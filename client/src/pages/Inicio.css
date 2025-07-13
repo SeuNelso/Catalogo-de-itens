@@ -1,0 +1,51 @@
+.inicio-bg {
+  min-height: 80vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #f7f8fa;
+}
+.inicio-card {
+  background: #fff;
+  border-radius: 18px;
+  box-shadow: 0 8px 32px rgba(9, 21, 255, 0.08);
+  padding: 48px 64px;
+  text-align: center;
+}
+.inicio-title {
+  color: #0915FF;
+  font-size: 2.2rem;
+  font-weight: bold;
+  margin-bottom: 12px;
+}
+.inicio-desc {
+  color: #444;
+  margin-bottom: 32px;
+}
+.inicio-actions {
+  display: flex;
+  gap: 24px;
+  justify-content: center;
+}
+.inicio-btn {
+  background: #0915FF;
+  color: #fff;
+  font-weight: 600;
+  border-radius: 8px;
+  padding: 16px 32px;
+  text-decoration: none;
+  font-size: 1.1rem;
+  transition: background 0.2s;
+}
+.inicio-btn:hover {
+  background: #2336ff;
+}
+@media (max-width: 700px) {
+  .inicio-card {
+    padding: 24px 8px;
+  }
+  .inicio-actions {
+    flex-direction: column;
+    gap: 16px;
+  }
+} 
