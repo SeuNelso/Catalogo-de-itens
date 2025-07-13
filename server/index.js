@@ -1,9 +1,80 @@
+/*
+-- SCRIPT DE CRIAÇÃO DAS TABELAS NO POSTGRESQL (use no Railway Console ou cliente SQL)
+
+CREATE TABLE itens (
+  id SERIAL PRIMARY KEY,
+  nome TEXT NOT NULL,
+  descricao TEXT,
+  categoria TEXT NOT NULL,
+  marca TEXT,
+  modelo TEXT,
+  codigo TEXT UNIQUE,
+  preco REAL,
+  quantidade INTEGER DEFAULT 0,
+  localizacao TEXT,
+  observacoes TEXT,
+  familia TEXT,
+  subfamilia TEXT,
+  setor TEXT,
+  comprimento REAL,
+  largura REAL,
+  altura REAL,
+  unidade TEXT,
+  peso TEXT,
+  unidadePeso TEXT,
+  unidadeArmazenamento TEXT,
+  data_cadastro TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE armazens_item (
+  id SERIAL PRIMARY KEY,
+  item_id INTEGER REFERENCES itens(id) ON DELETE CASCADE,
+  armazem TEXT,
+  quantidade INTEGER
+);
+
+CREATE TABLE imagens_itens (
+  id SERIAL PRIMARY KEY,
+  item_id INTEGER REFERENCES itens(id) ON DELETE CASCADE,
+  nome_arquivo TEXT NOT NULL,
+  caminho TEXT NOT NULL,
+  tipo TEXT,
+  data_upload TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE especificacoes (
+  id SERIAL PRIMARY KEY,
+  item_id INTEGER REFERENCES itens(id) ON DELETE CASCADE,
+  nome_especificacao TEXT NOT NULL,
+  valor TEXT NOT NULL,
+  obrigatorio BOOLEAN DEFAULT FALSE
+);
+
+CREATE TABLE usuarios (
+  id SERIAL PRIMARY KEY,
+  username TEXT UNIQUE NOT NULL,
+  password TEXT NOT NULL,
+  nome TEXT NOT NULL,
+  email TEXT UNIQUE,
+  role TEXT DEFAULT 'admin',
+  data_criacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+*/
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
-const sqlite3 = require('sqlite3').verbose();
+// Remover ou comentar a linha abaixo após migração completa:
+// const sqlite3 = require('sqlite3').verbose();
+// const db = new sqlite3.Database('catalogo.db');
+
+// Conexão com PostgreSQL (Railway)
+const { Pool } = require('pg');
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
+});
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const XLSX = require('xlsx');
@@ -84,8 +155,11 @@ app.post('/api/importar-excel', authenticateToken, excelUpload.single('arquivo')
     const sheet = workbook.Sheets[sheetName];
     const data = XLSX.utils.sheet_to_json(sheet, { defval: '' });
     // Início da transação
-    db.serialize(() => {
-      db.run('BEGIN TRANSACTION');
+    pool.query('BEGIN TRANSACTION', (err) => {
+      if (err) {
+        console.error('Erro ao iniciar transação:', err.message);
+        return res.status(500).json({ error: 'Erro ao iniciar transação.' });
+      }
       data.forEach((row, idx) => {
         const codigo = row['Artigo']?.toString().trim();
         const descricao = row['Descrição']?.toString().trim();
@@ -108,14 +182,14 @@ app.post('/api/importar-excel', authenticateToken, excelUpload.single('arquivo')
         Object.entries(armazens).forEach(([armazem, qtd]) => {
           console.log(`  - ${armazem}: ${qtd}`);
         });
-        db.get('SELECT id FROM itens WHERE codigo = ?', [codigo], (err, item) => {
+        pool.query('SELECT id FROM itens WHERE codigo = $1', [codigo], (err, result) => {
           if (err) {
             console.error(`[IMPORTAÇÃO] Erro ao buscar item (${codigo}):`, err.message);
             return;
           }
           const upsertArmazens = (itemId) => {
             // Apaga armazéns antigos desse item
-            db.run('DELETE FROM armazens_item WHERE item_id = ?', [itemId], (err) => {
+            pool.query('DELETE FROM armazens_item WHERE item_id = $1', [itemId], (err) => {
               if (err) {
                 console.error(`[IMPORTAÇÃO] Erro ao limpar armazéns do item (${codigo}):`, err.message);
               } else {
@@ -123,144 +197,58 @@ app.post('/api/importar-excel', authenticateToken, excelUpload.single('arquivo')
                 const armazemEntries = Object.entries(armazens);
                 if (armazemEntries.length > 0) {
                   const values = armazemEntries.map(([armazem, qtd]) => `(${itemId}, '${armazem.replace(/'/g, "''")}', ${qtd})`).join(',');
-                  db.run(`INSERT INTO armazens_item (item_id, armazem, quantidade) VALUES ${values}`);
+                  pool.query(`INSERT INTO armazens_item (item_id, armazem, quantidade) VALUES ${values}`);
                 }
               }
             });
           };
-          if (item) {
-            db.run('UPDATE itens SET nome = ?, descricao = ?, quantidade = ?, ordem_importacao = ? WHERE id = ?', [nome, descricao, quantidade, ordem_importacao, item.id], function(err2) {
+          if (result.rows.length > 0) {
+            const itemId = result.rows[0].id;
+            pool.query('UPDATE itens SET nome = $1, descricao = $2, quantidade = $3, ordem_importacao = $4 WHERE id = $5', [nome, descricao, quantidade, ordem_importacao, itemId], (err2) => {
               if (err2) {
                 console.error(`[IMPORTAÇÃO] Erro ao atualizar item (${codigo}):`, err2.message);
               } else {
-                upsertArmazens(item.id);
+                upsertArmazens(itemId);
                 console.log(`[IMPORTAÇÃO] Item atualizado: ${codigo}`);
               }
             });
           } else {
-            db.run('INSERT INTO itens (codigo, nome, descricao, categoria, quantidade, ordem_importacao) VALUES (?, ?, ?, ?, ?, ?)', [codigo, nome, descricao, 'Importado', quantidade, ordem_importacao], function(err2) {
+            pool.query('INSERT INTO itens (codigo, nome, descricao, categoria, quantidade, ordem_importacao) VALUES ($1, $2, $3, $4, $5, $6)', [codigo, nome, descricao, 'Importado', quantidade, ordem_importacao], (err2) => {
               if (err2) {
                 console.error(`[IMPORTAÇÃO] Erro ao inserir item (${codigo}):`, err2.message);
               } else {
-                upsertArmazens(this.lastID);
+                pool.query('SELECT id FROM itens WHERE codigo = $1 ORDER BY id DESC LIMIT 1', [codigo], (err3, itemIdResult) => {
+                  if (err3) {
+                    console.error(`[IMPORTAÇÃO] Erro ao obter ID do item inserido (${codigo}):`, err3.message);
+                  } else {
+                    const itemId = itemIdResult.rows[0].id;
+                    upsertArmazens(itemId);
+                  }
+                });
               }
             });
           }
         });
       });
-      db.run('COMMIT');
+      pool.query('COMMIT', (err) => {
+        if (err) {
+          console.error('Erro ao confirmar transação:', err.message);
+          return res.status(500).json({ error: 'Erro ao confirmar transação.' });
+        }
+        fs.unlinkSync(req.file.path);
+        res.json({ message: 'Importação concluída com sucesso!' });
+      });
     });
-    fs.unlinkSync(req.file.path);
-    res.json({ message: 'Importação concluída com sucesso!' });
   } catch (error) {
     res.status(500).json({ error: 'Erro ao processar o arquivo.' });
   }
 });
 
 // Inicialização do banco de dados
-const db = new sqlite3.Database('catalogo.db');
+// const db = new sqlite3.Database('catalogo.db');
 
 // Criar tabelas
-db.serialize(() => {
-  // Tabela de itens
-  db.run(`CREATE TABLE IF NOT EXISTS itens (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    nome TEXT NOT NULL,
-    descricao TEXT,
-    categoria TEXT NOT NULL,
-    marca TEXT,
-    modelo TEXT,
-    codigo TEXT UNIQUE,
-    preco REAL,
-    quantidade INTEGER DEFAULT 0,
-    localizacao TEXT,
-    observacoes TEXT,
-    familia TEXT,
-    subfamilia TEXT,
-    setor TEXT,
-    comprimento REAL,
-    largura REAL,
-    altura REAL,
-    unidade TEXT,
-    peso TEXT,
-    unidadePeso TEXT,
-    unidadeArmazenamento TEXT,
-    data_cadastro DATETIME DEFAULT CURRENT_TIMESTAMP
-  )`);
-
-  // Tabela de armazéns por item
-  db.run(`CREATE TABLE IF NOT EXISTS armazens_item (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    item_id INTEGER,
-    armazem TEXT,
-    quantidade INTEGER,
-    FOREIGN KEY (item_id) REFERENCES itens(id) ON DELETE CASCADE
-  )`);
-
-  // Tabela de imagens dos itens
-  db.run(`CREATE TABLE IF NOT EXISTS imagens_itens (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    item_id INTEGER,
-    nome_arquivo TEXT NOT NULL,
-    caminho TEXT NOT NULL,
-    tipo TEXT,
-    data_upload DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (item_id) REFERENCES itens (id) ON DELETE CASCADE
-  )`);
-
-  // Tabela de especificações dos itens
-  db.run(`CREATE TABLE IF NOT EXISTS especificacoes (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    item_id INTEGER,
-    nome_especificacao TEXT NOT NULL,
-    valor TEXT NOT NULL,
-    obrigatorio BOOLEAN DEFAULT 0,
-    FOREIGN KEY (item_id) REFERENCES itens (id) ON DELETE CASCADE
-  )`);
-
-  // Tabela de usuários
-  db.run(`CREATE TABLE IF NOT EXISTS usuarios (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    username TEXT UNIQUE NOT NULL,
-    password TEXT NOT NULL,
-    nome TEXT NOT NULL,
-    email TEXT UNIQUE,
-    role TEXT DEFAULT 'admin',
-    data_criacao DATETIME DEFAULT CURRENT_TIMESTAMP
-  )`);
-
-  // Criar usuário admin padrão se não existir
-  db.get('SELECT id FROM usuarios WHERE username = ?', ['admin'], (err, row) => {
-    if (err) {
-      console.error('Erro ao verificar usuário admin:', err);
-      return;
-    }
-    
-    if (!row) {
-      const hashedPassword = bcrypt.hashSync('admin123', 10);
-      db.run('INSERT INTO usuarios (username, password, nome, email, role) VALUES (?, ?, ?, ?, ?)',
-        ['admin', hashedPassword, 'Administrador', 'admin@catalogo.com', 'admin'],
-        (err) => {
-          if (err) {
-            console.error('Erro ao criar usuário admin:', err);
-          } else {
-            console.log('Usuário admin criado com sucesso!');
-            console.log('Username: admin');
-            console.log('Password: admin123');
-          }
-        }
-      );
-    }
-  });
-
-  // Adicionar campo ordem_importacao se não existir
-  // (executa apenas uma vez, ignora erro se já existir)
-  db.run('ALTER TABLE itens ADD COLUMN ordem_importacao INTEGER', [], (err) => {
-    if (err && !err.message.includes('duplicate')) {
-      console.error('Erro ao adicionar coluna ordem_importacao:', err.message);
-    }
-  });
-});
+// const db = new sqlite3.Database('catalogo.db');
 
 // Rotas da API
 
@@ -272,15 +260,16 @@ app.post('/api/login', (req, res) => {
     return res.status(400).json({ error: 'Username e password são obrigatórios' });
   }
 
-  db.get('SELECT * FROM usuarios WHERE username = ?', [username], (err, user) => {
+  pool.query('SELECT * FROM usuarios WHERE username = $1', [username], (err, result) => {
     if (err) {
       return res.status(500).json({ error: err.message });
     }
 
-    if (!user) {
+    if (result.rows.length === 0) {
       return res.status(401).json({ error: 'Usuário não encontrado' });
     }
 
+    const user = result.rows[0];
     const validPassword = bcrypt.compareSync(password, user.password);
     if (!validPassword) {
       return res.status(401).json({ error: 'Senha incorreta' });
@@ -322,11 +311,11 @@ app.get('/api/itens', (req, res) => {
     ORDER BY i.ordem_importacao ASC, i.data_cadastro DESC
   `;
 
-  db.all(query, [], (err, rows) => {
+  pool.query(query, [], (err, result) => {
     if (err) {
       return res.status(500).json({ error: err.message });
     }
-    const itens = rows.map(row => ({
+    const itens = result.rows.map(row => ({
       ...row,
       imagens: row.imagens ? row.imagens.split(',') : []
     }));
@@ -339,35 +328,35 @@ app.get('/api/itens/:id', (req, res) => {
   const itemId = req.params.id;
   
   // Buscar item
-  db.get('SELECT * FROM itens WHERE id = ?', [itemId], (err, item) => {
+  pool.query('SELECT * FROM itens WHERE id = $1', [itemId], (err, result) => {
     if (err) {
       return res.status(500).json({ error: err.message });
     }
-    if (!item) {
+    if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Item não encontrado' });
     }
     
     // Buscar imagens
-    db.all('SELECT * FROM imagens_itens WHERE item_id = ?', [itemId], (err, imagens) => {
+    pool.query('SELECT * FROM imagens_itens WHERE item_id = $1', [itemId], (err, imagensResult) => {
       if (err) {
         return res.status(500).json({ error: err.message });
       }
       
       // Buscar especificações
-      db.all('SELECT * FROM especificacoes WHERE item_id = ?', [itemId], (err, especificacoes) => {
+      pool.query('SELECT * FROM especificacoes WHERE item_id = $1', [itemId], (err, especificacoesResult) => {
         if (err) {
           return res.status(500).json({ error: err.message });
         }
         // Buscar armazéns
-        db.all('SELECT armazem, quantidade FROM armazens_item WHERE item_id = ?', [itemId], (err, armazens) => {
+        pool.query('SELECT armazem, quantidade FROM armazens_item WHERE item_id = $1', [itemId], (err, armazensResult) => {
           if (err) {
             return res.status(500).json({ error: err.message });
           }
           res.json({
-            ...item,
-            imagens: imagens,
-            especificacoes: especificacoes,
-            armazens: armazens || []
+            ...result.rows[0],
+            imagens: imagensResult.rows,
+            especificacoes: especificacoesResult.rows,
+            armazens: armazensResult.rows || []
           });
         });
       });
@@ -398,11 +387,11 @@ app.post('/api/itens', authenticateToken, upload.array('imagens', 10), (req, res
 
   // Verificar se código já existe
   if (codigo) {
-    db.get('SELECT id FROM itens WHERE codigo = ?', [codigo], (err, row) => {
+    pool.query('SELECT id FROM itens WHERE codigo = $1', [codigo], (err, result) => {
       if (err) {
         return res.status(500).json({ error: err.message });
       }
-      if (row) {
+      if (result.rows.length > 0) {
         return res.status(400).json({ error: 'Código já existe' });
       }
       inserirItem();
@@ -442,18 +431,18 @@ app.post('/api/itens', authenticateToken, upload.array('imagens', 10), (req, res
       unidadeArmazenamento: req.body.unidadeArmazenamento || ''
     };
 
-    db.run(`
+    pool.query(`
       INSERT INTO itens (nome, descricao, categoria, marca, modelo, codigo, preco, quantidade, localizacao, observacoes, familia, subfamilia, setor, comprimento, largura, altura, unidade, peso, unidadePeso, unidadeArmazenamento)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
     `, [itemData.nome, itemData.descricao, itemData.categoria, itemData.marca, itemData.modelo, 
         itemData.codigo, itemData.preco, itemData.quantidade, itemData.localizacao, itemData.observacoes,
         itemData.familia, itemData.subfamilia, itemData.setor, itemData.comprimento, itemData.largura, itemData.altura, itemData.unidade, itemData.peso, itemData.unidadePeso, itemData.unidadeArmazenamento],
-      function(err) {
+      (err, result) => {
         if (err) {
           return res.status(500).json({ error: err.message });
         }
 
-        const itemId = this.lastID;
+        const itemId = result.rows[0].id;
 
         // Salvar imagens no Google Drive
         if (req.files && req.files.length > 0) {
@@ -471,9 +460,9 @@ app.post('/api/itens', authenticateToken, upload.array('imagens', 10), (req, res
               
               // Salvar informações no banco
               return new Promise((resolve, reject) => {
-                db.run(`
+                pool.query(`
                   INSERT INTO imagens_itens (item_id, nome_arquivo, caminho, tipo)
-                  VALUES (?, ?, ?, ?)
+                  VALUES ($1, $2, $3, $4)
                 `, [itemId, file.originalname, publicUrl, file.mimetype], (err) => {
                   if (err) reject(err);
                   else {
@@ -498,9 +487,9 @@ app.post('/api/itens', authenticateToken, upload.array('imagens', 10), (req, res
                 const especArray = JSON.parse(especificacoes);
                 const especPromises = especArray.map(espec => {
                   return new Promise((resolve, reject) => {
-                    db.run(`
+                    pool.query(`
                       INSERT INTO especificacoes (item_id, nome_especificacao, valor, obrigatorio)
-                      VALUES (?, ?, ?, ?)
+                      VALUES ($1, $2, $3, $4)
                     `, [itemId, espec.nome, espec.valor, espec.obrigatorio ? 1 : 0], (err) => {
                       if (err) reject(err);
                       else resolve();
@@ -577,12 +566,12 @@ app.post('/api/reconhecer', upload.single('imagem'), (req, res) => {
     LIMIT 15
   `;
 
-  db.all(query, [], (err, rows) => {
+  pool.query(query, [], (err, result) => {
     if (err) {
       return res.status(500).json({ error: err.message });
     }
     
-    const itens = rows.map(row => ({
+    const itens = result.rows.map(row => ({
       ...row,
       imagens: row.imagens ? row.imagens.split(',') : [],
       relevancia: Math.random() * 100 // Simulação de relevância
@@ -614,19 +603,19 @@ app.get('/api/buscar', (req, res) => {
            GROUP_CONCAT(DISTINCT img.caminho) as imagens
     FROM itens i
     LEFT JOIN imagens_itens img ON i.id = img.item_id
-    WHERE i.nome LIKE ? OR i.descricao LIKE ? OR i.categoria LIKE ? OR i.marca LIKE ? OR i.modelo LIKE ?
+    WHERE i.nome LIKE $1 OR i.descricao LIKE $2 OR i.categoria LIKE $3 OR i.marca LIKE $4 OR i.modelo LIKE $5
     GROUP BY i.id
     ORDER BY i.data_cadastro DESC
   `;
 
   const searchTerm = `%${q}%`;
   
-  db.all(query, [searchTerm, searchTerm, searchTerm, searchTerm, searchTerm], (err, rows) => {
+  pool.query(query, [searchTerm, searchTerm, searchTerm, searchTerm, searchTerm], (err, result) => {
     if (err) {
       return res.status(500).json({ error: err.message });
     }
     
-    const itens = rows.map(row => ({
+    const itens = result.rows.map(row => ({
       ...row,
       imagens: row.imagens ? row.imagens.split(',') : []
     }));
@@ -666,21 +655,21 @@ app.put('/api/itens/:id', authenticateToken, upload.array('imagens', 10), (req, 
     return res.status(400).json({ error: 'Código e descrição são obrigatórios' });
   }
 
-  db.run(`
+  pool.query(`
     UPDATE itens 
-    SET nome = ?, descricao = ?, categoria = ?, marca = ?, modelo = ?, 
-        codigo = ?, preco = ?, quantidade = ?, localizacao = ?, observacoes = ?,
-        familia = ?, subfamilia = ?, setor = ?, comprimento = ?, largura = ?, altura = ?,
-        unidade = ?, peso = ?, unidadePeso = ?, unidadeArmazenamento = ?
-    WHERE id = ?
+    SET nome = $1, descricao = $2, categoria = $3, marca = $4, modelo = $5, 
+        codigo = $6, preco = $7, quantidade = $8, localizacao = $9, observacoes = $10,
+        familia = $11, subfamilia = $12, setor = $13, comprimento = $14, largura = $15, altura = $16,
+        unidade = $17, peso = $18, unidadePeso = $19, unidadeArmazenamento = $20
+    WHERE id = $21
   `, [
     nome || descricao, descricao, categoria || 'Sem categoria', marca, modelo, codigo, preco, quantidade, localizacao, observacoes,
     familia, subfamilia, setor, comprimento, largura, altura, unidade, peso, unidadePeso, unidadeArmazenamento, itemId
-  ], function(err) {
+  ], (err, result) => {
     if (err) {
       return res.status(500).json({ error: err.message });
     }
-    if (this.changes === 0) {
+    if (result.rowCount === 0) {
       return res.status(404).json({ error: 'Item não encontrado' });
     }
 
@@ -689,16 +678,16 @@ app.put('/api/itens/:id', authenticateToken, upload.array('imagens', 10), (req, 
       try {
         const especArray = JSON.parse(especificacoes);
         // Apagar especificações antigas
-        db.run('DELETE FROM especificacoes WHERE item_id = ?', [itemId], (err) => {
+        pool.query('DELETE FROM especificacoes WHERE item_id = $1', [itemId], (err) => {
           if (err) {
             return res.status(500).json({ error: 'Erro ao apagar especificações antigas.' });
           }
           // Inserir novas especificações
           const especPromises = especArray.map(espec => {
             return new Promise((resolve, reject) => {
-              db.run(`
+              pool.query(`
                 INSERT INTO especificacoes (item_id, nome_especificacao, valor, obrigatorio)
-                VALUES (?, ?, ?, ?)
+                VALUES ($1, $2, $3, $4)
               `, [itemId, espec.nome, espec.valor, espec.obrigatorio ? 1 : 0], (err) => {
                 if (err) reject(err);
                 else resolve();
@@ -728,13 +717,13 @@ app.delete('/api/itens/:id', authenticateToken, (req, res) => {
   const itemId = req.params.id;
 
   // Primeiro, deletar imagens do sistema de arquivos
-  db.all('SELECT caminho FROM imagens_itens WHERE item_id = ?', [itemId], (err, imagens) => {
+  pool.query('SELECT caminho FROM imagens_itens WHERE item_id = $1', [itemId], (err, imagensResult) => {
     if (err) {
       return res.status(500).json({ error: err.message });
     }
 
     // Deletar arquivos físicos
-    imagens.forEach(img => {
+    imagensResult.rows.forEach(img => {
       const filePath = path.join(__dirname, '..', 'uploads', img.caminho);
       if (fs.existsSync(filePath)) {
         fs.unlinkSync(filePath);
@@ -742,12 +731,12 @@ app.delete('/api/itens/:id', authenticateToken, (req, res) => {
     });
 
     // Deletar do banco de dados
-    db.run('DELETE FROM itens WHERE id = ?', [itemId], function(err) {
+    pool.query('DELETE FROM itens WHERE id = $1', [itemId], (err) => {
       if (err) {
         return res.status(500).json({ error: err.message });
       }
       
-      if (this.changes === 0) {
+      if (result.rowCount === 0) {
         return res.status(404).json({ error: 'Item não encontrado' });
       }
       
@@ -761,15 +750,31 @@ app.delete('/api/itens', authenticateToken, (req, res) => {
   if (!req.user || req.user.role !== 'admin') {
     return res.status(403).json({ error: 'Apenas administradores podem excluir todos os itens.' });
   }
-  db.serialize(() => {
-    db.run('DELETE FROM armazens_item', [], (err) => {
-      if (err) return res.status(500).json({ error: 'Erro ao apagar armazéns.' });
-      db.run('DELETE FROM imagens_itens', [], (err2) => {
-        if (err2) return res.status(500).json({ error: 'Erro ao apagar imagens.' });
-        db.run('DELETE FROM especificacoes', [], (err3) => {
-          if (err3) return res.status(500).json({ error: 'Erro ao apagar especificações.' });
-          db.run('DELETE FROM itens', [], (err4) => {
-            if (err4) return res.status(500).json({ error: 'Erro ao apagar itens.' });
+  pool.query('BEGIN TRANSACTION', (err) => {
+    if (err) {
+      console.error('Erro ao iniciar transação para deletar todos os itens:', err.message);
+      return res.status(500).json({ error: 'Erro ao iniciar transação.' });
+    }
+    pool.query('DELETE FROM armazens_item', [], (err) => {
+      if (err) {
+        console.error('Erro ao apagar armazéns:', err.message);
+        return res.status(500).json({ error: 'Erro ao apagar armazéns.' });
+      }
+      pool.query('DELETE FROM imagens_itens', [], (err2) => {
+        if (err2) {
+          console.error('Erro ao apagar imagens:', err2.message);
+          return res.status(500).json({ error: 'Erro ao apagar imagens.' });
+        }
+        pool.query('DELETE FROM especificacoes', [], (err3) => {
+          if (err3) {
+            console.error('Erro ao apagar especificações:', err3.message);
+            return res.status(500).json({ error: 'Erro ao apagar especificações.' });
+          }
+          pool.query('DELETE FROM itens', [], (err4) => {
+            if (err4) {
+              console.error('Erro ao apagar itens:', err4.message);
+              return res.status(500).json({ error: 'Erro ao apagar itens.' });
+            }
             res.json({ message: 'Todos os itens foram excluídos com sucesso.' });
           });
         });
@@ -782,23 +787,23 @@ app.delete('/api/itens', authenticateToken, (req, res) => {
 app.delete('/api/imagens/:id', authenticateToken, (req, res) => {
   const imagemId = req.params.id;
 
-  db.get('SELECT caminho FROM imagens_itens WHERE id = ?', [imagemId], (err, imagem) => {
+  pool.query('SELECT caminho FROM imagens_itens WHERE id = $1', [imagemId], (err, imagemResult) => {
     if (err) {
       return res.status(500).json({ error: err.message });
     }
     
-    if (!imagem) {
+    if (imagemResult.rows.length === 0) {
       return res.status(404).json({ error: 'Imagem não encontrada' });
     }
 
     // Deletar arquivo físico
-    const filePath = path.join(__dirname, '..', 'uploads', imagem.caminho);
+    const filePath = path.join(__dirname, '..', 'uploads', imagemResult.rows[0].caminho);
     if (fs.existsSync(filePath)) {
       fs.unlinkSync(filePath);
     }
 
     // Deletar do banco
-    db.run('DELETE FROM imagens_itens WHERE id = ?', [imagemId], function(err) {
+    pool.query('DELETE FROM imagens_itens WHERE id = $1', [imagemId], (err) => {
       if (err) {
         return res.status(500).json({ error: err.message });
       }
@@ -810,12 +815,12 @@ app.delete('/api/imagens/:id', authenticateToken, (req, res) => {
 
 // Obter categorias
 app.get('/api/categorias', (req, res) => {
-  db.all('SELECT DISTINCT categoria FROM itens ORDER BY categoria', [], (err, rows) => {
+  pool.query('SELECT DISTINCT categoria FROM itens ORDER BY categoria', [], (err, result) => {
     if (err) {
       return res.status(500).json({ error: err.message });
     }
     
-    const categorias = rows.map(row => row.categoria);
+    const categorias = result.rows.map(row => row.categoria);
     res.json(categorias);
   });
 });
@@ -825,25 +830,25 @@ app.get('/api/estatisticas', (req, res) => {
   const stats = {};
   
   // Total de itens
-  db.get('SELECT COUNT(*) as total FROM itens', [], (err, row) => {
+  pool.query('SELECT COUNT(*) as total FROM itens', [], (err, result) => {
     if (err) {
       return res.status(500).json({ error: err.message });
     }
-    stats.totalItens = row.total;
+    stats.totalItens = result.rows[0].total;
     
     // Total de categorias
-    db.get('SELECT COUNT(DISTINCT categoria) as total FROM itens', [], (err, row) => {
+    pool.query('SELECT COUNT(DISTINCT categoria) as total FROM itens', [], (err, result) => {
       if (err) {
         return res.status(500).json({ error: err.message });
       }
-      stats.totalCategorias = row.total;
+      stats.totalCategorias = result.rows[0].total;
       
       // Total de imagens
-      db.get('SELECT COUNT(*) as total FROM imagens_itens', [], (err, row) => {
+      pool.query('SELECT COUNT(*) as total FROM imagens_itens', [], (err, result) => {
         if (err) {
           return res.status(500).json({ error: err.message });
         }
-        stats.totalImagens = row.total;
+        stats.totalImagens = result.rows[0].total;
         
         res.json(stats);
       });
