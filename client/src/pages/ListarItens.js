@@ -52,7 +52,7 @@ const ListarItens = () => {
   useEffect(() => {
     function calcularItensPorPagina() {
       // Altura do cabeçalho, filtros, margens, etc.
-      const alturaCabecalho = 250; // considera header, filtros, paginação, etc.
+      // const alturaCabecalho = 250; // considera header, filtros, paginação, etc. (não usado)
       // const alturaLinha = 48; // altura média de uma linha da tabela (não usado)
       // const alturaDisponivel = window.innerHeight - alturaCabecalho; // não usado
     }
