@@ -10,11 +10,12 @@ import Webcam from 'react-webcam';
 const ListarItens = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [itens, setItens] = useState([]);
-  const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState(null);
   const [paginaAtual, setPaginaAtual] = useState(1);
-  const [itensPorPagina, setItensPorPagina] = useState(10);
   // Remover variáveis não utilizadas
+  // const [loading, setLoading] = useState(true); // não usado
+  // const [quantidadeFiltro, setQuantidadeFiltro] = useState(''); // não usado
+  // const [itensPorPagina, setItensPorPagina] = useState(10); // não usado
   // const [tabelaRef, setTabelaRef] = useState(null); // não usado
   // const [totalItens, setTotalItens] = useState(0); // não usado
 
@@ -24,7 +25,6 @@ const ListarItens = () => {
   const [ordemDescricaoAsc, setOrdemDescricaoAsc] = useState(true);
   const [codigoFiltro, setCodigoFiltro] = useState('');
   const [descricaoFiltro, setDescricaoFiltro] = useState('');
-  const [quantidadeFiltro, setQuantidadeFiltro] = useState('');
   const [showCodigoFiltro, setShowCodigoFiltro] = useState(false);
   const [showDescricaoFiltro, setShowDescricaoFiltro] = useState(false);
   const codigoFiltroRef = useRef(null);
@@ -47,7 +47,7 @@ const ListarItens = () => {
   useEffect(() => {
     fetchItens();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [paginaAtual, itensPorPagina]);
+  }, [paginaAtual]);
 
   useEffect(() => {
     function calcularItensPorPagina() {
@@ -56,7 +56,7 @@ const ListarItens = () => {
       const alturaLinha = 48; // altura média de uma linha da tabela
       const alturaDisponivel = window.innerHeight - alturaCabecalho;
       const possiveis = Math.max(3, Math.floor(alturaDisponivel / alturaLinha));
-      setItensPorPagina(possiveis);
+      // setItensPorPagina(possiveis); // não usado
     }
     calcularItensPorPagina();
     window.addEventListener('resize', calcularItensPorPagina);
@@ -65,7 +65,7 @@ const ListarItens = () => {
 
   useEffect(() => {
     setPaginaAtual(1); // Sempre volta para a primeira página ao filtrar
-  }, [codigoFiltro, descricaoFiltro, quantidadeFiltro]);
+  }, [codigoFiltro, descricaoFiltro]);
 
   useEffect(() => {
     function handleClickOutside(event) {
@@ -81,9 +81,9 @@ const ListarItens = () => {
   }, []);
 
   const fetchItens = async () => {
-    setLoading(true);
+    // setLoading(true); // não usado
     try {
-      const response = await fetch(`/api/itens?page=${paginaAtual}&limit=${itensPorPagina}`);
+      const response = await fetch(`/api/itens?page=${paginaAtual}&limit=10`); // itensPorPagina não usado
       if (response.ok) {
         const data = await response.json();
         let arr = [];
@@ -100,7 +100,7 @@ const ListarItens = () => {
       // setTotalItens(0); // não usado
       setToast({ type: 'error', message: 'Erro ao carregar itens.' });
     } finally {
-      setLoading(false);
+      // setLoading(false); // não usado
     }
   };
 
@@ -114,8 +114,8 @@ const ListarItens = () => {
       (item.descricao && item.descricao.toLowerCase().includes(termo))
     );
   }) : [];
-  const totalPaginas = Math.ceil(itensFiltrados.length / itensPorPagina);
-  const itensPagina = Array.isArray(itensFiltrados) ? itensFiltrados.slice((paginaAtual - 1) * itensPorPagina, paginaAtual * itensPorPagina) : [];
+  const totalPaginas = Math.ceil(itensFiltrados.length / 10); // itensPorPagina não usado
+  const itensPagina = Array.isArray(itensFiltrados) ? itensFiltrados.slice((paginaAtual - 1) * 10, paginaAtual * 10) : []; // itensPorPagina não usado
 
   const ordenarPorCodigo = () => {
     setOrdemCodigoAsc(!ordemCodigoAsc);

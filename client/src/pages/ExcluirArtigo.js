@@ -25,7 +25,7 @@ export default function ExcluirArtigo() {
       return;
     }
     fetchItens();
-  }, [user]);
+  }, [user, navigate]);
 
   useEffect(() => {
     setPaginaAtual(1);
