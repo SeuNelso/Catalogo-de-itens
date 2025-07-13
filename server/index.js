@@ -1,3 +1,4 @@
+require('dotenv').config();
 /*
 -- SCRIPT DE CRIAÇÃO DAS TABELAS NO POSTGRESQL (use no Railway Console ou cliente SQL)
 
@@ -72,8 +73,8 @@ const fs = require('fs');
 // Conexão com PostgreSQL (Railway)
 const { Pool } = require('pg');
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
+  connectionString: 'postgres://postgres:DwAOpLGFNCgDcBkeobQVKuXqHWpiQqZt@switchyard.proxy.rlwy.net:10773/railway',
+  ssl: { rejectUnauthorized: false }
 });
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
@@ -107,9 +108,6 @@ app.use(cors());
 app.use(express.json());
 app.use('/uploads', express.static('uploads'));
 app.use(express.static(path.join(__dirname, '../client/build')));
-app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, '../client/build', 'index.html'));
-});
 
 // Configuração do Multer para upload de imagens
 const storage = multer.diskStorage({
@@ -213,18 +211,12 @@ app.post('/api/importar-excel', authenticateToken, excelUpload.single('arquivo')
               }
             });
           } else {
-            pool.query('INSERT INTO itens (codigo, nome, descricao, categoria, quantidade, ordem_importacao) VALUES ($1, $2, $3, $4, $5, $6)', [codigo, nome, descricao, 'Importado', quantidade, ordem_importacao], (err2) => {
+            pool.query('INSERT INTO itens (codigo, nome, descricao, categoria, quantidade, ordem_importacao) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id', [codigo, nome, descricao, 'Importado', quantidade, ordem_importacao], (err2, resultInsert) => {
               if (err2) {
                 console.error(`[IMPORTAÇÃO] Erro ao inserir item (${codigo}):`, err2.message);
               } else {
-                pool.query('SELECT id FROM itens WHERE codigo = $1 ORDER BY id DESC LIMIT 1', [codigo], (err3, itemIdResult) => {
-                  if (err3) {
-                    console.error(`[IMPORTAÇÃO] Erro ao obter ID do item inserido (${codigo}):`, err3.message);
-                  } else {
-                    const itemId = itemIdResult.rows[0].id;
-                    upsertArmazens(itemId);
-                  }
-                });
+                const itemId = resultInsert.rows[0].id;
+                upsertArmazens(itemId);
               }
             });
           }
@@ -303,7 +295,7 @@ app.get('/api/verify-token', authenticateToken, (req, res) => {
 app.get('/api/itens', (req, res) => {
   const query = `
     SELECT i.*, 
-           GROUP_CONCAT(DISTINCT img.caminho) as imagens,
+           STRING_AGG(DISTINCT img.caminho, ',') as imagens,
            COUNT(DISTINCT img.id) as total_imagens
     FROM itens i
     LEFT JOIN imagens_itens img ON i.id = img.item_id
@@ -434,6 +426,7 @@ app.post('/api/itens', authenticateToken, upload.array('imagens', 10), (req, res
     pool.query(`
       INSERT INTO itens (nome, descricao, categoria, marca, modelo, codigo, preco, quantidade, localizacao, observacoes, familia, subfamilia, setor, comprimento, largura, altura, unidade, peso, unidadePeso, unidadeArmazenamento)
       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+      RETURNING id
     `, [itemData.nome, itemData.descricao, itemData.categoria, itemData.marca, itemData.modelo, 
         itemData.codigo, itemData.preco, itemData.quantidade, itemData.localizacao, itemData.observacoes,
         itemData.familia, itemData.subfamilia, itemData.setor, itemData.comprimento, itemData.largura, itemData.altura, itemData.unidade, itemData.peso, itemData.unidadePeso, itemData.unidadeArmazenamento],
@@ -551,7 +544,7 @@ app.post('/api/reconhecer', upload.single('imagem'), (req, res) => {
   // Por enquanto, retornamos todos os itens ordenados por relevância
   const query = `
     SELECT i.*, 
-           GROUP_CONCAT(DISTINCT img.caminho) as imagens,
+           STRING_AGG(DISTINCT img.caminho, ',') as imagens,
            COUNT(DISTINCT img.id) as total_imagens
     FROM itens i
     LEFT JOIN imagens_itens img ON i.id = img.item_id
@@ -600,7 +593,7 @@ app.get('/api/buscar', (req, res) => {
 
   const query = `
     SELECT i.*, 
-           GROUP_CONCAT(DISTINCT img.caminho) as imagens
+           STRING_AGG(DISTINCT img.caminho, ',') as imagens
     FROM itens i
     LEFT JOIN imagens_itens img ON i.id = img.item_id
     WHERE i.nome LIKE $1 OR i.descricao LIKE $2 OR i.categoria LIKE $3 OR i.marca LIKE $4 OR i.modelo LIKE $5
@@ -905,4 +898,8 @@ app.post('/api/test-upload', upload.single('imagem'), async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Servidor rodando na porta ${PORT}`);
   console.log(`API disponível em http://localhost:${PORT}/api`);
+}); 
+
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, '../client/build', 'index.html'));
 }); 
