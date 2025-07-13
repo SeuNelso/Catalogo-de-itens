@@ -14,7 +14,9 @@ const ListarItens = () => {
   const [toast, setToast] = useState(null);
   const [paginaAtual, setPaginaAtual] = useState(1);
   const [itensPorPagina, setItensPorPagina] = useState(10);
-  const [totalItens, setTotalItens] = useState(0);
+  // Remover variáveis não utilizadas
+  // const [tabelaRef, setTabelaRef] = useState(null); // não usado
+  // const [totalItens, setTotalItens] = useState(0); // não usado
 
   const navigate = useNavigate();
 
@@ -23,7 +25,6 @@ const ListarItens = () => {
   const [codigoFiltro, setCodigoFiltro] = useState('');
   const [descricaoFiltro, setDescricaoFiltro] = useState('');
   const [quantidadeFiltro, setQuantidadeFiltro] = useState('');
-  const [tabelaRef, setTabelaRef] = useState(null);
   const [showCodigoFiltro, setShowCodigoFiltro] = useState(false);
   const [showDescricaoFiltro, setShowDescricaoFiltro] = useState(false);
   const codigoFiltroRef = useRef(null);
@@ -42,8 +43,10 @@ const ListarItens = () => {
   const { user } = useAuth();
   const isAdmin = user && user.role === 'admin';
 
+  // Corrigir useEffect para não dar erro de dependência
   useEffect(() => {
     fetchItens();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [paginaAtual, itensPorPagina]);
 
   useEffect(() => {
@@ -87,14 +90,14 @@ const ListarItens = () => {
         if (Array.isArray(data.itens)) arr = data.itens;
         else if (Array.isArray(data)) arr = data;
         setItens(arr);
-        setTotalItens(data.total || arr.length);
+        // setTotalItens(data.total || arr.length); // não usado
       } else {
         setItens([]);
-        setTotalItens(0);
+        // setTotalItens(0); // não usado
       }
     } catch (error) {
       setItens([]);
-      setTotalItens(0);
+      // setTotalItens(0); // não usado
       setToast({ type: 'error', message: 'Erro ao carregar itens.' });
     } finally {
       setLoading(false);
