@@ -11,7 +11,6 @@ export default function ExcluirArtigo() {
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState(null);
   const [paginaAtual, setPaginaAtual] = useState(1);
-  const [itensPorPagina, setItensPorPagina] = useState(10);
   const [showCodigoFiltro, setShowCodigoFiltro] = useState(false);
   const [showDescricaoFiltro, setShowDescricaoFiltro] = useState(false);
   const [codigoFiltro, setCodigoFiltro] = useState('');
@@ -64,8 +63,8 @@ export default function ExcluirArtigo() {
     const descricaoOk = descricaoFiltro === '' || (item.nome || '').toLowerCase().includes(descricaoFiltro.toLowerCase());
     return codigoOk && descricaoOk;
   });
-  const totalPaginas = Math.ceil(itensFiltrados.length / itensPorPagina);
-  const itensPagina = itensFiltrados.slice((paginaAtual - 1) * itensPorPagina, paginaAtual * itensPorPagina);
+  const totalPaginas = Math.ceil(itensFiltrados.length / 10); // itensPorPagina foi removido
+  const itensPagina = itensFiltrados.slice((paginaAtual - 1) * 10, paginaAtual * 10); // itensPorPagina foi removido
 
   const handleDelete = async (id) => {
     if (!window.confirm('Tem certeza que deseja excluir este artigo? Esta ação não pode ser desfeita.')) return;

@@ -55,8 +55,7 @@ const ListarItens = () => {
       const alturaCabecalho = 250; // considera header, filtros, paginação, etc.
       const alturaLinha = 48; // altura média de uma linha da tabela
       const alturaDisponivel = window.innerHeight - alturaCabecalho;
-      const possiveis = Math.max(3, Math.floor(alturaDisponivel / alturaLinha));
-      // setItensPorPagina(possiveis); // não usado
+      // const possiveis = Math.max(3, Math.floor(alturaDisponivel / alturaLinha)); // não usado
     }
     calcularItensPorPagina();
     window.addEventListener('resize', calcularItensPorPagina);
