@@ -35,6 +35,10 @@ const authenticateToken = (req, res, next) => {
 app.use(cors());
 app.use(express.json());
 app.use('/uploads', express.static('uploads'));
+app.use(express.static(path.join(__dirname, '../client/build')));
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, '../client/build', 'index.html'));
+});
 
 // Configuração do Multer para upload de imagens
 const storage = multer.diskStorage({
