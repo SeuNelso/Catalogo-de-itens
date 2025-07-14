@@ -1,6 +1,8 @@
 import React from 'react';
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import { AuthProvider } from './contexts/AuthContext';
+import { ImportProgressProvider } from './contexts/ImportProgressContext';
+import ImportProgressBar from './components/ImportProgressBar';
 import Navbar from './components/Navbar';
 import ProtectedRoute from './components/ProtectedRoute';
 import Home from './pages/Home';
@@ -11,44 +13,57 @@ import DetalhesItem from './pages/DetalhesItem';
 import EditarItem from './pages/EditarItem';
 import ExcluirArtigo from './pages/ExcluirArtigo';
 import ImportarExcel from './pages/ImportarExcel';
+import ImportarStockNacional from './pages/ImportarStockNacional';
 import './App.css';
 
 function App() {
   return (
-    <AuthProvider>
-      <Router>
-        <div className="App min-h-screen bg-[#F7F8FA] flex flex-col">
-          <Navbar />
-          <div className="flex-1 pt-16">
-            <Routes>
-              <Route path="/" element={<Home />} />
-              <Route path="/login" element={<Login />} />
-              <Route path="/listar" element={<ListarItens />} />
-              <Route path="/item/:id" element={<DetalhesItem />} />
-              <Route path="/editar/:id" element={<ProtectedRoute><EditarItem /></ProtectedRoute>} />
-              <Route path="/excluir-artigo" element={<ProtectedRoute><ExcluirArtigo /></ProtectedRoute>} />
-              {/* Rotas protegidas */}
-              <Route 
-                path="/cadastrar" 
-                element={
-                  <ProtectedRoute>
-                    <CadastrarItem />
-                  </ProtectedRoute>
-                } 
-              />
-              <Route 
-                path="/importar-excel" 
-                element={
-                  <ProtectedRoute>
-                    <ImportarExcel />
-                  </ProtectedRoute>
-                } 
-              />
-            </Routes>
+    <ImportProgressProvider>
+      <AuthProvider>
+        <Router>
+          <div className="App min-h-screen bg-[#F7F8FA] flex flex-col">
+            <Navbar />
+            <div className="flex-1 pt-16">
+              <Routes>
+                <Route path="/" element={<Home />} />
+                <Route path="/login" element={<Login />} />
+                <Route path="/listar" element={<ListarItens />} />
+                <Route path="/item/:id" element={<DetalhesItem />} />
+                <Route path="/editar/:id" element={<ProtectedRoute><EditarItem /></ProtectedRoute>} />
+                <Route path="/excluir-artigo" element={<ProtectedRoute><ExcluirArtigo /></ProtectedRoute>} />
+                {/* Rotas protegidas */}
+                <Route 
+                  path="/cadastrar" 
+                  element={
+                    <ProtectedRoute>
+                      <CadastrarItem />
+                    </ProtectedRoute>
+                  } 
+                />
+                <Route 
+                  path="/importar-excel" 
+                  element={
+                    <ProtectedRoute>
+                      <ImportarExcel />
+                    </ProtectedRoute>
+                  } 
+                />
+                <Route 
+                  path="/importar-stock-nacional" 
+                  element={
+                    <ProtectedRoute>
+                      <ImportarStockNacional />
+                    </ProtectedRoute>
+                  } 
+                />
+              </Routes>
+            </div>
+            {/* Renderizar a barra de progresso global */}
+            <ImportProgressBar />
           </div>
-        </div>
-      </Router>
-    </AuthProvider>
+        </Router>
+      </AuthProvider>
+    </ImportProgressProvider>
   );
 }
 

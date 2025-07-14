@@ -200,7 +200,7 @@ const EditarItem = () => {
           marginTop: isMobile ? 16 : 32,
           marginLeft: 0,
           marginRight: isMobile ? 0 : 'auto',
-          width: isMobile ? '100%' : undefined,
+          width: '100%',
           display: 'flex',
           flexDirection: 'column',
           alignItems: 'center',

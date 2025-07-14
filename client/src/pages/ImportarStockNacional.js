@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
-import { Upload, FileText, CheckCircle, XCircle } from 'react-feather';
+import { Upload, Box, CheckCircle, XCircle } from 'react-feather';
 import { useImportProgress } from '../contexts/ImportProgressContext';
 
-const ImportarExcel = () => {
+const ImportarStockNacional = () => {
   const [file, setFile] = useState(null);
   const [status, setStatus] = useState('');
   const [message, setMessage] = useState('');
@@ -65,7 +65,6 @@ const ImportarExcel = () => {
 
   return (
     <div className="min-h-screen bg-[#e5eefe] flex flex-col items-center justify-center py-12 px-4">
-      {/* Removida a barra de progresso local, agora é global */}
       <div style={{
         background: '#fff',
         borderRadius: 20,
@@ -81,18 +80,22 @@ const ImportarExcel = () => {
         gap: isMobile ? 16 : 28
       }}>
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
-          <div style={{ background: '#0915FF', borderRadius: '50%', padding: 14, marginBottom: 8 }}>
-            <FileText style={{ color: '#fff', width: 32, height: 32 }} />
+          <div style={{ background: '#0A7B83', borderRadius: '50%', padding: 14, marginBottom: 8 }}>
+            <Box style={{ color: '#fff', width: 32, height: 32 }} />
           </div>
-          <h1 style={{ color: '#0915FF', fontWeight: 800, fontSize: isMobile ? 20 : 26, textAlign: 'center', margin: 0 }}>
-            Importar Itens via Excel
+          <h1 style={{ color: '#0A7B83', fontWeight: 900, fontSize: isMobile ? 22 : 30, textAlign: 'center', margin: 0, letterSpacing: 1 }}>
+            Importar Stock Nacional
           </h1>
-          <p style={{ color: '#444', fontSize: isMobile ? 14 : 16, textAlign: 'center', margin: 0, maxWidth: 340 }}>
-            Faça upload de um arquivo Excel (.xlsx ou .csv) para cadastrar ou atualizar itens em massa.
+          <p style={{ color: '#333', fontSize: isMobile ? 15 : 18, textAlign: 'center', margin: 0, maxWidth: 420, fontWeight: 500 }}>
+            Faça upload de um arquivo Excel (.xlsx ou .csv) no formato de <b>stock nacional</b> para atualizar as quantidades dos itens em cada armazém.<br/>
+            <span style={{ color: '#0A7B83', fontWeight: 700 }}>Atenção:</span> O arquivo deve conter as colunas <b>Artigo</b>, <b>Descrição</b> e pelo menos um armazém (ex: WH1, WH2, ...).
           </p>
+          <a href="/exemplo_stock_nacional.xlsx" download style={{ color: '#0A7B83', fontWeight: 700, fontSize: 15, margin: '10px 0 0 0', textDecoration: 'underline' }}>
+            Baixar exemplo de arquivo
+          </a>
         </div>
-        <form onSubmit={handleSubmit} style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: isMobile ? 12 : 18 }}>
-          <label htmlFor="excel-upload" style={{
+        <form onSubmit={handleSubmit} style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: isMobile ? 12 : 18, background: '#e6fafd' }}>
+          <label htmlFor="stock-upload" style={{
             border: '2px dashed #d1d5db',
             borderRadius: 12,
             padding: isMobile ? 14 : 24,
@@ -110,7 +113,7 @@ const ImportarExcel = () => {
               {file ? file.name : 'Clique ou arraste para selecionar o arquivo'}
             </span>
             <input
-              id="excel-upload"
+              id="stock-upload"
               type="file"
               accept=".xlsx,.xls,.csv"
               onChange={handleFileChange}
@@ -121,7 +124,7 @@ const ImportarExcel = () => {
             type="submit"
             disabled={loading}
             style={{
-              background: '#0915FF',
+              background: '#0A7B83',
               color: '#fff',
               fontWeight: 700,
               borderRadius: 10,
@@ -140,6 +143,16 @@ const ImportarExcel = () => {
           >
             {loading ? 'Importando...' : 'Importar Arquivo'}
           </button>
+          {loading && (
+            <div style={{ textAlign: 'center', margin: '18px 0 0 0', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10 }}>
+              <svg style={{ width: 28, height: 28 }} viewBox="0 0 50 50">
+                <circle cx="25" cy="25" r="20" fill="none" stroke="#0A7B83" strokeWidth="5" strokeDasharray="31.4 31.4" strokeLinecap="round">
+                  <animateTransform attributeName="transform" type="rotate" from="0 25 25" to="360 25 25" dur="1s" repeatCount="indefinite" />
+                </circle>
+              </svg>
+              <span style={{ color: '#0A7B83', fontWeight: 600, fontSize: 16 }}>Processando arquivo, aguarde...</span>
+            </div>
+          )}
         </form>
         {status === 'sucesso' && (
           <div style={{ color: '#22c55e', display: 'flex', alignItems: 'center', gap: 8, fontWeight: 600, fontSize: isMobile ? 14 : 16 }}>
@@ -156,4 +169,4 @@ const ImportarExcel = () => {
   );
 };
 
-export default ImportarExcel; 
+export default ImportarStockNacional; 

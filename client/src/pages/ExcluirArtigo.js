@@ -18,6 +18,8 @@ export default function ExcluirArtigo() {
   const codigoFiltroRef = useRef(null);
   const descricaoFiltroRef = useRef(null);
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 600);
+  const [showConfirmModal, setShowConfirmModal] = useState(false);
+  const [deletingAll, setDeletingAll] = useState(false);
 
   useEffect(() => {
     if (!user || user.role !== 'admin') {
@@ -96,10 +98,32 @@ export default function ExcluirArtigo() {
     }
   };
 
+  const handleDeleteAll = async () => {
+    setDeletingAll(true);
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch('/api/limpar-banco', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (response.ok) {
+        setItens([]);
+        setToast({ type: 'success', message: 'Todos os dados foram excluídos!' });
+      } else {
+        setToast({ type: 'error', message: 'Erro ao excluir todos os dados.' });
+      }
+    } catch (err) {
+      setToast({ type: 'error', message: 'Erro de conexão ao excluir todos.' });
+    } finally {
+      setDeletingAll(false);
+      setShowConfirmModal(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-[#e5e5e5] flex flex-col items-center pb-12">
-      <div style={{ width: '100%', maxWidth: isMobile ? '100%' : 1100, margin: isMobile ? '16px auto 0 auto' : '40px auto 0 auto', display: 'block' }}>
-        <div className={styles['catalogo-card']} style={{ margin: '0 auto', boxShadow: '0 8px 32px rgba(9,21,255,0.08)', display: 'flex', flexDirection: 'column', alignItems: 'center', padding: isMobile ? 12 : undefined }}>
+      <div style={{ width: '100%', maxWidth: isMobile ? '100%' : '1200px', margin: isMobile ? '16px auto 0 auto' : '40px auto 0 auto', display: 'block' }}>
+        <div className={styles['catalogo-card']} style={{ margin: '0 auto', boxShadow: '0 8px 32px rgba(9,21,255,0.08)', display: 'flex', flexDirection: 'column', alignItems: 'center', padding: isMobile ? 12 : undefined, width: '100%' }}>
           <h1 className="text-2xl font-bold text-[#0915FF] mb-6 text-center">Excluir Artigos</h1>
           {/* Botão Excluir Todos */}
           {itens.length > 0 && (
@@ -128,10 +152,43 @@ export default function ExcluirArtigo() {
               Excluir Todos
             </button>
           )}
+          {/* Botão Excluir TODOS os dados */}
+          <div style={{ margin: '24px 0', textAlign: 'center' }}>
+            <button
+              onClick={() => setShowConfirmModal(true)}
+              style={{ background: '#b91c1c', color: '#fff', fontWeight: 700, borderRadius: 8, padding: '12px 32px', fontSize: 17, border: 'none', boxShadow: '0 2px 8px rgba(239,68,68,0.10)', cursor: 'pointer' }}
+            >
+              Excluir TODOS os dados do banco
+            </button>
+          </div>
+          {showConfirmModal && (
+            <div style={{ position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh', background: 'rgba(0,0,0,0.35)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <div style={{ background: '#fff', borderRadius: 16, padding: 32, maxWidth: 340, width: '90%', boxShadow: '0 8px 32px rgba(239,68,68,0.18)', textAlign: 'center' }}>
+                <h2 style={{ color: '#b91c1c', fontWeight: 800, fontSize: 22, marginBottom: 18 }}>Tem certeza?</h2>
+                <p style={{ color: '#444', fontSize: 16, marginBottom: 24 }}>
+                  Esta ação irá <b>apagar TODOS os dados do banco</b> (itens, estoques, etc).<br />
+                  <b>Não poderá ser desfeita!</b>
+                </p>
+                <button
+                  onClick={handleDeleteAll}
+                  disabled={deletingAll}
+                  style={{ background: '#b91c1c', color: '#fff', fontWeight: 700, borderRadius: 8, padding: '10px 28px', fontSize: 16, border: 'none', marginRight: 12, cursor: deletingAll ? 'not-allowed' : 'pointer' }}
+                >
+                  {deletingAll ? 'Excluindo...' : 'Sim, apagar tudo'}
+                </button>
+                <button
+                  onClick={() => setShowConfirmModal(false)}
+                  style={{ background: '#eee', color: '#222', fontWeight: 600, borderRadius: 8, padding: '10px 18px', fontSize: 16, border: 'none', marginLeft: 12, cursor: 'pointer' }}
+                >
+                  Cancelar
+                </button>
+              </div>
+            </div>
+          )}
           {loading ? (
             <div className="text-center text-gray-500">Carregando...</div>
           ) : (
-            <div className={styles['catalogo-conteudo']}>
+            <div className={styles['catalogo-conteudo']} style={{ width: '100%' }}>
               {isMobile ? (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 16, alignItems: 'center', width: '100%' }}>
                   {itensPagina.length === 0 ? (
@@ -152,7 +209,7 @@ export default function ExcluirArtigo() {
                   )}
                 </div>
               ) : (
-                <table className={styles['catalogo-tabela']} style={{ margin: '0 auto', width: 'auto' }}>
+                <table className={styles['catalogo-tabela']} style={{ margin: '0 auto', width: '100%', minWidth: 600, maxWidth: '100%' }}>
                   <thead>
                     <tr>
                       <th style={{ whiteSpace: 'nowrap', textAlign: 'center', fontFamily: 'monospace', position: 'relative', cursor: 'pointer' }} onClick={() => setShowCodigoFiltro(v => !v)}>

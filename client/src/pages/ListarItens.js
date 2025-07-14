@@ -12,8 +12,8 @@ const ListarItens = () => {
   const [itens, setItens] = useState([]);
   const [toast, setToast] = useState(null);
   const [paginaAtual, setPaginaAtual] = useState(1);
+  const [loading, setLoading] = useState(false);
   // Remover variáveis não utilizadas
-  // const [loading, setLoading] = useState(true); // não usado
   // const [quantidadeFiltro, setQuantidadeFiltro] = useState(''); // não usado
   // const [itensPorPagina, setItensPorPagina] = useState(10); // não usado
   // const [tabelaRef, setTabelaRef] = useState(null); // não usado
@@ -89,7 +89,7 @@ const ListarItens = () => {
   }, []);
 
   const fetchItens = async () => {
-    // setLoading(true); // não usado
+    setLoading(true);
     try {
       const response = await fetch(`/api/itens?page=${paginaAtual}&limit=10`); // itensPorPagina não usado
       if (response.ok) {
@@ -108,7 +108,7 @@ const ListarItens = () => {
       // setTotalItens(0); // não usado
       setToast({ type: 'error', message: 'Erro ao carregar itens.' });
     } finally {
-      // setLoading(false); // não usado
+      setLoading(false);
     }
   };
 
@@ -483,188 +483,206 @@ const ListarItens = () => {
               </div>
             </div>
           ) : (
-            <div className={styles['catalogo-card']} style={{ margin: 0, boxShadow: '0 8px 32px rgba(9,21,255,0.08)', width: isMobile ? '100%' : undefined }}>
-              <div className={styles['catalogo-conteudo']}>
-                <div className={styles['catalogo-subtitulo']}>Itens em Estoque</div>
-                <table className={styles['catalogo-tabela']}>
-                  <thead>
+            <div className={styles['catalogo-card']} style={{ margin: 0, boxShadow: '0 8px 32px rgba(9,21,255,0.08)', width: isMobile ? '100%' : '100%' }}>
+              <div className={styles['catalogo-conteudo']} style={{ width: '100%' }}>
+              <div className={styles['catalogo-subtitulo']}>Itens em Estoque</div>
+                {!isMobile && (
+                  <table className={styles['catalogo-tabela']} style={{ width: '100%', minWidth: 600, maxWidth: '100%' }}>
+                <thead>
+                  <tr>
+                    <th style={{ whiteSpace: 'nowrap', cursor: 'pointer', position: 'relative' }} onClick={() => setShowCodigoFiltro(v => !v)}>
+                      CÓDIGO
+                      <button onClick={e => { e.stopPropagation(); ordenarPorCodigo(); }} style={{ background: 'none', border: 'none', marginLeft: 6, cursor: 'pointer' }} title="Ordenar">
+                        <FaFilter color="#fff" size={14} style={{ verticalAlign: 'middle' }} />
+                      </button>
+                      <br />
+                      {showCodigoFiltro && (
+                        <input
+                          ref={codigoFiltroRef}
+                          type="text"
+                          value={codigoFiltro}
+                          onChange={e => setCodigoFiltro(e.target.value)}
+                          placeholder="Filtrar"
+                          style={{
+                            width: 70,
+                            border: '1px solid #e0e7ef',
+                            borderRadius: 5,
+                            padding: '2px 6px',
+                            fontSize: 12,
+                            marginLeft: 8,
+                            marginTop: 0,
+                            background: '#f7fafd',
+                            color: '#222',
+                            position: 'absolute',
+                            left: 'auto',
+                            right: 0,
+                            top: 8,
+                            zIndex: 10,
+                            boxShadow: '0 2px 8px rgba(9,21,255,0.06)',
+                          }}
+                          autoFocus
+                          onClick={e => e.stopPropagation()}
+                        />
+                      )}
+                    </th>
+                    <th style={{ whiteSpace: 'nowrap', cursor: 'pointer', position: 'relative' }} onClick={() => setShowDescricaoFiltro(v => !v)}>
+                      DESCRIÇÃO
+                      <button onClick={e => { e.stopPropagation(); ordenarPorDescricao(); }} style={{ background: 'none', border: 'none', marginLeft: 6, cursor: 'pointer' }} title="Ordenar">
+                        <FaFilter color="#fff" size={14} style={{ verticalAlign: 'middle' }} />
+                      </button>
+                      <br />
+                      {showDescricaoFiltro && (
+                        <input
+                          ref={descricaoFiltroRef}
+                          type="text"
+                          value={descricaoFiltro}
+                          onChange={e => setDescricaoFiltro(e.target.value)}
+                          placeholder="Filtrar"
+                          style={{
+                            width: 120,
+                            border: '1px solid #e0e7ef',
+                            borderRadius: 5,
+                            padding: '2px 6px',
+                            fontSize: 12,
+                            marginLeft: 8,
+                            marginTop: 0,
+                            background: '#f7fafd',
+                            color: '#222',
+                            position: 'absolute',
+                            left: 'auto',
+                            right: 0,
+                            top: 8,
+                            zIndex: 10,
+                            boxShadow: '0 2px 8px rgba(9,21,255,0.06)',
+                          }}
+                          autoFocus
+                          onClick={e => e.stopPropagation()}
+                        />
+                      )}
+                    </th>
+                    <th>QUANTIDADE</th>
+                    <th>AÇÃO</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {itensPagina.length === 0 ? (
                     <tr>
-                      <th style={{ whiteSpace: 'nowrap', cursor: 'pointer', position: 'relative' }} onClick={() => setShowCodigoFiltro(v => !v)}>
-                        CÓDIGO
-                        <button onClick={e => { e.stopPropagation(); ordenarPorCodigo(); }} style={{ background: 'none', border: 'none', marginLeft: 6, cursor: 'pointer' }} title="Ordenar">
-                          <FaFilter color="#fff" size={14} style={{ verticalAlign: 'middle' }} />
-                        </button>
-                        <br />
-                        {showCodigoFiltro && (
-                          <input
-                            ref={codigoFiltroRef}
-                            type="text"
-                            value={codigoFiltro}
-                            onChange={e => setCodigoFiltro(e.target.value)}
-                            placeholder="Filtrar"
-                            style={{
-                              width: 70,
-                              border: '1px solid #e0e7ef',
-                              borderRadius: 5,
-                              padding: '2px 6px',
-                              fontSize: 12,
-                              marginLeft: 8,
-                              marginTop: 0,
-                              background: '#f7fafd',
-                              color: '#222',
-                              position: 'absolute',
-                              left: 'auto',
-                              right: 0,
-                              top: 8,
-                              zIndex: 10,
-                              boxShadow: '0 2px 8px rgba(9,21,255,0.06)',
-                            }}
-                            autoFocus
-                            onClick={e => e.stopPropagation()}
-                          />
-                        )}
-                      </th>
-                      <th style={{ whiteSpace: 'nowrap', cursor: 'pointer', position: 'relative' }} onClick={() => setShowDescricaoFiltro(v => !v)}>
-                        DESCRIÇÃO
-                        <button onClick={e => { e.stopPropagation(); ordenarPorDescricao(); }} style={{ background: 'none', border: 'none', marginLeft: 6, cursor: 'pointer' }} title="Ordenar">
-                          <FaFilter color="#fff" size={14} style={{ verticalAlign: 'middle' }} />
-                        </button>
-                        <br />
-                        {showDescricaoFiltro && (
-                          <input
-                            ref={descricaoFiltroRef}
-                            type="text"
-                            value={descricaoFiltro}
-                            onChange={e => setDescricaoFiltro(e.target.value)}
-                            placeholder="Filtrar"
-                            style={{
-                              width: 120,
-                              border: '1px solid #e0e7ef',
-                              borderRadius: 5,
-                              padding: '2px 6px',
-                              fontSize: 12,
-                              marginLeft: 8,
-                              marginTop: 0,
-                              background: '#f7fafd',
-                              color: '#222',
-                              position: 'absolute',
-                              left: 'auto',
-                              right: 0,
-                              top: 8,
-                              zIndex: 10,
-                              boxShadow: '0 2px 8px rgba(9,21,255,0.06)',
-                            }}
-                            autoFocus
-                            onClick={e => e.stopPropagation()}
-                          />
-                        )}
-                      </th>
-                      <th>QUANTIDADE</th>
-                      <th>AÇÃO</th>
+                      <td colSpan={4} style={{ textAlign: 'center', color: '#888', padding: '32px 0' }}>Nenhum item encontrado.</td>
                     </tr>
-                  </thead>
-                  <tbody>
-                    {itensPagina.length === 0 ? (
-                      <tr>
-                        <td colSpan={4} style={{ textAlign: 'center', color: '#888', padding: '32px 0' }}>Nenhum item encontrado.</td>
-                      </tr>
-                    ) : (
-                      itensPagina.map(item => (
-                        <tr key={item.id}>
-                          <td title={item.codigo || '-'}>
-                            <Link to={`/item/${item.id}`} className={styles['catalogo-link']}>
-                              {item.codigo || '-'}
-                            </Link>
-                          </td>
-                          <td title={item.nome}>
-                            {item.nome}
-                          </td>
-                          <td title={item.quantidade !== undefined ? String(item.quantidade) : '-'}>
-                            <span className={
-                              item.quantidade > 10
-                                ? `${styles['catalogo-quantidade']} ${styles['verde']}`
-                                : `${styles['catalogo-quantidade']} ${styles['vermelho']}`
-                            }>
-                              {/* Exibir 0 normalmente, apenas ocultar se for null ou undefined */}
-                              {item.quantidade !== null && item.quantidade !== undefined ? item.quantidade : '-'}
-                            </span>
-                          </td>
-                          <td>
-                            <button
-                              className="px-4 py-1 rounded bg-[#0915FF] text-white font-semibold text-xs hover:bg-[#2336ff] transition-all"
-                              onClick={() => navigate(`/item/${item.id}`)}
-                              style={{ marginRight: 8 }}
-                            >
-                              Detalhes
-                            </button>
-                            {isAdmin && (
-                              <button
-                                className="px-4 py-1 rounded bg-[#FFB800] text-black font-semibold text-xs hover:bg-[#ffe066] transition-all"
-                                onClick={() => navigate(`/editar/${item.id}`)}
-                              >
-                                Editar
-                              </button>
-                            )}
-                          </td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-                {/* Adicionar controles de paginação centralizados abaixo da tabela: */}
-                <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 4, marginTop: 18, marginBottom: 0, flexWrap: 'wrap', width: '100%' }}>
-                  <button
-                    onClick={() => setPaginaAtual(p => Math.max(1, p - 1))}
-                    disabled={paginaAtual === 1}
-                    style={{ minWidth: 36, height: 36, border: '1.5px solid #0915FF', background: '#fff', color: '#0915FF', fontWeight: 600, fontSize: 16, borderRadius: 7, cursor: paginaAtual === 1 ? 'not-allowed' : 'pointer', margin: 2 }}
-                  >Anterior</button>
-                  {(() => {
-                    const botoes = [];
-                    const mostrar = 2; // Quantos botões mostrar no início/fim
-                    const vizinhos = 2; // Quantos vizinhos ao redor da página atual
-                    for (let p = 1; p <= totalPaginas; p++) {
-                      if (
-                        p <= mostrar ||
-                        p > totalPaginas - mostrar ||
-                        (p >= paginaAtual - vizinhos && p <= paginaAtual + vizinhos)
-                      ) {
-                        botoes.push(
+                  ) : (
+                    itensPagina.map(item => (
+                      <tr key={item.id}>
+                        <td title={item.codigo || '-'}>
+                          <Link to={`/item/${item.id}`} className={styles['catalogo-link']}>
+                            {item.codigo || '-'}
+                          </Link>
+                        </td>
+                        <td title={item.nome}>
+                          {item.nome}
+                        </td>
+                        <td title={item.quantidade !== undefined ? String(item.quantidade) : '-'}>
+                          <span className={
+                            item.quantidade > 10
+                              ? `${styles['catalogo-quantidade']} ${styles['verde']}`
+                              : `${styles['catalogo-quantidade']} ${styles['vermelho']}`
+                          }>
+                            {/* Exibir 0 normalmente, apenas ocultar se for null ou undefined */}
+                            {item.quantidade !== null && item.quantidade !== undefined ? item.quantidade : '-'}
+                          </span>
+                        </td>
+                        <td>
                           <button
-                            key={p}
-                            onClick={() => setPaginaAtual(p)}
-                            style={{
-                              minWidth: 36,
-                              height: 36,
-                              border: '1.5px solid #0915FF',
-                              background: paginaAtual === p ? '#0915FF' : '#fff',
-                              color: paginaAtual === p ? '#fff' : '#0915FF',
-                              fontWeight: 700,
-                              fontSize: 16,
-                              borderRadius: 7,
-                              cursor: 'pointer',
-                              margin: 2
-                            }}
-                            disabled={paginaAtual === p}
-                          >{p}</button>
-                        );
-                      } else if (
-                        (p === mostrar + 1 && paginaAtual - vizinhos > mostrar + 1) ||
-                        (p === totalPaginas - mostrar && paginaAtual + vizinhos < totalPaginas - mostrar)
-                      ) {
-                        botoes.push(
-                          <span key={p} style={{ minWidth: 24, textAlign: 'center', color: '#0915FF' }}>...</span>
-                        );
-                      }
+                            className="px-4 py-1 rounded bg-[#0915FF] text-white font-semibold text-xs hover:bg-[#2336ff] transition-all"
+                            onClick={() => navigate(`/item/${item.id}`)}
+                            style={{ marginRight: 8 }}
+                          >
+                            Detalhes
+                          </button>
+                          {isAdmin && (
+                            <button
+                              className="px-4 py-1 rounded bg-[#FFB800] text-black font-semibold text-xs hover:bg-[#ffe066] transition-all"
+                              onClick={() => navigate(`/editar/${item.id}`)}
+                            >
+                              Editar
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+                )}
+              {/* Adicionar controles de paginação centralizados abaixo da tabela: */}
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-start', width: '100%', marginTop: 18, marginBottom: 0, minHeight: 40 }}>
+                  {/* Espaço fixo para o loader, para não mover a paginação */}
+                  <div style={{ width: 110, display: 'flex', alignItems: 'center', justifyContent: 'flex-start' }}>
+                    {loading && (
+                      <div style={{ display: 'flex', alignItems: 'center' }}>
+                        <svg style={{ width: 28, height: 28 }} viewBox="0 0 50 50">
+                          <circle cx="25" cy="25" r="20" fill="none" stroke="#0915FF" strokeWidth="5" strokeDasharray="31.4 31.4" strokeLinecap="round">
+                            <animateTransform attributeName="transform" type="rotate" from="0 25 25" to="360 25 25" dur="1s" repeatCount="indefinite" />
+                          </circle>
+                        </svg>
+                        <span style={{ color: '#0915FF', fontWeight: 600, fontSize: 15, marginLeft: 6 }}>Carregando...</span>
+                      </div>
+                    )}
+                  </div>
+                  <div style={{ flex: 1, display: 'flex', justifyContent: 'center' }}>
+                    {/* Paginação */}
+                <button
+                  onClick={() => setPaginaAtual(p => Math.max(1, p - 1))}
+                  disabled={paginaAtual === 1}
+                  style={{ minWidth: 36, height: 36, border: '1.5px solid #0915FF', background: '#fff', color: '#0915FF', fontWeight: 600, fontSize: 16, borderRadius: 7, cursor: paginaAtual === 1 ? 'not-allowed' : 'pointer', margin: 2 }}
+                >Anterior</button>
+                {(() => {
+                  const botoes = [];
+                  const mostrar = 2; // Quantos botões mostrar no início/fim
+                  const vizinhos = 2; // Quantos vizinhos ao redor da página atual
+                  for (let p = 1; p <= totalPaginas; p++) {
+                    if (
+                      p <= mostrar ||
+                      p > totalPaginas - mostrar ||
+                      (p >= paginaAtual - vizinhos && p <= paginaAtual + vizinhos)
+                    ) {
+                      botoes.push(
+                        <button
+                          key={p}
+                          onClick={() => setPaginaAtual(p)}
+                          style={{
+                            minWidth: 36,
+                            height: 36,
+                            border: '1.5px solid #0915FF',
+                            background: paginaAtual === p ? '#0915FF' : '#fff',
+                            color: paginaAtual === p ? '#fff' : '#0915FF',
+                            fontWeight: 700,
+                            fontSize: 16,
+                            borderRadius: 7,
+                            cursor: 'pointer',
+                            margin: 2
+                          }}
+                          disabled={paginaAtual === p}
+                        >{p}</button>
+                      );
+                    } else if (
+                      (p === mostrar + 1 && paginaAtual - vizinhos > mostrar + 1) ||
+                      (p === totalPaginas - mostrar && paginaAtual + vizinhos < totalPaginas - mostrar)
+                    ) {
+                      botoes.push(
+                        <span key={p} style={{ minWidth: 24, textAlign: 'center', color: '#0915FF' }}>...</span>
+                      );
                     }
-                    return botoes;
-                  })()}
-                  <button
-                    onClick={() => setPaginaAtual(p => Math.min(totalPaginas, p + 1))}
-                    disabled={paginaAtual === totalPaginas}
-                    style={{ minWidth: 36, height: 36, border: '1.5px solid #0915FF', background: '#fff', color: '#0915FF', fontWeight: 600, fontSize: 16, borderRadius: 7, cursor: paginaAtual === totalPaginas ? 'not-allowed' : 'pointer', margin: 2 }}
-                  >Próximo</button>
-                </div>
+                  }
+                  return botoes;
+                })()}
+                <button
+                  onClick={() => setPaginaAtual(p => Math.min(totalPaginas, p + 1))}
+                  disabled={paginaAtual === totalPaginas}
+                  style={{ minWidth: 36, height: 36, border: '1.5px solid #0915FF', background: '#fff', color: '#0915FF', fontWeight: 600, fontSize: 16, borderRadius: 7, cursor: paginaAtual === totalPaginas ? 'not-allowed' : 'pointer', margin: 2 }}
+                >Próximo</button>
               </div>
+            </div>
+          </div>
             </div>
           )}
         </div>

@@ -25,8 +25,16 @@ const Navbar = () => {
         <div className="navbar-digi-logo">DIGI</div>
         <nav className={`navbar-digi-menu ${mobileOpen ? 'open' : ''}`}>
           {menuItems.map((item) => (
-            <div key={item.label} className="navbar-digi-menu-item">
-              <Link to={item.path}>{item.label}</Link>
+            <div
+              key={item.label}
+              className="navbar-digi-menu-item"
+              tabIndex={0}
+              role="button"
+              onClick={() => navigate(item.path)}
+              onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') navigate(item.path); }}
+              style={{ cursor: 'pointer' }}
+            >
+              <span style={{ width: '100%', textAlign: 'center' }}>{item.label}</span>
             </div>
           ))}
           {isAuthenticated && (
@@ -44,6 +52,18 @@ const Navbar = () => {
               <Link to="/importar-excel">IMPORTAR EXCEL</Link>
             </div>
           )}
+          {isAuthenticated && user && user.role === 'admin' && (
+            <div
+              className="navbar-digi-menu-item"
+              tabIndex={0}
+              role="button"
+              onClick={() => navigate('/importar-stock-nacional')}
+              onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') navigate('/importar-stock-nacional'); }}
+              style={{ cursor: 'pointer' }}
+            >
+              <span style={{ width: '100%', textAlign: 'center' }}>IMPORTAR STOCK NACIONAL</span>
+            </div>
+          )}
         </nav>
         {isAuthenticated ? (
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -55,7 +75,7 @@ const Navbar = () => {
         ) : (
           <Link to="/login" className="navbar-digi-logout">ENTRAR</Link>
         )}
-        <button className="navbar-digi-mobile-toggle" onClick={() => setMobileOpen(!mobileOpen)}>
+        <button className="navbar-digi-mobile-toggle" aria-label="Abrir menu" tabIndex={0} onClick={() => setMobileOpen(!mobileOpen)}>
           <span className="navbar-digi-mobile-bar"></span>
           <span className="navbar-digi-mobile-bar"></span>
           <span className="navbar-digi-mobile-bar"></span>

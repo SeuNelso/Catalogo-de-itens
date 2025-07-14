@@ -138,102 +138,112 @@ const upload = multer({
   }
 });
 
-// Endpoint para importar Excel (apenas admin)
+// --- Importação assíncrona de Excel com progresso em memória ---
+const importStatus = {};
+const { v4: uuidv4 } = require('uuid');
+
 const excelUpload = multer({ dest: 'uploads/' });
-app.post('/api/importar-excel', authenticateToken, excelUpload.single('arquivo'), (req, res) => {
+app.post('/api/importar-excel', authenticateToken, excelUpload.single('arquivo'), async (req, res) => {
   if (!req.user || req.user.role !== 'admin') {
     return res.status(403).json({ error: 'Apenas administradores podem importar dados.' });
   }
   if (!req.file) {
     return res.status(400).json({ error: 'Arquivo não enviado.' });
   }
-  try {
-    const workbook = XLSX.readFile(req.file.path);
-    const sheetName = workbook.SheetNames[0];
-    const sheet = workbook.Sheets[sheetName];
-    const data = XLSX.utils.sheet_to_json(sheet, { defval: '' });
-    // Início da transação
-    pool.query('BEGIN TRANSACTION', (err) => {
-      if (err) {
-        console.error('Erro ao iniciar transação:', err.message);
-        return res.status(500).json({ error: 'Erro ao iniciar transação.' });
+  const importId = uuidv4();
+  importStatus[importId] = {
+    status: 'iniciando',
+    total: 0,
+    processados: 0,
+    erros: [],
+    concluido: false,
+    iniciadoEm: new Date(),
+    terminadoEm: null
+  };
+  res.json({ message: 'Importação iniciada', importId });
+
+  setImmediate(async () => {
+    try {
+      const XLSX = require('xlsx');
+      const fs = require('fs');
+      const workbook = XLSX.readFile(req.file.path);
+      const sheetName = workbook.SheetNames[0];
+      const sheet = workbook.Sheets[sheetName];
+      const data = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+      importStatus[importId].status = 'importando';
+      importStatus[importId].total = data.length;
+      let processados = 0;
+      const BATCH_SIZE = 50;
+      for (let batchStart = 0; batchStart < data.length; batchStart += BATCH_SIZE) {
+        const batch = data.slice(batchStart, batchStart + BATCH_SIZE);
+        await Promise.all(batch.map(async (row, i) => {
+          const idx = batchStart + i;
+          try {
+            const codigo = row['Artigo']?.toString().trim();
+            const descricao = row['Descrição']?.toString().trim();
+            const nome = descricao;
+            const quantidade = Number(row['TOTAL']) || 0;
+            const ordem_importacao = idx;
+            if (!codigo || !nome) {
+              importStatus[importId].erros.push({ codigo: codigo || 'N/A', descricao: nome || 'N/A', motivo: 'Código ou nome ausente', linha: idx + 2 });
+              processados++;
+              importStatus[importId].processados = processados;
+              return;
+            }
+            const armazens = {};
+            Object.keys(row).forEach(col => {
+              if (col.startsWith('WH')) {
+                armazens[col] = Number(row[col]) || 0;
+              }
+            });
+            // UPSERT do item
+            const upsertResult = await pool.query(`
+              INSERT INTO itens (codigo, nome, descricao, categoria, quantidade, ordem_importacao)
+              VALUES ($1, $2, $3, $4, $5, $6)
+              ON CONFLICT (codigo) DO UPDATE
+                SET nome = EXCLUDED.nome, descricao = EXCLUDED.descricao, quantidade = EXCLUDED.quantidade, ordem_importacao = EXCLUDED.ordem_importacao
+              RETURNING id
+            `, [codigo, nome, descricao, 'Importado', quantidade, ordem_importacao]);
+            if (upsertResult && upsertResult.rows && upsertResult.rows.length > 0) {
+              const itemId = upsertResult.rows[0].id;
+              // Deletar armazéns antigos
+              await pool.query('DELETE FROM armazens_item WHERE item_id = $1', [itemId]);
+              // Inserir armazéns
+              const armazemEntries = Object.entries(armazens);
+              for (const [armazem, qtd] of armazemEntries) {
+                await pool.query('INSERT INTO armazens_item (item_id, armazem, quantidade) VALUES ($1, $2, $3)', [itemId, armazem, qtd]);
+              }
+            } else {
+              importStatus[importId].erros.push({ codigo: codigo, descricao: nome || 'N/A', motivo: 'Erro no UPSERT', erro: 'ID não retornado', linha: idx + 2 });
+            }
+            processados++;
+            importStatus[importId].processados = processados;
+          } catch (err) {
+            importStatus[importId].erros.push({ codigo: row['Artigo'] || 'N/A', descricao: row['Descrição'] || 'N/A', motivo: 'Erro ao importar', erro: err?.message || String(err), linha: idx + 2 });
+            processados++;
+            importStatus[importId].processados = processados;
+          }
+        }));
       }
-      data.forEach((row, idx) => {
-        const codigo = row['Artigo']?.toString().trim();
-        const descricao = row['Descrição']?.toString().trim();
-        const nome = descricao; // Usar descrição como nome
-        const quantidade = Number(row['TOTAL']) || 0;
-        const ordem_importacao = idx;
-        if (!codigo || !nome) {
-          console.log(`[IMPORTAÇÃO] Linha ${idx + 2}: Código ou nome ausente. Ignorado.`);
-          return;
-        }
-        // Montar objeto de armazéns
-        const armazens = {};
-        Object.keys(row).forEach(col => {
-          if (col.startsWith('WH')) {
-            armazens[col] = Number(row[col]) || 0;
-          }
-        });
-        // Logar armazéns importados
-        console.log(`[IMPORTAÇÃO] Item ${codigo} - Armazéns:`);
-        Object.entries(armazens).forEach(([armazem, qtd]) => {
-          console.log(`  - ${armazem}: ${qtd}`);
-        });
-        pool.query('SELECT id FROM itens WHERE codigo = $1', [codigo], (err, result) => {
-          if (err) {
-            console.error(`[IMPORTAÇÃO] Erro ao buscar item (${codigo}):`, err.message);
-            return;
-          }
-          const upsertArmazens = (itemId) => {
-            // Apaga armazéns antigos desse item
-            pool.query('DELETE FROM armazens_item WHERE item_id = $1', [itemId], (err) => {
-              if (err) {
-                console.error(`[IMPORTAÇÃO] Erro ao limpar armazéns do item (${codigo}):`, err.message);
-              } else {
-                // Batch insert dos armazéns
-                const armazemEntries = Object.entries(armazens);
-                if (armazemEntries.length > 0) {
-                  const values = armazemEntries.map(([armazem, qtd]) => `(${itemId}, '${armazem.replace(/'/g, "''")}', ${qtd})`).join(',');
-                  pool.query(`INSERT INTO armazens_item (item_id, armazem, quantidade) VALUES ${values}`);
-                }
-              }
-            });
-          };
-          if (result.rows.length > 0) {
-            const itemId = result.rows[0].id;
-            pool.query('UPDATE itens SET nome = $1, descricao = $2, quantidade = $3, ordem_importacao = $4 WHERE id = $5', [nome, descricao, quantidade, ordem_importacao, itemId], (err2) => {
-              if (err2) {
-                console.error(`[IMPORTAÇÃO] Erro ao atualizar item (${codigo}):`, err2.message);
-              } else {
-                upsertArmazens(itemId);
-                console.log(`[IMPORTAÇÃO] Item atualizado: ${codigo}`);
-              }
-            });
-          } else {
-            pool.query('INSERT INTO itens (codigo, nome, descricao, categoria, quantidade, ordem_importacao) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id', [codigo, nome, descricao, 'Importado', quantidade, ordem_importacao], (err2, resultInsert) => {
-              if (err2) {
-                console.error(`[IMPORTAÇÃO] Erro ao inserir item (${codigo}):`, err2.message);
-              } else {
-                const itemId = resultInsert.rows[0].id;
-                upsertArmazens(itemId);
-              }
-            });
-          }
-        });
-      });
-      pool.query('COMMIT', (err) => {
-        if (err) {
-          console.error('Erro ao confirmar transação:', err.message);
-          return res.status(500).json({ error: 'Erro ao confirmar transação.' });
-        }
-        fs.unlinkSync(req.file.path);
-        res.json({ message: 'Importação concluída com sucesso!' });
-      });
-    });
-  } catch (error) {
-    res.status(500).json({ error: 'Erro ao processar o arquivo.' });
+      fs.unlinkSync(req.file.path);
+      importStatus[importId].status = 'concluido';
+      importStatus[importId].concluido = true;
+      importStatus[importId].terminadoEm = new Date();
+    } catch (error) {
+      importStatus[importId].status = 'erro';
+      importStatus[importId].erros.push({ erro: error.message });
+      importStatus[importId].terminadoEm = new Date();
+    }
+  });
+});
+
+// Endpoint para consultar status da importação
+app.get('/api/importar-excel-status/:id', authenticateToken, (req, res) => {
+  const importId = req.params.id;
+  if (!importStatus[importId]) {
+    return res.status(404).json({ error: 'Importação não encontrada.' });
   }
+  res.json(importStatus[importId]);
 });
 
 // Inicialização do banco de dados
@@ -362,8 +372,6 @@ app.post('/api/itens', authenticateToken, upload.array('imagens', 10), (req, res
     nome,
     descricao,
     categoria,
-    marca,
-    modelo,
     codigo,
     preco,
     quantidade,
@@ -404,8 +412,6 @@ app.post('/api/itens', authenticateToken, upload.array('imagens', 10), (req, res
       nome: nome || descricao, // Se nome não for enviado, usar descricao como nome
       descricao,
       categoria: categoria || 'Sem categoria', // valor padrão
-      marca,
-      modelo,
       codigo,
       preco: preco ? parseFloat(preco) : null,
       quantidade: quantidade ? parseInt(quantidade) : 0,
@@ -424,11 +430,10 @@ app.post('/api/itens', authenticateToken, upload.array('imagens', 10), (req, res
     };
 
     pool.query(`
-      INSERT INTO itens (nome, descricao, categoria, marca, modelo, codigo, preco, quantidade, localizacao, observacoes, familia, subfamilia, setor, comprimento, largura, altura, unidade, peso, unidadePeso, unidadeArmazenamento)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+      INSERT INTO itens (nome, descricao, categoria, codigo, preco, quantidade, localizacao, observacoes, familia, subfamilia, setor, comprimento, largura, altura, unidade, peso, unidadePeso, unidadeArmazenamento)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
       RETURNING id
-    `, [itemData.nome, itemData.descricao, itemData.categoria, itemData.marca, itemData.modelo, 
-        itemData.codigo, itemData.preco, itemData.quantidade, itemData.localizacao, itemData.observacoes,
+    `, [itemData.nome, itemData.descricao, itemData.categoria, itemData.codigo, itemData.preco, itemData.quantidade, itemData.localizacao, itemData.observacoes,
         itemData.familia, itemData.subfamilia, itemData.setor, itemData.comprimento, itemData.largura, itemData.altura, itemData.unidade, itemData.peso, itemData.unidadePeso, itemData.unidadeArmazenamento],
       (err, result) => {
         if (err) {
@@ -596,14 +601,14 @@ app.get('/api/buscar', (req, res) => {
            STRING_AGG(DISTINCT img.caminho, ',') as imagens
     FROM itens i
     LEFT JOIN imagens_itens img ON i.id = img.item_id
-    WHERE i.nome LIKE $1 OR i.descricao LIKE $2 OR i.categoria LIKE $3 OR i.marca LIKE $4 OR i.modelo LIKE $5
+    WHERE i.nome LIKE $1 OR i.descricao LIKE $2 OR i.categoria LIKE $3
     GROUP BY i.id
     ORDER BY i.data_cadastro DESC
   `;
 
   const searchTerm = `%${q}%`;
   
-  pool.query(query, [searchTerm, searchTerm, searchTerm, searchTerm, searchTerm], (err, result) => {
+  pool.query(query, [searchTerm, searchTerm, searchTerm], (err, result) => {
     if (err) {
       return res.status(500).json({ error: err.message });
     }
@@ -624,8 +629,6 @@ app.put('/api/itens/:id', authenticateToken, upload.array('imagens', 10), (req, 
     nome,
     descricao,
     categoria,
-    marca,
-    modelo,
     codigo,
     preco,
     quantidade,
@@ -650,13 +653,12 @@ app.put('/api/itens/:id', authenticateToken, upload.array('imagens', 10), (req, 
 
   pool.query(`
     UPDATE itens 
-    SET nome = $1, descricao = $2, categoria = $3, marca = $4, modelo = $5, 
-        codigo = $6, preco = $7, quantidade = $8, localizacao = $9, observacoes = $10,
-        familia = $11, subfamilia = $12, setor = $13, comprimento = $14, largura = $15, altura = $16,
-        unidade = $17, peso = $18, unidadePeso = $19, unidadeArmazenamento = $20
-    WHERE id = $21
+    SET nome = $1, descricao = $2, categoria = $3, codigo = $4, preco = $5, quantidade = $6, localizacao = $7, observacoes = $8,
+        familia = $9, subfamilia = $10, setor = $11, comprimento = $12, largura = $13, altura = $14,
+        unidade = $15, peso = $16, unidadePeso = $17, unidadeArmazenamento = $18
+    WHERE id = $19
   `, [
-    nome || descricao, descricao, categoria || 'Sem categoria', marca, modelo, codigo, preco, quantidade, localizacao, observacoes,
+    nome || descricao, descricao, categoria || 'Sem categoria', codigo, preco, quantidade, localizacao, observacoes,
     familia, subfamilia, setor, comprimento, largura, altura, unidade, peso, unidadePeso, unidadeArmazenamento, itemId
   ], (err, result) => {
     if (err) {
@@ -892,6 +894,50 @@ app.post('/api/test-upload', upload.single('imagem'), async (req, res) => {
       error: 'Erro no teste de upload',
       details: error.message 
     });
+  }
+});
+
+// Limpar banco de dados (exceto usuários)
+app.post('/api/limpar-banco', authenticateToken, async (req, res) => {
+  if (!req.user || req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Apenas administradores podem limpar o banco.' });
+  }
+  try {
+    await pool.query('BEGIN');
+    await pool.query('DELETE FROM armazens_item');
+    await pool.query('DELETE FROM imagens_itens');
+    await pool.query('DELETE FROM especificacoes');
+    await pool.query('DELETE FROM itens');
+    await pool.query('COMMIT');
+    res.status(200).json({ message: 'Banco limpo com sucesso. Usuários mantidos.' });
+  } catch (error) {
+    await pool.query('ROLLBACK');
+    res.status(500).json({ error: 'Erro ao limpar banco.', details: error.message });
+  }
+});
+
+// Exportar todos os dados do banco em JSON
+app.get('/api/exportar-json', authenticateToken, async (req, res) => {
+  if (!req.user || req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Apenas administradores podem exportar os dados.' });
+  }
+  try {
+    const [itens, imagens, especificacoes, armazens, usuarios] = await Promise.all([
+      pool.query('SELECT * FROM itens'),
+      pool.query('SELECT * FROM imagens_itens'),
+      pool.query('SELECT * FROM especificacoes'),
+      pool.query('SELECT * FROM armazens_item'),
+      pool.query('SELECT id, username, nome, email, role, data_criacao FROM usuarios')
+    ]);
+    res.json({
+      itens: itens.rows,
+      imagens_itens: imagens.rows,
+      especificacoes: especificacoes.rows,
+      armazens_item: armazens.rows,
+      usuarios: usuarios.rows
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Erro ao exportar dados.', details: error.message });
   }
 });
 

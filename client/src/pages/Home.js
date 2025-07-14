@@ -1,11 +1,37 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
-import { Database, Plus, Search, Users, Shield } from 'react-feather';
+import { Database, Plus, Search, Users, Shield, Download } from 'react-feather';
 import { useAuth } from '../contexts/AuthContext';
 
 const Home = () => {
   const { isAuthenticated, user } = useAuth();
   const isAdmin = isAuthenticated && user && user.role === 'admin';
+
+  // Função para exportar JSON
+  const handleExportJson = async () => {
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch('/api/exportar-json', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (!response.ok) {
+        alert('Erro ao exportar dados.');
+        return;
+      }
+      const data = await response.json();
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'exportacao_catalogo.json';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      alert('Erro de conexão ao exportar dados.');
+    }
+  };
 
   return (
     <div className="min-h-screen bg-[#e5eefe] flex flex-col items-center justify-center py-12 px-4 Home-main">
@@ -56,25 +82,52 @@ const Home = () => {
             Consultar Catálogo
           </Link>
           {isAdmin && (
-            <Link to="/cadastrar" className="Home-link" style={{
-              background: '#0915FF',
-              color: '#fff',
-              fontWeight: 700,
-              borderRadius: 12,
-              padding: '18px 0',
-              fontSize: 18,
-              textAlign: 'center',
-              textDecoration: 'none',
-              boxShadow: '0 2px 8px rgba(9,21,255,0.10)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: 10,
-              transition: 'background 0.2s, color 0.2s'
-            }}>
-              <Plus style={{ width: 22, height: 22 }} />
-              Cadastrar Novo Item
-            </Link>
+            <>
+              <Link to="/cadastrar" className="Home-link" style={{
+                background: '#0915FF',
+                color: '#fff',
+                fontWeight: 700,
+                borderRadius: 12,
+                padding: '18px 0',
+                fontSize: 18,
+                textAlign: 'center',
+                textDecoration: 'none',
+                boxShadow: '0 2px 8px rgba(9,21,255,0.10)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 10,
+                transition: 'background 0.2s, color 0.2s'
+              }}>
+                <Plus style={{ width: 22, height: 22 }} />
+                Cadastrar Novo Item
+              </Link>
+              <button
+                onClick={handleExportJson}
+                style={{
+                  background: '#22c55e',
+                  color: '#fff',
+                  fontWeight: 700,
+                  borderRadius: 12,
+                  padding: '18px 0',
+                  fontSize: 18,
+                  textAlign: 'center',
+                  border: 'none',
+                  boxShadow: '0 2px 8px rgba(34,197,94,0.10)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 10,
+                  marginTop: 10,
+                  cursor: 'pointer',
+                  transition: 'background 0.2s, color 0.2s',
+                  width: '100%'
+                }}
+              >
+                <Download style={{ width: 22, height: 22 }} />
+                Exportar Dados (JSON)
+              </button>
+            </>
           )}
           <Link to="/login" className="Home-link" style={{
             background: '#fff',
