@@ -1,6 +1,6 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
-import { Database, Plus, Search, Users, Shield, Download } from 'react-feather';
+import { Database, Plus, Search, Users, Shield, Download, UserPlus } from 'react-feather';
 import { useAuth } from '../contexts/AuthContext';
 
 const Home = () => {
@@ -127,6 +127,28 @@ const Home = () => {
                 <Download style={{ width: 22, height: 22 }} />
                 Exportar Dados (JSON)
               </button>
+              <Link to="/cadastrar-usuario" className="Home-link" style={{
+                background: '#fff',
+                border: '1.5px solid #22c55e',
+                color: '#22c55e',
+                fontWeight: 700,
+                borderRadius: 12,
+                padding: '18px 0',
+                fontSize: 18,
+                textAlign: 'center',
+                textDecoration: 'none',
+                boxShadow: '0 2px 8px rgba(34,197,94,0.06)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 10,
+                marginTop: 10,
+                transition: 'background 0.2s, color 0.2s',
+                width: '100%'
+              }}>
+                <UserPlus style={{ width: 22, height: 22 }} />
+                Cadastrar Usuário
+              </Link>
             </>
           )}
           <Link to="/login" className="Home-link" style={{

@@ -42,7 +42,7 @@ const Navbar = () => {
               <Link to="/cadastrar">CRIAR ARTIGO</Link>
             </div>
           )}
-          {isAuthenticated && user && user.role === 'admin' && (
+          {isAuthenticated && user && (user.role === 'admin' || user.role === 'controller') && (
             <div className="navbar-digi-menu-item">
               <Link to="/excluir-artigo">EXCLUIR ARTIGO</Link>
             </div>
@@ -52,7 +52,7 @@ const Navbar = () => {
               <Link to="/importar-excel">IMPORTAR EXCEL</Link>
             </div>
           )}
-          {isAuthenticated && user && user.role === 'admin' && (
+          {isAuthenticated && user && (user.role === 'admin' || user.role === 'controller') && (
             <div
               className="navbar-digi-menu-item"
               tabIndex={0}

@@ -14,6 +14,7 @@ import EditarItem from './pages/EditarItem';
 import ExcluirArtigo from './pages/ExcluirArtigo';
 import ImportarExcel from './pages/ImportarExcel';
 import ImportarStockNacional from './pages/ImportarStockNacional';
+import CadastrarUsuario from './pages/CadastrarUsuario';
 import './App.css';
 
 function App() {
@@ -30,13 +31,28 @@ function App() {
                 <Route path="/listar" element={<ListarItens />} />
                 <Route path="/item/:id" element={<DetalhesItem />} />
                 <Route path="/editar/:id" element={<ProtectedRoute><EditarItem /></ProtectedRoute>} />
-                <Route path="/excluir-artigo" element={<ProtectedRoute><ExcluirArtigo /></ProtectedRoute>} />
+                <Route 
+                  path="/excluir-artigo" 
+                  element={
+                    <ProtectedRoute allowedRoles={['admin', 'controller']}>
+                      <ExcluirArtigo />
+                    </ProtectedRoute>
+                  } 
+                />
                 {/* Rotas protegidas */}
                 <Route 
                   path="/cadastrar" 
                   element={
                     <ProtectedRoute>
                       <CadastrarItem />
+                    </ProtectedRoute>
+                  } 
+                />
+                <Route 
+                  path="/cadastrar-usuario" 
+                  element={
+                    <ProtectedRoute>
+                      <CadastrarUsuario />
                     </ProtectedRoute>
                   } 
                 />
@@ -51,7 +67,7 @@ function App() {
                 <Route 
                   path="/importar-stock-nacional" 
                   element={
-                    <ProtectedRoute>
+                    <ProtectedRoute allowedRoles={['admin', 'controller']}>
                       <ImportarStockNacional />
                     </ProtectedRoute>
                   } 

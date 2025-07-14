@@ -941,6 +941,35 @@ app.get('/api/exportar-json', authenticateToken, async (req, res) => {
   }
 });
 
+// Cadastro de novo usuário (apenas admin)
+app.post('/api/usuarios', authenticateToken, async (req, res) => {
+  if (!req.user || req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Apenas administradores podem cadastrar usuários.' });
+  }
+  const { username, password, nome, email, role } = req.body;
+  if (!username || !password || !nome || !role) {
+    return res.status(400).json({ error: 'Preencha todos os campos obrigatórios.' });
+  }
+  if (!['admin', 'controller'].includes(role)) {
+    return res.status(400).json({ error: 'Role inválido.' });
+  }
+  try {
+    // Verificar se username ou email já existem
+    const userExists = await pool.query('SELECT id FROM usuarios WHERE username = $1 OR email = $2', [username, email]);
+    if (userExists.rows.length > 0) {
+      return res.status(400).json({ error: 'Username ou email já cadastrado.' });
+    }
+    const hashedPassword = await bcrypt.hash(password, 10);
+    await pool.query(
+      'INSERT INTO usuarios (username, password, nome, email, role) VALUES ($1, $2, $3, $4, $5)',
+      [username, hashedPassword, nome, email, role]
+    );
+    res.status(201).json({ message: 'Usuário cadastrado com sucesso.' });
+  } catch (error) {
+    res.status(500).json({ error: 'Erro ao cadastrar usuário.', details: error.message });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`Servidor rodando na porta ${PORT}`);
   console.log(`API disponível em http://localhost:${PORT}/api`);
