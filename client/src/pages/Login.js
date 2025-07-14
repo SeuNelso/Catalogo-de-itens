@@ -2,7 +2,6 @@ import React, { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { LogIn, Eye, EyeOff, Lock, User, ArrowLeft, Shield } from 'react-feather';
 import { useAuth } from '../contexts/AuthContext';
-import Toast from '../components/Toast';
 
 const Login = () => {
   const navigate = useNavigate();
