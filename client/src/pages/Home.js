@@ -8,8 +8,8 @@ const Home = () => {
   const isAdmin = isAuthenticated && user && user.role === 'admin';
 
   return (
-    <div className="min-h-screen bg-[#e5eefe] flex flex-col items-center justify-center py-12 px-4">
-      <div style={{
+    <div className="min-h-screen bg-[#e5eefe] flex flex-col items-center justify-center py-12 px-4 Home-main">
+      <div className="Home-card" style={{
         background: '#fff',
         borderRadius: 20,
         boxShadow: '0 8px 32px rgba(9,21,255,0.08)',
@@ -27,15 +27,15 @@ const Home = () => {
           <div style={{ background: '#0915FF', borderRadius: '50%', padding: 16, marginBottom: 8 }}>
             <Database style={{ color: '#fff', width: 40, height: 40 }} />
           </div>
-          <h1 style={{ color: '#0915FF', fontWeight: 800, fontSize: 32, textAlign: 'center', margin: 0 }}>
+          <h1 className="Home-title" style={{ color: '#0915FF', fontWeight: 800, fontSize: 32, textAlign: 'center', margin: 0 }}>
             Catálogo Inteligente
           </h1>
-          <p style={{ color: '#444', fontSize: 18, textAlign: 'center', margin: 0, maxWidth: 400 }}>
+          <p className="Home-desc" style={{ color: '#444', fontSize: 18, textAlign: 'center', margin: 0, maxWidth: 400 }}>
             Sistema moderno para catalogação, identificação visual e gestão de itens.
           </p>
         </div>
         <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 20 }}>
-          <Link to="/listar" style={{
+          <Link to="/listar" className="Home-link" style={{
             background: '#fff',
             border: '1.5px solid #0915FF',
             color: '#0915FF',
@@ -56,7 +56,7 @@ const Home = () => {
             Consultar Catálogo
           </Link>
           {isAdmin && (
-            <Link to="/cadastrar" style={{
+            <Link to="/cadastrar" className="Home-link" style={{
               background: '#0915FF',
               color: '#fff',
               fontWeight: 700,
@@ -76,7 +76,7 @@ const Home = () => {
               Cadastrar Novo Item
             </Link>
           )}
-          <Link to="/login" style={{
+          <Link to="/login" className="Home-link" style={{
             background: '#fff',
             border: '1.5px solid #d1d5db',
             color: '#444',

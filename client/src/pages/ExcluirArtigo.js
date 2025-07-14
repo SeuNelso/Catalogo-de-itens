@@ -17,6 +17,7 @@ export default function ExcluirArtigo() {
   const [descricaoFiltro, setDescricaoFiltro] = useState('');
   const codigoFiltroRef = useRef(null);
   const descricaoFiltroRef = useRef(null);
+  const [isMobile, setIsMobile] = useState(window.innerWidth <= 600);
 
   useEffect(() => {
     if (!user || user.role !== 'admin') {
@@ -41,6 +42,14 @@ export default function ExcluirArtigo() {
     }
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  useEffect(() => {
+    function handleResize() {
+      setIsMobile(window.innerWidth <= 600);
+    }
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
   }, []);
 
   const fetchItens = async () => {
@@ -89,8 +98,8 @@ export default function ExcluirArtigo() {
 
   return (
     <div className="min-h-screen bg-[#e5e5e5] flex flex-col items-center pb-12">
-      <div style={{ width: '100%', maxWidth: 1100, margin: '40px auto 0 auto', display: 'block' }}>
-        <div className={styles['catalogo-card']} style={{ margin: '0 auto', boxShadow: '0 8px 32px rgba(9,21,255,0.08)', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+      <div style={{ width: '100%', maxWidth: isMobile ? '100%' : 1100, margin: isMobile ? '16px auto 0 auto' : '40px auto 0 auto', display: 'block' }}>
+        <div className={styles['catalogo-card']} style={{ margin: '0 auto', boxShadow: '0 8px 32px rgba(9,21,255,0.08)', display: 'flex', flexDirection: 'column', alignItems: 'center', padding: isMobile ? 12 : undefined }}>
           <h1 className="text-2xl font-bold text-[#0915FF] mb-6 text-center">Excluir Artigos</h1>
           {/* Botão Excluir Todos */}
           {itens.length > 0 && (
@@ -123,67 +132,88 @@ export default function ExcluirArtigo() {
             <div className="text-center text-gray-500">Carregando...</div>
           ) : (
             <div className={styles['catalogo-conteudo']}>
-              <table className={styles['catalogo-tabela']} style={{ margin: '0 auto', width: 'auto' }}>
-                <thead>
-                  <tr>
-                    <th style={{ whiteSpace: 'nowrap', textAlign: 'center', fontFamily: 'monospace', position: 'relative', cursor: 'pointer' }} onClick={() => setShowCodigoFiltro(v => !v)}>
-                      CÓDIGO
-                      <br />
-                      {showCodigoFiltro && (
-                        <input
-                          ref={codigoFiltroRef}
-                          type="text"
-                          value={codigoFiltro}
-                          onChange={e => setCodigoFiltro(e.target.value)}
-                          placeholder="Filtrar"
-                          style={{ width: 70, border: '1px solid #e0e7ef', borderRadius: 5, padding: '2px 6px', fontSize: 12, marginTop: 2, background: '#f7fafd', color: '#222', position: 'absolute', left: '50%', transform: 'translateX(-50%)', top: 28, zIndex: 10, boxShadow: '0 2px 8px rgba(9,21,255,0.06)' }}
-                          autoFocus
-                          onClick={e => e.stopPropagation()}
-                        />
-                      )}
-                    </th>
-                    <th style={{ whiteSpace: 'nowrap', textAlign: 'left', position: 'relative', cursor: 'pointer' }} onClick={() => setShowDescricaoFiltro(v => !v)}>
-                      DESCRIÇÃO
-                      <br />
-                      {showDescricaoFiltro && (
-                        <input
-                          ref={descricaoFiltroRef}
-                          type="text"
-                          value={descricaoFiltro}
-                          onChange={e => setDescricaoFiltro(e.target.value)}
-                          placeholder="Filtrar"
-                          style={{ width: 120, border: '1px solid #e0e7ef', borderRadius: 5, padding: '2px 6px', fontSize: 12, marginTop: 2, background: '#f7fafd', color: '#222', position: 'absolute', left: 0, top: 28, zIndex: 10, boxShadow: '0 2px 8px rgba(9,21,255,0.06)' }}
-                          autoFocus
-                          onClick={e => e.stopPropagation()}
-                        />
-                      )}
-                    </th>
-                    <th style={{ whiteSpace: 'nowrap' }}>AÇÃO</th>
-                  </tr>
-                </thead>
-                <tbody>
+              {isMobile ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 16, alignItems: 'center', width: '100%' }}>
                   {itensPagina.length === 0 ? (
-                    <tr>
-                      <td colSpan={3} style={{ textAlign: 'center', color: '#888', padding: '32px 0' }}>Nenhum artigo encontrado.</td>
-                    </tr>
+                    <div style={{ textAlign: 'center', color: '#888', padding: '32px 0' }}>Nenhum artigo encontrado.</div>
                   ) : (
                     itensPagina.map(item => (
-                      <tr key={item.id} className="hover:bg-[#F0F4FF] transition">
-                        <td className={styles['catalogo-link']} style={{ fontFamily: 'monospace', color: '#0915FF', textAlign: 'center' }}>{item.codigo}</td>
-                        <td className="description-cell" style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.nome}</td>
-                        <td>
-                          <button
-                            onClick={() => handleDelete(item.id)}
-                            className="px-4 py-1 rounded bg-red-600 text-white font-semibold text-xs hover:bg-red-700 transition-all"
-                          >
-                            Excluir
-                          </button>
-                        </td>
-                      </tr>
+                      <div key={item.id} style={{ background: '#fff', borderRadius: 12, boxShadow: '0 2px 8px rgba(9,21,255,0.08)', border: '1.5px solid #d1d5db', width: '95%', maxWidth: 400, padding: 16, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                        <div style={{ fontWeight: 700, color: '#0915FF', fontSize: 16 }}>Código: <span style={{ color: '#222' }}>{item.codigo}</span></div>
+                        <div style={{ color: '#444', fontSize: 15, fontWeight: 500 }}>Descrição: <span style={{ color: '#222', fontWeight: 400 }}>{item.nome}</span></div>
+                        <button
+                          onClick={() => handleDelete(item.id)}
+                          style={{ marginTop: 8, background: '#ef4444', color: '#fff', border: 'none', borderRadius: 8, padding: '10px 0', fontWeight: 700, fontSize: 15, cursor: 'pointer', width: '100%' }}
+                        >
+                          Excluir
+                        </button>
+                      </div>
                     ))
                   )}
-                </tbody>
-              </table>
+                </div>
+              ) : (
+                <table className={styles['catalogo-tabela']} style={{ margin: '0 auto', width: 'auto' }}>
+                  <thead>
+                    <tr>
+                      <th style={{ whiteSpace: 'nowrap', textAlign: 'center', fontFamily: 'monospace', position: 'relative', cursor: 'pointer' }} onClick={() => setShowCodigoFiltro(v => !v)}>
+                        CÓDIGO
+                        <br />
+                        {showCodigoFiltro && (
+                          <input
+                            ref={codigoFiltroRef}
+                            type="text"
+                            value={codigoFiltro}
+                            onChange={e => setCodigoFiltro(e.target.value)}
+                            placeholder="Filtrar"
+                            style={{ width: 70, border: '1px solid #e0e7ef', borderRadius: 5, padding: '2px 6px', fontSize: 12, marginTop: 2, background: '#f7fafd', color: '#222', position: 'absolute', left: '50%', transform: 'translateX(-50%)', top: 28, zIndex: 10, boxShadow: '0 2px 8px rgba(9,21,255,0.06)' }}
+                            autoFocus
+                            onClick={e => e.stopPropagation()}
+                          />
+                        )}
+                      </th>
+                      <th style={{ whiteSpace: 'nowrap', textAlign: 'left', position: 'relative', cursor: 'pointer' }} onClick={() => setShowDescricaoFiltro(v => !v)}>
+                        DESCRIÇÃO
+                        <br />
+                        {showDescricaoFiltro && (
+                          <input
+                            ref={descricaoFiltroRef}
+                            type="text"
+                            value={descricaoFiltro}
+                            onChange={e => setDescricaoFiltro(e.target.value)}
+                            placeholder="Filtrar"
+                            style={{ width: 120, border: '1px solid #e0e7ef', borderRadius: 5, padding: '2px 6px', fontSize: 12, marginTop: 2, background: '#f7fafd', color: '#222', position: 'absolute', left: 0, top: 28, zIndex: 10, boxShadow: '0 2px 8px rgba(9,21,255,0.06)' }}
+                            autoFocus
+                            onClick={e => e.stopPropagation()}
+                          />
+                        )}
+                      </th>
+                      <th style={{ whiteSpace: 'nowrap' }}>AÇÃO</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {itensPagina.length === 0 ? (
+                      <tr>
+                        <td colSpan={3} style={{ textAlign: 'center', color: '#888', padding: '32px 0' }}>Nenhum artigo encontrado.</td>
+                      </tr>
+                    ) : (
+                      itensPagina.map(item => (
+                        <tr key={item.id} className="hover:bg-[#F0F4FF] transition">
+                          <td className={styles['catalogo-link']} style={{ fontFamily: 'monospace', color: '#0915FF', textAlign: 'center' }}>{item.codigo}</td>
+                          <td className="description-cell" style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.nome}</td>
+                          <td>
+                            <button
+                              onClick={() => handleDelete(item.id)}
+                              className="px-4 py-1 rounded bg-red-600 text-white font-semibold text-xs hover:bg-red-700 transition-all"
+                            >
+                              Excluir
+                            </button>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              )}
               {/* Paginação igual ao catálogo */}
               <div className={styles['paginacao']}>
                 <button

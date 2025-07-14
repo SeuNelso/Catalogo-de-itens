@@ -437,3 +437,27 @@ img:hover, .image-preview img:hover, .group:hover img {
   transform: scale(1.07) rotate(-1deg);
   box-shadow: 0 6px 24px 0 rgba(9,21,255,0.10);
 } 
+
+/* Responsividade para a Home */
+@media (max-width: 600px) {
+  .Home-main {
+    padding: 12px 4px !important;
+  }
+  .Home-card {
+    padding: 16px !important;
+    margin: 16px 0 !important;
+    border-radius: 12px !important;
+    max-width: 100vw !important;
+  }
+  .Home-title {
+    font-size: 22px !important;
+  }
+  .Home-desc {
+    font-size: 15px !important;
+    max-width: 95vw !important;
+  }
+  .Home-link {
+    font-size: 15px !important;
+    padding: 12px 0 !important;
+  }
+} 

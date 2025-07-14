@@ -27,6 +27,7 @@ const EditarItem = () => {
     unidadeArmazenamento: '',
     quantidade: '' // campo adicionado
   });
+  const [isMobile, setIsMobile] = useState(window.innerWidth <= 600);
 
   useEffect(() => {
     const fetchItem = async () => {
@@ -64,6 +65,14 @@ const EditarItem = () => {
     };
     fetchItem();
   }, [id]);
+
+  useEffect(() => {
+    function handleResize() {
+      setIsMobile(window.innerWidth <= 600);
+    }
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
   const handleInputChange = (e) => {
     const { name, value } = e.target;
@@ -164,13 +173,39 @@ const EditarItem = () => {
   }
 
   return (
-    <div className="min-h-screen bg-[#e5e5e5] pb-12 flex flex-col items-center">
+    <div className={`min-h-screen bg-[#e5e5e5] pb-12 flex flex-col items-center${isMobile ? ' cadastro-mobile-stack' : ''}`}>
       {toast && (
         <Toast type={toast.type} message={toast.message} onClose={() => setToast(null)} />
       )}
-      <div style={{ display: 'flex', flexDirection: 'row', justifyContent: 'center', alignItems: 'flex-start', gap: 48, width: '100%', maxWidth: 1200, marginTop: 40 }}>
+      <div style={{
+        display: isMobile ? 'block' : 'flex',
+        flexDirection: isMobile ? 'column' : 'row',
+        justifyContent: 'center',
+        alignItems: isMobile ? 'stretch' : 'flex-start',
+        gap: isMobile ? 0 : 48,
+        width: '100%',
+        maxWidth: 1200,
+        marginTop: isMobile ? 0 : 40,
+        padding: isMobile ? '0 0 16px 0' : undefined
+      }}>
         {/* Card de informações básicas à esquerda */}
-        <div style={{ background: '#fff', borderRadius: 16, boxShadow: '0 8px 32px rgba(9,21,255,0.08)', padding: 32, minWidth: 300, maxWidth: 400, flex: '0 0 400px', marginTop: 32 }}>
+        <div style={{
+          background: '#fff',
+          borderRadius: 16,
+          boxShadow: '0 8px 32px rgba(9,21,255,0.08)',
+          padding: isMobile ? 16 : 32,
+          minWidth: isMobile ? 'unset' : 300,
+          maxWidth: isMobile ? '100%' : 400,
+          flex: isMobile ? 'unset' : '0 0 400px',
+          marginTop: isMobile ? 16 : 32,
+          marginLeft: 0,
+          marginRight: isMobile ? 0 : 'auto',
+          width: isMobile ? '100%' : undefined,
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          gap: 18
+        }}>
           <div style={{ display: 'flex', alignItems: 'center', marginBottom: 24 }}>
             <Package style={{ width: 24, height: 24, color: '#0915FF', marginRight: 12 }} />
             <h2 style={{ color: '#0915FF', fontWeight: 700, fontSize: 20, margin: 0 }}>

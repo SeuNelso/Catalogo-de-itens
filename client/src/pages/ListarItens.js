@@ -43,6 +43,16 @@ const ListarItens = () => {
   const { user } = useAuth();
   const isAdmin = user && user.role === 'admin';
 
+  const [isMobile, setIsMobile] = useState(window.innerWidth <= 600);
+
+  useEffect(() => {
+    function handleResize() {
+      setIsMobile(window.innerWidth <= 600);
+    }
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
   // Corrigir useEffect para não dar erro de dependência
   useEffect(() => {
     fetchItens();
@@ -201,7 +211,7 @@ const ListarItens = () => {
   };
 
   return (
-    <div className="bg-[#e5e5e5] flex flex-col items-center">
+    <div className={`bg-[#e5e5e5] flex flex-col items-center${isMobile ? ' catalogo-mobile-stack' : ''}`}>
       {/* Modal de busca por imagem */}
       {showImageModal && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -310,9 +320,34 @@ const ListarItens = () => {
           </div>
         </div>
       )}
-      <div style={{ display: 'flex', flexDirection: 'row', justifyContent: 'center', alignItems: 'flex-start', gap: 48, width: '100%', maxWidth: 1800, marginTop: 0 }}>
-        {/* Card de busca visual à esquerda */}
-        <div style={{ background: '#fff', borderRadius: 16, boxShadow: '0 8px 32px rgba(9,21,255,0.08)', padding: 32, minWidth: 300, maxWidth: 340, flex: '0 0 340px', marginTop: 0, marginLeft: 0, marginRight: 'auto', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 18 }}>
+      <div style={{
+        display: isMobile ? 'block' : 'flex',
+        flexDirection: isMobile ? 'column' : 'row',
+        justifyContent: 'center',
+        alignItems: isMobile ? 'stretch' : 'flex-start',
+        gap: isMobile ? 0 : 48,
+        width: '100%',
+        maxWidth: 1800,
+        marginTop: 0
+      }}>
+        {/* Card de busca visual */}
+        <div style={{
+          background: '#fff',
+          borderRadius: 16,
+          boxShadow: '0 8px 32px rgba(9,21,255,0.08)',
+          padding: 32,
+          minWidth: isMobile ? 'unset' : 300,
+          maxWidth: isMobile ? '100%' : 340,
+          flex: isMobile ? 'unset' : '0 0 340px',
+          marginTop: 0,
+          marginLeft: 0,
+          marginRight: isMobile ? 0 : 'auto',
+          width: isMobile ? '100%' : undefined,
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          gap: 18
+        }}>
           <button
             onClick={() => setShowImageModal(true)}
             style={{ background: '#0915FF', color: '#fff', fontWeight: 700, border: 'none', borderRadius: 8, padding: '10px 28px', fontSize: 16, display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', boxShadow: '0 2px 8px rgba(9,21,255,0.08)', marginBottom: 8 }}
@@ -361,138 +396,40 @@ const ListarItens = () => {
             </button>
           </div>
         </div>
-        {/* Card da tabela centralizado no espaço restante */}
-        <div style={{ flex: 1, minWidth: 350, marginTop: 0, marginLeft: 'auto', marginRight: 0, display: 'flex', justifyContent: 'center' }}>
-          <div className={styles['catalogo-card']} style={{ margin: 0, boxShadow: '0 8px 32px rgba(9,21,255,0.08)' }}>
-            <div className={styles['catalogo-conteudo']}>
-              <div className={styles['catalogo-subtitulo']}>Itens em Estoque</div>
-              <table className={styles['catalogo-tabela']}>
-                <thead>
-                  <tr>
-                    <th style={{ whiteSpace: 'nowrap', cursor: 'pointer', position: 'relative' }} onClick={() => setShowCodigoFiltro(v => !v)}>
-                      CÓDIGO
-                      <button onClick={e => { e.stopPropagation(); ordenarPorCodigo(); }} style={{ background: 'none', border: 'none', marginLeft: 6, cursor: 'pointer' }} title="Ordenar">
-                        <FaFilter color="#fff" size={14} style={{ verticalAlign: 'middle' }} />
-                      </button>
-                      <br />
-                      {showCodigoFiltro && (
-                        <input
-                          ref={codigoFiltroRef}
-                          type="text"
-                          value={codigoFiltro}
-                          onChange={e => setCodigoFiltro(e.target.value)}
-                          placeholder="Filtrar"
-                          style={{
-                            width: 70,
-                            border: '1px solid #e0e7ef',
-                            borderRadius: 5,
-                            padding: '2px 6px',
-                            fontSize: 12,
-                            marginLeft: 8,
-                            marginTop: 0,
-                            background: '#f7fafd',
-                            color: '#222',
-                            position: 'absolute',
-                            left: 'auto',
-                            right: 0,
-                            top: 8,
-                            zIndex: 10,
-                            boxShadow: '0 2px 8px rgba(9,21,255,0.06)',
-                          }}
-                          autoFocus
-                          onClick={e => e.stopPropagation()}
-                        />
+        {/* Card da tabela ou cards mobile */}
+        <div style={{
+          flex: 1,
+          minWidth: isMobile ? 'unset' : 350,
+          marginTop: 0,
+          marginLeft: isMobile ? 0 : 'auto',
+          marginRight: 0,
+          display: 'flex',
+          justifyContent: 'center',
+          width: isMobile ? '100%' : undefined
+        }}>
+          {isMobile ? (
+            <div style={{ width: '100%', padding: '8px 0' }}>
+              <div style={{ textAlign: 'center', color: '#0915FF', fontWeight: 700, fontSize: 20, margin: '12px 0 16px 0' }}>Itens em Estoque</div>
+              {itensPagina.length === 0 && (
+                <div style={{ textAlign: 'center', color: '#888', margin: '24px 0' }}>Nenhum item encontrado.</div>
+              )}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 16, alignItems: 'center' }}>
+                {itensPagina.map(item => (
+                  <div key={item.id} style={{ background: '#fff', borderRadius: 12, boxShadow: '0 2px 8px rgba(9,21,255,0.08)', border: '1.5px solid #d1d5db', width: '95%', maxWidth: 400, padding: 16, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    <div style={{ fontWeight: 700, color: '#0915FF', fontSize: 16 }}>Código: <span style={{ color: '#222' }}>{item.codigo}</span></div>
+                    <div style={{ color: '#444', fontSize: 15, fontWeight: 500 }}>Descrição: <span style={{ color: '#222', fontWeight: 400 }}>{item.nome || item.descricao}</span></div>
+                    <div style={{ fontWeight: 600, color: '#222', fontSize: 15 }}>Quantidade: <span style={{ color: item.quantidade > 0 ? '#1a7f37' : '#b91c1c', background: item.quantidade > 0 ? '#e6fbe6' : '#ffeaea', borderRadius: 6, padding: '2px 10px', marginLeft: 4 }}>{item.quantidade}</span></div>
+                    <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                      <button onClick={() => navigate(`/item/${item.id}`)} style={{ background: '#0915FF', color: '#fff', border: 'none', borderRadius: 8, padding: '10px 0', fontWeight: 700, fontSize: 15, cursor: 'pointer', width: '100%' }}>Detalhes</button>
+                      {user && (
+                        <button onClick={() => navigate(`/editar/${item.id}`)} style={{ background: '#FFD600', color: '#0915FF', border: 'none', borderRadius: 8, padding: '10px 0', fontWeight: 700, fontSize: 15, cursor: 'pointer', width: '100%' }}>Editar</button>
                       )}
-                    </th>
-                    <th style={{ whiteSpace: 'nowrap', cursor: 'pointer', position: 'relative' }} onClick={() => setShowDescricaoFiltro(v => !v)}>
-                      DESCRIÇÃO
-                      <button onClick={e => { e.stopPropagation(); ordenarPorDescricao(); }} style={{ background: 'none', border: 'none', marginLeft: 6, cursor: 'pointer' }} title="Ordenar">
-                        <FaFilter color="#fff" size={14} style={{ verticalAlign: 'middle' }} />
-                      </button>
-                      <br />
-                      {showDescricaoFiltro && (
-                        <input
-                          ref={descricaoFiltroRef}
-                          type="text"
-                          value={descricaoFiltro}
-                          onChange={e => setDescricaoFiltro(e.target.value)}
-                          placeholder="Filtrar"
-                          style={{
-                            width: 120,
-                            border: '1px solid #e0e7ef',
-                            borderRadius: 5,
-                            padding: '2px 6px',
-                            fontSize: 12,
-                            marginLeft: 8,
-                            marginTop: 0,
-                            background: '#f7fafd',
-                            color: '#222',
-                            position: 'absolute',
-                            left: 'auto',
-                            right: 0,
-                            top: 8,
-                            zIndex: 10,
-                            boxShadow: '0 2px 8px rgba(9,21,255,0.06)',
-                          }}
-                          autoFocus
-                          onClick={e => e.stopPropagation()}
-                        />
-                      )}
-                    </th>
-                    <th>QUANTIDADE</th>
-                    <th>AÇÃO</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {itensPagina.length === 0 ? (
-                    <tr>
-                      <td colSpan={4} style={{ textAlign: 'center', color: '#888', padding: '32px 0' }}>Nenhum item encontrado.</td>
-                    </tr>
-                  ) : (
-                    itensPagina.map(item => (
-                      <tr key={item.id}>
-                        <td title={item.codigo || '-'}>
-                          <Link to={`/item/${item.id}`} className={styles['catalogo-link']}>
-                            {item.codigo || '-'}
-                          </Link>
-                        </td>
-                        <td title={item.nome}>
-                          {item.nome}
-                        </td>
-                        <td title={item.quantidade !== undefined ? String(item.quantidade) : '-'}>
-                          <span className={
-                            item.quantidade > 10
-                              ? `${styles['catalogo-quantidade']} ${styles['verde']}`
-                              : `${styles['catalogo-quantidade']} ${styles['vermelho']}`
-                          }>
-                            {/* Exibir 0 normalmente, apenas ocultar se for null ou undefined */}
-                            {item.quantidade !== null && item.quantidade !== undefined ? item.quantidade : '-'}
-                          </span>
-                        </td>
-                        <td>
-                          <button
-                            className="px-4 py-1 rounded bg-[#0915FF] text-white font-semibold text-xs hover:bg-[#2336ff] transition-all"
-                            onClick={() => navigate(`/item/${item.id}`)}
-                            style={{ marginRight: 8 }}
-                          >
-                            Detalhes
-                          </button>
-                          {isAdmin && (
-                            <button
-                              className="px-4 py-1 rounded bg-[#FFB800] text-black font-semibold text-xs hover:bg-[#ffe066] transition-all"
-                              onClick={() => navigate(`/editar/${item.id}`)}
-                            >
-                              Editar
-                            </button>
-                          )}
-                        </td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-              {/* Adicionar controles de paginação centralizados abaixo da tabela: */}
-              <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 4, marginTop: 18, marginBottom: 0, flexWrap: 'wrap', width: '100%' }}>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              {/* Paginação */}
+              <div style={{ margin: '18px 0 0 0', display: 'flex', justifyContent: 'center' }}>
                 <button
                   onClick={() => setPaginaAtual(p => Math.max(1, p - 1))}
                   disabled={paginaAtual === 1}
@@ -545,7 +482,191 @@ const ListarItens = () => {
                 >Próximo</button>
               </div>
             </div>
-          </div>
+          ) : (
+            <div className={styles['catalogo-card']} style={{ margin: 0, boxShadow: '0 8px 32px rgba(9,21,255,0.08)', width: isMobile ? '100%' : undefined }}>
+              <div className={styles['catalogo-conteudo']}>
+                <div className={styles['catalogo-subtitulo']}>Itens em Estoque</div>
+                <table className={styles['catalogo-tabela']}>
+                  <thead>
+                    <tr>
+                      <th style={{ whiteSpace: 'nowrap', cursor: 'pointer', position: 'relative' }} onClick={() => setShowCodigoFiltro(v => !v)}>
+                        CÓDIGO
+                        <button onClick={e => { e.stopPropagation(); ordenarPorCodigo(); }} style={{ background: 'none', border: 'none', marginLeft: 6, cursor: 'pointer' }} title="Ordenar">
+                          <FaFilter color="#fff" size={14} style={{ verticalAlign: 'middle' }} />
+                        </button>
+                        <br />
+                        {showCodigoFiltro && (
+                          <input
+                            ref={codigoFiltroRef}
+                            type="text"
+                            value={codigoFiltro}
+                            onChange={e => setCodigoFiltro(e.target.value)}
+                            placeholder="Filtrar"
+                            style={{
+                              width: 70,
+                              border: '1px solid #e0e7ef',
+                              borderRadius: 5,
+                              padding: '2px 6px',
+                              fontSize: 12,
+                              marginLeft: 8,
+                              marginTop: 0,
+                              background: '#f7fafd',
+                              color: '#222',
+                              position: 'absolute',
+                              left: 'auto',
+                              right: 0,
+                              top: 8,
+                              zIndex: 10,
+                              boxShadow: '0 2px 8px rgba(9,21,255,0.06)',
+                            }}
+                            autoFocus
+                            onClick={e => e.stopPropagation()}
+                          />
+                        )}
+                      </th>
+                      <th style={{ whiteSpace: 'nowrap', cursor: 'pointer', position: 'relative' }} onClick={() => setShowDescricaoFiltro(v => !v)}>
+                        DESCRIÇÃO
+                        <button onClick={e => { e.stopPropagation(); ordenarPorDescricao(); }} style={{ background: 'none', border: 'none', marginLeft: 6, cursor: 'pointer' }} title="Ordenar">
+                          <FaFilter color="#fff" size={14} style={{ verticalAlign: 'middle' }} />
+                        </button>
+                        <br />
+                        {showDescricaoFiltro && (
+                          <input
+                            ref={descricaoFiltroRef}
+                            type="text"
+                            value={descricaoFiltro}
+                            onChange={e => setDescricaoFiltro(e.target.value)}
+                            placeholder="Filtrar"
+                            style={{
+                              width: 120,
+                              border: '1px solid #e0e7ef',
+                              borderRadius: 5,
+                              padding: '2px 6px',
+                              fontSize: 12,
+                              marginLeft: 8,
+                              marginTop: 0,
+                              background: '#f7fafd',
+                              color: '#222',
+                              position: 'absolute',
+                              left: 'auto',
+                              right: 0,
+                              top: 8,
+                              zIndex: 10,
+                              boxShadow: '0 2px 8px rgba(9,21,255,0.06)',
+                            }}
+                            autoFocus
+                            onClick={e => e.stopPropagation()}
+                          />
+                        )}
+                      </th>
+                      <th>QUANTIDADE</th>
+                      <th>AÇÃO</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {itensPagina.length === 0 ? (
+                      <tr>
+                        <td colSpan={4} style={{ textAlign: 'center', color: '#888', padding: '32px 0' }}>Nenhum item encontrado.</td>
+                      </tr>
+                    ) : (
+                      itensPagina.map(item => (
+                        <tr key={item.id}>
+                          <td title={item.codigo || '-'}>
+                            <Link to={`/item/${item.id}`} className={styles['catalogo-link']}>
+                              {item.codigo || '-'}
+                            </Link>
+                          </td>
+                          <td title={item.nome}>
+                            {item.nome}
+                          </td>
+                          <td title={item.quantidade !== undefined ? String(item.quantidade) : '-'}>
+                            <span className={
+                              item.quantidade > 10
+                                ? `${styles['catalogo-quantidade']} ${styles['verde']}`
+                                : `${styles['catalogo-quantidade']} ${styles['vermelho']}`
+                            }>
+                              {/* Exibir 0 normalmente, apenas ocultar se for null ou undefined */}
+                              {item.quantidade !== null && item.quantidade !== undefined ? item.quantidade : '-'}
+                            </span>
+                          </td>
+                          <td>
+                            <button
+                              className="px-4 py-1 rounded bg-[#0915FF] text-white font-semibold text-xs hover:bg-[#2336ff] transition-all"
+                              onClick={() => navigate(`/item/${item.id}`)}
+                              style={{ marginRight: 8 }}
+                            >
+                              Detalhes
+                            </button>
+                            {isAdmin && (
+                              <button
+                                className="px-4 py-1 rounded bg-[#FFB800] text-black font-semibold text-xs hover:bg-[#ffe066] transition-all"
+                                onClick={() => navigate(`/editar/${item.id}`)}
+                              >
+                                Editar
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+                {/* Adicionar controles de paginação centralizados abaixo da tabela: */}
+                <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 4, marginTop: 18, marginBottom: 0, flexWrap: 'wrap', width: '100%' }}>
+                  <button
+                    onClick={() => setPaginaAtual(p => Math.max(1, p - 1))}
+                    disabled={paginaAtual === 1}
+                    style={{ minWidth: 36, height: 36, border: '1.5px solid #0915FF', background: '#fff', color: '#0915FF', fontWeight: 600, fontSize: 16, borderRadius: 7, cursor: paginaAtual === 1 ? 'not-allowed' : 'pointer', margin: 2 }}
+                  >Anterior</button>
+                  {(() => {
+                    const botoes = [];
+                    const mostrar = 2; // Quantos botões mostrar no início/fim
+                    const vizinhos = 2; // Quantos vizinhos ao redor da página atual
+                    for (let p = 1; p <= totalPaginas; p++) {
+                      if (
+                        p <= mostrar ||
+                        p > totalPaginas - mostrar ||
+                        (p >= paginaAtual - vizinhos && p <= paginaAtual + vizinhos)
+                      ) {
+                        botoes.push(
+                          <button
+                            key={p}
+                            onClick={() => setPaginaAtual(p)}
+                            style={{
+                              minWidth: 36,
+                              height: 36,
+                              border: '1.5px solid #0915FF',
+                              background: paginaAtual === p ? '#0915FF' : '#fff',
+                              color: paginaAtual === p ? '#fff' : '#0915FF',
+                              fontWeight: 700,
+                              fontSize: 16,
+                              borderRadius: 7,
+                              cursor: 'pointer',
+                              margin: 2
+                            }}
+                            disabled={paginaAtual === p}
+                          >{p}</button>
+                        );
+                      } else if (
+                        (p === mostrar + 1 && paginaAtual - vizinhos > mostrar + 1) ||
+                        (p === totalPaginas - mostrar && paginaAtual + vizinhos < totalPaginas - mostrar)
+                      ) {
+                        botoes.push(
+                          <span key={p} style={{ minWidth: 24, textAlign: 'center', color: '#0915FF' }}>...</span>
+                        );
+                      }
+                    }
+                    return botoes;
+                  })()}
+                  <button
+                    onClick={() => setPaginaAtual(p => Math.min(totalPaginas, p + 1))}
+                    disabled={paginaAtual === totalPaginas}
+                    style={{ minWidth: 36, height: 36, border: '1.5px solid #0915FF', background: '#fff', color: '#0915FF', fontWeight: 600, fontSize: 16, borderRadius: 7, cursor: paginaAtual === totalPaginas ? 'not-allowed' : 'pointer', margin: 2 }}
+                  >Próximo</button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </div>
       {toast && (
