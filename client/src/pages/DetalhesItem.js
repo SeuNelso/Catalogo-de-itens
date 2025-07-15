@@ -40,13 +40,22 @@ const DetalhesItem = () => {
     isDownRef.current = true;
     startXRef.current = e.touches[0].pageX - imagensScrollRef.current.offsetLeft;
     scrollLeftRef.current = imagensScrollRef.current.scrollLeft;
+    // Salva a posição inicial do Y para detectar direção
+    imagensScrollRef.current._startY = e.touches[0].clientY;
   };
   const handleTouchEnd = () => {
     isDownRef.current = false;
+    imagensScrollRef.current._startY = null;
   };
   const handleTouchMove = (e) => {
     if (!isDownRef.current) return;
     const x = e.touches[0].pageX - imagensScrollRef.current.offsetLeft;
+    const y = e.touches[0].clientY;
+    const startY = imagensScrollRef.current._startY || 0;
+    // Se o movimento for mais horizontal que vertical, previne o scroll da tela
+    if (Math.abs(e.touches[0].clientX - startXRef.current) > Math.abs(y - startY)) {
+      e.preventDefault();
+    }
     const walk = (x - startXRef.current) * 2;
     imagensScrollRef.current.scrollLeft = scrollLeftRef.current - walk;
   };
