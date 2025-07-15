@@ -1,37 +1,10 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
-import { Database, Plus, Search, Users, Shield, Download, UserPlus } from 'react-feather';
+import { Database, Search, Users, Shield, UserPlus } from 'react-feather';
 import { useAuth } from '../contexts/AuthContext';
 
 const Home = () => {
-  const { isAuthenticated, user } = useAuth();
-  const isAdmin = isAuthenticated && user && user.role === 'admin';
-
-  // Função para exportar JSON
-  const handleExportJson = async () => {
-    try {
-      const token = localStorage.getItem('token');
-      const response = await fetch('/api/exportar-json', {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      if (!response.ok) {
-        alert('Erro ao exportar dados.');
-        return;
-      }
-      const data = await response.json();
-      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'exportacao_catalogo.json';
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      window.URL.revokeObjectURL(url);
-    } catch (err) {
-      alert('Erro de conexão ao exportar dados.');
-    }
-  };
+  const { isAuthenticated } = useAuth();
 
   return (
     <div className="min-h-screen bg-[#e5eefe] flex flex-col items-center justify-center py-12 px-4 Home-main">

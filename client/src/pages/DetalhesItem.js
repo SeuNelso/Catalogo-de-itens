@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { ArrowLeft, Package, Calendar, MapPin, Tag, Hash } from 'react-feather';
+import { ArrowLeft, Package, Calendar, Tag, Hash } from 'react-feather';
 
 const DetalhesItem = () => {
   const { id } = useParams();
