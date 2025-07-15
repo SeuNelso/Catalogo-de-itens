@@ -266,7 +266,7 @@ app.post('/api/login', (req, res) => {
     return res.status(400).json({ error: 'Username e password são obrigatórios' });
   }
 
-  pool.query('SELECT * FROM usuarios WHERE username = $1', [username], (err, result) => {
+  pool.query('SELECT * FROM usuarios WHERE LOWER(username) = LOWER($1)', [username], (err, result) => {
     if (err) {
       return res.status(500).json({ error: err.message });
     }
@@ -434,15 +434,15 @@ app.post('/api/itens', authenticateToken, upload.array('imagens', 10), (req, res
       unidade: req.body.unidade || '',
       peso: pesoFinal,
       unidadePeso: req.body.unidadePeso || '',
-      unidadeArmazenamento: req.body.unidadeArmazenamento || ''
+      unidadearmazenamento: req.body.unidadeArmazenamento || ''
     };
 
     pool.query(`
-      INSERT INTO itens (nome, descricao, categoria, codigo, preco, quantidade, localizacao, observacoes, familia, subfamilia, setor, comprimento, largura, altura, unidade, peso, unidadePeso, unidadeArmazenamento)
+      INSERT INTO itens (nome, descricao, categoria, codigo, preco, quantidade, localizacao, observacoes, familia, subfamilia, setor, comprimento, largura, altura, unidade, peso, unidadePeso, unidadearmazenamento)
       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
       RETURNING id
     `, [itemData.nome, itemData.descricao, itemData.categoria, itemData.codigo, itemData.preco, itemData.quantidade, itemData.localizacao, itemData.observacoes,
-        itemData.familia, itemData.subfamilia, itemData.setor, itemData.comprimento, itemData.largura, itemData.altura, itemData.unidade, itemData.peso, itemData.unidadePeso, itemData.unidadeArmazenamento],
+        itemData.familia, itemData.subfamilia, itemData.setor, itemData.comprimento, itemData.largura, itemData.altura, itemData.unidade, itemData.peso, itemData.unidadePeso, itemData.unidadearmazenamento],
       (err, result) => {
         if (err) {
           return res.status(500).json({ error: err.message });
@@ -677,7 +677,7 @@ app.put('/api/itens/:id', authenticateToken, upload.array('imagens', 10), (req, 
     unidade,
     peso,
     unidadePeso,
-    unidadeArmazenamento,
+    unidadearmazenamento,
     especificacoes
   } = req.body;
 
@@ -685,15 +685,22 @@ app.put('/api/itens/:id', authenticateToken, upload.array('imagens', 10), (req, 
     return res.status(400).json({ error: 'Código e descrição são obrigatórios' });
   }
 
+  // Tratar campos numéricos - converter strings vazias para null
+  const precoNum = preco && preco.trim() !== '' ? parseFloat(preco) : null;
+  const quantidadeNum = quantidade && quantidade.trim() !== '' ? parseInt(quantidade) : null;
+  const comprimentoNum = comprimento && comprimento.trim() !== '' ? parseFloat(comprimento) : null;
+  const larguraNum = largura && largura.trim() !== '' ? parseFloat(largura) : null;
+  const alturaNum = altura && altura.trim() !== '' ? parseFloat(altura) : null;
+
   pool.query(`
     UPDATE itens 
     SET nome = $1, descricao = $2, categoria = $3, codigo = $4, preco = $5, quantidade = $6, localizacao = $7, observacoes = $8,
         familia = $9, subfamilia = $10, setor = $11, comprimento = $12, largura = $13, altura = $14,
-        unidade = $15, peso = $16, unidadePeso = $17, unidadeArmazenamento = $18
+        unidade = $15, peso = $16, unidadePeso = $17, unidadearmazenamento = $18
     WHERE id = $19
   `, [
-    nome || descricao, descricao, categoria || 'Sem categoria', codigo, preco, quantidade, localizacao, observacoes,
-    familia, subfamilia, setor, comprimento, largura, altura, unidade, peso, unidadePeso, unidadeArmazenamento, itemId
+    nome || descricao, descricao, categoria || 'Sem categoria', codigo, precoNum, quantidadeNum, localizacao, observacoes,
+    familia, subfamilia, setor, comprimentoNum, larguraNum, alturaNum, unidade, peso, unidadePeso, unidadearmazenamento, itemId
   ], (err, result) => {
     if (err) {
       return res.status(500).json({ error: err.message });
@@ -1014,6 +1021,61 @@ app.post('/api/usuarios', authenticateToken, async (req, res) => {
     res.status(201).json({ message: 'Usuário cadastrado com sucesso.' });
   } catch (error) {
     res.status(500).json({ error: 'Erro ao cadastrar usuário.', details: error.message });
+  }
+});
+
+// Cadastro de novo usuário
+app.post('/api/cadastrar-usuario', async (req, res) => {
+  const { nome, numero_colaborador, senha } = req.body;
+  if (!nome || !numero_colaborador || !senha) {
+    return res.status(400).json({ error: 'Nome, número de colaborador e senha são obrigatórios.' });
+  }
+  try {
+    // Verifica se já existe
+    const existe = await pool.query('SELECT id FROM usuarios WHERE numero_colaborador = $1', [numero_colaborador]);
+    if (existe.rows.length > 0) {
+      return res.status(400).json({ error: 'Número de colaborador já cadastrado.' });
+    }
+    const hash = bcrypt.hashSync(senha, 10);
+    // Agora inclui username (igual ao numero_colaborador)
+    await pool.query(
+      'INSERT INTO usuarios (nome, numero_colaborador, username, password, role) VALUES ($1, $2, $3, $4, $5)',
+      [nome, numero_colaborador, numero_colaborador, hash, 'basico']
+    );
+    res.status(201).json({ message: 'Usuário cadastrado com sucesso!' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Listar todos os usuários (apenas admin/controller)
+app.get('/api/usuarios', authenticateToken, async (req, res) => {
+  if (!req.user || (req.user.role !== 'admin' && req.user.role !== 'controller')) {
+    return res.status(403).json({ error: 'Apenas administradores ou controllers podem acessar esta rota.' });
+  }
+  try {
+    const result = await pool.query('SELECT id, username, numero_colaborador, nome, role, email, data_criacao FROM usuarios ORDER BY id DESC');
+    res.json(result.rows);
+  } catch (error) {
+    res.status(500).json({ error: 'Erro ao listar usuários.', details: error.message });
+  }
+});
+
+// Atualizar o role de um usuário (apenas admin/controller)
+app.patch('/api/usuarios/:id', authenticateToken, async (req, res) => {
+  if (!req.user || (req.user.role !== 'admin' && req.user.role !== 'controller')) {
+    return res.status(403).json({ error: 'Apenas administradores ou controllers podem acessar esta rota.' });
+  }
+  const { id } = req.params;
+  const { role } = req.body;
+  if (!role || !['admin', 'controller', 'basico'].includes(role)) {
+    return res.status(400).json({ error: 'Role inválido.' });
+  }
+  try {
+    await pool.query('UPDATE usuarios SET role = $1 WHERE id = $2', [role, id]);
+    res.json({ message: 'Role atualizado com sucesso.' });
+  } catch (error) {
+    res.status(500).json({ error: 'Erro ao atualizar role.', details: error.message });
   }
 });
 

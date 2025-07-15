@@ -24,7 +24,7 @@ const EditarItem = () => {
     peso: '',
     unidadePeso: '',
     observacoes: '',
-    unidadeArmazenamento: '',
+    unidadearmazenamento: '',
     quantidade: '' // campo adicionado
   });
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 600);
@@ -49,7 +49,7 @@ const EditarItem = () => {
             peso: data.peso || '',
             unidadePeso: data.unidadePeso || '',
             observacoes: data.observacoes || '',
-            unidadeArmazenamento: data.unidadeArmazenamento || '',
+            unidadearmazenamento: data.unidadearmazenamento || '',
             quantidade: data.quantidade || '' // campo adicionado
           });
           setEspecificacoes(data.especificacoes || []);
@@ -133,9 +133,8 @@ const EditarItem = () => {
       const token = localStorage.getItem('token');
       const submitData = new FormData();
       Object.keys(formData).forEach(key => {
-        if (formData[key]) {
-          submitData.append(key, formData[key]);
-        }
+        // Enviar todos os campos, mesmo que vazios
+        submitData.append(key, formData[key] || '');
       });
       selectedFiles.forEach(file => {
         submitData.append('imagens', file);
@@ -500,8 +499,8 @@ const EditarItem = () => {
                 Unidade de Armazenamento <span style={{ color: '#ef4444' }}>*</span>
               </label>
               <select
-                name="unidadeArmazenamento"
-                value={formData.unidadeArmazenamento}
+                name="unidadearmazenamento"
+                value={formData.unidadearmazenamento}
                 onChange={handleInputChange}
                 style={{
                   width: '100%',

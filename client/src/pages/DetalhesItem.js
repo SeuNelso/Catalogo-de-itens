@@ -6,6 +6,7 @@ const DetalhesItem = () => {
   const { id } = useParams();
   const [item, setItem] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
   const [zoomImage, setZoomImage] = useState(null);
   const imagensScrollRef = useRef(null);
   // Variáveis de controle do drag
@@ -66,9 +67,11 @@ const DetalhesItem = () => {
       if (response.ok) {
         const data = await response.json();
         setItem(data);
+      } else {
+        setError('Item não encontrado');
       }
     } catch (error) {
-      // Erro silencioso para melhor UX
+      setError('Erro ao carregar item');
     } finally {
       setLoading(false);
     }
@@ -78,6 +81,31 @@ const DetalhesItem = () => {
     fetchItem();
   }, [fetchItem]);
 
+  // Adiciona listeners de touch com passive: false para garantir o preventDefault
+  useEffect(() => {
+    const container = imagensScrollRef.current;
+    if (!container) return;
+    // Funções auxiliares
+    const onTouchStart = (e) => handleTouchStart(e);
+    const onTouchEnd = (e) => handleTouchEnd(e);
+    const onTouchMove = (e) => handleTouchMove(e);
+    container.addEventListener('touchstart', onTouchStart, { passive: false });
+    container.addEventListener('touchend', onTouchEnd, { passive: false });
+    container.addEventListener('touchmove', onTouchMove, { passive: false });
+    return () => {
+      container.removeEventListener('touchstart', onTouchStart);
+      container.removeEventListener('touchend', onTouchEnd);
+      container.removeEventListener('touchmove', onTouchMove);
+    };
+  }, []);
+
+  // Adicionar um state para detectar se é mobile
+  const [isMobile, setIsMobile] = useState(window.innerWidth < 700);
+  useEffect(() => {
+    const handleResize = () => setIsMobile(window.innerWidth < 700);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
 
   const formatDate = (dateString) => {
@@ -91,6 +119,22 @@ const DetalhesItem = () => {
         <div className="text-center">
           <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto mb-4"></div>
           <p className="text-gray-600">Carregando item...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-purple-50 flex items-center justify-center">
+        <div className="text-center">
+          <Package className="w-16 h-16 text-gray-300 mx-auto mb-4" />
+          <h2 className="text-2xl font-bold text-gray-900 mb-2">Erro</h2>
+          <p className="text-gray-600 mb-4">{error}</p>
+          <Link to="/listar" className="btn btn-primary">
+            <ArrowLeft className="w-4 h-4 mr-2" />
+            Voltar ao Catálogo
+          </Link>
         </div>
       </div>
     );
@@ -132,7 +176,7 @@ const DetalhesItem = () => {
           <div className="flex items-center space-x-4 text-sm text-gray-600">
             <div className="flex items-center">
               <Tag className="w-4 h-4 mr-1" />
-              <span>{item.categoria}</span>
+              <span>{typeof item.categoria === 'object' && item.categoria !== null ? item.categoria.nome : item.categoria}</span>
             </div>
             {item.data_cadastro && (
               <div className="flex items-center">
@@ -146,7 +190,17 @@ const DetalhesItem = () => {
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
           {/* Images */}
           <div className="space-y-6">
-            <div className="bg-white rounded-lg shadow-md p-6">
+            <div
+              className="bg-white rounded-lg shadow-md p-6"
+              style={isMobile ? {
+                width: '290px',
+                height: '191px',
+                margin: '0 auto',
+                padding: '15px',
+                boxSizing: 'border-box',
+                maxWidth: '100%'
+              } : {}}
+            >
               <h2 className="text-2xl font-bold text-gray-900 mb-4">Imagens</h2>
               
               {item.imagens && item.imagens.length > 0 ? (
@@ -203,9 +257,6 @@ const DetalhesItem = () => {
                     onMouseLeave={handleMouseLeave}
                     onMouseUp={handleMouseUp}
                     onMouseMove={handleMouseMove}
-                    onTouchStart={handleTouchStart}
-                    onTouchEnd={handleTouchEnd}
-                    onTouchMove={handleTouchMove}
                   >
                     {item.imagens.map((imagem, index) => (
                       <div
@@ -289,13 +340,7 @@ const DetalhesItem = () => {
                       <p className="font-medium">{item.subfamilia || ''}</p>
                     </div>
                   </div>
-                  <div className="flex items-center">
-                    <Tag className="w-4 h-4 text-gray-400 mr-2" />
-                    <div>
-                      <p className="text-sm text-gray-500">Unidade</p>
-                      <p className="font-medium">{item.unidade || ''}</p>
-                    </div>
-                  </div>
+                  {/* Remover campo Unidade */}
                   <div className="flex items-center">
                     <Tag className="w-4 h-4 text-gray-400 mr-2" />
                     <div>
@@ -307,21 +352,14 @@ const DetalhesItem = () => {
                     <Tag className="w-4 h-4 text-gray-400 mr-2" />
                     <div>
                       <p className="text-sm text-gray-500">Dimensões</p>
-                      <p className="font-medium">{item.comprimento || ''} x {item.largura || ''} x {item.altura || ''} {item.unidade || ''}</p>
-                    </div>
-                  </div>
-                  <div className="flex items-center md:col-span-2">
-                    <MapPin className="w-4 h-4 text-gray-400 mr-2" />
-                    <div>
-                      <p className="text-sm text-gray-500">Localização</p>
-                      <p className="font-medium">{item.localizacao || ''}</p>
+                      <p className="font-medium">{item.comprimento || ''} x {item.largura || ''} x {item.altura || ''}{item.unidade ? ` ${item.unidade}` : ''}</p>
                     </div>
                   </div>
                   <div className="flex items-center">
                     <Tag className="w-4 h-4 text-gray-400 mr-2" />
                     <div>
                       <p className="text-sm text-gray-500">Unidade de Armazenamento</p>
-                      <p className="font-medium">{item.unidadeArmazenamento || '-'}</p>
+                      <p className="font-medium">{item.unidadearmazenamento || '-'}</p>
                     </div>
                   </div>
                 </div>
@@ -350,7 +388,7 @@ const DetalhesItem = () => {
                           <td colSpan={2} className="px-3 py-2 text-gray-500 text-center">Nenhum armazém cadastrado</td>
                         </tr>
                       ) : (
-                        item.armazens.map((a, idx) => (
+                        [...item.armazens].sort((a, b) => (a.armazem || '').localeCompare(b.armazem || '')).map((a, idx) => (
                           <tr key={idx}>
                             <td className="px-3 py-1 border-b text-gray-700">{a.armazem}</td>
                             <td className="px-3 py-1 border-b text-gray-900 font-semibold">{a.quantidade}</td>
@@ -406,38 +444,44 @@ const DetalhesItem = () => {
           }}
           onClick={() => setZoomImage(null)}
         >
-          <img
-            src={zoomImage}
-            alt="Zoom"
-            style={{
-              maxWidth: '90vw',
-              maxHeight: '90vh',
-              borderRadius: 12,
-              boxShadow: '0 4px 32px rgba(0,0,0,0.25)',
-              background: '#fff'
-            }}
-            onClick={e => e.stopPropagation()}
-          />
-          <button
-            onClick={() => setZoomImage(null)}
-            style={{
-              position: 'fixed',
-              top: 32,
-              right: 32,
-              background: 'rgba(0,0,0,0.5)',
-              color: '#fff',
-              border: 'none',
-              borderRadius: '50%',
-              width: 40,
-              height: 40,
-              fontSize: 24,
-              cursor: 'pointer',
-              zIndex: 1001
-            }}
-            aria-label="Fechar"
-          >
-            &times;
-          </button>
+          <div style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={e => e.stopPropagation()}>
+            <img
+              src={zoomImage}
+              alt="Zoom"
+              style={{
+                maxWidth: '90vw',
+                maxHeight: '90vh',
+                borderRadius: 12,
+                boxShadow: '0 4px 32px rgba(0,0,0,0.25)',
+                background: '#fff',
+                display: 'block'
+              }}
+            />
+            <button
+              onClick={() => setZoomImage(null)}
+              style={{
+                position: 'absolute',
+                top: 10,
+                right: 10,
+                background: 'rgba(0,0,0,0.55)',
+                color: '#fff',
+                border: 'none',
+                borderRadius: '50%',
+                width: 36,
+                height: 36,
+                fontSize: 22,
+                cursor: 'pointer',
+                zIndex: 2,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                boxShadow: '0 2px 8px rgba(0,0,0,0.18)'
+              }}
+              aria-label="Fechar"
+            >
+              &times;
+            </button>
+          </div>
         </div>
       )}
     </div>

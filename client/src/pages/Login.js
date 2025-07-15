@@ -242,14 +242,6 @@ const Login = () => {
             Voltar ao Início
           </Link>
         </div>
-        {/* Demo Credentials */}
-        <div style={{ marginTop: 24, padding: 12, background: 'rgba(9,21,255,0.07)', borderRadius: 10, width: '100%' }}>
-          <h3 style={{ fontSize: 14, fontWeight: 700, color: '#0915FF', marginBottom: 6 }}>💡 Credenciais de Demonstração:</h3>
-          <div style={{ fontSize: 13, color: '#2336ff', lineHeight: 1.6 }}>
-            <p><strong>Usuário:</strong> admin</p>
-            <p><strong>Senha:</strong> admin123</p>
-          </div>
-        </div>
         {/* Footer */}
         <div style={{ textAlign: 'center', marginTop: 18 }}>
           <p style={{ color: '#fff', opacity: 0.7, fontSize: 13, margin: 0 }}>Sistema de Catálogo Inteligente</p>

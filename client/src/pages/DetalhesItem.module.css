@@ -7,12 +7,22 @@
 }
 @media (max-width: 699px) {
   .imagens-grid-desktop { display: none !important; }
-  .imagens-scroll-mobile { display: flex !important; }
+  .imagens-scroll-mobile { display: flex !important; max-width: 100vw; box-sizing: border-box; padding-left: 8px; padding-right: 8px; }
 }
 
 .imagens-scroll-mobile {
   cursor: grab;
+  max-width: 100vw;
+  box-sizing: border-box;
+  padding-left: 8px;
+  padding-right: 8px;
 }
 .imagens-scroll-mobile.active {
   cursor: grabbing;
+}
+
+/* Container principal para evitar overflow lateral */
+:root, body, #root, .min-h-screen {
+  overflow-x: hidden !important;
+  max-width: 100vw !important;
 } 

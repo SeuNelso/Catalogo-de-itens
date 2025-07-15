@@ -5,7 +5,7 @@ import './NavbarCustom.css';
 
 const menuItems = [
   { label: 'INÍCIO', path: '/' },
-  { label: 'CATÁLOGO', path: '/listar' },
+  // { label: 'CATÁLOGO', path: '/listar' }, // Removido daqui
   // { label: 'RECONHECER', path: '/reconhecimento' }, // Removido
 ];
 
@@ -40,12 +40,28 @@ const Navbar = () => {
               <span style={{ width: '100%', textAlign: 'center' }}>{item.label}</span>
             </div>
           ))}
+          {/* Renderiza o botão CATÁLOGO apenas se autenticado */}
           {isAuthenticated && (
+            <div
+              className="navbar-digi-menu-item"
+              tabIndex={0}
+              role="button"
+              onClick={() => {
+                navigate('/listar');
+                setMobileOpen(false);
+              }}
+              onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { navigate('/listar'); setMobileOpen(false); } }}
+              style={{ cursor: 'pointer' }}
+            >
+              <span style={{ width: '100%', textAlign: 'center' }}>CATÁLOGO</span>
+            </div>
+          )}
+          {isAuthenticated && user && user.role === 'admin' && (
             <div className="navbar-digi-menu-item">
               <Link to="/cadastrar" onClick={() => setMobileOpen(false)}>CRIAR ARTIGO</Link>
             </div>
           )}
-          {isAuthenticated && user && (user.role === 'admin' || user.role === 'controller') && (
+          {isAuthenticated && user && user.role === 'admin' && (
             <div className="navbar-digi-menu-item">
               <Link to="/excluir-artigo" onClick={() => setMobileOpen(false)}>EXCLUIR ARTIGO</Link>
             </div>
@@ -70,26 +86,13 @@ const Navbar = () => {
               <span style={{ width: '100%', textAlign: 'center' }}>IMPORTAR STOCK NACIONAL</span>
             </div>
           )}
-          {isAuthenticated && mobileOpen && (
-            <div style={{ marginTop: 24, textAlign: 'center', color: '#888' }}>
-              <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 6 }}>
-                {user?.nome || user?.username}
-              </div>
-              <button
-                onClick={handleLogout}
-                style={{
-                  background: 'none',
-                  border: 'none',
-                  color: '#b91c1c',
-                  fontSize: 14,
-                  opacity: 0.7,
-                  cursor: 'pointer',
-                  padding: 0
-                }}
-              >
-                Sair
-              </button>
+          {isAuthenticated && user && user.role === 'admin' && (
+            <div className="navbar-digi-menu-item">
+              <Link to="/admin-usuarios" onClick={() => setMobileOpen(false)}>USUÁRIOS</Link>
             </div>
+          )}
+          {isAuthenticated && mobileOpen && (
+            null
           )}
         </nav>
         {isAuthenticated ? (

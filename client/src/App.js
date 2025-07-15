@@ -14,7 +14,8 @@ import EditarItem from './pages/EditarItem';
 import ExcluirArtigo from './pages/ExcluirArtigo';
 import ImportarExcel from './pages/ImportarExcel';
 import ImportarStockNacional from './pages/ImportarStockNacional';
-import CadastrarUsuario from './pages/CadastrarUsuario';
+import CadastroUsuario from './pages/CadastroUsuario';
+import AdminUsuarios from './pages/AdminUsuarios';
 import './App.css';
 
 function App() {
@@ -28,13 +29,13 @@ function App() {
               <Routes>
                 <Route path="/" element={<Home />} />
                 <Route path="/login" element={<Login />} />
-                <Route path="/listar" element={<ListarItens />} />
+                <Route path="/listar" element={<ProtectedRoute><ListarItens /></ProtectedRoute>} />
                 <Route path="/item/:id" element={<DetalhesItem />} />
                 <Route path="/editar/:id" element={<ProtectedRoute><EditarItem /></ProtectedRoute>} />
                 <Route 
                   path="/excluir-artigo" 
                   element={
-                    <ProtectedRoute allowedRoles={['admin', 'controller']}>
+                    <ProtectedRoute allowedRoles={['admin']}>
                       <ExcluirArtigo />
                     </ProtectedRoute>
                   } 
@@ -43,16 +44,8 @@ function App() {
                 <Route 
                   path="/cadastrar" 
                   element={
-                    <ProtectedRoute>
+                    <ProtectedRoute allowedRoles={['admin']}>
                       <CadastrarItem />
-                    </ProtectedRoute>
-                  } 
-                />
-                <Route 
-                  path="/cadastrar-usuario" 
-                  element={
-                    <ProtectedRoute>
-                      <CadastrarUsuario />
                     </ProtectedRoute>
                   } 
                 />
@@ -69,6 +62,15 @@ function App() {
                   element={
                     <ProtectedRoute allowedRoles={['admin', 'controller']}>
                       <ImportarStockNacional />
+                    </ProtectedRoute>
+                  } 
+                />
+                <Route path="/cadastro" element={<CadastroUsuario />} />
+                <Route 
+                  path="/admin-usuarios" 
+                  element={
+                    <ProtectedRoute allowedRoles={['admin']}>
+                      <AdminUsuarios />
                     </ProtectedRoute>
                   } 
                 />

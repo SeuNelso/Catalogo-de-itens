@@ -23,8 +23,7 @@ const CadastrarItem = () => {
     peso: '',
     unidadePeso: '',
     observacoes: '',
-    unidadeArmazenamento: '',
-    quantidade: '' // campo adicionado
+    unidadearmazenamento: ''
   });
 
   const handleInputChange = (e) => {
@@ -126,8 +125,7 @@ const CadastrarItem = () => {
           peso: '',
           unidadePeso: '',
           observacoes: '',
-          unidadeArmazenamento: '',
-          quantidade: ''
+          unidadearmazenamento: ''
         });
         setSelectedFiles([]);
         setEspecificacoes([]);
@@ -495,8 +493,8 @@ const CadastrarItem = () => {
                 Unidade de Armazenamento <span style={{ color: '#ef4444' }}>*</span>
               </label>
               <select
-                name="unidadeArmazenamento"
-                value={formData.unidadeArmazenamento}
+                name="unidadearmazenamento"
+                value={formData.unidadearmazenamento}
                 onChange={handleInputChange}
                 style={{
                   width: '100%',

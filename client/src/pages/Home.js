@@ -61,95 +61,49 @@ const Home = () => {
           </p>
         </div>
         <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 20 }}>
-          <Link to="/listar" className="Home-link" style={{
+          <Link to="/cadastro" className="Home-link" style={{
             background: '#fff',
-            border: '1.5px solid #0915FF',
-            color: '#0915FF',
+            border: '1.5px solid #22c55e',
+            color: '#22c55e',
             fontWeight: 700,
             borderRadius: 12,
             padding: '18px 0',
             fontSize: 18,
             textAlign: 'center',
             textDecoration: 'none',
-            boxShadow: '0 2px 8px rgba(9,21,255,0.06)',
+            boxShadow: '0 2px 8px rgba(34,197,94,0.06)',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
             gap: 10,
-            transition: 'background 0.2s, color 0.2s'
+            marginBottom: 10,
+            transition: 'background 0.2s, color 0.2s',
+            width: '100%'
           }}>
-            <Search style={{ width: 22, height: 22 }} />
-            Consultar Catálogo
+            <UserPlus style={{ width: 22, height: 22 }} />
+            Criar Conta
           </Link>
-          {isAdmin && (
-            <>
-              <Link to="/cadastrar" className="Home-link" style={{
-                background: '#0915FF',
-                color: '#fff',
-                fontWeight: 700,
-                borderRadius: 12,
-                padding: '18px 0',
-                fontSize: 18,
-                textAlign: 'center',
-                textDecoration: 'none',
-                boxShadow: '0 2px 8px rgba(9,21,255,0.10)',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: 10,
-                transition: 'background 0.2s, color 0.2s'
-              }}>
-                <Plus style={{ width: 22, height: 22 }} />
-                Cadastrar Novo Item
-              </Link>
-              <button
-                onClick={handleExportJson}
-                style={{
-                  background: '#22c55e',
-                  color: '#fff',
-                  fontWeight: 700,
-                  borderRadius: 12,
-                  padding: '18px 0',
-                  fontSize: 18,
-                  textAlign: 'center',
-                  border: 'none',
-                  boxShadow: '0 2px 8px rgba(34,197,94,0.10)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: 10,
-                  marginTop: 10,
-                  cursor: 'pointer',
-                  transition: 'background 0.2s, color 0.2s',
-                  width: '100%'
-                }}
-              >
-                <Download style={{ width: 22, height: 22 }} />
-                Exportar Dados (JSON)
-              </button>
-              <Link to="/cadastrar-usuario" className="Home-link" style={{
-                background: '#fff',
-                border: '1.5px solid #22c55e',
-                color: '#22c55e',
-                fontWeight: 700,
-                borderRadius: 12,
-                padding: '18px 0',
-                fontSize: 18,
-                textAlign: 'center',
-                textDecoration: 'none',
-                boxShadow: '0 2px 8px rgba(34,197,94,0.06)',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: 10,
-                marginTop: 10,
-                transition: 'background 0.2s, color 0.2s',
-                width: '100%'
-              }}>
-                <UserPlus style={{ width: 22, height: 22 }} />
-                Cadastrar Usuário
-              </Link>
-            </>
+          {isAuthenticated && (
+            <Link to="/listar" className="Home-link" style={{
+              background: '#fff',
+              border: '1.5px solid #0915FF',
+              color: '#0915FF',
+              fontWeight: 700,
+              borderRadius: 12,
+              padding: '18px 0',
+              fontSize: 18,
+              textAlign: 'center',
+              textDecoration: 'none',
+              boxShadow: '0 2px 8px rgba(9,21,255,0.06)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 10,
+              transition: 'background 0.2s, color 0.2s'
+            }}>
+              <Search style={{ width: 22, height: 22 }} />
+              Consultar Catálogo
+            </Link>
           )}
           <Link to="/login" className="Home-link" style={{
             background: '#fff',
