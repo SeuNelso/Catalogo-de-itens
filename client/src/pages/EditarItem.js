@@ -545,6 +545,43 @@ const EditarItem = () => {
                   {(selectedFiles.length + imagensExistentes.length)}/5 imagens
                 </div>
               </div>
+              {/* Imagens já vinculadas ao item */}
+              {imagensExistentes.length > 0 && (
+                <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', margin: '10px 0' }}>
+                  {imagensExistentes.map((img, idx) => (
+                    <div key={img.id || idx} style={{ position: 'relative', width: 80, height: 80 }}>
+                      <img
+                        src={img.caminho || img}
+                        alt={`imagem-${idx}`}
+                        style={{ width: 80, height: 80, objectFit: 'cover', borderRadius: 8, border: '1.5px solid #d1d5db' }}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => removeImagemExistente(img.id)}
+                        style={{
+                          position: 'absolute',
+                          top: -8,
+                          right: -8,
+                          background: '#ef4444',
+                          color: '#fff',
+                          border: 'none',
+                          borderRadius: '50%',
+                          width: 22,
+                          height: 22,
+                          cursor: 'pointer',
+                          fontWeight: 700,
+                          fontSize: 14,
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          boxShadow: '0 2px 8px rgba(239,68,68,0.10)'
+                        }}
+                        aria-label="Remover imagem"
+                      >×</button>
+                    </div>
+                  ))}
+                </div>
+              )}
               <div style={{ 
                 border: '2px dashed #d1d5db', 
                 borderRadius: 12, 
@@ -586,41 +623,6 @@ const EditarItem = () => {
                   </p>
                 </label>
               </div>
-              {/* Imagens já existentes */}
-              {imagensExistentes.length > 0 && (
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))', gap: 16, marginBottom: 12 }}>
-                  {imagensExistentes.map((img, index) => (
-                    <div key={img.id || index} style={{ position: 'relative' }}>
-                      <img
-                        src={img.caminho || img}
-                        alt={`Imagem ${index + 1}`}
-                        style={{ width: '100%', height: 120, objectFit: 'cover', borderRadius: 8 }}
-                      />
-                      <button
-                        type="button"
-                        onClick={() => removeImagemExistente(img.id)}
-                        style={{
-                          position: 'absolute',
-                          top: 8,
-                          right: 8,
-                          background: '#ef4444',
-                          color: '#fff',
-                          border: 'none',
-                          borderRadius: '50%',
-                          width: 24,
-                          height: 24,
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          cursor: 'pointer'
-                        }}
-                      >
-                        <X style={{ width: 14, height: 14 }} />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
               {/* Novas imagens selecionadas */}
               {selectedFiles.length > 0 && (
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))', gap: 16 }}>

@@ -144,13 +144,18 @@
 
 @media (max-width: 700px) {
   .navbar-digi-content {
-    flex-wrap: wrap;
-    height: auto;
-    padding: 0 4px;
+    flex-wrap: nowrap;
+    height: 56px;
+    padding: 0 16px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
   }
   .navbar-digi-logo {
     font-size: 1.3rem;
     margin-right: 10px;
+    flex-shrink: 0;
+    padding-left: 4px;
   }
   .navbar-digi-menu {
     position: absolute;
@@ -164,6 +169,9 @@
     padding: 8px 0;
     display: none;
     z-index: 1001;
+    border-bottom-left-radius: 0;
+    border-bottom-right-radius: 0;
+    box-shadow: none;
   }
   .navbar-digi-menu.open {
     display: flex;
@@ -173,13 +181,22 @@
     padding: 12px 24px;
     height: auto;
     border-radius: 0;
+    text-align: inherit;
+    font-size: 1rem;
   }
   .navbar-digi-logout {
     margin: 8px 0 8px auto;
     display: block;
+    width: auto;
+    font-size: 1rem;
+    border-radius: 4px;
+    box-shadow: 0 2px 8px rgba(9,21,255,0.04);
   }
   .navbar-digi-mobile-toggle {
-    display: flex;
+    display: flex !important;
+    margin-left: 8px;
+    margin-right: 4px;
+    align-self: flex-start;
   }
 }
 

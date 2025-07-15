@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { ArrowLeft, Package, Calendar, MapPin, Tag, Hash } from 'react-feather';
 
@@ -7,6 +7,49 @@ const DetalhesItem = () => {
   const [item, setItem] = useState(null);
   const [loading, setLoading] = useState(true);
   const [zoomImage, setZoomImage] = useState(null);
+  const imagensScrollRef = useRef(null);
+  // Variáveis de controle do drag
+  const isDownRef = useRef(false);
+  const startXRef = useRef(0);
+  const scrollLeftRef = useRef(0);
+
+  // Handlers para mouse
+  const handleMouseDown = (e) => {
+    isDownRef.current = true;
+    imagensScrollRef.current.classList.add('active');
+    startXRef.current = e.pageX - imagensScrollRef.current.offsetLeft;
+    scrollLeftRef.current = imagensScrollRef.current.scrollLeft;
+  };
+  const handleMouseLeave = () => {
+    isDownRef.current = false;
+    imagensScrollRef.current.classList.remove('active');
+  };
+  const handleMouseUp = () => {
+    isDownRef.current = false;
+    imagensScrollRef.current.classList.remove('active');
+  };
+  const handleMouseMove = (e) => {
+    if (!isDownRef.current) return;
+    e.preventDefault();
+    const x = e.pageX - imagensScrollRef.current.offsetLeft;
+    const walk = (x - startXRef.current) * 2;
+    imagensScrollRef.current.scrollLeft = scrollLeftRef.current - walk;
+  };
+  // Handlers para touch
+  const handleTouchStart = (e) => {
+    isDownRef.current = true;
+    startXRef.current = e.touches[0].pageX - imagensScrollRef.current.offsetLeft;
+    scrollLeftRef.current = imagensScrollRef.current.scrollLeft;
+  };
+  const handleTouchEnd = () => {
+    isDownRef.current = false;
+  };
+  const handleTouchMove = (e) => {
+    if (!isDownRef.current) return;
+    const x = e.touches[0].pageX - imagensScrollRef.current.offsetLeft;
+    const walk = (x - startXRef.current) * 2;
+    imagensScrollRef.current.scrollLeft = scrollLeftRef.current - walk;
+  };
 
   const fetchItem = useCallback(async () => {
     try {
@@ -98,25 +141,94 @@ const DetalhesItem = () => {
               <h2 className="text-2xl font-bold text-gray-900 mb-4">Imagens</h2>
               
               {item.imagens && item.imagens.length > 0 ? (
-                <div className="grid grid-cols-2 gap-4">
-                  {item.imagens.map((imagem, index) => (
-                    <div
-                      key={index}
-                      className="relative group cursor-pointer focus:outline-none focus:ring-2 focus:ring-primary"
-                      onClick={() => setZoomImage(imagem)}
-                      tabIndex={0}
-                      aria-label={`Ampliar imagem ${index + 1} de ${item.nome}`}
-                      onKeyDown={e => (e.key === 'Enter' || e.key === ' ') && setZoomImage(imagem)}
-                    >
-                      <img
-                        src={imagem}
-                        alt={`Foto ${index + 1} do item ${item.nome}`}
-                        className="w-full h-24 object-cover rounded-lg group-hover:scale-105 transition-transform"
-                        style={{ maxHeight: 100 }}
-                      />
-                    </div>
-                  ))}
-                </div>
+                <>
+                  {/* Grid para desktop */}
+                  <div
+                    className="imagens-grid-desktop"
+                    style={{
+                      display: 'none',
+                      gap: 18,
+                      justifyItems: 'center',
+                      alignItems: 'center'
+                    }}
+                  >
+                    {item.imagens.map((imagem, index) => (
+                      <div
+                        key={index}
+                        style={{
+                          width: 120,
+                          height: 120,
+                          overflow: 'hidden',
+                          borderRadius: 10,
+                          background: '#f3f4f6',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center'
+                        }}
+                        onClick={() => setZoomImage(imagem)}
+                      >
+                        <img
+                          src={imagem}
+                          alt={`Foto ${index + 1} do item ${item.nome}`}
+                          style={{
+                            width: '100%',
+                            height: '100%',
+                            objectFit: 'cover',
+                            cursor: 'pointer'
+                          }}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                  {/* Carrossel para mobile */}
+                  <div
+                    className="imagens-scroll-mobile"
+                    style={{
+                      display: 'flex',
+                      overflowX: 'auto',
+                      gap: 12,
+                      paddingBottom: 8
+                    }}
+                    ref={imagensScrollRef}
+                    onMouseDown={handleMouseDown}
+                    onMouseLeave={handleMouseLeave}
+                    onMouseUp={handleMouseUp}
+                    onMouseMove={handleMouseMove}
+                    onTouchStart={handleTouchStart}
+                    onTouchEnd={handleTouchEnd}
+                    onTouchMove={handleTouchMove}
+                  >
+                    {item.imagens.map((imagem, index) => (
+                      <div
+                        key={index}
+                        style={{
+                          minWidth: 120,
+                          minHeight: 120,
+                          maxWidth: 120,
+                          maxHeight: 120,
+                          overflow: 'hidden',
+                          borderRadius: 10,
+                          background: '#f3f4f6',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center'
+                        }}
+                        onClick={() => setZoomImage(imagem)}
+                      >
+                        <img
+                          src={imagem}
+                          alt={`Foto ${index + 1} do item ${item.nome}`}
+                          style={{
+                            width: '100%',
+                            height: '100%',
+                            objectFit: 'cover',
+                            cursor: 'pointer'
+                          }}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </>
               ) : (
                 <div className="text-center py-12">
                   <Package className="w-16 h-16 text-gray-300 mx-auto mb-4" />
@@ -271,13 +383,52 @@ const DetalhesItem = () => {
       {/* Modal de Zoom */}
       {zoomImage && (
         <div
-          className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-50"
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            width: '100vw',
+            height: '100vh',
+            background: 'rgba(0,0,0,0.7)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000
+          }}
           onClick={() => setZoomImage(null)}
-          tabIndex={0}
-          aria-label="Fechar imagem ampliada"
-          onKeyDown={e => (e.key === 'Escape' || e.key === 'Enter' || e.key === ' ') && setZoomImage(null)}
         >
-          <img src={zoomImage} alt="Imagem ampliada do item" className="max-w-full max-h-[80vh] rounded-lg shadow-lg border-4 border-white" />
+          <img
+            src={zoomImage}
+            alt="Zoom"
+            style={{
+              maxWidth: '90vw',
+              maxHeight: '90vh',
+              borderRadius: 12,
+              boxShadow: '0 4px 32px rgba(0,0,0,0.25)',
+              background: '#fff'
+            }}
+            onClick={e => e.stopPropagation()}
+          />
+          <button
+            onClick={() => setZoomImage(null)}
+            style={{
+              position: 'fixed',
+              top: 32,
+              right: 32,
+              background: 'rgba(0,0,0,0.5)',
+              color: '#fff',
+              border: 'none',
+              borderRadius: '50%',
+              width: 40,
+              height: 40,
+              fontSize: 24,
+              cursor: 'pointer',
+              zIndex: 1001
+            }}
+            aria-label="Fechar"
+          >
+            &times;
+          </button>
         </div>
       )}
     </div>

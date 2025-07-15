@@ -1,0 +1,18 @@
+.imagens-grid-desktop { display: none; }
+.imagens-scroll-mobile { display: flex; }
+
+@media (min-width: 700px) {
+  .imagens-scroll-mobile { display: none !important; }
+  .imagens-grid-desktop { display: grid !important; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); }
+}
+@media (max-width: 699px) {
+  .imagens-grid-desktop { display: none !important; }
+  .imagens-scroll-mobile { display: flex !important; }
+}
+
+.imagens-scroll-mobile {
+  cursor: grab;
+}
+.imagens-scroll-mobile.active {
+  cursor: grabbing;
+} 

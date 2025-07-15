@@ -30,8 +30,11 @@ const Navbar = () => {
               className="navbar-digi-menu-item"
               tabIndex={0}
               role="button"
-              onClick={() => navigate(item.path)}
-              onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') navigate(item.path); }}
+              onClick={() => {
+                navigate(item.path);
+                setMobileOpen(false);
+              }}
+              onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { navigate(item.path); setMobileOpen(false); } }}
               style={{ cursor: 'pointer' }}
             >
               <span style={{ width: '100%', textAlign: 'center' }}>{item.label}</span>
@@ -39,17 +42,17 @@ const Navbar = () => {
           ))}
           {isAuthenticated && (
             <div className="navbar-digi-menu-item">
-              <Link to="/cadastrar">CRIAR ARTIGO</Link>
+              <Link to="/cadastrar" onClick={() => setMobileOpen(false)}>CRIAR ARTIGO</Link>
             </div>
           )}
           {isAuthenticated && user && (user.role === 'admin' || user.role === 'controller') && (
             <div className="navbar-digi-menu-item">
-              <Link to="/excluir-artigo">EXCLUIR ARTIGO</Link>
+              <Link to="/excluir-artigo" onClick={() => setMobileOpen(false)}>EXCLUIR ARTIGO</Link>
             </div>
           )}
           {isAuthenticated && user && user.role === 'admin' && (
             <div className="navbar-digi-menu-item">
-              <Link to="/importar-excel">IMPORTAR EXCEL</Link>
+              <Link to="/importar-excel" onClick={() => setMobileOpen(false)}>IMPORTAR EXCEL</Link>
             </div>
           )}
           {isAuthenticated && user && (user.role === 'admin' || user.role === 'controller') && (
@@ -57,11 +60,35 @@ const Navbar = () => {
               className="navbar-digi-menu-item"
               tabIndex={0}
               role="button"
-              onClick={() => navigate('/importar-stock-nacional')}
-              onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') navigate('/importar-stock-nacional'); }}
+              onClick={() => {
+                navigate('/importar-stock-nacional');
+                setMobileOpen(false);
+              }}
+              onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { navigate('/importar-stock-nacional'); setMobileOpen(false); } }}
               style={{ cursor: 'pointer' }}
             >
               <span style={{ width: '100%', textAlign: 'center' }}>IMPORTAR STOCK NACIONAL</span>
+            </div>
+          )}
+          {isAuthenticated && mobileOpen && (
+            <div style={{ marginTop: 24, textAlign: 'center', color: '#888' }}>
+              <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 6 }}>
+                {user?.nome || user?.username}
+              </div>
+              <button
+                onClick={handleLogout}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  color: '#b91c1c',
+                  fontSize: 14,
+                  opacity: 0.7,
+                  cursor: 'pointer',
+                  padding: 0
+                }}
+              >
+                Sair
+              </button>
             </div>
           )}
         </nav>

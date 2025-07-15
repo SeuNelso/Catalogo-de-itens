@@ -49,7 +49,7 @@ const Login = () => {
       if (result.success) {
         setToast({ type: 'success', message: 'Login realizado com sucesso! Redirecionando...' });
         setTimeout(() => {
-          navigate('/cadastrar');
+          navigate('/');
         }, 1500);
       } else {
         setFieldError(result.message || 'Usuário ou senha inválidos');

@@ -542,46 +542,55 @@ const CadastrarItem = () => {
                 </div>
               </div>
               
-              <div style={{ 
-                border: '2px dashed #d1d5db', 
-                borderRadius: 12, 
-                padding: 24, 
-                textAlign: 'center', 
-                marginBottom: 20,
-                opacity: selectedFiles.length >= 5 ? 0.5 : 1,
-                pointerEvents: selectedFiles.length >= 5 ? 'none' : 'auto'
-              }}>
+              {/* Upload de imagens */}
+              <div>
+                <label style={{ display: 'block', color: '#374151', fontWeight: 600, marginBottom: 6, fontSize: 14 }}>
+                  Imagens (máx. 5)
+                </label>
                 <input
                   type="file"
-                  multiple
                   accept="image/*"
+                  multiple
                   onChange={handleFileSelect}
-                  style={{ display: 'none' }}
-                  id="image-upload"
-                  disabled={selectedFiles.length >= 5}
+                  style={{ marginBottom: 8 }}
                 />
-                <label htmlFor="image-upload" style={{ cursor: selectedFiles.length >= 5 ? 'not-allowed' : 'pointer' }}>
-                  <Upload style={{ 
-                    width: 48, 
-                    height: 48, 
-                    color: selectedFiles.length >= 5 ? '#d1d5db' : '#9ca3af', 
-                    margin: '0 auto 16px auto' 
-                  }} />
-                  <p style={{ 
-                    fontSize: 16, 
-                    fontWeight: 600, 
-                    color: selectedFiles.length >= 5 ? '#9ca3af' : '#374151', 
-                    marginBottom: 8 
-                  }}>
-                    {selectedFiles.length >= 5 ? 'Limite de imagens atingido' : 'Clique para selecionar imagens'}
-                  </p>
-                  <p style={{ color: '#6b7280', fontSize: 14 }}>
-                    {selectedFiles.length >= 5 
-                      ? `Máximo de 5 imagens permitidas (${selectedFiles.length}/5)`
-                      : `Arraste e solte ou clique para selecionar arquivos (${selectedFiles.length}/5)`
-                    }
-                  </p>
-                </label>
+                {/* Preview das imagens selecionadas */}
+                {selectedFiles.length > 0 && (
+                  <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', margin: '10px 0' }}>
+                    {selectedFiles.map((file, idx) => (
+                      <div key={idx} style={{ position: 'relative', width: 80, height: 80 }}>
+                        <img
+                          src={URL.createObjectURL(file)}
+                          alt={`preview-${idx}`}
+                          style={{ width: 80, height: 80, objectFit: 'cover', borderRadius: 8, border: '1.5px solid #d1d5db' }}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => removeFile(idx)}
+                          style={{
+                            position: 'absolute',
+                            top: -8,
+                            right: -8,
+                            background: '#ef4444',
+                            color: '#fff',
+                            border: 'none',
+                            borderRadius: '50%',
+                            width: 22,
+                            height: 22,
+                            cursor: 'pointer',
+                            fontWeight: 700,
+                            fontSize: 14,
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            boxShadow: '0 2px 8px rgba(239,68,68,0.10)'
+                          }}
+                          aria-label="Remover imagem"
+                        >×</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
 
               {selectedFiles.length > 0 && (

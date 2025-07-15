@@ -66,6 +66,7 @@ const cors = require('cors');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+const sharp = require('sharp');
 // Remover ou comentar a linha abaixo após migração completa:
 // const sqlite3 = require('sqlite3').verbose();
 // const db = new sqlite3.Database('catalogo.db');
@@ -79,7 +80,10 @@ const pool = new Pool({
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const XLSX = require('xlsx');
-const { uploadToGoogleDrive, getPublicUrl, deleteFromGoogleDrive } = require('./googleDriveConfig');
+const { uploadToS3 } = require('./s3Upload');
+const vision = require('@google-cloud/vision');
+const { detectLabelsFromS3 } = require('./rekognition');
+const AWS = require('aws-sdk');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -356,7 +360,11 @@ app.get('/api/itens/:id', (req, res) => {
           }
           res.json({
             ...result.rows[0],
-            imagens: imagensResult.rows,
+            imagens: imagensResult.rows.map(img =>
+              img.caminho.startsWith('http')
+                ? img.caminho
+                : `https://${process.env.AWS_S3_BUCKET}.s3.${process.env.AWS_REGION}.amazonaws.com/${img.caminho}`
+            ),
             especificacoes: especificacoesResult.rows,
             armazens: armazensResult.rows || []
           });
@@ -442,38 +450,34 @@ app.post('/api/itens', authenticateToken, upload.array('imagens', 10), (req, res
 
         const itemId = result.rows[0].id;
 
-        // Salvar imagens no Google Drive
+        // Salvar imagens no AWS S3
         if (req.files && req.files.length > 0) {
           const imagensPromises = req.files.map(async (file) => {
             try {
-              // Upload para Google Drive
-              const driveResult = await uploadToGoogleDrive(
-                file.path, 
-                `${itemId}_${Date.now()}_${file.originalname}`, 
+              // Upload para AWS S3
+              const s3Result = await uploadToS3(
+                file.path,
+                `${itemId}_${Date.now()}_${file.originalname}`,
                 file.mimetype
               );
-              
-              // Tornar arquivo público e obter URL
-              const publicUrl = await getPublicUrl(driveResult.fileId);
-              
               // Salvar informações no banco
               return new Promise((resolve, reject) => {
-                pool.query(`
-                  INSERT INTO imagens_itens (item_id, nome_arquivo, caminho, tipo)
-                  VALUES ($1, $2, $3, $4)
-                `, [itemId, file.originalname, publicUrl, file.mimetype], (err) => {
-                  if (err) reject(err);
-                  else {
-                    // Remover arquivo local após upload
-                    fs.unlink(file.path, (unlinkErr) => {
-                      if (unlinkErr) console.error('Erro ao remover arquivo local:', unlinkErr);
-                    });
-                    resolve();
+                pool.query(
+                  `INSERT INTO imagens_itens (item_id, nome_arquivo, caminho, tipo)
+                   VALUES ($1, $2, $3, $4)`,
+                  [itemId, file.originalname, s3Result.url, file.mimetype],
+                  (err) => {
+                    if (err) reject(err);
+                    else {
+                      // Remover arquivo local após upload
+                      fs.unlink(file.path, (unlinkErr) => {});
+                      resolve();
+                    }
                   }
-                });
+                );
               });
             } catch (error) {
-              console.error('Erro no upload para Google Drive:', error);
+              console.error('Erro no upload para AWS S3:', error);
               throw error;
             }
           });
@@ -526,64 +530,94 @@ app.post('/api/itens', authenticateToken, upload.array('imagens', 10), (req, res
 });
 
 // Buscar itens por imagem (reconhecimento) - PÚBLICO
-app.post('/api/reconhecer', upload.single('imagem'), (req, res) => {
+app.post('/api/reconhecer', upload.single('imagem'), async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: 'Nenhuma imagem enviada' });
   }
 
-  // Algoritmo de reconhecimento por imagem
-  // 1. Extrair características da imagem enviada
-  // 2. Comparar com imagens existentes no banco
-  // 3. Retornar itens mais similares
-  
-  // Por enquanto, vamos implementar uma busca inteligente
-  // que analisa características básicas da imagem
-  const imageAnalysis = {
-    filename: req.file.filename,
-    size: req.file.size,
-    mimetype: req.file.mimetype,
-    // Aqui você pode adicionar análise de cores, formas, etc.
-  };
+  // Função para calcular cor média de uma imagem
+  async function getAverageColorFromFile(filePath) {
+    try {
+      const { data, info } = await sharp(filePath).resize(32, 32).raw().toBuffer({ resolveWithObject: true });
+      let r = 0, g = 0, b = 0;
+      for (let i = 0; i < data.length; i += info.channels) {
+        r += data[i];
+        g += data[i + 1];
+        b += data[i + 2];
+      }
+      const pixels = data.length / info.channels;
+      return [Math.round(r / pixels), Math.round(g / pixels), Math.round(b / pixels)];
+    } catch (err) {
+      return [0, 0, 0];
+    }
+  }
 
-  // Buscar itens com base em características similares
-  // Por enquanto, retornamos todos os itens ordenados por relevância
-  const query = `
-    SELECT i.*, 
-           STRING_AGG(DISTINCT img.caminho, ',') as imagens,
-           COUNT(DISTINCT img.id) as total_imagens
+  // Calcular cor média da imagem enviada
+  const corMediaEnviada = await getAverageColorFromFile(req.file.path);
+
+  // Buscar itens e imagens do banco
+  pool.query(`
+    SELECT i.*, img.id as img_id, img.caminho as img_caminho
     FROM itens i
     LEFT JOIN imagens_itens img ON i.id = img.item_id
-    GROUP BY i.id
-    ORDER BY 
-      CASE 
-        WHEN i.categoria IN ('Eletrônicos', 'Tecnologia') THEN 1
-        WHEN i.categoria IN ('Ferramentas', 'Equipamentos') THEN 2
-        ELSE 3
-      END,
-      i.data_cadastro DESC
-    LIMIT 15
-  `;
-
-  pool.query(query, [], (err, result) => {
+  `, async (err, result) => {
     if (err) {
+      fs.unlinkSync(req.file.path);
       return res.status(500).json({ error: err.message });
     }
-    
-    const itens = result.rows.map(row => ({
-      ...row,
-      imagens: row.imagens ? row.imagens.split(',') : [],
-      relevancia: Math.random() * 100 // Simulação de relevância
-    }));
-
-    // Ordenar por relevância simulada
-    itens.sort((a, b) => b.relevancia - a.relevancia);
-    
-    res.json({
-      message: 'Análise de imagem concluída',
-      resultados: itens.slice(0, 10), // Top 10 resultados
-      imagem_analisada: req.file.filename,
-      total_encontrados: itens.length,
-      analise: imageAnalysis
+    // Para cada imagem, calcular cor média
+    const itensMap = {};
+    const corMediaBanco = [];
+    for (const row of result.rows) {
+      if (!row.img_caminho) continue;
+      try {
+        // Baixar imagem do Google Drive se for URL
+        let localPath = row.img_caminho;
+        if (row.img_caminho.startsWith('http')) {
+          // Baixar temporariamente
+          const axios = require('axios');
+          const tempPath = `uploads/temp_${row.img_id}_${Date.now()}.jpg`;
+          const response = await axios({ url: row.img_caminho, responseType: 'arraybuffer' });
+          fs.writeFileSync(tempPath, response.data);
+          localPath = tempPath;
+        }
+        const cor = await getAverageColorFromFile(localPath);
+        corMediaBanco.push({ itemId: row.id, imgId: row.img_id, caminho: row.img_caminho, cor });
+        if (localPath !== row.img_caminho && fs.existsSync(localPath)) fs.unlinkSync(localPath);
+      } catch {}
+    }
+    // Calcular distância de cor
+    function colorDistance(c1, c2) {
+      return Math.sqrt((c1[0]-c2[0])**2 + (c1[1]-c2[1])**2 + (c1[2]-c2[2])**2);
+    }
+    // Para cada item, pegar a menor distância de cor entre as imagens
+    const itemScores = {};
+    for (const img of corMediaBanco) {
+      const dist = colorDistance(corMediaEnviada, img.cor);
+      if (!itemScores[img.itemId] || dist < itemScores[img.itemId].dist) {
+        itemScores[img.itemId] = { dist, caminho: img.caminho };
+      }
+    }
+    // Buscar dados dos itens mais próximos
+    const topItens = Object.entries(itemScores)
+      .sort((a, b) => a[1].dist - b[1].dist)
+      .slice(0, 10)
+      .map(([itemId, data]) => ({ itemId: Number(itemId), distancia: data.dist, imagem: data.caminho }));
+    // Buscar detalhes dos itens
+    const ids = topItens.map(i => i.itemId);
+    if (ids.length === 0) {
+      fs.unlinkSync(req.file.path);
+      return res.json({ resultados: [], analise: { corMediaEnviada } });
+    }
+    pool.query(`SELECT * FROM itens WHERE id = ANY($1)`, [ids], (err2, itensResult) => {
+      fs.unlinkSync(req.file.path);
+      if (err2) return res.status(500).json({ error: err2.message });
+      // Juntar info
+      const itensDetalhados = topItens.map(ti => {
+        const item = itensResult.rows.find(i => i.id === ti.itemId);
+        return { ...item, distancia: ti.distancia, imagemMaisProxima: ti.imagem };
+      });
+      res.json({ resultados: itensDetalhados, analise: { corMediaEnviada } });
     });
   });
 });
@@ -704,40 +738,57 @@ app.put('/api/itens/:id', authenticateToken, upload.array('imagens', 10), (req, 
   });
 });
 
-// Deletar item (protegido)
-app.delete('/api/itens/:id', authenticateToken, (req, res) => {
-  if (req.user.role !== 'admin') {
-    return res.status(403).json({ error: 'Apenas administradores podem excluir itens.' });
-  }
-  const itemId = req.params.id;
-
-  // Primeiro, deletar imagens do sistema de arquivos
-  pool.query('SELECT caminho FROM imagens_itens WHERE item_id = $1', [itemId], (err, imagensResult) => {
-    if (err) {
-      return res.status(500).json({ error: err.message });
-    }
-
-    // Deletar arquivos físicos
-    imagensResult.rows.forEach(img => {
-      const filePath = path.join(__dirname, '..', 'uploads', img.caminho);
-      if (fs.existsSync(filePath)) {
-        fs.unlinkSync(filePath);
-      }
-    });
-
-    // Deletar do banco de dados
-    pool.query('DELETE FROM itens WHERE id = $1', [itemId], (err) => {
-      if (err) {
-        return res.status(500).json({ error: err.message });
-      }
-      
-      if (result.rowCount === 0) {
-        return res.status(404).json({ error: 'Item não encontrado' });
-      }
-      
-      res.json({ message: 'Item deletado com sucesso' });
+// Função para deletar imagem do S3
+async function deleteFromS3(key) {
+  const s3 = new AWS.S3({
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+    region: process.env.AWS_REGION
+  });
+  return new Promise((resolve, reject) => {
+    s3.deleteObject({
+      Bucket: process.env.AWS_S3_BUCKET,
+      Key: key
+    }, (err, data) => {
+      if (err) reject(err);
+      else resolve(data);
     });
   });
+}
+
+// Excluir item e imagens do S3
+app.delete('/api/itens/:id', authenticateToken, async (req, res) => {
+  const itemId = req.params.id;
+  const userRole = req.user && req.user.role;
+  if (userRole !== 'admin' && userRole !== 'controller') {
+    return res.status(403).json({ error: 'Acesso restrito a administradores ou controllers.' });
+  }
+  try {
+    // Buscar imagens associadas
+    const { rows: imagens } = await pool.query('SELECT caminho FROM imagens_itens WHERE item_id = $1', [itemId]);
+    // Excluir imagens do S3
+    for (const img of imagens) {
+      let key = img.caminho;
+      // Se for URL completa, extrair apenas o nome do arquivo
+      if (key.startsWith('http')) {
+        const url = new URL(key);
+        key = decodeURIComponent(url.pathname.replace(/^\//, ''));
+      }
+      await deleteFromS3(key);
+    }
+    // Excluir registros do banco
+    await pool.query('DELETE FROM imagens_itens WHERE item_id = $1', [itemId]);
+    await pool.query('DELETE FROM especificacoes WHERE item_id = $1', [itemId]);
+    await pool.query('DELETE FROM armazens_item WHERE item_id = $1', [itemId]);
+    const { rowCount } = await pool.query('DELETE FROM itens WHERE id = $1', [itemId]);
+    if (rowCount === 0) {
+      return res.status(404).json({ error: 'Item não encontrado' });
+    }
+    res.json({ message: 'Item e imagens excluídos com sucesso.' });
+  } catch (error) {
+    console.error('Erro ao excluir item/imagens:', error);
+    res.status(500).json({ error: 'Erro ao excluir item ou imagens.' });
+  }
 });
 
 // Deletar TODOS os itens (protegido, apenas admin)
@@ -864,17 +915,13 @@ app.post('/api/test-upload', upload.single('imagem'), async (req, res) => {
     console.log('Tipo:', req.file.mimetype);
 
     // Upload para Google Drive
-    const driveResult = await uploadToGoogleDrive(
+    const driveResult = await uploadToS3(
       req.file.path,
       `test_${Date.now()}_${req.file.originalname}`,
       req.file.mimetype
     );
 
     console.log('Upload bem-sucedido:', driveResult);
-
-    // Tornar arquivo público
-    const publicUrl = await getPublicUrl(driveResult.fileId);
-    console.log('URL pública:', publicUrl);
 
     // Remover arquivo local
     fs.unlink(req.file.path, (err) => {
@@ -883,9 +930,9 @@ app.post('/api/test-upload', upload.single('imagem'), async (req, res) => {
 
     res.json({
       message: 'Teste de upload bem-sucedido!',
-      fileId: driveResult.fileId,
-      publicUrl: publicUrl,
-      webViewLink: driveResult.webViewLink
+      fileId: driveResult.url, // Assuming the S3 URL is the fileId for this test
+      publicUrl: driveResult.url,
+      webViewLink: null // No direct webViewLink for S3 URL
     });
 
   } catch (error) {
@@ -967,6 +1014,108 @@ app.post('/api/usuarios', authenticateToken, async (req, res) => {
     res.status(201).json({ message: 'Usuário cadastrado com sucesso.' });
   } catch (error) {
     res.status(500).json({ error: 'Erro ao cadastrar usuário.', details: error.message });
+  }
+});
+
+// Gerenciar fotos de reconhecimento (apenas admin)
+const fotoReconhecimentoUpload = multer({ dest: 'uploads/' });
+
+// Upload de foto de reconhecimento
+app.post('/api/fotos-reconhecimento', authenticateToken, fotoReconhecimentoUpload.single('foto'), async (req, res) => {
+  if (!req.user || req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Apenas administradores podem enviar fotos.' });
+  }
+  if (!req.file) {
+    return res.status(400).json({ error: 'Arquivo não enviado.' });
+  }
+  try {
+    const { nome, descricao } = req.body;
+    // Upload para Google Drive
+    const driveResult = await uploadToS3(
+      req.file.path,
+      `reconhecimento_${Date.now()}_${req.file.originalname}`,
+      req.file.mimetype
+    );
+    // Salvar no banco
+    await pool.query(
+      'INSERT INTO fotos_reconhecimento (nome, descricao, caminho) VALUES ($1, $2, $3)',
+      [nome, descricao, driveResult.url]
+    );
+    // Remover arquivo local
+    fs.unlink(req.file.path, () => {});
+    res.status(201).json({ message: 'Foto enviada com sucesso.' });
+  } catch (error) {
+    res.status(500).json({ error: 'Erro ao enviar foto.', details: error.message });
+  }
+});
+
+// Listar fotos de reconhecimento
+app.get('/api/fotos-reconhecimento', authenticateToken, async (req, res) => {
+  if (!req.user || req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Apenas administradores podem listar fotos.' });
+  }
+  try {
+    const result = await pool.query('SELECT * FROM fotos_reconhecimento ORDER BY data_upload DESC');
+    res.json(result.rows);
+  } catch (error) {
+    res.status(500).json({ error: 'Erro ao listar fotos.', details: error.message });
+  }
+});
+
+// Deletar foto de reconhecimento
+app.delete('/api/fotos-reconhecimento/:id', authenticateToken, async (req, res) => {
+  if (!req.user || req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Apenas administradores podem deletar fotos.' });
+  }
+  const id = req.params.id;
+  try {
+    // Buscar caminho para possível remoção do arquivo do Google Drive (opcional)
+    const result = await pool.query('SELECT caminho FROM fotos_reconhecimento WHERE id = $1', [id]);
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Foto não encontrada.' });
+    }
+    // Opcional: deletar do Google Drive usando deleteFromGoogleDrive se salvar o fileId
+    await pool.query('DELETE FROM fotos_reconhecimento WHERE id = $1', [id]);
+    res.json({ message: 'Foto deletada com sucesso.' });
+  } catch (error) {
+    res.status(500).json({ error: 'Erro ao deletar foto.', details: error.message });
+  }
+});
+
+// Endpoint para upload e reconhecimento de imagem
+app.post('/vision', upload.single('imagem'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'Nenhuma imagem enviada.' });
+    }
+    const filePath = req.file.path;
+    const visionClient = new vision.ImageAnnotatorClient();
+    const [result] = await visionClient.labelDetection(filePath);
+    const labels = result.labelAnnotations.map(label => label.description);
+    res.json({ labels });
+  } catch (error) {
+    console.error('Erro no Vision:', error);
+    res.status(500).json({ error: 'Erro ao processar a imagem.' });
+  }
+});
+
+// Endpoint protegido para análise de imagem no S3 com Rekognition
+app.post('/api/rekognition-labels', authenticateToken, async (req, res) => {
+  const { key } = req.body;
+  const userRole = req.user && req.user.role;
+  if (!key) {
+    return res.status(400).json({ error: 'O campo key é obrigatório.' });
+  }
+  if (userRole !== 'admin' && userRole !== 'controller') {
+    return res.status(403).json({ error: 'Acesso restrito a administradores ou controllers.' });
+  }
+  try {
+    const bucket = process.env.AWS_S3_BUCKET;
+    const labels = await detectLabelsFromS3(bucket, key);
+    res.json({ labels });
+  } catch (error) {
+    console.error('Erro no Rekognition:', error);
+    res.status(500).json({ error: 'Erro ao analisar imagem no Rekognition.' });
   }
 });
 
