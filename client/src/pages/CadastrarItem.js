@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { Upload, X, Plus, Save, ArrowLeft, Package, FileText } from 'react-feather';
+import { X, Plus, Save, ArrowLeft, Package, FileText } from 'react-feather';
 import Toast from '../components/Toast';
 
 const CadastrarItem = () => {
