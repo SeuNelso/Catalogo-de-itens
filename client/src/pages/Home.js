@@ -34,28 +34,30 @@ const Home = () => {
           </p>
         </div>
         <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 20 }}>
-          <Link to="/cadastro" className="Home-link" style={{
-            background: '#fff',
-            border: '1.5px solid #22c55e',
-            color: '#22c55e',
-            fontWeight: 700,
-            borderRadius: 12,
-            padding: '18px 0',
-            fontSize: 18,
-            textAlign: 'center',
-            textDecoration: 'none',
-            boxShadow: '0 2px 8px rgba(34,197,94,0.06)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: 10,
-            marginBottom: 10,
-            transition: 'background 0.2s, color 0.2s',
-            width: '100%'
-          }}>
-            <UserPlus style={{ width: 22, height: 22 }} />
-            Criar Conta
-          </Link>
+          {!isAuthenticated && (
+            <Link to="/cadastro" className="Home-link" style={{
+              background: '#fff',
+              border: '1.5px solid #22c55e',
+              color: '#22c55e',
+              fontWeight: 700,
+              borderRadius: 12,
+              padding: '18px 0',
+              fontSize: 18,
+              textAlign: 'center',
+              textDecoration: 'none',
+              boxShadow: '0 2px 8px rgba(34,197,94,0.06)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 10,
+              marginBottom: 10,
+              transition: 'background 0.2s, color 0.2s',
+              width: '100%'
+            }}>
+              <UserPlus style={{ width: 22, height: 22 }} />
+              Criar Conta
+            </Link>
+          )}
           {isAuthenticated && (
             <Link to="/listar" className="Home-link" style={{
               background: '#fff',
@@ -78,26 +80,6 @@ const Home = () => {
               Consultar Catálogo
             </Link>
           )}
-          <Link to="/login" className="Home-link" style={{
-            background: '#fff',
-            border: '1.5px solid #d1d5db',
-            color: '#444',
-            fontWeight: 700,
-            borderRadius: 12,
-            padding: '18px 0',
-            fontSize: 18,
-            textAlign: 'center',
-            textDecoration: 'none',
-            boxShadow: '0 2px 8px rgba(9,21,255,0.04)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: 10,
-            transition: 'background 0.2s, color 0.2s'
-          }}>
-            <Users style={{ width: 22, height: 22 }} />
-            Área Administrativa
-          </Link>
         </div>
         <div style={{ color: '#888', fontSize: 15, textAlign: 'center', marginTop: 12 }}>
           <Shield style={{ width: 18, height: 18, color: '#0915FF', marginRight: 6, verticalAlign: 'middle' }} />
