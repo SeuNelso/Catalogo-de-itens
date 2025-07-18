@@ -182,16 +182,7 @@ const CadastrarItem = () => {
       armazens: armazens.length > 0 ? armazens : prev.armazens, // novo campo
       quantidade: quantidade !== '' ? quantidade : prev.quantidade // novo campo
     }));
-    setArmazens(armazens.length > 0 ? armazens : []);
   }, [location.search]);
-
-  // Novo state para armazéns
-  const [armazens, setArmazens] = useState([]);
-
-  // Função para atualizar armazém/quantidade
-  const handleArmazemChange = (index, field, value) => {
-    setArmazens(prev => prev.map((a, i) => i === index ? { ...a, [field]: value } : a));
-  };
 
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 600);
   React.useEffect(() => {

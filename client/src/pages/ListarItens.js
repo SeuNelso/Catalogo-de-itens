@@ -56,13 +56,6 @@ const ListarItens = () => {
     }
   }, []);
 
-  // Função para remover artigo não cadastrado após cadastro
-  const removerNaoCadastrado = (codigo) => {
-    const novos = naoCadastrados.filter(a => a.codigo !== codigo);
-    setNaoCadastrados(novos);
-    localStorage.setItem('artigos_nao_cadastrados', JSON.stringify(novos));
-  };
-
   useEffect(() => {
     function handleResize() {
       setIsMobile(window.innerWidth <= 600);
