@@ -494,7 +494,7 @@ const ListarItens = () => {
                   <div key={item.id} style={{ background: '#fff', borderRadius: 12, boxShadow: '0 2px 8px rgba(9,21,255,0.08)', border: '1.5px solid #d1d5db', width: '95%', maxWidth: 400, padding: 16, display: 'flex', flexDirection: 'column', gap: 8 }}>
                     <div style={{ fontWeight: 700, color: '#0915FF', fontSize: 16 }}>Código: <span style={{ color: '#222' }}>{item.codigo}</span></div>
                     <div style={{ color: '#444', fontSize: 15, fontWeight: 500 }}>Descrição: <span style={{ color: '#222', fontWeight: 400 }}>{item.nome || item.descricao}</span></div>
-                    <div style={{ fontWeight: 600, color: '#222', fontSize: 15 }}>Quantidade: <span style={{ color: item.quantidade > 0 ? '#1a7f37' : '#b91c1c', background: item.quantidade > 0 ? '#e6fbe6' : '#ffeaea', borderRadius: 6, padding: '2px 10px', marginLeft: 4 }}>{item.quantidade}</span></div>
+                    <div style={{ fontWeight: 600, color: '#222', fontSize: 15 }}>Quantidade: <span style={{ color: item.quantidade > 0 ? '#1a7f37' : '#b91c1c', background: item.quantidade > 0 ? '#e6fbe6' : '#ffeaea', borderRadius: 6, padding: '2px 10px', marginLeft: 4 }}>{item.quantidade != null && item.quantidade !== '' ? item.quantidade : 0}</span></div>
                     <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
                       <button onClick={() => navigate(`/item/${item.id}`)} style={{ background: '#0915FF', color: '#fff', border: 'none', borderRadius: 8, padding: '10px 0', fontWeight: 700, fontSize: 15, cursor: 'pointer', width: '100%' }}>Detalhes</button>
                       {user && (
@@ -663,7 +663,7 @@ const ListarItens = () => {
                               : `${styles['catalogo-quantidade']} ${styles['vermelho']}`
                           }>
                             {/* Exibir 0 normalmente, apenas ocultar se for null ou undefined */}
-                            {item.quantidade !== null && item.quantidade !== undefined ? item.quantidade : '-'}
+                            {item.quantidade != null && item.quantidade !== '' ? item.quantidade : 0}
                           </span>
                         </td>
                         <td>

@@ -474,11 +474,14 @@ app.get('/api/itens/:id', (req, res) => {
           }
           res.json({
             ...result.rows[0],
-            imagens: imagensResult.rows.map(img =>
-              img.caminho.startsWith('http')
+            imagens: imagensResult.rows.map(img => ({
+              id: img.id,
+              caminho: img.caminho.startsWith('http')
                 ? img.caminho
-                : `https://${process.env.AWS_S3_BUCKET}.s3.${process.env.AWS_REGION}.amazonaws.com/${img.caminho}`
-            ),
+                : `https://${process.env.AWS_S3_BUCKET}.s3.${process.env.AWS_REGION}.amazonaws.com/${img.caminho}`,
+              nome_arquivo: img.nome_arquivo,
+              tipo: img.tipo
+            })),
             especificacoes: especificacoesResult.rows,
             armazens: armazensResult.rows || []
           });
@@ -815,12 +818,47 @@ app.put('/api/itens/:id', authenticateToken, upload.array('imagens', 10), (req, 
   `, [
     nome || descricao, descricao, categoria || 'Sem categoria', codigo, precoNum, quantidadeNum, localizacao, observacoes,
     familia, subfamilia, setor, comprimentoNum, larguraNum, alturaNum, unidade, peso, unidadePeso, unidadearmazenamento, itemId
-  ], (err, result) => {
+  ], async (err, result) => {
     if (err) {
       return res.status(500).json({ error: err.message });
     }
     if (result.rowCount === 0) {
       return res.status(404).json({ error: 'Item não encontrado' });
+    }
+
+    // Salvar novas imagens, se enviadas
+    console.log('req.files:', req.files);
+    console.log('req.file:', req.file);
+    let arquivos = [];
+    if (req.files && req.files.length > 0) {
+      arquivos = req.files;
+    } else if (req.file) {
+      arquivos = [req.file];
+    }
+    console.log('Arquivos para upload:', arquivos.length);
+    if (arquivos.length > 0) {
+      try {
+        const imagensPromises = arquivos.map(async (file) => {
+          // Upload para AWS S3
+          const s3Result = await uploadToS3(
+            file.path,
+            `${itemId}_${Date.now()}_${file.originalname}`,
+            file.mimetype
+          );
+          // Salvar informações no banco
+          await pool.query(
+            `INSERT INTO imagens_itens (item_id, nome_arquivo, caminho, tipo)
+             VALUES ($1, $2, $3, $4)`,
+            [itemId, file.originalname, s3Result.url, file.mimetype]
+          );
+          // Remover arquivo local após upload
+          fs.unlink(file.path, (unlinkErr) => {});
+        });
+        await Promise.all(imagensPromises);
+      } catch (err) {
+        console.error('Erro ao salvar imagens:', err);
+        return res.status(500).json({ error: 'Erro ao salvar imagens: ' + err.message });
+      }
     }
 
     // Atualizar especificações se enviadas

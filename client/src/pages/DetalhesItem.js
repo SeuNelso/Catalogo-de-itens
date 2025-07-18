@@ -230,16 +230,18 @@ const DetalhesItem = () => {
                         }}
                         onClick={() => setZoomImage(imagem)}
                       >
-                        <img
-                          src={imagem}
-                          alt={`Foto ${index + 1} do item ${item.nome}`}
-                          style={{
-                            width: '100%',
-                            height: '100%',
-                            objectFit: 'cover',
-                            cursor: 'pointer'
-                          }}
-                        />
+                        {imagem.caminho && imagem.caminho.startsWith('http') && (
+                          <img
+                            src={imagem.caminho}
+                            alt={`Foto ${index + 1} do item ${item.nome}`}
+                            style={{
+                              width: '100%',
+                              height: '100%',
+                              objectFit: 'cover',
+                              cursor: 'pointer'
+                            }}
+                          />
+                        )}
                       </div>
                     ))}
                   </div>
@@ -275,16 +277,18 @@ const DetalhesItem = () => {
                         }}
                         onClick={() => setZoomImage(imagem)}
                       >
-                        <img
-                          src={imagem}
-                          alt={`Foto ${index + 1} do item ${item.nome}`}
-                          style={{
-                            width: '100%',
-                            height: '100%',
-                            objectFit: 'cover',
-                            cursor: 'pointer'
-                          }}
-                        />
+                        {imagem.caminho && imagem.caminho.startsWith('http') && (
+                          <img
+                            src={imagem.caminho}
+                            alt={`Foto ${index + 1} do item ${item.nome}`}
+                            style={{
+                              width: '100%',
+                              height: '100%',
+                              objectFit: 'cover',
+                              cursor: 'pointer'
+                            }}
+                          />
+                        )}
                       </div>
                     ))}
                   </div>
@@ -446,7 +450,7 @@ const DetalhesItem = () => {
         >
           <div style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={e => e.stopPropagation()}>
             <img
-              src={zoomImage}
+              src={zoomImage.caminho}
               alt="Zoom"
               style={{
                 maxWidth: '90vw',
