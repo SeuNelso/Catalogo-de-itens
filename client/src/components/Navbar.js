@@ -68,7 +68,7 @@ const Navbar = () => {
           )}
           {isAuthenticated && user && user.role === 'admin' && (
             <div className="navbar-digi-menu-item">
-              <Link to="/importar-excel" onClick={() => setMobileOpen(false)}>IMPORTAR EXCEL</Link>
+              <Link to="/importar-itens" onClick={() => setMobileOpen(false)}>IMPORTAR ITENS</Link>
             </div>
           )}
           {isAuthenticated && user && (user.role === 'admin' || user.role === 'controller') && (

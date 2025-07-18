@@ -16,6 +16,7 @@ import ImportarExcel from './pages/ImportarExcel';
 import ImportarStockNacional from './pages/ImportarStockNacional';
 import CadastroUsuario from './pages/CadastroUsuario';
 import AdminUsuarios from './pages/AdminUsuarios';
+import ImportarItens from './pages/ImportarItens';
 import './App.css';
 
 function App() {
@@ -62,6 +63,14 @@ function App() {
                   element={
                     <ProtectedRoute allowedRoles={['admin', 'controller']}>
                       <ImportarStockNacional />
+                    </ProtectedRoute>
+                  } 
+                />
+                <Route 
+                  path="/importar-itens" 
+                  element={
+                    <ProtectedRoute allowedRoles={['admin']}>
+                      <ImportarItens />
                     </ProtectedRoute>
                   } 
                 />

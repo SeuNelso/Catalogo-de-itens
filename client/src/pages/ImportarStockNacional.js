@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Upload, Box, CheckCircle, XCircle } from 'react-feather';
 import { useImportProgress } from '../contexts/ImportProgressContext';
+import { useNavigate } from 'react-router-dom';
 
 const ImportarStockNacional = () => {
   const [file, setFile] = useState(null);
@@ -9,6 +10,9 @@ const ImportarStockNacional = () => {
   const [loading, setLoading] = useState(false);
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 600);
   const { startImport } = useImportProgress();
+  const [importId, setImportId] = useState(null);
+  const [naoCadastrados, setNaoCadastrados] = useState([]);
+  const navigate = useNavigate();
 
   React.useEffect(() => {
     function handleResize() {
@@ -17,6 +21,35 @@ const ImportarStockNacional = () => {
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
   }, []);
+
+  // Buscar status da importação quando importId mudar
+  React.useEffect(() => {
+    if (!importId) return;
+    const token = localStorage.getItem('token');
+    const interval = setInterval(async () => {
+      const res = await fetch(`/api/importar-excel-status/${importId}`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.status === 'concluido' || data.status === 'erro') {
+          clearInterval(interval);
+          setLoading(false);
+          setStatus(data.status === 'concluido' ? 'sucesso' : 'erro');
+          setMessage(data.status === 'concluido' ? 'Importação concluída!' : 'Erro na importação.');
+          // Filtrar artigos não cadastrados
+          const naoCad = (data.erros || []).filter(e => e.motivo === 'Artigo não cadastrado');
+          console.log('Erros da importação:', data.erros); // <-- Adicionado para depuração
+          setNaoCadastrados(naoCad);
+          // Salvar no localStorage para ListarItens
+          if (naoCad.length > 0) {
+            localStorage.setItem('artigos_nao_cadastrados', JSON.stringify(naoCad));
+          }
+        }
+      }
+    }, 1500);
+    return () => clearInterval(interval);
+  }, [importId]);
 
   const handleFileChange = (e) => {
     setFile(e.target.files[0]);
@@ -48,6 +81,7 @@ const ImportarStockNacional = () => {
       const data = await response.json();
       if (response.ok && data.importId) {
         startImport(data.importId);
+        setImportId(data.importId);
         setStatus('progresso');
         setMessage('Importação iniciada.');
         setFile(null);
@@ -162,6 +196,22 @@ const ImportarStockNacional = () => {
         {status === 'erro' && (
           <div style={{ color: '#ef4444', display: 'flex', alignItems: 'center', gap: 8, fontWeight: 600, fontSize: isMobile ? 14 : 16 }}>
             <XCircle style={{ width: 20, height: 20 }} /> {message}
+          </div>
+        )}
+        {naoCadastrados.length > 0 && (
+          <div style={{ marginTop: 24, width: '100%', maxWidth: 600, background: '#fffbe6', border: '1px solid #ffe58f', borderRadius: 12, padding: 18 }}>
+            <h3 style={{ color: '#b45309', fontWeight: 700, fontSize: 18, marginBottom: 10 }}>Artigos não cadastrados encontrados:</h3>
+            <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+              {naoCadastrados.map((art, idx) => (
+                <li key={idx} style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
+                  <span style={{ fontWeight: 600 }}>{art.codigo}</span> - <span>{art.descricao}</span>
+                  <button
+                    style={{ marginLeft: 'auto', background: '#0A7B83', color: '#fff', border: 'none', borderRadius: 8, padding: '6px 14px', fontWeight: 600, cursor: 'pointer' }}
+                    onClick={() => navigate(`/cadastrar?codigo=${encodeURIComponent(art.codigo)}&descricao=${encodeURIComponent(art.descricao)}`)}
+                  >Cadastrar artigo</button>
+                </li>
+              ))}
+            </ul>
           </div>
         )}
       </div>

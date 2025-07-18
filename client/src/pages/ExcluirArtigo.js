@@ -152,6 +152,17 @@ export default function ExcluirArtigo() {
               Excluir Todos
             </button>
           )}
+          {/* Botão Excluir itens não cadastrados */}
+          <button
+            onClick={() => {
+              localStorage.removeItem('artigos_nao_cadastrados');
+              setToast({ type: 'success', message: 'Itens não cadastrados removidos com sucesso!' });
+            }}
+            className="mb-4 px-6 py-2 rounded bg-yellow-600 text-white font-bold text-sm hover:bg-yellow-700 transition-all shadow"
+            style={{ display: 'block', marginLeft: 'auto', marginRight: 'auto' }}
+          >
+            Excluir Itens Não Cadastrados
+          </button>
           {/* Botão Excluir TODOS os dados */}
           <div style={{ margin: '24px 0', textAlign: 'center' }}>
             <button

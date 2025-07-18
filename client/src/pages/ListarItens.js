@@ -44,6 +44,24 @@ const ListarItens = () => {
   const isAdmin = user && user.role === 'admin';
 
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 600);
+  const [naoCadastrados, setNaoCadastrados] = useState([]);
+
+  // Buscar artigos não cadastrados do localStorage ao montar
+  useEffect(() => {
+    const salvos = localStorage.getItem('artigos_nao_cadastrados');
+    if (salvos) {
+      try {
+        setNaoCadastrados(JSON.parse(salvos));
+      } catch {}
+    }
+  }, []);
+
+  // Função para remover artigo não cadastrado após cadastro
+  const removerNaoCadastrado = (codigo) => {
+    const novos = naoCadastrados.filter(a => a.codigo !== codigo);
+    setNaoCadastrados(novos);
+    localStorage.setItem('artigos_nao_cadastrados', JSON.stringify(novos));
+  };
 
   useEffect(() => {
     function handleResize() {
@@ -346,7 +364,8 @@ const ListarItens = () => {
           display: 'flex',
           flexDirection: 'column',
           alignItems: 'center',
-          gap: 18
+          gap: 18,
+          position: 'relative'
         }}>
           <button
             onClick={() => setShowImageModal(true)}
@@ -395,6 +414,70 @@ const ListarItens = () => {
               <FaSearch />
             </button>
           </div>
+          {/* Itens não cadastrados - agora abaixo do card de busca visual */}
+          {naoCadastrados.length > 0 && (
+            <div style={{
+              margin: '18px 0 0 0',
+              width: '100%',
+              background: '#fffde7',
+              border: '1px solid #ffe082',
+              borderRadius: 10,
+              boxShadow: '0 1px 4px rgba(250,204,21,0.04)',
+              padding: 12,
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+                <span style={{ fontSize: 18, color: '#eab308' }}>⚠️</span>
+                <h3 style={{ color: '#b45309', fontWeight: 700, fontSize: 16, margin: 0, letterSpacing: 0 }}>Itens não cadastrados</h3>
+              </div>
+              <div style={{
+                display: 'grid',
+                gridTemplateColumns: '1fr',
+                gap: 10,
+                width: '100%',
+                maxWidth: 320,
+                maxHeight: '40vh', // Limita a altura máxima a 40% da viewport
+                overflowY: 'auto', // Adiciona scroll vertical se necessário
+              }}>
+                {naoCadastrados.map((art, idx) => (
+                  <div key={idx} style={{
+                    background: '#fff',
+                    border: '1px solid #ffe082',
+                    borderRadius: 8,
+                    boxShadow: '0 1px 4px rgba(250,204,21,0.04)',
+                    padding: 10,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'flex-start',
+                    gap: 4,
+                    minHeight: 60,
+                  }}>
+                    <div style={{ fontWeight: 600, fontSize: 15, color: '#b45309', marginBottom: 1 }}>{art.codigo}</div>
+                    <div style={{ color: '#444', fontSize: 13, marginBottom: 4 }}>{art.descricao}</div>
+                    <button
+                      style={{
+                        background: '#ffe082',
+                        color: '#7c4700',
+                        border: 'none',
+                        borderRadius: 6,
+                        padding: '4px 12px',
+                        fontWeight: 600,
+                        fontSize: 13,
+                        cursor: 'pointer',
+                        marginTop: 'auto',
+                        transition: 'background 0.2s, color 0.2s',
+                      }}
+                      onClick={() => {
+                        navigate(`/cadastrar?codigo=${encodeURIComponent(art.codigo)}&descricao=${encodeURIComponent(art.descricao)}`);
+                      }}
+                    >Cadastrar</button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
         {/* Card da tabela ou cards mobile */}
         <div style={{

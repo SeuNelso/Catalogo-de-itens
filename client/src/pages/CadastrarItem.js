@@ -1,10 +1,11 @@
 import React, { useState } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate, Link, useLocation } from 'react-router-dom';
 import { X, Plus, Save, ArrowLeft, Package, FileText } from 'react-feather';
 import Toast from '../components/Toast';
 
 const CadastrarItem = () => {
   const navigate = useNavigate();
+  const location = useLocation();
   const [loading, setLoading] = useState(false);
   const [selectedFiles, setSelectedFiles] = useState([]);
   const [especificacoes, setEspecificacoes] = useState([]);
@@ -23,7 +24,8 @@ const CadastrarItem = () => {
     peso: '',
     unidadePeso: '',
     observacoes: '',
-    unidadearmazenamento: ''
+    unidadearmazenamento: '',
+    armazens: [] // novo campo
   });
 
   const handleInputChange = (e) => {
@@ -110,7 +112,10 @@ const CadastrarItem = () => {
 
       if (response.ok) {
         setToast({ type: 'success', message: 'Item cadastrado com sucesso!' });
-        
+        // Remover do localStorage de não cadastrados
+        const artigosNaoCadastrados = JSON.parse(localStorage.getItem('artigos_nao_cadastrados') || '[]');
+        const novos = artigosNaoCadastrados.filter(a => a.codigo !== formData.codigo);
+        localStorage.setItem('artigos_nao_cadastrados', JSON.stringify(novos));
         // Limpar formulário
         setFormData({
           codigo: '',
@@ -125,7 +130,8 @@ const CadastrarItem = () => {
           peso: '',
           unidadePeso: '',
           observacoes: '',
-          unidadearmazenamento: ''
+          unidadearmazenamento: '',
+          armazens: []
         });
         setSelectedFiles([]);
         setEspecificacoes([]);
@@ -147,6 +153,44 @@ const CadastrarItem = () => {
     } finally {
       setLoading(false);
     }
+  };
+
+  React.useEffect(() => {
+    // Preencher código e descrição se vierem na URL
+    const params = new URLSearchParams(location.search);
+    const codigo = params.get('codigo');
+    const descricao = params.get('descricao');
+    let armazens = [];
+    let quantidade = '';
+    if (codigo) {
+      // Buscar no localStorage o item não cadastrado
+      const artigosNaoCadastrados = JSON.parse(localStorage.getItem('artigos_nao_cadastrados') || '[]');
+      const artigo = artigosNaoCadastrados.find(a => a.codigo === codigo);
+      if (artigo && Array.isArray(artigo.armazens)) {
+        armazens = artigo.armazens;
+        quantidade = armazens.reduce((soma, a) => soma + (parseFloat(a.quantidade) || 0), 0);
+      } else if (artigo && artigo.armazens && typeof artigo.armazens === 'object') {
+        // Se vier como objeto, converte para array de objetos
+        armazens = Object.entries(artigo.armazens).map(([nome, quantidade]) => ({ nome, quantidade }));
+        quantidade = armazens.reduce((soma, a) => soma + (parseFloat(a.quantidade) || 0), 0);
+      }
+    }
+    setFormData(prev => ({
+      ...prev,
+      codigo: codigo || prev.codigo,
+      descricao: descricao || prev.descricao,
+      armazens: armazens.length > 0 ? armazens : prev.armazens, // novo campo
+      quantidade: quantidade !== '' ? quantidade : prev.quantidade // novo campo
+    }));
+    setArmazens(armazens.length > 0 ? armazens : []);
+  }, [location.search]);
+
+  // Novo state para armazéns
+  const [armazens, setArmazens] = useState([]);
+
+  // Função para atualizar armazém/quantidade
+  const handleArmazemChange = (index, field, value) => {
+    setArmazens(prev => prev.map((a, i) => i === index ? { ...a, [field]: value } : a));
   };
 
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 600);
@@ -328,7 +372,7 @@ const CadastrarItem = () => {
                   <input
                     type="number"
                     name="comprimento"
-                    value={formData.comprimento}
+                    value={formData.comprimento !== undefined && formData.comprimento !== null ? String(formData.comprimento) : ''}
                     onChange={handleInputChange}
                     style={{
                       width: '100%',
@@ -348,7 +392,7 @@ const CadastrarItem = () => {
                   <input
                     type="number"
                     name="largura"
-                    value={formData.largura}
+                    value={formData.largura !== undefined && formData.largura !== null ? String(formData.largura) : ''}
                     onChange={handleInputChange}
                     style={{
                       width: '100%',
@@ -368,7 +412,7 @@ const CadastrarItem = () => {
                   <input
                     type="number"
                     name="altura"
-                    value={formData.altura}
+                    value={formData.altura !== undefined && formData.altura !== null ? String(formData.altura) : ''}
                     onChange={handleInputChange}
                     style={{
                       width: '100%',
@@ -420,7 +464,7 @@ const CadastrarItem = () => {
                   <input
                     type="number"
                     name="peso"
-                    value={formData.peso}
+                    value={formData.peso !== undefined && formData.peso !== null ? String(formData.peso) : ''}
                     onChange={handleInputChange}
                     style={{
                       width: '100%',
@@ -513,6 +557,8 @@ const CadastrarItem = () => {
                 <option value="Metros">Metros</option>
               </select>
             </div>
+
+            {/* Armazéns e Quantidades */}
           </form>
         </div>
 

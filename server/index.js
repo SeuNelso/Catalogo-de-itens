@@ -148,6 +148,7 @@ const { v4: uuidv4 } = require('uuid');
 
 const excelUpload = multer({ dest: 'uploads/' });
 app.post('/api/importar-excel', authenticateToken, excelUpload.single('arquivo'), async (req, res) => {
+  console.log('Recebendo importação de excel');
   if (!req.user || req.user.role !== 'admin') {
     return res.status(403).json({ error: 'Apenas administradores podem importar dados.' });
   }
@@ -189,36 +190,40 @@ app.post('/api/importar-excel', authenticateToken, excelUpload.single('arquivo')
             const quantidade = Number(row['TOTAL']) || 0;
             const ordem_importacao = idx;
             if (!codigo || !nome) {
-              importStatus[importId].erros.push({ codigo: codigo || 'N/A', descricao: nome || 'N/A', motivo: 'Código ou nome ausente', linha: idx + 2 });
+              importStatus[importId].erros.push({ codigo: codigo || 'N/A', descricao: nome || 'N/A', motivo: 'Artigo não cadastrado', linha: idx + 2 });
               processados++;
               importStatus[importId].processados = processados;
               return;
             }
+            // Verificar se o artigo já existe
+            console.log('Verificando artigo:', codigo);
+            const existe = await pool.query('SELECT id FROM itens WHERE codigo = $1', [codigo]);
+            console.log('Resultado da query para', codigo, ':', existe.rows);
+            // Coletar armazéns do row
             const armazens = {};
             Object.keys(row).forEach(col => {
               if (col.startsWith('WH')) {
                 armazens[col] = Number(row[col]) || 0;
               }
             });
-            // UPSERT do item
-            const upsertResult = await pool.query(`
-              INSERT INTO itens (codigo, nome, descricao, categoria, quantidade, ordem_importacao)
-              VALUES ($1, $2, $3, $4, $5, $6)
-              ON CONFLICT (codigo) DO UPDATE
-                SET nome = EXCLUDED.nome, descricao = EXCLUDED.descricao, quantidade = EXCLUDED.quantidade, ordem_importacao = EXCLUDED.ordem_importacao
-              RETURNING id
-            `, [codigo, nome, descricao, 'Importado', quantidade, ordem_importacao]);
-            if (upsertResult && upsertResult.rows && upsertResult.rows.length > 0) {
-              const itemId = upsertResult.rows[0].id;
-              // Deletar armazéns antigos
-              await pool.query('DELETE FROM armazens_item WHERE item_id = $1', [itemId]);
-              // Inserir armazéns
-              const armazemEntries = Object.entries(armazens);
-              for (const [armazem, qtd] of armazemEntries) {
-                await pool.query('INSERT INTO armazens_item (item_id, armazem, quantidade) VALUES ($1, $2, $3)', [itemId, armazem, qtd]);
-              }
-            } else {
-              importStatus[importId].erros.push({ codigo: codigo, descricao: nome || 'N/A', motivo: 'Erro no UPSERT', erro: 'ID não retornado', linha: idx + 2 });
+            if (!existe.rows.length) {
+              importStatus[importId].erros.push({ codigo: codigo, descricao: nome || 'N/A', motivo: 'Artigo não cadastrado', linha: idx + 2, armazens });
+              processados++;
+              importStatus[importId].processados = processados;
+              return;
+            }
+            // Atualizar item existente
+            await pool.query(
+              'UPDATE itens SET nome = $1, descricao = $2, quantidade = $3, ordem_importacao = $4 WHERE codigo = $5',
+              [nome, descricao, quantidade, ordem_importacao, codigo]
+            );
+            const itemId = existe.rows[0].id;
+            // Deletar armazéns antigos
+            await pool.query('DELETE FROM armazens_item WHERE item_id = $1', [itemId]);
+            // Inserir armazéns
+            const armazemEntries = Object.entries(armazens);
+            for (const [armazem, qtd] of armazemEntries) {
+              await pool.query('INSERT INTO armazens_item (item_id, armazem, quantidade) VALUES ($1, $2, $3)', [itemId, armazem, qtd]);
             }
             processados++;
             importStatus[importId].processados = processados;
@@ -248,6 +253,111 @@ app.get('/api/importar-excel-status/:id', authenticateToken, (req, res) => {
     return res.status(404).json({ error: 'Importação não encontrada.' });
   }
   res.json(importStatus[importId]);
+});
+
+// --- Importação de novos itens via Excel ---
+const excelUploadItens = multer({ dest: 'uploads/' });
+app.post('/api/importar-itens', authenticateToken, excelUploadItens.single('arquivo'), async (req, res) => {
+  if (!req.user || req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Apenas administradores podem importar itens.' });
+  }
+  if (!req.file) {
+    return res.status(400).json({ error: 'Arquivo não enviado.' });
+  }
+  const XLSX = require('xlsx');
+  const fs = require('fs');
+  const { v4: uuidv4 } = require('uuid');
+  const importId = uuidv4();
+  importStatus[importId] = {
+    status: 'iniciando',
+    total: 0,
+    processados: 0,
+    erros: [],
+    cadastrados: 0,
+    ignorados: 0,
+    concluido: false,
+    iniciadoEm: new Date(),
+    terminadoEm: null
+  };
+  res.json({ importId });
+  setImmediate(async () => {
+    try {
+      const workbook = XLSX.readFile(req.file.path);
+      const sheetName = workbook.SheetNames[0];
+      const sheet = workbook.Sheets[sheetName];
+      const data = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+      importStatus[importId].status = 'progresso';
+      importStatus[importId].total = data.length;
+      let cadastrados = 0;
+      let ignorados = 0;
+      let processados = 0;
+      // Buscar todos os códigos já existentes
+      const { rows: existentes } = await pool.query('SELECT codigo FROM itens');
+      const codigosExistentes = new Set(existentes.map(e => e.codigo));
+      // Função para processar um item
+      async function processarLinha(row, idx) {
+        try {
+          const codigo = row['Artigo']?.toString().trim();
+          const descricao = row['Descrição']?.toString().trim();
+          const nome = descricao;
+          const categoria = row['Categoria']?.toString().trim() || 'Sem categoria';
+          const quantidade = Number(row['TOTAL']) || 0;
+          if (!codigo || !nome) {
+            importStatus[importId].erros.push({ linha: idx + 2, motivo: 'Código ou descrição ausente', codigo: codigo || 'N/A' });
+            processados++;
+            importStatus[importId].processados = processados;
+            return;
+          }
+          if (codigosExistentes.has(codigo)) {
+            ignorados++;
+            processados++;
+            importStatus[importId].ignorados = ignorados;
+            importStatus[importId].processados = processados;
+            return;
+          }
+          // Inserir novo item
+          const result = await pool.query(
+            `INSERT INTO itens (nome, descricao, categoria, codigo, quantidade) VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+            [nome, descricao, categoria, codigo, quantidade]
+          );
+          const itemId = result.rows[0].id;
+          // Inserir armazéns (colunas WH) em paralelo
+          const armazens = {};
+          Object.keys(row).forEach(col => {
+            if (col.startsWith('WH')) {
+              armazens[col] = Number(row[col]) || 0;
+            }
+          });
+          await Promise.all(Object.entries(armazens).map(([armazem, qtd]) =>
+            pool.query('INSERT INTO armazens_item (item_id, armazem, quantidade) VALUES ($1, $2, $3)', [itemId, armazem, qtd])
+          ));
+          cadastrados++;
+          processados++;
+          importStatus[importId].cadastrados = cadastrados;
+          importStatus[importId].processados = processados;
+          codigosExistentes.add(codigo); // Evita duplicidade no mesmo arquivo
+        } catch (err) {
+          importStatus[importId].erros.push({ linha: idx + 2, motivo: 'Erro ao cadastrar', erro: err?.message || String(err) });
+          processados++;
+          importStatus[importId].processados = processados;
+        }
+      }
+      // Processar em lotes de 20
+      const BATCH_SIZE = 20;
+      for (let batchStart = 0; batchStart < data.length; batchStart += BATCH_SIZE) {
+        const batch = data.slice(batchStart, batchStart + BATCH_SIZE);
+        await Promise.all(batch.map((row, i) => processarLinha(row, batchStart + i)));
+      }
+      fs.unlinkSync(req.file.path);
+      importStatus[importId].status = 'concluido';
+      importStatus[importId].concluido = true;
+      importStatus[importId].terminadoEm = new Date();
+    } catch (error) {
+      importStatus[importId].status = 'erro';
+      importStatus[importId].erros.push({ erro: error.message });
+      importStatus[importId].terminadoEm = new Date();
+    }
+  });
 });
 
 // Inicialização do banco de dados
@@ -314,7 +424,11 @@ app.get('/api/itens', (req, res) => {
     FROM itens i
     LEFT JOIN imagens_itens img ON i.id = img.item_id
     GROUP BY i.id
-    ORDER BY i.ordem_importacao ASC, i.data_cadastro DESC
+    ORDER BY 
+      (i.codigo ~ '^[0-9]') DESC, -- Prioriza códigos que começam com número
+      i.codigo ASC,
+      i.ordem_importacao ASC, 
+      i.data_cadastro DESC
   `;
 
   pool.query(query, [], (err, result) => {
