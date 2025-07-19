@@ -417,7 +417,7 @@ const ListarItens = () => {
             </button>
           </div>
           {/* Itens não cadastrados - agora abaixo do card de busca visual */}
-          {naoCadastrados.length > 0 && (
+          {naoCadastrados.length > 0 && isAdmin && (
             <div style={{
               margin: '18px 0 0 0',
               width: '100%',
@@ -513,59 +513,88 @@ const ListarItens = () => {
                   </div>
                 ))}
               </div>
-              {/* Paginação */}
-              <div style={{ margin: '18px 0 0 0', display: 'flex', justifyContent: 'center' }}>
+              {/* Paginação Mobile - Versão Compacta */}
+              <div className="mobile-pagination" style={{ 
+                margin: '18px 0 0 0', 
+                display: 'flex', 
+                justifyContent: 'center',
+                alignItems: 'center',
+                gap: 8,
+                flexWrap: 'wrap',
+                padding: '0 8px'
+              }}>
+                {/* Botão Anterior */}
                 <button
                   onClick={() => setPaginaAtual(p => Math.max(1, p - 1))}
                   disabled={paginaAtual === 1}
-                  style={{ minWidth: 36, height: 36, border: '1.5px solid #0915FF', background: '#fff', color: '#0915FF', fontWeight: 600, fontSize: 16, borderRadius: 7, cursor: paginaAtual === 1 ? 'not-allowed' : 'pointer', margin: 2 }}
-                >Anterior</button>
-                {(() => {
-                  const botoes = [];
-                  const mostrar = 2; // Quantos botões mostrar no início/fim
-                  const vizinhos = 2; // Quantos vizinhos ao redor da página atual
-                  for (let p = 1; p <= totalPaginas; p++) {
-                    if (
-                      p <= mostrar ||
-                      p > totalPaginas - mostrar ||
-                      (p >= paginaAtual - vizinhos && p <= paginaAtual + vizinhos)
-                    ) {
-                      botoes.push(
-                        <button
-                          key={p}
-                          onClick={() => setPaginaAtual(p)}
-                          style={{
-                            minWidth: 36,
-                            height: 36,
-                            border: '1.5px solid #0915FF',
-                            background: paginaAtual === p ? '#0915FF' : '#fff',
-                            color: paginaAtual === p ? '#fff' : '#0915FF',
-                            fontWeight: 700,
-                            fontSize: 16,
-                            borderRadius: 7,
-                            cursor: 'pointer',
-                            margin: 2
-                          }}
-                          disabled={paginaAtual === p}
-                        >{p}</button>
-                      );
-                    } else if (
-                      (p === mostrar + 1 && paginaAtual - vizinhos > mostrar + 1) ||
-                      (p === totalPaginas - mostrar && paginaAtual + vizinhos < totalPaginas - mostrar)
-                    ) {
-                      botoes.push(
-                        <span key={p} style={{ minWidth: 24, textAlign: 'center', color: '#0915FF' }}>...</span>
-                      );
-                    }
-                  }
-                  return botoes;
-                })()}
+                  style={{ 
+                    minWidth: 44, 
+                    height: 44, 
+                    border: '1.5px solid #0915FF', 
+                    background: '#fff', 
+                    color: '#0915FF', 
+                    fontWeight: 600, 
+                    fontSize: 14, 
+                    borderRadius: 8, 
+                    cursor: paginaAtual === 1 ? 'not-allowed' : 'pointer',
+                    opacity: paginaAtual === 1 ? 0.5 : 1,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center'
+                  }}
+                >
+                  ←
+                </button>
+
+                {/* Informação da página atual */}
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  fontSize: 14,
+                  color: '#374151',
+                  fontWeight: 500
+                }}>
+                  <span>Página</span>
+                  <span style={{
+                    background: '#0915FF',
+                    color: '#fff',
+                    padding: '4px 12px',
+                    borderRadius: 6,
+                    fontWeight: 700,
+                    minWidth: 32,
+                    textAlign: 'center'
+                  }}>
+                    {paginaAtual}
+                  </span>
+                  <span>de {totalPaginas}</span>
+                </div>
+
+                {/* Botão Próximo */}
                 <button
                   onClick={() => setPaginaAtual(p => Math.min(totalPaginas, p + 1))}
                   disabled={paginaAtual === totalPaginas}
-                  style={{ minWidth: 36, height: 36, border: '1.5px solid #0915FF', background: '#fff', color: '#0915FF', fontWeight: 600, fontSize: 16, borderRadius: 7, cursor: paginaAtual === totalPaginas ? 'not-allowed' : 'pointer', margin: 2 }}
-                >Próximo</button>
+                  style={{ 
+                    minWidth: 44, 
+                    height: 44, 
+                    border: '1.5px solid #0915FF', 
+                    background: '#fff', 
+                    color: '#0915FF', 
+                    fontWeight: 600, 
+                    fontSize: 14, 
+                    borderRadius: 8, 
+                    cursor: paginaAtual === totalPaginas ? 'not-allowed' : 'pointer',
+                    opacity: paginaAtual === totalPaginas ? 0.5 : 1,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center'
+                  }}
+                >
+                  →
+                </button>
               </div>
+
+
             </div>
           ) : (
             <div className={styles['catalogo-card']} style={{ margin: 0, boxShadow: '0 8px 32px rgba(9,21,255,0.08)', width: isMobile ? '100%' : '100%' }}>
@@ -727,58 +756,96 @@ const ListarItens = () => {
                     )}
                   </div>
                   <div style={{ flex: 1, display: 'flex', justifyContent: 'center' }}>
-                    {/* Paginação */}
-                <button
-                  onClick={() => setPaginaAtual(p => Math.max(1, p - 1))}
-                  disabled={paginaAtual === 1}
-                  style={{ minWidth: 36, height: 36, border: '1.5px solid #0915FF', background: '#fff', color: '#0915FF', fontWeight: 600, fontSize: 16, borderRadius: 7, cursor: paginaAtual === 1 ? 'not-allowed' : 'pointer', margin: 2 }}
-                >Anterior</button>
-                {(() => {
-                  const botoes = [];
-                  const mostrar = 2; // Quantos botões mostrar no início/fim
-                  const vizinhos = 2; // Quantos vizinhos ao redor da página atual
-                  for (let p = 1; p <= totalPaginas; p++) {
-                    if (
-                      p <= mostrar ||
-                      p > totalPaginas - mostrar ||
-                      (p >= paginaAtual - vizinhos && p <= paginaAtual + vizinhos)
-                    ) {
-                      botoes.push(
-                        <button
-                          key={p}
-                          onClick={() => setPaginaAtual(p)}
-                          style={{
-                            minWidth: 36,
-                            height: 36,
-                            border: '1.5px solid #0915FF',
-                            background: paginaAtual === p ? '#0915FF' : '#fff',
-                            color: paginaAtual === p ? '#fff' : '#0915FF',
-                            fontWeight: 700,
-                            fontSize: 16,
-                            borderRadius: 7,
-                            cursor: 'pointer',
-                            margin: 2
-                          }}
-                          disabled={paginaAtual === p}
-                        >{p}</button>
-                      );
-                    } else if (
-                      (p === mostrar + 1 && paginaAtual - vizinhos > mostrar + 1) ||
-                      (p === totalPaginas - mostrar && paginaAtual + vizinhos < totalPaginas - mostrar)
-                    ) {
-                      botoes.push(
-                        <span key={p} style={{ minWidth: 24, textAlign: 'center', color: '#0915FF' }}>...</span>
-                      );
-                    }
-                  }
-                  return botoes;
-                })()}
-                <button
-                  onClick={() => setPaginaAtual(p => Math.min(totalPaginas, p + 1))}
-                  disabled={paginaAtual === totalPaginas}
-                  style={{ minWidth: 36, height: 36, border: '1.5px solid #0915FF', background: '#fff', color: '#0915FF', fontWeight: 600, fontSize: 16, borderRadius: 7, cursor: paginaAtual === totalPaginas ? 'not-allowed' : 'pointer', margin: 2 }}
-                >Próximo</button>
-              </div>
+                    {/* Paginação Desktop - Versão Completa */}
+                    <div className="desktop-pagination" style={{ 
+                      display: 'flex',
+                      justifyContent: 'center',
+                      alignItems: 'center',
+                      gap: 4,
+                      flexWrap: 'wrap'
+                    }}>
+                      <button
+                        onClick={() => setPaginaAtual(p => Math.max(1, p - 1))}
+                        disabled={paginaAtual === 1}
+                        style={{ 
+                          minWidth: 36, 
+                          height: 36, 
+                          border: '1.5px solid #0915FF', 
+                          background: '#fff', 
+                          color: '#0915FF', 
+                          fontWeight: 600, 
+                          fontSize: 16, 
+                          borderRadius: 7, 
+                          cursor: paginaAtual === 1 ? 'not-allowed' : 'pointer', 
+                          margin: 2 
+                        }}
+                      >
+                        Anterior
+                      </button>
+                      {(() => {
+                        const botoes = [];
+                        const mostrar = 2; // Quantos botões mostrar no início/fim
+                        const vizinhos = 2; // Quantos vizinhos ao redor da página atual
+                        for (let p = 1; p <= totalPaginas; p++) {
+                          if (
+                            p <= mostrar ||
+                            p > totalPaginas - mostrar ||
+                            (p >= paginaAtual - vizinhos && p <= paginaAtual + vizinhos)
+                          ) {
+                            botoes.push(
+                              <button
+                                key={p}
+                                onClick={() => setPaginaAtual(p)}
+                                style={{
+                                  minWidth: 36,
+                                  height: 36,
+                                  border: '1.5px solid #0915FF',
+                                  background: paginaAtual === p ? '#0915FF' : '#fff',
+                                  color: paginaAtual === p ? '#fff' : '#0915FF',
+                                  fontWeight: 700,
+                                  fontSize: 16,
+                                  borderRadius: 7,
+                                  cursor: 'pointer',
+                                  margin: 2
+                                }}
+                                disabled={paginaAtual === p}
+                              >
+                                {p}
+                              </button>
+                            );
+                          } else if (
+                            (p === mostrar + 1 && paginaAtual - vizinhos > mostrar + 1) ||
+                            (p === totalPaginas - mostrar && paginaAtual + vizinhos < totalPaginas - mostrar)
+                          ) {
+                            botoes.push(
+                              <span key={p} style={{ minWidth: 24, textAlign: 'center', color: '#0915FF' }}>
+                                ...
+                              </span>
+                            );
+                          }
+                        }
+                        return botoes;
+                      })()}
+                      <button
+                        onClick={() => setPaginaAtual(p => Math.min(totalPaginas, p + 1))}
+                        disabled={paginaAtual === totalPaginas}
+                        style={{ 
+                          minWidth: 36, 
+                          height: 36, 
+                          border: '1.5px solid #0915FF', 
+                          background: '#fff', 
+                          color: '#0915FF', 
+                          fontWeight: 600, 
+                          fontSize: 16, 
+                          borderRadius: 7, 
+                          cursor: paginaAtual === totalPaginas ? 'not-allowed' : 'pointer', 
+                          margin: 2 
+                        }}
+                      >
+                        Próximo
+                      </button>
+                    </div>
+                  </div>
             </div>
           </div>
             </div>

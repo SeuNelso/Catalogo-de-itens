@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
 
 * {
   margin: 0;
@@ -7,11 +7,19 @@
 }
 
 body {
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  min-height: 100vh;
-  color: #333;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background-color: #f5f5f5;
   line-height: 1.6;
+  color: #333;
+}
+
+code {
+  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
+    monospace;
 }
 
 /* Variáveis CSS para cores */
@@ -529,5 +537,566 @@ body {
     --bg-secondary: #111827;
     --bg-tertiary: #374151;
     --border-color: #374151;
+  }
+} 
+
+/* Responsividade Global */
+@media (max-width: 768px) {
+  body {
+    font-size: 14px;
+  }
+  
+  /* Melhorar touch targets */
+  button, 
+  input[type="button"], 
+  input[type="submit"], 
+  input[type="reset"],
+  a {
+    min-height: 44px;
+    min-width: 44px;
+  }
+  
+  /* Melhorar espaçamento em mobile */
+  .container {
+    padding: 0 16px;
+  }
+  
+  /* Ajustar tamanhos de fonte */
+  h1 { font-size: 1.75rem !important; }
+  h2 { font-size: 1.5rem !important; }
+  h3 { font-size: 1.25rem !important; }
+  h4 { font-size: 1.125rem !important; }
+  h5 { font-size: 1rem !important; }
+  h6 { font-size: 0.875rem !important; }
+}
+
+@media (max-width: 480px) {
+  body {
+    font-size: 13px;
+  }
+  
+  /* Ajustes para telas muito pequenas */
+  .container {
+    padding: 0 12px;
+  }
+  
+  /* Reduzir margens e paddings */
+  .card,
+  .modal,
+  .form-container {
+    margin: 8px;
+    padding: 16px;
+  }
+}
+
+/* Melhorar acessibilidade */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Melhorar contraste para acessibilidade */
+@media (prefers-contrast: high) {
+  body {
+    background-color: #ffffff;
+    color: #000000;
+  }
+  
+  .card,
+  .modal {
+    border: 2px solid #000000;
+  }
+}
+
+/* Suporte para modo escuro do sistema */
+@media (prefers-color-scheme: dark) {
+  body {
+    background-color: #1a1a1a;
+    color: #ffffff;
+  }
+  
+  .card,
+  .modal {
+    background-color: #2d2d2d;
+    border-color: #404040;
+  }
+  
+  input,
+  textarea,
+  select {
+    background-color: #2d2d2d;
+    color: #ffffff;
+    border-color: #404040;
+  }
+}
+
+/* Animações suaves */
+.fade-in {
+  animation: fadeIn 0.3s ease-in;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Melhorar scroll em mobile */
+html {
+  scroll-behavior: smooth;
+}
+
+/* Estilos para scroll personalizado */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f1f1f1;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #c1c1c1;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #a8a8a8;
+}
+
+/* Melhorar foco para acessibilidade */
+*:focus {
+  outline: 2px solid #0915FF;
+  outline-offset: 2px;
+}
+
+/* Estilos para loading states */
+.loading {
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+.loading-spinner {
+  display: inline-block;
+  width: 20px;
+  height: 20px;
+  border: 3px solid #f3f3f3;
+  border-top: 3px solid #0915FF;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+/* Utilitários para mobile */
+.mobile-only {
+  display: none;
+}
+
+.desktop-only {
+  display: block;
+}
+
+@media (max-width: 768px) {
+  .mobile-only {
+    display: block;
+  }
+  
+  .desktop-only {
+    display: none;
+  }
+}
+
+/* Melhorar formulários em mobile */
+@media (max-width: 768px) {
+  input,
+  textarea,
+  select {
+    font-size: 16px !important; /* Evita zoom em iOS */
+  }
+  
+  /* Melhorar espaçamento de formulários */
+  form {
+    gap: 16px;
+  }
+  
+  .form-group {
+    margin-bottom: 16px;
+  }
+}
+
+/* Melhorar tabelas em mobile */
+@media (max-width: 768px) {
+  table {
+    font-size: 14px;
+  }
+  
+  th,
+  td {
+    padding: 8px 4px;
+  }
+}
+
+/* Melhorar modais em mobile */
+@media (max-width: 768px) {
+  .modal {
+    margin: 16px;
+    max-height: calc(100vh - 32px);
+    overflow-y: auto;
+  }
+  
+  .modal-content {
+    padding: 16px;
+  }
+}
+
+/* Melhorar navegação em mobile */
+@media (max-width: 768px) {
+  .nav-menu {
+    flex-direction: column;
+    gap: 8px;
+  }
+  
+  .nav-item {
+    width: 100%;
+    text-align: center;
+  }
+}
+
+/* Melhorar cards em mobile */
+@media (max-width: 768px) {
+  .card {
+    margin: 8px 0;
+    padding: 16px;
+  }
+  
+  .card-grid {
+    grid-template-columns: 1fr;
+    gap: 16px;
+  }
+}
+
+/* Melhorar botões em mobile */
+@media (max-width: 768px) {
+  .btn {
+    padding: 12px 16px;
+    font-size: 16px;
+    min-height: 48px;
+  }
+  
+  .btn-group {
+    flex-direction: column;
+    gap: 8px;
+  }
+  
+  .btn-group .btn {
+    width: 100%;
+  }
+}
+
+/* Melhorar paginação em mobile */
+@media (max-width: 768px) {
+  .pagination {
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 4px;
+  }
+  
+  .pagination button {
+    min-width: 40px;
+    height: 40px;
+    font-size: 14px;
+  }
+}
+
+/* Paginação responsiva */
+.desktop-pagination {
+  display: none !important;
+}
+
+@media (min-width: 768px) {
+  .desktop-pagination {
+    display: flex !important;
+  }
+  
+  /* Esconder paginação mobile no desktop */
+  .mobile-pagination {
+    display: none !important;
+  }
+}
+
+@media (max-width: 767px) {
+  .desktop-pagination {
+    display: none !important;
+  }
+  
+  /* Mostrar paginação mobile */
+  .mobile-pagination {
+    display: flex !important;
+  }
+  
+  /* Melhorar botões da paginação mobile */
+  .mobile-pagination button {
+    transition: all 0.2s ease;
+    touch-action: manipulation;
+  }
+  
+  .mobile-pagination button:active {
+    transform: scale(0.95);
+  }
+  
+  .mobile-pagination button:disabled {
+    opacity: 0.5;
+    transform: none;
+  }
+}
+
+/* Melhorar filtros em mobile */
+@media (max-width: 768px) {
+  .filters {
+    flex-direction: column;
+    gap: 12px;
+  }
+  
+  .filter-group {
+    width: 100%;
+  }
+  
+  .filter-input {
+    width: 100%;
+  }
+}
+
+/* Melhorar search em mobile */
+@media (max-width: 768px) {
+  .search-container {
+    flex-direction: column;
+    gap: 12px;
+  }
+  
+  .search-input {
+    width: 100%;
+  }
+  
+  .search-button {
+    width: 100%;
+  }
+}
+
+/* Melhorar upload em mobile */
+@media (max-width: 768px) {
+  .upload-area {
+    padding: 24px 16px;
+  }
+  
+  .file-input {
+    width: 100%;
+  }
+}
+
+/* Melhorar webcam em mobile */
+@media (max-width: 768px) {
+  .webcam-container {
+    width: 100%;
+    max-width: 320px;
+  }
+  
+  .webcam-video {
+    width: 100%;
+    height: auto;
+  }
+}
+
+/* Melhorar resultados em mobile */
+@media (max-width: 768px) {
+  .results-grid {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+  
+  .result-card {
+    padding: 12px;
+  }
+}
+
+/* Melhorar toast em mobile */
+@media (max-width: 768px) {
+  .toast {
+    margin: 8px;
+    padding: 12px 16px;
+    font-size: 14px;
+  }
+}
+
+/* Melhorar dropdown em mobile */
+@media (max-width: 768px) {
+  .dropdown-menu {
+    position: static;
+    box-shadow: none;
+    border: none;
+    background: transparent;
+  }
+  
+  .dropdown-item {
+    padding: 12px 16px;
+    border-bottom: 1px solid #e5e7eb;
+  }
+}
+
+/* Melhorar tabs em mobile */
+@media (max-width: 768px) {
+  .tabs {
+    flex-direction: column;
+  }
+  
+  .tab {
+    width: 100%;
+    text-align: center;
+  }
+}
+
+/* Melhorar accordion em mobile */
+@media (max-width: 768px) {
+  .accordion-item {
+    margin-bottom: 8px;
+  }
+  
+  .accordion-header {
+    padding: 16px;
+  }
+  
+  .accordion-content {
+    padding: 16px;
+  }
+}
+
+/* Melhorar tooltip em mobile */
+@media (max-width: 768px) {
+  .tooltip {
+    display: none;
+  }
+}
+
+/* Melhorar progress bar em mobile */
+@media (max-width: 768px) {
+  .progress-bar {
+    height: 8px;
+  }
+  
+  .progress-text {
+    font-size: 12px;
+  }
+}
+
+/* Melhorar status em mobile */
+@media (max-width: 768px) {
+  .status-badge {
+    font-size: 12px;
+    padding: 4px 8px;
+  }
+}
+
+/* Melhorar avatar em mobile */
+@media (max-width: 768px) {
+  .avatar {
+    width: 32px;
+    height: 32px;
+  }
+  
+  .avatar-large {
+    width: 48px;
+    height: 48px;
+  }
+}
+
+/* Melhorar badge em mobile */
+@media (max-width: 768px) {
+  .badge {
+    font-size: 11px;
+    padding: 2px 6px;
+  }
+}
+
+/* Melhorar chip em mobile */
+@media (max-width: 768px) {
+  .chip {
+    font-size: 12px;
+    padding: 4px 8px;
+  }
+}
+
+/* Melhorar skeleton em mobile */
+@media (max-width: 768px) {
+  .skeleton {
+    height: 16px;
+  }
+  
+  .skeleton-text {
+    height: 14px;
+  }
+}
+
+/* Melhorar divider em mobile */
+@media (max-width: 768px) {
+  .divider {
+    margin: 16px 0;
+  }
+}
+
+/* Melhorar spacing em mobile */
+@media (max-width: 768px) {
+  .space-xs { margin: 4px; }
+  .space-sm { margin: 8px; }
+  .space-md { margin: 12px; }
+  .space-lg { margin: 16px; }
+  .space-xl { margin: 20px; }
+}
+
+/* Melhorar typography em mobile */
+@media (max-width: 768px) {
+  .text-xs { font-size: 11px; }
+  .text-sm { font-size: 12px; }
+  .text-base { font-size: 14px; }
+  .text-lg { font-size: 16px; }
+  .text-xl { font-size: 18px; }
+  .text-2xl { font-size: 20px; }
+  .text-3xl { font-size: 24px; }
+}
+
+/* Melhorar layout em mobile */
+@media (max-width: 768px) {
+  .flex-col-mobile {
+    flex-direction: column;
+  }
+  
+  .w-full-mobile {
+    width: 100%;
+  }
+  
+  .text-center-mobile {
+    text-align: center;
+  }
+  
+  .hidden-mobile {
+    display: none;
+  }
+  
+  .block-mobile {
+    display: block;
   }
 } 
