@@ -25,9 +25,19 @@ const EditarItem = () => {
     unidadePeso: '',
     observacoes: '',
     unidadearmazenamento: '',
-    quantidade: '' // campo adicionado
+    quantidade: '', // campo adicionado
+    tipocontrolo: '' // campo adicionado
   });
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 600);
+  const [imagensRemovidas, setImagensRemovidas] = useState([]);
+
+  // Listas independentes de famílias e subfamílias
+  const familias = [
+    "Consumível", "EPC", "EPI", "Equipamentos", "Ferramentas", "Materiais", "Imobilizado", "Software", "Serviços", "Licenças", "Impostos", "Donativos", "Despesas", "Juros", "Câmbio", "Penalidades"
+  ];
+  const subfamilias = [
+    "Consumível", "Acessórios", "Altura", "Sinalética", "Calçado", "Roupa", "Informático", "Imobilizado", "Tecnológico", "Veículos", "Economato", "Digi Romania", "Colaboradores", "Combustíveis", "Comunicações", "Conservação de Edifícios", "Honorários", "Limpeza", "Policiamentos", "Quotas", "Rendas", "Seguros", "Serviços Bancários", "Sucata", "Transporte", "Vigilância", "Coimas", "IUC", "Água", "Eletricidade", "Nokia", "Ericsson"
+  ];
 
   useEffect(() => {
     const fetchItem = async () => {
@@ -50,7 +60,8 @@ const EditarItem = () => {
             unidadePeso: data.unidadePeso || '',
             observacoes: data.observacoes || '',
             unidadearmazenamento: data.unidadearmazenamento || '',
-            quantidade: data.quantidade || '' // campo adicionado
+            quantidade: data.quantidade || '', // campo adicionado
+            tipocontrolo: data.tipocontrolo || '' // campo adicionado
           });
           setEspecificacoes(data.especificacoes || []);
           setImagensExistentes(data.imagens || []);
@@ -97,21 +108,9 @@ const EditarItem = () => {
     setSelectedFiles(prev => prev.filter((_, i) => i !== index));
   };
 
-  const removeImagemExistente = async (imgId) => {
-    try {
-      const token = localStorage.getItem('token');
-      const response = await fetch(`/api/imagens/${imgId}`, {
-        method: 'DELETE',
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      if (response.ok) {
-        setImagensExistentes(prev => prev.filter(img => img.id !== imgId));
-      } else {
-        setToast({ type: 'error', message: 'Erro ao remover imagem.' });
-      }
-    } catch {
-      setToast({ type: 'error', message: 'Erro ao remover imagem.' });
-    }
+  const marcarImagemParaRemocao = (imgId) => {
+    setImagensRemovidas(prev => [...prev, imgId]);
+    setImagensExistentes(prev => prev.filter(img => img.id !== imgId));
   };
 
   const addEspecificacao = () => {
@@ -141,6 +140,9 @@ const EditarItem = () => {
       });
       if (especificacoes.length > 0) {
         submitData.append('especificacoes', JSON.stringify(especificacoes));
+      }
+      if (imagensRemovidas.length > 0) {
+        submitData.append('imagensRemovidas', JSON.stringify(imagensRemovidas));
       }
       const response = await fetch(`/api/itens/${id}`, {
         method: 'PUT',
@@ -266,43 +268,61 @@ const EditarItem = () => {
                 <label style={{ display: 'block', color: '#374151', fontWeight: 600, marginBottom: 6, fontSize: 14 }}>
                   Família
                 </label>
-                <input
-                  type="text"
+                <select
                   name="familia"
                   value={formData.familia}
-                  onChange={handleInputChange}
+                  onChange={e => setFormData(prev => ({ ...prev, familia: e.target.value }))}
                   style={{
                     width: '100%',
-                    border: '1.5px solid #d1d5db',
-                    borderRadius: 8,
-                    padding: '12px 16px',
-                    fontSize: 14,
+                    border: '1px solid #bfc4ca',
+                    borderRadius: 6,
+                    padding: '8px 12px',
+                    fontSize: 15,
+                    background: '#f7f8fa',
+                    color: '#222',
                     outline: 'none',
-                    transition: 'border 0.2s'
+                    boxShadow: '0 1px 2px rgba(9,21,255,0.03)',
+                    transition: 'border 0.2s, box-shadow 0.2s'
                   }}
-                  placeholder="Ex: Eletrônicos, Ferramentas, etc."
-                />
+                  onFocus={e => e.target.style.border = '1.5px solid #0915FF'}
+                  onBlur={e => e.target.style.border = '1px solid #bfc4ca'}
+                  required
+                >
+                  <option value="">Selecione a família</option>
+                  {familias.map(fam => (
+                    <option key={fam} value={fam}>{fam}</option>
+                  ))}
+                </select>
               </div>
               <div style={{ flex: 1 }}>
                 <label style={{ display: 'block', color: '#374151', fontWeight: 600, marginBottom: 6, fontSize: 14 }}>
                   Subfamília
                 </label>
-                <input
-                  type="text"
+                <select
                   name="subfamilia"
                   value={formData.subfamilia}
-                  onChange={handleInputChange}
+                  onChange={e => setFormData(prev => ({ ...prev, subfamilia: e.target.value }))}
                   style={{
                     width: '100%',
-                    border: '1.5px solid #d1d5db',
-                    borderRadius: 8,
-                    padding: '12px 16px',
-                    fontSize: 14,
+                    border: '1px solid #bfc4ca',
+                    borderRadius: 6,
+                    padding: '8px 12px',
+                    fontSize: 15,
+                    background: '#f7f8fa',
+                    color: '#222',
                     outline: 'none',
-                    transition: 'border 0.2s'
+                    boxShadow: '0 1px 2px rgba(9,21,255,0.03)',
+                    transition: 'border 0.2s, box-shadow 0.2s'
                   }}
-                  placeholder="Ex: Smartphones, Chaves, etc."
-                />
+                  onFocus={e => e.target.style.border = '1.5px solid #0915FF'}
+                  onBlur={e => e.target.style.border = '1px solid #bfc4ca'}
+                  required
+                >
+                  <option value="">Selecione a subfamília</option>
+                  {subfamilias.map(sub => (
+                    <option key={sub} value={sub}>{sub}</option>
+                  ))}
+                </select>
               </div>
             </div>
             {/* Setor */}
@@ -324,7 +344,7 @@ const EditarItem = () => {
                   outline: 'none',
                   transition: 'border 0.2s'
                 }}
-                placeholder="Ex: Almoxarifado, Produção, Escritório, etc."
+                placeholder="Ex: Fibra, Móvel, Cliente, etc..."
               />
             </div>
             {/* Dimensões */}
@@ -489,14 +509,14 @@ const EditarItem = () => {
                   resize: 'vertical',
                   minHeight: 80
                 }}
-                placeholder="Observações adicionais sobre o item"
+                placeholder="Observações adicionais sobre o item. (OPCIONAL)"
                 rows="3"
               />
             </div>
-            {/* Unidade de Armazenamento */}
+            {/* Unidade base */}
             <div>
               <label style={{ display: 'block', color: '#374151', fontWeight: 600, marginBottom: 6, fontSize: 14 }}>
-                Unidade de Armazenamento <span style={{ color: '#ef4444' }}>*</span>
+                Unidade base <span style={{ color: '#ef4444' }}>*</span>
               </label>
               <select
                 name="unidadearmazenamento"
@@ -504,19 +524,52 @@ const EditarItem = () => {
                 onChange={handleInputChange}
                 style={{
                   width: '100%',
-                  border: '1.5px solid #d1d5db',
-                  borderRadius: 8,
-                  padding: '12px 16px',
-                  fontSize: 14,
+                  border: '1px solid #bfc4ca',
+                  borderRadius: 6,
+                  padding: '8px 12px',
+                  fontSize: 15,
+                  background: '#f7f8fa',
+                  color: '#222',
                   outline: 'none',
-                  transition: 'border 0.2s',
-                  background: '#fff'
+                  boxShadow: '0 1px 2px rgba(9,21,255,0.03)',
+                  transition: 'border 0.2s, box-shadow 0.2s'
                 }}
                 required
               >
                 <option value="">Selecione</option>
-                <option value="Unidades">Unidades</option>
-                <option value="Metros">Metros</option>
+                <option value="KG">KG</option>
+                <option value="MT">MT</option>
+                <option value="UN">UN</option>
+                <option value="LT">LT</option>
+              </select>
+            </div>
+            {/* Tipo de controlo */}
+            <div>
+              <label style={{ display: 'block', color: '#374151', fontWeight: 600, marginBottom: 6, fontSize: 14 }}>
+                Tipo de controlo <span style={{ color: '#ef4444' }}>*</span>
+              </label>
+              <select
+                name="tipocontrolo"
+                value={formData.tipocontrolo || ''}
+                onChange={handleInputChange}
+                style={{
+                  width: '100%',
+                  border: '1px solid #bfc4ca',
+                  borderRadius: 6,
+                  padding: '8px 12px',
+                  fontSize: 15,
+                  background: '#f7f8fa',
+                  color: '#222',
+                  outline: 'none',
+                  boxShadow: '0 1px 2px rgba(9,21,255,0.03)',
+                  transition: 'border 0.2s, box-shadow 0.2s'
+                }}
+                required
+              >
+                <option value="">Selecione</option>
+                <option value="S/N">S/N</option>
+                <option value="LOTE">LOTE</option>
+                <option value="Quantidade">Quantidade</option>
               </select>
             </div>
           </form>
@@ -556,7 +609,7 @@ const EditarItem = () => {
                       />
                       <button
                         type="button"
-                        onClick={() => removeImagemExistente(img.id)}
+                        onClick={() => marcarImagemParaRemocao(img.id)}
                         style={{
                           position: 'absolute',
                           top: -8,

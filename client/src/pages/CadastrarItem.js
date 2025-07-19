@@ -193,6 +193,14 @@ const CadastrarItem = () => {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
+  // Listas independentes de famílias e subfamílias
+  const familias = [
+    "Consumível", "EPC", "EPI", "Equipamentos", "Ferramentas", "Materiais", "Imobilizado", "Software", "Serviços", "Licenças", "Impostos", "Donativos", "Despesas", "Juros", "Câmbio", "Penalidades"
+  ];
+  const subfamilias = [
+    "Consumível", "Acessórios", "Altura", "Sinalética", "Calçado", "Roupa", "Informático", "Imobilizado", "Tecnológico", "Veículos", "Economato", "Digi Romania", "Colaboradores", "Combustíveis", "Comunicações", "Conservação de Edifícios", "Honorários", "Limpeza", "Policiamentos", "Quotas", "Rendas", "Seguros", "Serviços Bancários", "Sucata", "Transporte", "Vigilância", "Coimas", "IUC", "Água", "Eletricidade", "Nokia", "Ericsson"
+  ];
+
   return (
     <div className={`min-h-screen bg-[#e5e5e5] pb-12 flex flex-col items-center${isMobile ? ' cadastro-mobile-stack' : ''}`}>
       {toast && (
@@ -291,43 +299,61 @@ const CadastrarItem = () => {
                 <label style={{ display: 'block', color: '#374151', fontWeight: 600, marginBottom: 6, fontSize: 14 }}>
                   Família
                 </label>
-                <input
-                  type="text"
+                <select
                   name="familia"
                   value={formData.familia}
-                  onChange={handleInputChange}
+                  onChange={e => setFormData(prev => ({ ...prev, familia: e.target.value }))}
                   style={{
                     width: '100%',
-                    border: '1.5px solid #d1d5db',
-                    borderRadius: 8,
-                    padding: '12px 16px',
-                    fontSize: 14,
+                    border: '1px solid #bfc4ca',
+                    borderRadius: 6,
+                    padding: '8px 12px',
+                    fontSize: 15,
+                    background: '#f7f8fa',
+                    color: '#222',
                     outline: 'none',
-                    transition: 'border 0.2s'
+                    boxShadow: '0 1px 2px rgba(9,21,255,0.03)',
+                    transition: 'border 0.2s, box-shadow 0.2s'
                   }}
-                  placeholder="Ex: Eletrônicos, Ferramentas, etc."
-                />
+                  onFocus={e => e.target.style.border = '1.5px solid #0915FF'}
+                  onBlur={e => e.target.style.border = '1px solid #bfc4ca'}
+                  required
+                >
+                  <option value="">Selecione a família</option>
+                  {familias.map(fam => (
+                    <option key={fam} value={fam}>{fam}</option>
+                  ))}
+                </select>
               </div>
               <div style={{ flex: 1 }}>
                 <label style={{ display: 'block', color: '#374151', fontWeight: 600, marginBottom: 6, fontSize: 14 }}>
                   Subfamília
                 </label>
-                <input
-                  type="text"
+                <select
                   name="subfamilia"
                   value={formData.subfamilia}
-                  onChange={handleInputChange}
+                  onChange={e => setFormData(prev => ({ ...prev, subfamilia: e.target.value }))}
                   style={{
                     width: '100%',
-                    border: '1.5px solid #d1d5db',
-                    borderRadius: 8,
-                    padding: '12px 16px',
-                    fontSize: 14,
+                    border: '1px solid #bfc4ca',
+                    borderRadius: 6,
+                    padding: '8px 12px',
+                    fontSize: 15,
+                    background: '#f7f8fa',
+                    color: '#222',
                     outline: 'none',
-                    transition: 'border 0.2s'
+                    boxShadow: '0 1px 2px rgba(9,21,255,0.03)',
+                    transition: 'border 0.2s, box-shadow 0.2s'
                   }}
-                  placeholder="Ex: Smartphones, Chaves, etc."
-                />
+                  onFocus={e => e.target.style.border = '1.5px solid #0915FF'}
+                  onBlur={e => e.target.style.border = '1px solid #bfc4ca'}
+                  required
+                >
+                  <option value="">Selecione a subfamília</option>
+                  {subfamilias.map(sub => (
+                    <option key={sub} value={sub}>{sub}</option>
+                  ))}
+                </select>
               </div>
             </div>
             {/* Setor */}
@@ -349,7 +375,7 @@ const CadastrarItem = () => {
                   outline: 'none',
                   transition: 'border 0.2s'
                 }}
-                placeholder="Ex: Almoxarifado, Produção, Escritório, etc."
+                placeholder="Ex: Fibra, Móvel, cliente e etc."
               />
             </div>
 
@@ -522,10 +548,10 @@ const CadastrarItem = () => {
               />
             </div>
 
-            {/* Unidade de Armazenamento */}
+            {/* Unidade base */}
             <div>
               <label style={{ display: 'block', color: '#374151', fontWeight: 600, marginBottom: 6, fontSize: 14 }}>
-                Unidade de Armazenamento <span style={{ color: '#ef4444' }}>*</span>
+                Unidade base <span style={{ color: '#ef4444' }}>*</span>
               </label>
               <select
                 name="unidadearmazenamento"
@@ -533,19 +559,53 @@ const CadastrarItem = () => {
                 onChange={handleInputChange}
                 style={{
                   width: '100%',
-                  border: '1.5px solid #d1d5db',
-                  borderRadius: 8,
-                  padding: '12px 16px',
-                  fontSize: 14,
+                  border: '1px solid #bfc4ca',
+                  borderRadius: 6,
+                  padding: '8px 12px',
+                  fontSize: 15,
+                  background: '#f7f8fa',
+                  color: '#222',
                   outline: 'none',
-                  transition: 'border 0.2s',
-                  background: '#fff'
+                  boxShadow: '0 1px 2px rgba(9,21,255,0.03)',
+                  transition: 'border 0.2s, box-shadow 0.2s'
                 }}
                 required
               >
                 <option value="">Selecione</option>
-                <option value="Unidades">Unidades</option>
-                <option value="Metros">Metros</option>
+                <option value="KG">KG</option>
+                <option value="MT">MT</option>
+                <option value="UN">UN</option>
+                <option value="LT">LT</option>
+              </select>
+            </div>
+
+            {/* Tipo de controlo */}
+            <div>
+              <label style={{ display: 'block', color: '#374151', fontWeight: 600, marginBottom: 6, fontSize: 14 }}>
+                Tipo de controlo <span style={{ color: '#ef4444' }}>*</span>
+              </label>
+              <select
+                name="tipocontrolo"
+                value={formData.tipocontrolo || ''}
+                onChange={handleInputChange}
+                style={{
+                  width: '100%',
+                  border: '1px solid #bfc4ca',
+                  borderRadius: 6,
+                  padding: '8px 12px',
+                  fontSize: 15,
+                  background: '#f7f8fa',
+                  color: '#222',
+                  outline: 'none',
+                  boxShadow: '0 1px 2px rgba(9,21,255,0.03)',
+                  transition: 'border 0.2s, box-shadow 0.2s'
+                }}
+                required
+              >
+                <option value="">Selecione</option>
+                <option value="S/N">S/N</option>
+                <option value="LOTE">LOTE</option>
+                <option value="Quantidade">Quantidade</option>
               </select>
             </div>
 

@@ -17,6 +17,7 @@ import ImportarStockNacional from './pages/ImportarStockNacional';
 import CadastroUsuario from './pages/CadastroUsuario';
 import AdminUsuarios from './pages/AdminUsuarios';
 import ImportarItens from './pages/ImportarItens';
+import ExportarDados from './pages/ExportarDados';
 import './App.css';
 
 function App() {
@@ -74,6 +75,7 @@ function App() {
                     </ProtectedRoute>
                   } 
                 />
+                <Route path="/exportar" element={<ExportarDados />} />
                 <Route path="/cadastro" element={<CadastroUsuario />} />
                 <Route 
                   path="/admin-usuarios" 

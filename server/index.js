@@ -179,6 +179,14 @@ app.post('/api/importar-excel', authenticateToken, excelUpload.single('arquivo')
       importStatus[importId].total = data.length;
       let processados = 0;
       const BATCH_SIZE = 50;
+      // Coletar todos os códigos do arquivo
+      const codigosAtivos = new Set(data.map(row => row['Artigo']?.toString().trim()).filter(Boolean));
+      // Marcar todos os itens do banco como inativos inicialmente
+      await pool.query('UPDATE itens SET ativo = false');
+      // Marcar como ativo os itens presentes no arquivo
+      if (codigosAtivos.size > 0) {
+        await pool.query('UPDATE itens SET ativo = true WHERE codigo = ANY($1)', [Array.from(codigosAtivos)]);
+      }
       for (let batchStart = 0; batchStart < data.length; batchStart += BATCH_SIZE) {
         const batch = data.slice(batchStart, batchStart + BATCH_SIZE);
         await Promise.all(batch.map(async (row, i) => {
@@ -417,12 +425,15 @@ app.get('/api/verify-token', authenticateToken, (req, res) => {
 
 // Listar todos os itens (público) SEM paginação
 app.get('/api/itens', (req, res) => {
+  const incluirInativos = req.query.incluirInativos === 'true';
+  const whereAtivo = incluirInativos ? '' : 'WHERE i.ativo = true';
   const query = `
     SELECT i.*, 
            STRING_AGG(DISTINCT img.caminho, ',') as imagens,
            COUNT(DISTINCT img.id) as total_imagens
     FROM itens i
     LEFT JOIN imagens_itens img ON i.id = img.item_id
+    ${whereAtivo}
     GROUP BY i.id
     ORDER BY 
       (i.codigo ~ '^[0-9]') DESC, -- Prioriza códigos que começam com número
@@ -551,15 +562,16 @@ app.post('/api/itens', authenticateToken, upload.array('imagens', 10), (req, res
       unidade: req.body.unidade || '',
       peso: pesoFinal,
       unidadePeso: req.body.unidadePeso || '',
-      unidadearmazenamento: req.body.unidadeArmazenamento || ''
+      unidadearmazenamento: req.body.unidadeArmazenamento || '',
+      ativo: true // Sempre ativo ao cadastrar
     };
 
     pool.query(`
-      INSERT INTO itens (nome, descricao, categoria, codigo, preco, quantidade, localizacao, observacoes, familia, subfamilia, setor, comprimento, largura, altura, unidade, peso, unidadePeso, unidadearmazenamento)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+      INSERT INTO itens (nome, descricao, categoria, codigo, preco, quantidade, localizacao, observacoes, familia, subfamilia, setor, comprimento, largura, altura, unidade, peso, unidadePeso, unidadearmazenamento, ativo)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
       RETURNING id
     `, [itemData.nome, itemData.descricao, itemData.categoria, itemData.codigo, itemData.preco, itemData.quantidade, itemData.localizacao, itemData.observacoes,
-        itemData.familia, itemData.subfamilia, itemData.setor, itemData.comprimento, itemData.largura, itemData.altura, itemData.unidade, itemData.peso, itemData.unidadePeso, itemData.unidadearmazenamento],
+        itemData.familia, itemData.subfamilia, itemData.setor, itemData.comprimento, itemData.largura, itemData.altura, itemData.unidade, itemData.peso, itemData.unidadePeso, itemData.unidadearmazenamento, itemData.ativo],
       (err, result) => {
         if (err) {
           return res.status(500).json({ error: err.message });
@@ -824,6 +836,29 @@ app.put('/api/itens/:id', authenticateToken, upload.array('imagens', 10), (req, 
     }
     if (result.rowCount === 0) {
       return res.status(404).json({ error: 'Item não encontrado' });
+    }
+
+    // Remover imagens marcadas para exclusão
+    if (req.body.imagensRemovidas) {
+      try {
+        const imagensRemovidas = JSON.parse(req.body.imagensRemovidas);
+        for (const imgId of imagensRemovidas) {
+          // Buscar caminho da imagem
+          const { rows } = await pool.query('SELECT caminho FROM imagens_itens WHERE id = $1 AND item_id = $2', [imgId, itemId]);
+          if (rows.length > 0) {
+            let key = rows[0].caminho;
+            // Se for URL completa, extrair apenas o nome do arquivo
+            if (key.startsWith('http')) {
+              const url = new URL(key);
+              key = decodeURIComponent(url.pathname.replace(/^\//, ''));
+            }
+            await deleteFromS3(key);
+            await pool.query('DELETE FROM imagens_itens WHERE id = $1', [imgId]);
+          }
+        }
+      } catch (err) {
+        return res.status(500).json({ error: 'Erro ao remover imagens: ' + err.message });
+      }
     }
 
     // Salvar novas imagens, se enviadas
@@ -1144,6 +1179,105 @@ app.get('/api/exportar-json', authenticateToken, async (req, res) => {
     });
   } catch (error) {
     res.status(500).json({ error: 'Erro ao exportar dados.', details: error.message });
+  }
+});
+
+// Endpoint para exportar itens em Excel
+app.get('/api/exportar-itens', authenticateToken, async (req, res) => {
+  try {
+    const { rows: itens } = await pool.query(`
+      SELECT codigo, descricao, unidadearmazenamento, familia, subfamilia, setor, ativo, quantidade 
+      FROM itens 
+      WHERE ativo = true
+      ORDER BY codigo
+    `);
+    
+    if (!itens.length) {
+      return res.status(404).json({ error: 'Nenhum item encontrado.' });
+    }
+    
+    const ExcelJS = require('exceljs');
+    const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet('Itens');
+    
+    // Definir cabeçalhos
+    worksheet.columns = [
+      { header: 'Código', key: 'codigo', width: 12 },
+      { header: 'Descrição', key: 'descricao', width: 40 },
+      { header: 'Unidade base', key: 'unidade_base', width: 16 },
+      { header: 'Família', key: 'familia', width: 18 },
+      { header: 'Subfamília', key: 'subfamilia', width: 18 },
+      { header: 'Setor', key: 'setor', width: 18 },
+      { header: 'Ativo', key: 'ativo', width: 8 },
+      { header: 'Quantidade', key: 'quantidade', width: 12 }
+    ];
+    
+    // Adicionar dados
+    itens.forEach(item => {
+      worksheet.addRow({
+        codigo: item.codigo,
+        descricao: item.descricao,
+        unidade_base: item.unidadearmazenamento,
+        familia: item.familia,
+        subfamilia: item.subfamilia,
+        setor: item.setor,
+        ativo: item.ativo,
+        quantidade: item.quantidade
+      });
+    });
+    
+    // Calcular largura automática para a coluna Descrição
+    let maxDescricaoLength = 0;
+    itens.forEach(item => {
+      const length = item.descricao ? item.descricao.length : 0;
+      if (length > maxDescricaoLength) {
+        maxDescricaoLength = length;
+      }
+    });
+    
+    // Ajustar largura da coluna Descrição (mínimo 40, máximo 80)
+    const descricaoWidth = Math.max(40, Math.min(80, maxDescricaoLength + 5));
+    worksheet.getColumn('descricao').width = descricaoWidth;
+    
+    // Formatar cabeçalho
+    const headerRow = worksheet.getRow(1);
+    headerRow.font = { bold: true, color: { argb: 'FF000000' } };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFD3D3D3' }
+    };
+    headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+    
+    // Aplicar bordas a todas as células (incluindo células vazias)
+    const lastRow = worksheet.rowCount;
+    const lastCol = worksheet.columnCount;
+    
+    for (let row = 1; row <= lastRow; row++) {
+      for (let col = 1; col <= lastCol; col++) {
+        const cell = worksheet.getCell(row, col);
+        cell.border = {
+          top: { style: 'thin', color: { argb: 'FF000000' } },
+          left: { style: 'thin', color: { argb: 'FF000000' } },
+          bottom: { style: 'thin', color: { argb: 'FF000000' } },
+          right: { style: 'thin', color: { argb: 'FF000000' } }
+        };
+      }
+    }
+    
+    // Congelar primeira linha
+    worksheet.views = [
+      { state: 'frozen', ySplit: 1 }
+    ];
+    
+    // Gerar buffer
+    const buffer = await workbook.xlsx.writeBuffer();
+    
+    res.setHeader('Content-Disposition', 'attachment; filename="catalogo_itens.xlsx"');
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.send(buffer);
+  } catch (err) {
+    res.status(500).json({ error: 'Erro ao exportar itens: ' + err.message });
   }
 });
 

@@ -45,6 +45,7 @@ const ListarItens = () => {
 
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 600);
   const [naoCadastrados, setNaoCadastrados] = useState([]);
+  const [mostrarInativos, setMostrarInativos] = useState(false);
 
   // Buscar artigos não cadastrados do localStorage ao montar
   useEffect(() => {
@@ -102,7 +103,8 @@ const ListarItens = () => {
   const fetchItens = async () => {
     setLoading(true);
     try {
-      const response = await fetch(`/api/itens?page=${paginaAtual}&limit=10`); // itensPorPagina não usado
+      const url = mostrarInativos ? `/api/itens?incluirInativos=true&page=${paginaAtual}&limit=10` : `/api/itens?page=${paginaAtual}&limit=10`;
+      const response = await fetch(url); // itensPorPagina não usado
       if (response.ok) {
         const data = await response.json();
         let arr = [];
@@ -123,8 +125,9 @@ const ListarItens = () => {
     }
   };
 
-  // Calcular itens da página atual após filtrar:
+  // Filtro de itens ativos/inativos
   const itensFiltrados = Array.isArray(itens) ? itens.filter(item => {
+    if (!mostrarInativos && !item.ativo) return false;
     const termo = searchTerm.trim().toLowerCase();
     if (!termo) return true;
     return (
@@ -220,6 +223,12 @@ const ListarItens = () => {
       setImageLoading(false);
     }
   };
+
+  // Atualizar itens ao mudar o checkbox de mostrar inativos
+  useEffect(() => {
+    fetchItens();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [paginaAtual, mostrarInativos]);
 
   return (
     <div className={`bg-[#e5e5e5] flex flex-col items-center${isMobile ? ' catalogo-mobile-stack' : ''}`}>
@@ -690,6 +699,19 @@ const ListarItens = () => {
               </table>
                 )}
               {/* Adicionar controles de paginação centralizados abaixo da tabela: */}
+              {/* Checkbox para mostrar inativos */}
+              <div style={{ margin: '16px 0', display: 'flex', alignItems: 'center', gap: 8 }}>
+                <input
+                  type="checkbox"
+                  id="mostrar-inativos"
+                  checked={mostrarInativos}
+                  onChange={e => setMostrarInativos(e.target.checked)}
+                  style={{ width: 18, height: 18 }}
+                />
+                <label htmlFor="mostrar-inativos" style={{ fontSize: 15, color: '#374151', fontWeight: 500 }}>
+                  Mostrar Inativos
+                </label>
+              </div>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-start', width: '100%', marginTop: 18, marginBottom: 0, minHeight: 40 }}>
                   {/* Espaço fixo para o loader, para não mover a paginação */}
                   <div style={{ width: 110, display: 'flex', alignItems: 'center', justifyContent: 'flex-start' }}>

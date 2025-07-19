@@ -23,7 +23,7 @@ const Navbar = () => {
     <header className="navbar-digi">
       <div className="navbar-digi-content">
         <div className="navbar-digi-logo">DIGI</div>
-        <nav className={`navbar-digi-menu ${mobileOpen ? 'open' : ''}`}>
+        <nav className={`navbar-digi-menu ${mobileOpen ? 'open' : ''}`} style={{ overflowX: 'auto', whiteSpace: 'nowrap', maxWidth: '100vw' }}>
           {menuItems.map((item) => (
             <div
               key={item.label}
@@ -89,6 +89,11 @@ const Navbar = () => {
           {isAuthenticated && user && user.role === 'admin' && (
             <div className="navbar-digi-menu-item">
               <Link to="/admin-usuarios" onClick={() => setMobileOpen(false)}>USUÁRIOS</Link>
+            </div>
+          )}
+          {isAuthenticated && user && user.role === 'admin' && (
+            <div className="navbar-digi-menu-item">
+              <Link to="/exportar" onClick={() => setMobileOpen(false)}>EXPORTAR DADOS</Link>
             </div>
           )}
           {isAuthenticated && mobileOpen && (
