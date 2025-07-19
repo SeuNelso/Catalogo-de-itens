@@ -787,6 +787,10 @@ app.get('/api/buscar', (req, res) => {
 
 // Atualizar item (protegido)
 app.put('/api/itens/:id', authenticateToken, upload.array('imagens', 10), (req, res) => {
+  // Verificar permissão para editar
+  if (!req.user || (req.user.role !== 'admin' && req.user.role !== 'controller')) {
+    return res.status(403).json({ error: 'Apenas administradores ou controllers podem editar itens.' });
+  }
   const itemId = req.params.id;
   const {
     nome,

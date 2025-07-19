@@ -33,7 +33,14 @@ function App() {
                 <Route path="/login" element={<Login />} />
                 <Route path="/listar" element={<ProtectedRoute><ListarItens /></ProtectedRoute>} />
                 <Route path="/item/:id" element={<DetalhesItem />} />
-                <Route path="/editar/:id" element={<ProtectedRoute><EditarItem /></ProtectedRoute>} />
+                <Route 
+                  path="/editar/:id" 
+                  element={
+                    <ProtectedRoute allowedRoles={['admin', 'controller']}>
+                      <EditarItem />
+                    </ProtectedRoute>
+                  } 
+                />
                 <Route 
                   path="/excluir-artigo" 
                   element={

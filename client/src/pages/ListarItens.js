@@ -42,6 +42,10 @@ const ListarItens = () => {
 
   const { user } = useAuth();
   const isAdmin = user && user.role === 'admin';
+  const canEdit = user && (user.role === 'admin' || user.role === 'controller');
+  
+  // Verificação adicional de segurança
+  const userCanEdit = Boolean(canEdit);
 
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 600);
   const [naoCadastrados, setNaoCadastrados] = useState([]);
@@ -506,7 +510,7 @@ const ListarItens = () => {
                     <div style={{ fontWeight: 600, color: '#222', fontSize: 15 }}>Quantidade: <span style={{ color: item.quantidade > 0 ? '#1a7f37' : '#b91c1c', background: item.quantidade > 0 ? '#e6fbe6' : '#ffeaea', borderRadius: 6, padding: '2px 10px', marginLeft: 4 }}>{item.quantidade != null && item.quantidade !== '' ? item.quantidade : 0}</span></div>
                     <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
                       <button onClick={() => navigate(`/item/${item.id}`)} style={{ background: '#0915FF', color: '#fff', border: 'none', borderRadius: 8, padding: '10px 0', fontWeight: 700, fontSize: 15, cursor: 'pointer', width: '100%' }}>Detalhes</button>
-                      {user && (
+                      {userCanEdit && (
                         <button onClick={() => navigate(`/editar/${item.id}`)} style={{ background: '#FFD600', color: '#0915FF', border: 'none', borderRadius: 8, padding: '10px 0', fontWeight: 700, fontSize: 15, cursor: 'pointer', width: '100%' }}>Editar</button>
                       )}
                     </div>
@@ -712,7 +716,7 @@ const ListarItens = () => {
                           >
                             Detalhes
                           </button>
-                          {isAdmin && (
+                          {userCanEdit && (
                             <button
                               className="px-4 py-1 rounded bg-[#FFB800] text-black font-semibold text-xs hover:bg-[#ffe066] transition-all"
                               onClick={() => navigate(`/editar/${item.id}`)}
