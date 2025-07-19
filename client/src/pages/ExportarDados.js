@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Save, Box, CheckCircle, XCircle } from 'react-feather';
+import { Save, CheckCircle, XCircle } from 'react-feather';
 
 const ExportarDados = () => {
   const [loading, setLoading] = useState(false);
