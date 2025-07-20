@@ -144,7 +144,6 @@ const fixInvisibleText = () => {
   const hasVisibleText = (element) => {
     const computedStyle = window.getComputedStyle(element);
     const color = computedStyle.color;
-    const backgroundColor = computedStyle.backgroundColor;
     
     // Verificar se a cor do texto é muito clara ou transparente
     if (color === 'rgba(0, 0, 0, 0)' || color === 'transparent' || 
@@ -169,21 +168,7 @@ const fixInvisibleText = () => {
            backgroundColor.includes('#060BCC');
   };
 
-  // Função para corrigir texto invisível
-  const fixElement = (element) => {
-    const isNavbar = element.closest('.navbar-digi');
-    const hasBlue = hasBlueBackground(element);
-    
-    if (isNavbar || hasBlue) {
-      element.style.color = '#fff !important';
-      element.style.textShadow = '0 1px 2px rgba(0, 0, 0, 0.1)';
-    } else {
-      element.style.color = '#333 !important';
-    }
-    
-    element.style.textRendering = 'optimizeLegibility';
-    element.style.fontDisplay = 'swap';
-  };
+
 
   // Verificar todos os elementos de texto
   const textElements = document.querySelectorAll('h1, h2, h3, h4, h5, h6, p, span, div, a, button, input, textarea, label, td, th, svg');
