@@ -197,10 +197,10 @@ const fixInvisibleText = () => {
                           element.textContent === 'SAIR' ||
                           element.textContent === 'Sair' ||
                           element.textContent === 'sair';
-    const isCameraButton = element.textContent && element.textContent.toLowerCase().includes('câmera') || 
-                          element.textContent && element.textContent.toLowerCase().includes('camera') ||
-                          element.textContent && element.textContent.toLowerCase().includes('tirar foto') ||
-                          element.textContent && element.textContent.toLowerCase().includes('enviar imagem');
+    const isCameraButton = (element.textContent && element.textContent.toLowerCase().includes('câmera')) || 
+                          (element.textContent && element.textContent.toLowerCase().includes('camera')) ||
+                          (element.textContent && element.textContent.toLowerCase().includes('tirar foto')) ||
+                          (element.textContent && element.textContent.toLowerCase().includes('enviar imagem'));
     const isLoginButton = element.textContent === 'Login' ||
                          element.textContent === 'login' ||
                          element.closest('a[href="/login"]') ||

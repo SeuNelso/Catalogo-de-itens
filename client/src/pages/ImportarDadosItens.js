@@ -415,15 +415,15 @@ const ImportarDadosItens = () => {
           
           <button
             onClick={handleImport}
-            disabled={!selectedFile || loading}
+            disabled={(!selectedFile) || loading}
             style={{
-              background: selectedFile && !loading ? '#0915FF' : '#e5e7eb',
-              color: selectedFile && !loading ? '#fff' : '#9ca3af',
+              background: (selectedFile && !loading) ? '#0915FF' : '#e5e7eb',
+              color: (selectedFile && !loading) ? '#fff' : '#9ca3af',
               border: 'none',
               borderRadius: 8,
               padding: isMobile ? '12px 24px' : '14px 28px',
               fontWeight: 600,
-              cursor: selectedFile && !loading ? 'pointer' : 'not-allowed',
+              cursor: (selectedFile && !loading) ? 'pointer' : 'not-allowed',
               fontSize: isMobile ? 14 : 16,
               display: 'flex',
               alignItems: 'center',
