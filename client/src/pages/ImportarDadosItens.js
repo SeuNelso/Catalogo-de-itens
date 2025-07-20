@@ -8,7 +8,6 @@ const ImportarDadosItens = () => {
   const navigate = useNavigate();
   const { user } = useAuth();
   const [selectedFile, setSelectedFile] = useState(null);
-  const [preview, setPreview] = useState(null);
   const [loading, setLoading] = useState(false);
   const [importStatus, setImportStatus] = useState(null);
   const [toast, setToast] = useState(null);
@@ -43,7 +42,6 @@ const ImportarDadosItens = () => {
         return;
       }
       setSelectedFile(file);
-      setPreview(null);
       setImportStatus(null);
     }
   };
