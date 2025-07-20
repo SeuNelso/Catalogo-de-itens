@@ -368,6 +368,148 @@ app.post('/api/importar-itens', authenticateToken, excelUploadItens.single('arqu
   });
 });
 
+// --- Importação de dados dos itens existentes ---
+const dadosItensUpload = multer({ dest: 'uploads/' });
+app.post('/api/importar-dados-itens', authenticateToken, dadosItensUpload.single('arquivo'), async (req, res) => {
+  if (!req.user || (req.user.role !== 'admin' && req.user.role !== 'controller')) {
+    return res.status(403).json({ error: 'Apenas administradores ou controllers podem importar dados.' });
+  }
+  if (!req.file) {
+    return res.status(400).json({ error: 'Arquivo não enviado.' });
+  }
+
+  const importId = uuidv4();
+  importStatus[importId] = {
+    status: 'iniciando',
+    total: 0,
+    processados: 0,
+    atualizados: 0,
+    ignorados: 0,
+    erros: [],
+    concluido: false,
+    iniciadoEm: new Date(),
+    terminadoEm: null
+  };
+
+  res.json({ 
+    message: 'Importação de dados iniciada', 
+    importId,
+    details: 'Os dados serão processados em segundo plano'
+  });
+
+  setImmediate(async () => {
+    try {
+      const XLSX = require('xlsx');
+      const fs = require('fs');
+      const workbook = XLSX.readFile(req.file.path);
+      const sheetName = workbook.SheetNames[0];
+      const sheet = workbook.Sheets[sheetName];
+      const data = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+
+      importStatus[importId].status = 'importando';
+      importStatus[importId].total = data.length;
+      let processados = 0;
+      let atualizados = 0;
+      let ignorados = 0;
+
+      for (const row of data) {
+        try {
+          const codigo = row['Código']?.toString().trim();
+          if (!codigo) {
+            importStatus[importId].erros.push({ 
+              linha: processados + 2, 
+              motivo: 'Código não informado' 
+            });
+            processados++;
+            importStatus[importId].processados = processados;
+            continue;
+          }
+
+          // Verificar se o item existe
+          const itemExists = await pool.query('SELECT id FROM itens WHERE codigo = $1', [codigo]);
+          if (itemExists.rows.length === 0) {
+            importStatus[importId].erros.push({ 
+              codigo, 
+              linha: processados + 2, 
+              motivo: 'Item não encontrado no sistema' 
+            });
+            ignorados++;
+            processados++;
+            importStatus[importId].processados = processados;
+            continue;
+          }
+
+          const itemId = itemExists.rows[0].id;
+
+          // Preparar dados para atualização
+          const updateData = {};
+          const camposPermitidos = [
+            'familia', 'subfamilia', 'setor', 'comprimento', 'largura', 'altura', 
+            'unidade', 'peso', 'unidadePeso', 'unidadearmazenamento', 'observacoes'
+          ];
+
+          camposPermitidos.forEach(campo => {
+            const valorColuna = row[campo.charAt(0).toUpperCase() + campo.slice(1)] || 
+                               row[campo] || 
+                               row[campo.toUpperCase()];
+            if (valorColuna && valorColuna.toString().trim() !== '') {
+              updateData[campo] = valorColuna.toString().trim();
+            }
+          });
+
+          // Se há dados para atualizar
+          if (Object.keys(updateData).length > 0) {
+            const setClause = Object.keys(updateData).map((key, index) => `${key} = $${index + 2}`).join(', ');
+            const values = Object.values(updateData);
+            
+            await pool.query(
+              `UPDATE itens SET ${setClause} WHERE id = $1`,
+              [itemId, ...values]
+            );
+            atualizados++;
+          } else {
+            ignorados++;
+          }
+
+          processados++;
+          importStatus[importId].processados = processados;
+          importStatus[importId].atualizados = atualizados;
+          importStatus[importId].ignorados = ignorados;
+
+        } catch (err) {
+          importStatus[importId].erros.push({ 
+            codigo: row['Código'] || 'N/A', 
+            linha: processados + 2, 
+            motivo: 'Erro ao processar linha',
+            erro: err.message 
+          });
+          processados++;
+          importStatus[importId].processados = processados;
+        }
+      }
+
+      fs.unlinkSync(req.file.path);
+      importStatus[importId].status = 'concluido';
+      importStatus[importId].concluido = true;
+      importStatus[importId].terminadoEm = new Date();
+
+    } catch (error) {
+      importStatus[importId].status = 'erro';
+      importStatus[importId].erros.push({ erro: error.message });
+      importStatus[importId].terminadoEm = new Date();
+    }
+  });
+});
+
+// Endpoint para consultar status da importação de dados
+app.get('/api/importar-dados-itens-status/:id', authenticateToken, (req, res) => {
+  const importId = req.params.id;
+  if (!importStatus[importId]) {
+    return res.status(404).json({ error: 'Importação não encontrada.' });
+  }
+  res.json(importStatus[importId]);
+});
+
 // Inicialização do banco de dados
 // const db = new sqlite3.Database('catalogo.db');
 

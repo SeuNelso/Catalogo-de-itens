@@ -14,6 +14,7 @@ import EditarItem from './pages/EditarItem';
 import ExcluirArtigo from './pages/ExcluirArtigo';
 import ImportarExcel from './pages/ImportarExcel';
 import ImportarStockNacional from './pages/ImportarStockNacional';
+import ImportarDadosItens from './pages/ImportarDadosItens';
 import CadastroUsuario from './pages/CadastroUsuario';
 import AdminUsuarios from './pages/AdminUsuarios';
 import ImportarItens from './pages/ImportarItens';
@@ -79,6 +80,14 @@ function App() {
                   element={
                     <ProtectedRoute allowedRoles={['admin']}>
                       <ImportarItens />
+                    </ProtectedRoute>
+                  } 
+                />
+                <Route 
+                  path="/importar-dados-itens" 
+                  element={
+                    <ProtectedRoute allowedRoles={['admin', 'controller']}>
+                      <ImportarDadosItens />
                     </ProtectedRoute>
                   } 
                 />

@@ -6,15 +6,157 @@
   box-sizing: border-box;
 }
 
+/* Garantir que o texto seja sempre visível - regras de alta prioridade */
+html, body {
+  /* Forçar cores de texto visíveis */
+  color: #333 !important;
+  text-rendering: optimizeLegibility;
+  font-display: swap;
+  /* Garantir que as fontes sejam carregadas corretamente */
+  font-synthesis: none;
+  /* Prevenir problemas de renderização */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
 body {
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
     'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
     sans-serif;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
   background-color: #f5f5f5;
   line-height: 1.6;
   color: #333;
+}
+
+/* Regra global para garantir visibilidade do texto */
+* {
+  /* Garantir que o texto seja sempre visível */
+  color: #333 !important;
+  text-rendering: optimizeLegibility;
+  font-display: swap;
+}
+
+/* Exceções específicas para elementos que devem ter cores diferentes */
+.navbar-digi,
+.navbar-digi *,
+.navbar-digi-logo,
+.navbar-digi-menu,
+.navbar-digi-menu-item,
+.navbar-digi-dropdown,
+.navbar-digi-dropdown-toggle,
+.navbar-digi-user,
+.navbar-digi-username,
+.navbar-digi-logout,
+.navbar-digi-mobile-menu,
+.navbar-digi-mobile-user,
+.navbar-digi-mobile-username,
+.navbar-digi-mobile-logout {
+  color: #fff !important;
+}
+
+/* Garantir que links tenham cor visível */
+a {
+  color: #0915FF !important;
+}
+
+a:hover {
+  color: #060BCC !important;
+}
+
+/* Garantir que botões tenham texto visível */
+button {
+  color: inherit !important;
+}
+
+/* Garantir que inputs tenham texto visível */
+input, textarea {
+  color: #333 !important;
+}
+
+/* Garantir que labels tenham texto visível */
+label {
+  color: #333 !important;
+}
+
+/* Garantir que tabelas tenham texto visível */
+table, th, td {
+  color: #333 !important;
+}
+
+/* Garantir que cards tenham texto visível */
+.card, .card * {
+  color: #333 !important;
+}
+
+/* Garantir que botões tenham texto visível */
+.btn, .btn * {
+  color: inherit !important;
+}
+
+/* Fallback para casos onde a fonte não carrega */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: local('Inter'), local('Inter-Regular');
+}
+
+/* Regras específicas para garantir visibilidade do texto */
+h1, h2, h3, h4, h5, h6, p, span, div, a, button, input, textarea, label {
+  color: inherit;
+  /* Fallback para garantir que o texto seja sempre visível */
+  color: #000000 !important;
+}
+
+/* Regras de emergência para garantir visibilidade do texto */
+* {
+  /* Garantir que o texto seja sempre visível */
+  color: #ffffff !important;
+  text-rendering: optimizeLegibility;
+  font-display: swap;
+}
+
+/* Exceções para elementos que devem ter cores específicas */
+.navbar-digi,
+.navbar-digi *,
+.navbar-digi-logo,
+.navbar-digi-menu,
+.navbar-digi-menu-item,
+.navbar-digi-dropdown,
+.navbar-digi-dropdown-toggle,
+.navbar-digi-user,
+.navbar-digi-username,
+.navbar-digi-logout,
+.navbar-digi-mobile-menu,
+.navbar-digi-mobile-user,
+.navbar-digi-mobile-username,
+.navbar-digi-mobile-logout {
+  color: #fff !important;
+}
+
+/* Garantir que links tenham cor visível */
+a {
+  color: #0915FF !important;
+}
+
+a:hover {
+  color: #060BCC !important;
+}
+
+/* Garantir que botões tenham texto visível */
+button {
+  color: inherit !important;
+}
+
+/* Garantir que inputs tenham texto visível */
+input, textarea {
+  color: #333 !important;
+}
+
+/* Garantir que labels tenham texto visível */
+label {
+  color: #333 !important;
 }
 
 code {
@@ -1139,3 +1281,427 @@ html {
 }
 
 /* Paginação responsiva */ 
+
+/* Garantir que texto em caixas azuis seja branco e visível */
+.navbar-digi,
+.navbar-digi *,
+.navbar-digi-logo,
+.navbar-digi-menu,
+.navbar-digi-menu-item,
+.navbar-digi-dropdown,
+.navbar-digi-dropdown-toggle,
+.navbar-digi-user,
+.navbar-digi-username,
+.navbar-digi-logout,
+.navbar-digi-mobile-menu,
+.navbar-digi-mobile-user,
+.navbar-digi-mobile-username,
+.navbar-digi-mobile-logout,
+/* Cabeçalhos de tabela azuis */
+table thead,
+table thead *,
+table th,
+th,
+/* Botões azuis */
+.btn-primary,
+.btn-primary *,
+button[style*="background: #0915FF"],
+button[style*="background-color: #0915FF"],
+button[style*="background: #0915FF"],
+button[style*="background-color: #0915FF"],
+/* Cards azuis */
+.card[style*="background: #0915FF"],
+.card[style*="background-color: #0915FF"],
+/* Elementos com fundo azul */
+[style*="background: #0915FF"] *,
+[style*="background-color: #0915FF"] *,
+[style*="background: #4C63FF"] *,
+[style*="background-color: #4C63FF"] *,
+[style*="background: #060BCC"] *,
+[style*="background-color: #060BCC"] *,
+/* Classes específicas para elementos azuis */
+.bg-primary,
+.bg-primary *,
+.bg-blue,
+.bg-blue *,
+.header-blue,
+.header-blue *,
+.table-header,
+.table-header *,
+.blue-header,
+.blue-header * {
+  color: #fff !important;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+} 
+
+/* Regras específicas para cabeçalhos de tabela azuis */
+table thead,
+table thead th,
+table thead td,
+thead,
+thead th,
+thead td {
+  background-color: #0915FF !important;
+  color: #fff !important;
+}
+
+table thead *,
+table thead th *,
+table thead td *,
+thead *,
+thead th *,
+thead td * {
+  color: #fff !important;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+}
+
+/* Regras para elementos com fundo azul detectados dinamicamente */
+[style*="background: #0915FF"],
+[style*="background-color: #0915FF"],
+[style*="background: #4C63FF"],
+[style*="background-color: #4C63FF"],
+[style*="background: #060BCC"],
+[style*="background-color: #060BCC"] {
+  color: #fff !important;
+}
+
+[style*="background: #0915FF"] *,
+[style*="background-color: #0915FF"] *,
+[style*="background: #4C63FF"] *,
+[style*="background-color: #4C63FF"] *,
+[style*="background: #060BCC"] *,
+[style*="background-color: #060BCC"] * {
+  color: #fff !important;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+}
+
+/* Regras para botões azuis */
+.btn-primary,
+.btn-primary *,
+button.btn-primary,
+button.btn-primary * {
+  color: #fff !important;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+}
+
+/* Regras para cards azuis */
+.card[style*="background: #0915FF"],
+.card[style*="background-color: #0915FF"],
+.card.bg-primary,
+.card.bg-blue {
+  color: #fff !important;
+}
+
+.card[style*="background: #0915FF"] *,
+.card[style*="background-color: #0915FF"] *,
+.card.bg-primary *,
+.card.bg-blue * {
+  color: #fff !important;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+} 
+
+/* Regras específicas para elementos com classes azuis */
+.bg-primary,
+.bg-primary *,
+.bg-blue,
+.bg-blue *,
+.header-blue,
+.header-blue *,
+.table-header,
+.table-header *,
+.blue-header,
+.blue-header *,
+.blue-bg,
+.blue-bg * {
+  color: #fff !important;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+}
+
+/* Regras para elementos com fundo azul via CSS */
+[class*="blue"],
+[class*="primary"],
+[class*="header"] {
+  color: #fff !important;
+}
+
+[class*="blue"] *,
+[class*="primary"] *,
+[class*="header"] * {
+  color: #fff !important;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+} 
+
+/* Regras específicas para botões azuis e botão da câmera */
+.btn-primary,
+.btn-primary *,
+button.btn-primary,
+button.btn-primary *,
+button[style*="background: #0915FF"],
+button[style*="background-color: #0915FF"],
+button[style*="background: #4C63FF"],
+button[style*="background-color: #4C63FF"],
+button[style*="background: #060BCC"],
+button[style*="background-color: #060BCC"],
+/* Botão da câmera específico */
+.camera-button,
+.camera-button *,
+.webcam-button,
+.webcam-button *,
+.upload-button,
+.upload-button *,
+/* Elementos com fundo azul */
+[style*="background: #0915FF"],
+[style*="background-color: #0915FF"],
+[style*="background: #4C63FF"],
+[style*="background-color: #4C63FF"],
+[style*="background: #060BCC"],
+[style*="background-color: #060BCC"] {
+  color: #fff !important;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+}
+
+[style*="background: #0915FF"] *,
+[style*="background-color: #0915FF"] *,
+[style*="background: #4C63FF"] *,
+[style*="background-color: #4C63FF"] *,
+[style*="background: #060BCC"] *,
+[style*="background-color: #060BCC"] * {
+  color: #fff !important;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+} 
+
+/* Regras específicas para dropdowns azuis */
+.navbar-digi-dropdown-menu,
+.navbar-digi-dropdown-menu *,
+.dropdown-menu,
+.dropdown-menu *,
+.menu-dropdown,
+.menu-dropdown * {
+  background-color: #0915FF !important;
+  color: #fff !important;
+}
+
+.navbar-digi-dropdown-menu a,
+.dropdown-menu a,
+.menu-dropdown a {
+  color: #fff !important;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+}
+
+.navbar-digi-dropdown-menu a:hover,
+.dropdown-menu a:hover,
+.menu-dropdown a:hover {
+  background-color: rgba(255, 255, 255, 0.1) !important;
+  color: #fff !important;
+}
+
+.navbar-digi-dropdown-menu svg,
+.dropdown-menu svg,
+.menu-dropdown svg {
+  color: #fff !important;
+}
+
+.navbar-digi-dropdown-menu a:hover svg,
+.dropdown-menu a:hover svg,
+.menu-dropdown a:hover svg {
+  color: #fff !important;
+} 
+
+/* Regras globais para forçar cor azul no botão SAIR */
+.navbar-digi-logout,
+.navbar-digi-logout *,
+.navbar-digi-mobile-logout,
+.navbar-digi-mobile-logout *,
+button.navbar-digi-logout,
+button.navbar-digi-mobile-logout,
+.navbar-digi button[class*="logout"],
+.navbar-digi button[class*="logout"] * {
+  color: #0915FF !important;
+  background: #fff !important;
+  font-weight: 700 !important;
+  text-shadow: none !important;
+}
+
+.navbar-digi-logout:hover,
+.navbar-digi-logout:hover *,
+.navbar-digi-mobile-logout:hover,
+.navbar-digi-mobile-logout:hover *,
+button.navbar-digi-logout:hover,
+button.navbar-digi-mobile-logout:hover,
+.navbar-digi button[class*="logout"]:hover,
+.navbar-digi button[class*="logout"]:hover * {
+  color: #0915FF !important;
+  background: #e8edff !important;
+  text-shadow: none !important;
+}
+
+/* Exceção específica para botão SAIR - não aplicar regras de texto branco */
+.navbar-digi-logout,
+.navbar-digi-logout *,
+.navbar-digi-mobile-logout,
+.navbar-digi-mobile-logout * {
+  color: #0915FF !important;
+  text-shadow: none !important;
+} 
+
+/* Regra com especificidade máxima para botão SAIR */
+html body .navbar-digi .navbar-digi-user .navbar-digi-logout,
+html body .navbar-digi .navbar-digi-user .navbar-digi-logout *,
+html body .navbar-digi .navbar-digi-mobile-menu .navbar-digi-mobile-user .navbar-digi-mobile-logout,
+html body .navbar-digi .navbar-digi-mobile-menu .navbar-digi-mobile-user .navbar-digi-mobile-logout * {
+  color: #0915FF !important;
+  background: #fff !important;
+  font-weight: 700 !important;
+  text-shadow: none !important;
+}
+
+html body .navbar-digi .navbar-digi-user .navbar-digi-logout:hover,
+html body .navbar-digi .navbar-digi-mobile-menu .navbar-digi-mobile-user .navbar-digi-mobile-logout:hover,
+html body .navbar-digi .navbar-digi-mobile-menu .navbar-digi-mobile-user .navbar-digi-mobile-logout:hover * {
+  color: #0915FF !important;
+  background: #e8edff !important;
+  text-shadow: none !important;
+} 
+
+/* Regras específicas para botão de login na página inicial */
+.Home-link,
+.Home-link *,
+a.Home-link,
+a.Home-link * {
+  color: #fff !important;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+}
+
+/* Regras específicas para botões na página inicial */
+.Home-card .Home-link,
+.Home-card .Home-link *,
+.Home-card a[href="/login"],
+.Home-card a[href="/login"] * {
+  color: #fff !important;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+}
+
+/* Regras para botões com fundo azul na página inicial */
+.Home-card a[style*="background: #0915FF"],
+.Home-card a[style*="background-color: #0915FF"],
+.Home-card a[style*="background: #4C63FF"],
+.Home-card a[style*="background-color: #4C63FF"] {
+  color: #fff !important;
+}
+
+.Home-card a[style*="background: #0915FF"] *,
+.Home-card a[style*="background-color: #0915FF"] *,
+.Home-card a[style*="background: #4C63FF"] *,
+.Home-card a[style*="background-color: #4C63FF"] * {
+  color: #fff !important;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.1) !important;
+} 
+
+/* Regra com especificidade máxima para botão de login na página inicial */
+html body .Home-card .Home-link,
+html body .Home-card .Home-link *,
+html body .Home-card a[href="/login"],
+html body .Home-card a[href="/login"] *,
+html body .Home-card a[style*="background: #0915FF"],
+html body .Home-card a[style*="background: #0915FF"] *,
+html body .Home-card a[style*="background-color: #0915FF"],
+html body .Home-card a[style*="background-color: #0915FF"] * {
+  color: #0915FF !important;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.1) !important;
+}
+
+/* Regras específicas para botões com fundo azul na página inicial */
+.Home-card a[style*="background: #0915FF"],
+.Home-card a[style*="background-color: #0915FF"],
+.Home-card a[style*="background: #4C63FF"],
+.Home-card a[style*="background-color: #4C63FF"] {
+  color: #fff !important;
+}
+
+.Home-card a[style*="background: #0915FF"] *,
+.Home-card a[style*="background-color: #0915FF"] *,
+.Home-card a[style*="background: #4C63FF"] *,
+.Home-card a[style*="background-color: #4C63FF"] * {
+  color: #fff !important;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.1) !important;
+} 
+
+/* Regras específicas para botão "Criar Conta" na página inicial */
+.Home-card a[href="/cadastro"],
+.Home-card a[href="/cadastro"] *,
+.Home-card .Home-link[href="/cadastro"],
+.Home-card .Home-link[href="/cadastro"] * {
+  background: #0915FF !important;
+  border: 1.5px solid #0915FF !important;
+  color: #fff !important;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.1) !important;
+}
+
+/* Regras para ícone do botão "Criar Conta" */
+.Home-card a[href="/cadastro"] svg,
+.Home-card a[href="/cadastro"] * svg,
+.Home-card .Home-link[href="/cadastro"] svg,
+.Home-card .Home-link[href="/cadastro"] * svg {
+  color: #fff !important;
+}
+
+/* Regra com especificidade máxima para botão "Criar Conta" */
+html body .Home-card a[href="/cadastro"],
+html body .Home-card a[href="/cadastro"] *,
+html body .Home-card .Home-link[href="/cadastro"],
+html body .Home-card .Home-link[href="/cadastro"] * {
+  background: #0915FF !important;
+  border: 1.5px solid #0915FF !important;
+  color: #fff !important;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.1) !important;
+} 
+
+/* Regras específicas para o ícone do catálogo inteligente */
+.Home-card svg,
+.Home-card * svg,
+.Home-card .Home-title + div svg,
+.Home-card div[style*="background: #0915FF"] svg,
+.Home-card div[style*="background-color: #0915FF"] svg {
+  color: #fff !important;
+}
+
+/* Regra com especificidade máxima para o ícone do catálogo */
+html body .Home-card div[style*="background: #0915FF"] svg,
+html body .Home-card div[style*="background-color: #0915FF"] svg,
+html body .Home-card .Home-title + div svg {
+  color: #fff !important;
+}
+
+/* Regras para forçar ícones brancos em elementos azuis */
+svg[style*="color: gray"],
+svg[style*="color: grey"],
+svg[style*="color: #808080"],
+svg[style*="color: rgb(128, 128, 128)"],
+svg[style*="fill: gray"],
+svg[style*="fill: grey"],
+svg[style*="fill: #808080"],
+svg[style*="fill: rgb(128, 128, 128)"] {
+  color: #fff !important;
+  fill: #fff !important;
+  stroke: #fff !important;
+}
+
+/* Regras para ícones dentro de elementos azuis */
+div[style*="background: #0915FF"] svg,
+div[style*="background-color: #0915FF"] svg,
+div[style*="background: #4C63FF"] svg,
+div[style*="background-color: #4C63FF"] svg,
+div[style*="background: #060BCC"] svg,
+div[style*="background-color: #060BCC"] svg {
+  color: #fff !important;
+  fill: #fff !important;
+  stroke: #fff !important;
+}
+
+/* Regras específicas para ícones na página inicial */
+.Home-card div[style*="background: #0915FF"] svg,
+.Home-card div[style*="background-color: #0915FF"] svg {
+  color: #fff !important;
+  fill: #fff !important;
+  stroke: #fff !important;
+} 

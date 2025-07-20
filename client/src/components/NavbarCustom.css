@@ -10,6 +10,32 @@
   height: 56px;
   display: flex;
   align-items: center;
+  /* Garantir que o texto seja sempre visível */
+  text-rendering: optimizeLegibility;
+  font-display: swap;
+}
+
+/* Garantir que todo texto no navbar seja branco e visível */
+.navbar-digi * {
+  color: #fff !important;
+}
+
+.navbar-digi a,
+.navbar-digi button,
+.navbar-digi span,
+.navbar-digi div {
+  color: #fff !important;
+}
+
+/* Garantir que o logo seja sempre visível */
+.navbar-digi-logo {
+  font-size: 1.7rem;
+  font-weight: 900;
+  letter-spacing: 2px;
+  color: #fff !important;
+  margin-right: 32px;
+  flex-shrink: 0;
+  text-rendering: optimizeLegibility;
 }
 
 .navbar-digi-content {
@@ -21,15 +47,6 @@
   justify-content: space-between;
   height: 56px;
   padding: 0 24px;
-}
-
-.navbar-digi-logo {
-  font-size: 1.7rem;
-  font-weight: 900;
-  letter-spacing: 2px;
-  color: #fff;
-  margin-right: 32px;
-  flex-shrink: 0;
 }
 
 .navbar-digi-menu {
@@ -82,23 +99,49 @@
   color: #fff;
 }
 
-.navbar-digi-logout {
-  background: #fff;
-  color: #0915FF;
-  font-weight: 700;
-  border: none;
-  border-radius: 4px;
-  padding: 8px 28px;
-  margin-left: 32px;
-  font-size: 1rem;
-  cursor: pointer;
-  transition: background 0.2s, color 0.2s;
-  box-shadow: 0 2px 8px rgba(9, 21, 255, 0.04);
+/* Regras específicas para o botão SAIR - forçar cor azul */
+.navbar-digi-logout,
+.navbar-digi-logout *,
+.navbar-digi-mobile-logout,
+.navbar-digi-mobile-logout * {
+  background: #fff !important;
+  color: #0915FF !important;
+  font-weight: 700 !important;
+  border: none !important;
+  border-radius: 4px !important;
+  padding: 8px 28px !important;
+  margin-left: 32px !important;
+  font-size: 1rem !important;
+  cursor: pointer !important;
+  transition: background 0.2s, color 0.2s !important;
+  box-shadow: 0 2px 8px rgba(9, 21, 255, 0.04) !important;
+  text-shadow: none !important;
 }
 
-.navbar-digi-logout:hover {
-  background: #e8edff;
-  color: #0915FF;
+.navbar-digi-logout:hover,
+.navbar-digi-logout:hover *,
+.navbar-digi-mobile-logout:hover,
+.navbar-digi-mobile-logout:hover * {
+  background: #e8edff !important;
+  color: #0915FF !important;
+}
+
+.navbar-digi-mobile-logout {
+  background: #fff !important;
+  color: #0915FF !important;
+  font-weight: 700 !important;
+  border: none !important;
+  border-radius: 4px !important;
+  padding: 8px 16px !important;
+  font-size: 14px !important;
+  cursor: pointer !important;
+  transition: background 0.2s, color 0.2s !important;
+  text-shadow: none !important;
+}
+
+.navbar-digi-mobile-logout:hover {
+  background: #e8edff !important;
+  color: #0915FF !important;
 }
 
 .navbar-digi-mobile-toggle {
@@ -160,7 +203,7 @@
   position: absolute;
   top: 100%;
   left: 0;
-  background: #fff;
+  background: #0915FF !important;
   border: 1px solid #e5e7eb;
   border-radius: 8px;
   box-shadow: 0 10px 25px rgba(0, 0, 0, 0.15);
@@ -175,7 +218,7 @@
   align-items: center;
   gap: 12px;
   padding: 12px 16px;
-  color: #374151;
+  color: #fff !important;
   text-decoration: none;
   font-weight: 500;
   font-size: 14px;
@@ -183,16 +226,16 @@
 }
 
 .navbar-digi-dropdown-menu a:hover {
-  background-color: #f3f4f6;
-  color: #0915FF;
+  background-color: rgba(255, 255, 255, 0.1) !important;
+  color: #fff !important;
 }
 
 .navbar-digi-dropdown-menu a svg {
-  color: #6b7280;
+  color: #fff !important;
 }
 
 .navbar-digi-dropdown-menu a:hover svg {
-  color: #0915FF;
+  color: #fff !important;
 }
 
 /* User area styles */
@@ -722,4 +765,49 @@ body {
     display: flex !important;
     z-index: 1002;
   }
+} 
+
+/* Menu Mobile com área do usuário */
+.navbar-digi-mobile-menu {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  background: #0915FF;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 16px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  z-index: 999;
+}
+
+.navbar-digi-mobile-user {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  margin-top: 12px;
+}
+
+.navbar-digi-mobile-username {
+  color: #fff;
+  font-weight: 600;
+  font-size: 16px;
+}
+
+.navbar-digi-mobile-logout {
+  background: #fff;
+  color: #0915FF !important;
+  font-weight: 700;
+  border: none;
+  border-radius: 4px;
+  padding: 8px 16px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s;
+}
+
+.navbar-digi-mobile-logout:hover {
+  background: #e8edff;
+  color: #0915FF !important;
 } 

@@ -19,6 +19,12 @@ const Navbar = () => {
   const isAdmin = user && user.role === 'admin';
   const isController = user && (user.role === 'admin' || user.role === 'controller');
 
+  // Debug logs
+  console.log('Navbar - User:', user);
+  console.log('Navbar - isAdmin:', isAdmin);
+  console.log('Navbar - isController:', isController);
+  console.log('Navbar - User role:', user?.role);
+
   // Fechar menu mobile quando clicar fora
   useEffect(() => {
     const handleClickOutside = (event) => {
@@ -116,6 +122,12 @@ const Navbar = () => {
                       Importar Stock
                     </Link>
                   )}
+                  {(isAdmin || isController) && (
+                    <Link to="/importar-dados-itens" onClick={handleNavigation}>
+                      <FileText size={16} />
+                      Importar Dados
+                    </Link>
+                  )}
                   <Link to="/exportar" onClick={handleNavigation}>
                     <Download size={16} />
                     Exportar Dados
@@ -124,19 +136,9 @@ const Navbar = () => {
               )}
             </div>
           )}
-          
-          {/* Área do Usuário no Menu Mobile */}
-          {isAuthenticated && (
-            <div className="navbar-digi-user">
-              <span className="navbar-digi-username">
-                {user?.nome || user?.username}
-              </span>
-              <button className="navbar-digi-logout" onClick={handleLogout}>SAIR</button>
-            </div>
-          )}
         </nav>
 
-        {/* Área do Usuário no Desktop */}
+        {/* Área do Usuário - Apenas no Desktop */}
         {isAuthenticated ? (
           <div className="navbar-digi-user desktop-only">
             <span className="navbar-digi-username">
@@ -159,6 +161,18 @@ const Navbar = () => {
           <span className="navbar-digi-mobile-bar"></span>
         </button>
       </div>
+
+      {/* Menu Mobile - Inclui área do usuário */}
+      {mobileOpen && (
+        <div className="navbar-digi-mobile-menu">
+          <div className="navbar-digi-mobile-user">
+            <span className="navbar-digi-mobile-username">
+              {user?.nome || user?.username}
+            </span>
+            <button className="navbar-digi-mobile-logout" onClick={handleLogout}>SAIR</button>
+          </div>
+        </div>
+      )}
     </header>
   );
 };

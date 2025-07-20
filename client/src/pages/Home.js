@@ -99,16 +99,16 @@ const Home = () => {
               </Link>
               
               <Link to="/cadastro" className="Home-link" style={{
-                background: '#fff',
-                border: '1.5px solid #22c55e',
-                color: '#22c55e',
+                background: '#0915FF',
+                border: '1.5px solid #0915FF',
+                color: '#fff',
                 fontWeight: 700,
                 borderRadius: isMobile ? 10 : 12,
                 padding: isMobile ? '14px 0' : '18px 0',
                 fontSize: isMobile ? 16 : 18,
                 textAlign: 'center',
                 textDecoration: 'none',
-                boxShadow: '0 2px 8px rgba(34,197,94,0.06)',
+                boxShadow: '0 4px 12px rgba(9,21,255,0.15)',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
@@ -117,7 +117,7 @@ const Home = () => {
                 width: '100%',
                 minHeight: isMobile ? 48 : 56
               }}>
-                <UserPlus style={{ width: isMobile ? 20 : 22, height: isMobile ? 20 : 22 }} />
+                <UserPlus style={{ width: isMobile ? 20 : 22, height: isMobile ? 20 : 22, color: '#fff' }} />
                 Criar Conta
               </Link>
             </>
@@ -169,4 +169,4 @@ const Home = () => {
   );
 };
 
-export default Home; 
+export default Home;
