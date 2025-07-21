@@ -310,7 +310,7 @@ const CadastrarItem = () => {
                     padding: '8px 12px',
                     fontSize: 15,
                     background: '#f7f8fa',
-                    color: '#222',
+                    color: '#333 !important',
                     outline: 'none',
                     boxShadow: '0 1px 2px rgba(9,21,255,0.03)',
                     transition: 'border 0.2s, box-shadow 0.2s'
@@ -340,7 +340,7 @@ const CadastrarItem = () => {
                     padding: '8px 12px',
                     fontSize: 15,
                     background: '#f7f8fa',
-                    color: '#222',
+                    color: '#333 !important',
                     outline: 'none',
                     boxShadow: '0 1px 2px rgba(9,21,255,0.03)',
                     transition: 'border 0.2s, box-shadow 0.2s'
@@ -458,7 +458,8 @@ const CadastrarItem = () => {
                       fontSize: 14,
                       outline: 'none',
                       transition: 'border 0.2s',
-                      background: '#fff'
+                      background: '#fff',
+                      color: '#333 !important'
                     }}
                   >
                     <option value="">Unidade</option>
@@ -510,7 +511,8 @@ const CadastrarItem = () => {
                       fontSize: 14,
                       outline: 'none',
                       transition: 'border 0.2s',
-                      background: '#fff'
+                      background: '#fff',
+                      color: '#333 !important'
                     }}
                   >
                     <option value="">Unidade</option>
@@ -564,7 +566,7 @@ const CadastrarItem = () => {
                   padding: '8px 12px',
                   fontSize: 15,
                   background: '#f7f8fa',
-                  color: '#222',
+                  color: '#333 !important',
                   outline: 'none',
                   boxShadow: '0 1px 2px rgba(9,21,255,0.03)',
                   transition: 'border 0.2s, box-shadow 0.2s'
@@ -595,7 +597,7 @@ const CadastrarItem = () => {
                   padding: '8px 12px',
                   fontSize: 15,
                   background: '#f7f8fa',
-                  color: '#222',
+                  color: '#333 !important',
                   outline: 'none',
                   boxShadow: '0 1px 2px rgba(9,21,255,0.03)',
                   transition: 'border 0.2s, box-shadow 0.2s'
@@ -785,19 +787,7 @@ const CadastrarItem = () => {
                 <button
                   type="button"
                   onClick={addEspecificacao}
-                  style={{
-                    background: '#0915FF',
-                    color: '#fff',
-                    border: 'none',
-                    borderRadius: 8,
-                    padding: '12px 20px',
-                    fontWeight: 600,
-                    cursor: 'pointer',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 8,
-                    fontSize: 14
-                  }}
+                  className="btn-add-spec"
                 >
                   <Plus style={{ width: 16, height: 16 }} />
                   Adicionar Especificação
@@ -827,20 +817,7 @@ const CadastrarItem = () => {
               type="submit"
               disabled={loading}
               onClick={handleSubmit}
-              style={{
-                background: '#0915FF',
-                color: '#fff',
-                border: 'none',
-                borderRadius: 8,
-                padding: '14px 32px',
-                fontWeight: 700,
-                cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8,
-                fontSize: 16,
-                boxShadow: '0 2px 8px rgba(9,21,255,0.2)'
-              }}
+              className="btn-submit-item"
             >
               {loading ? (
                 <>

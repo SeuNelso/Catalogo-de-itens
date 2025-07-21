@@ -190,6 +190,7 @@ const ImportarDadosItens = () => {
           }}>
             <FileText style={{
               color: '#fff',
+              stroke: '#fff',
               width: isMobile ? 32 : 40,
               height: isMobile ? 32 : 40
             }} />

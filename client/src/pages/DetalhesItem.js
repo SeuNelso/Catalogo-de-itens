@@ -128,7 +128,7 @@ const DetalhesItem = () => {
     return (
       <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-purple-50 flex items-center justify-center">
         <div className="text-center">
-          <Package className="w-16 h-16 text-gray-300 mx-auto mb-4" />
+          <Package className="w-16 h-16 text-gray-800 mx-auto mb-4" />
           <h2 className="text-2xl font-bold text-gray-900 mb-2">Erro</h2>
           <p className="text-gray-600 mb-4">{error}</p>
           <Link to="/listar" className="btn btn-primary">
@@ -144,7 +144,7 @@ const DetalhesItem = () => {
     return (
       <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-purple-50 flex items-center justify-center">
         <div className="text-center">
-          <Package className="w-16 h-16 text-gray-300 mx-auto mb-4" />
+          <Package className="w-16 h-16 text-gray-800 mx-auto mb-4" />
           <h2 className="text-2xl font-bold text-gray-900 mb-2">Item não encontrado</h2>
           <p className="text-gray-600 mb-4">O item que você está procurando não existe.</p>
           <Link to="/listar" className="btn btn-primary">
@@ -157,7 +157,7 @@ const DetalhesItem = () => {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-purple-50">
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-purple-50 detalhes-item-root">
       <div className="container mx-auto px-4 py-8">
         {/* Header */}
         <div className="mb-8">
@@ -295,7 +295,7 @@ const DetalhesItem = () => {
                 </>
               ) : (
                 <div className="text-center py-12">
-                  <Package className="w-16 h-16 text-gray-300 mx-auto mb-4" />
+                  <Package className="w-16 h-16 text-gray-800 mx-auto mb-4" />
                   <p className="text-gray-600">Nenhuma imagem disponível</p>
                 </div>
               )}
@@ -317,60 +317,60 @@ const DetalhesItem = () => {
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="flex items-center">
-                    <Hash className="w-4 h-4 text-gray-400 mr-2" />
+                    <Hash className="w-4 h-4 text-gray-900 mr-2" />
                     <div>
-                      <p className="text-sm text-gray-500">Código</p>
+                      <p className="text-sm text-gray-900">Código</p>
                       <p className="font-medium">{item.codigo || ''}</p>
                     </div>
                   </div>
                   <div className="flex items-center">
-                    <Tag className="w-4 h-4 text-gray-400 mr-2" />
+                    <Tag className="w-4 h-4 text-gray-900 mr-2" />
                     <div>
-                      <p className="text-sm text-gray-500">Setor</p>
+                      <p className="text-sm text-gray-900">Setor</p>
                       <p className="font-medium">{item.setor || ''}</p>
                     </div>
                   </div>
                   <div className="flex items-center">
-                    <Tag className="w-4 h-4 text-gray-400 mr-2" />
+                    <Tag className="w-4 h-4 text-gray-900 mr-2" />
                     <div>
-                      <p className="text-sm text-gray-500">Família</p>
+                      <p className="text-sm text-gray-900">Família</p>
                       <p className="font-medium">{item.familia || ''}</p>
                     </div>
                   </div>
                   <div className="flex items-center">
-                    <Tag className="w-4 h-4 text-gray-400 mr-2" />
+                    <Tag className="w-4 h-4 text-gray-900 mr-2" />
                     <div>
-                      <p className="text-sm text-gray-500">Subfamília</p>
+                      <p className="text-sm text-gray-900">Subfamília</p>
                       <p className="font-medium">{item.subfamilia || ''}</p>
                     </div>
                   </div>
                   {/* Remover campo Unidade */}
                   <div className="flex items-center">
-                    <Tag className="w-4 h-4 text-gray-400 mr-2" />
+                    <Tag className="w-4 h-4 text-gray-900 mr-2" />
                     <div>
-                      <p className="text-sm text-gray-500">Peso</p>
+                      <p className="text-sm text-gray-900">Peso</p>
                       <p className="font-medium">{item.peso || ''} {item.unidadePeso || ''}</p>
                     </div>
                   </div>
                   <div className="flex items-center md:col-span-2">
-                    <Tag className="w-4 h-4 text-gray-400 mr-2" />
+                    <Tag className="w-4 h-4 text-gray-900 mr-2" />
                     <div>
-                      <p className="text-sm text-gray-500">Dimensões</p>
+                      <p className="text-sm text-gray-900">Dimensões</p>
                       <p className="font-medium">{item.comprimento || ''} x {item.largura || ''} x {item.altura || ''}{item.unidade ? ` ${item.unidade}` : ''}</p>
                     </div>
                   </div>
                   <div className="flex items-center">
-                    <Tag className="w-4 h-4 text-gray-400 mr-2" />
+                    <Tag className="w-4 h-4 text-gray-900 mr-2" />
                     <div>
-                      <p className="text-sm text-gray-500">Unidade de Armazenamento</p>
+                      <p className="text-sm text-gray-900">Unidade de Armazenamento</p>
                       <p className="font-medium">{item.unidadearmazenamento || '-'}</p>
                     </div>
                   </div>
                 </div>
                 <div className="flex items-center">
-                  <Package className="w-4 h-4 text-gray-400 mr-2" />
+                  <Package className="w-4 h-4 text-gray-900 mr-2" />
                   <div>
-                    <p className="text-sm text-gray-500">Quantidade</p>
+                    <p className="text-sm text-gray-900">Quantidade</p>
                     <p className="font-medium">{item.quantidade !== undefined ? item.quantidade : ''}</p>
                   </div>
                 </div>

@@ -67,7 +67,7 @@ const ExportarDados = () => {
       }}>
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
           <div style={{ background: '#0915FF', borderRadius: '50%', padding: 14, marginBottom: 8 }}>
-            <Save style={{ color: '#fff', width: 32, height: 32 }} />
+            <Save style={{ color: '#fff', stroke: '#fff', width: 32, height: 32 }} />
           </div>
           <h1 style={{ color: '#0915FF', fontWeight: 900, fontSize: isMobile ? 22 : 30, textAlign: 'center', margin: 0, letterSpacing: 1 }}>
             Exportar Catálogo
@@ -99,7 +99,7 @@ const ExportarDados = () => {
               transition: 'background 0.2s, color 0.2s'
             }}
           >
-            <Save style={{ width: 22, height: 22 }} />
+            <Save style={{ width: 22, height: 22, color: '#fff', stroke: '#fff' }} />
             {loading ? 'Exportando...' : 'Exportar Catálogo'}
           </button>
           {loading && (

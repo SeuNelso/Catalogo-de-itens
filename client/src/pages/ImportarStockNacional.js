@@ -121,8 +121,8 @@ const ImportarStockNacional = () => {
             Importar Stock Nacional
           </h1>
           <p style={{ color: '#333', fontSize: isMobile ? 15 : 18, textAlign: 'center', margin: 0, maxWidth: 420, fontWeight: 500 }}>
-            Faça upload de um arquivo Excel (.xlsx ou .csv) no formato de <b>stock nacional</b> para atualizar as quantidades dos itens em cada armazém.<br/>
-            <span style={{ color: '#0A7B83', fontWeight: 700 }}>Atenção:</span> O arquivo deve conter as colunas <b>Artigo</b>, <b>Descrição</b> e pelo menos um armazém (ex: WH1, WH2, ...).
+            Faça upload de um arquivo Excel (.xlsx ou .csv) no formato de <span style={{ color: '#0A7B83', fontWeight: 700 }}>Stock Nacional</span> para atualizar as quantidades dos itens em cada armazém.<br/>
+            <span style={{ color: '#0A7B83', fontWeight: 700 }}>Atenção:</span> O arquivo deve conter as colunas <span style={{ color: '#0A7B83', fontWeight: 700 }}>Artigo, Descrição</span> e pelo menos um armazém (ex: WH1, WH2, ...).
           </p>
           <a href="/exemplo_stock_nacional.xlsx" download style={{ color: '#0A7B83', fontWeight: 700, fontSize: 15, margin: '10px 0 0 0', textDecoration: 'underline' }}>
             Baixar exemplo de arquivo
@@ -157,24 +157,9 @@ const ImportarStockNacional = () => {
           <button
             type="submit"
             disabled={loading}
-            style={{
-              background: '#0A7B83',
-              color: '#fff',
-              fontWeight: 700,
-              borderRadius: 10,
-              padding: isMobile ? '10px 0' : '14px 0',
-              fontSize: isMobile ? 15 : 17,
-              textAlign: 'center',
-              border: 'none',
-              boxShadow: '0 2px 8px rgba(9,21,255,0.10)',
-              cursor: loading ? 'not-allowed' : 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: 10,
-              transition: 'background 0.2s, color 0.2s'
-            }}
+            className="import-button"
           >
+            <Upload size={18} />
             {loading ? 'Importando...' : 'Importar Arquivo'}
           </button>
           {loading && (

@@ -21,6 +21,26 @@
   cursor: grabbing;
 }
 
+/* Forçar cor escura para todo o conteúdo da tela de detalhes */
+.detalhes-item-root, .detalhes-item-root * {
+  color: #222 !important;
+}
+
+/* Forçar cor escura nos títulos e textos principais da tela de detalhes */
+.detalhes-item-root h1,
+.detalhes-item-root h2,
+.detalhes-item-root h3,
+.detalhes-item-root h4,
+.detalhes-item-root h5,
+.detalhes-item-root h6,
+.detalhes-item-root p,
+.detalhes-item-root span,
+.detalhes-item-root div,
+.detalhes-item-root label {
+  color: #222 !important;
+  text-shadow: none !important;
+}
+
 /* Container principal para evitar overflow lateral */
 :root, body, #root, .min-h-screen {
   overflow-x: hidden !important;

@@ -17,21 +17,24 @@ html, body {
   /* Prevenir problemas de renderização */
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  font-family: 'Inter', Arial, Helvetica, sans-serif;
 }
 
+/* ======== UTILITÁRIOS DE COR DE TEXTO ======== */
+.text-black { color: #111 !important; }
+.text-white { color: #fff !important; }
+.text-blue { color: #0915FF !important; }
+.text-gray { color: #666 !important; }
+
+/* ======== PADRÃO GLOBAL ======== */
 body {
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
-    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
-    sans-serif;
-  background-color: #f5f5f5;
-  line-height: 1.6;
-  color: #333;
+  color: #111;
 }
 
 /* Regra global para garantir visibilidade do texto */
 * {
   /* Garantir que o texto seja sempre visível */
-  color: #333 !important;
+  color: #000000 !important;
   text-rendering: optimizeLegibility;
   font-display: swap;
 }
@@ -110,12 +113,13 @@ h1, h2, h3, h4, h5, h6, p, span, div, a, button, input, textarea, label {
 }
 
 /* Regras de emergência para garantir visibilidade do texto */
+/*
 * {
-  /* Garantir que o texto seja sempre visível */
   color: #ffffff !important;
   text-rendering: optimizeLegibility;
   font-display: swap;
 }
+*/
 
 /* Exceções para elementos que devem ter cores específicas */
 .navbar-digi,
@@ -771,7 +775,7 @@ code {
   input,
   textarea,
   select {
-    background-color: #2d2d2d;
+    background-color: #ffffff;
     color: #ffffff;
     border-color: #404040;
   }
@@ -1282,57 +1286,7 @@ html {
 
 /* Paginação responsiva */ 
 
-/* Garantir que texto em caixas azuis seja branco e visível */
-.navbar-digi,
-.navbar-digi *,
-.navbar-digi-logo,
-.navbar-digi-menu,
-.navbar-digi-menu-item,
-.navbar-digi-dropdown,
-.navbar-digi-dropdown-toggle,
-.navbar-digi-user,
-.navbar-digi-username,
-.navbar-digi-logout,
-.navbar-digi-mobile-menu,
-.navbar-digi-mobile-user,
-.navbar-digi-mobile-username,
-.navbar-digi-mobile-logout,
-/* Cabeçalhos de tabela azuis */
-table thead,
-table thead *,
-table th,
-th,
-/* Botões azuis */
-.btn-primary,
-.btn-primary *,
-button[style*="background: #0915FF"],
-button[style*="background-color: #0915FF"],
-button[style*="background: #0915FF"],
-button[style*="background-color: #0915FF"],
-/* Cards azuis */
-.card[style*="background: #0915FF"],
-.card[style*="background-color: #0915FF"],
-/* Elementos com fundo azul */
-[style*="background: #0915FF"] *,
-[style*="background-color: #0915FF"] *,
-[style*="background: #4C63FF"] *,
-[style*="background-color: #4C63FF"] *,
-[style*="background: #060BCC"] *,
-[style*="background-color: #060BCC"] *,
-/* Classes específicas para elementos azuis */
-.bg-primary,
-.bg-primary *,
-.bg-blue,
-.bg-blue *,
-.header-blue,
-.header-blue *,
-.table-header,
-.table-header *,
-.blue-header,
-.blue-header * {
-  color: #fff !important;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
-} 
+/* Removidas regras globais de cor que causavam problemas de legibilidade */
 
 /* Regras específicas para cabeçalhos de tabela azuis */
 table thead,
@@ -1340,10 +1294,9 @@ table thead th,
 table thead td,
 thead,
 thead th,
-thead td {
-  background-color: #0915FF !important;
-  color: #fff !important;
-}
+thead td 
+  
+
 
 table thead *,
 table thead th *,
@@ -1351,7 +1304,7 @@ table thead td *,
 thead *,
 thead th *,
 thead td * {
-  color: #fff !important;
+  color: #000000 !important;
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
 }
 
@@ -1410,9 +1363,7 @@ button.btn-primary * {
 .table-header,
 .table-header *,
 .blue-header,
-.blue-header *,
-.blue-bg,
-.blue-bg * {
+.blue-header * {
   color: #fff !important;
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
 }
@@ -1421,13 +1372,13 @@ button.btn-primary * {
 [class*="blue"],
 [class*="primary"],
 [class*="header"] {
-  color: #fff !important;
+  color: #000000 !important;
 }
 
 [class*="blue"] *,
 [class*="primary"] *,
 [class*="header"] * {
-  color: #fff !important;
+  color: #000000 !important;
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
 } 
 
@@ -1704,4 +1655,78 @@ div[style*="background-color: #060BCC"] svg {
   color: #fff !important;
   fill: #fff !important;
   stroke: #fff !important;
+} 
+
+/* Forçar texto preto em toda a aplicação foi removido para corrigir conflitos */
+
+/* Garantir texto branco em botões com fundo azul */
+.btn-primary, .btn-primary * {
+  color: #fff !important;
+} 
+
+/* Botões e elementos com fundo azul devem ter texto branco */
+.btn-primary, .btn-primary *,
+.bg-blue, .bg-blue *,
+.bg-primary, .bg-primary * {
+  color: #fff !important;
+} 
+
+select, select option, select optgroup {
+  color: #333 !important;
+  background-color: #f7f8fa !important;
+} 
+
+.btn-add-spec, .btn-submit-item {
+  background: #0915FF;
+  color: #fff !important;
+  border: none;
+  border-radius: 8px;
+  padding: 12px 20px;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+}
+
+.btn-submit-item {
+  padding: 14px 32px;
+  font-size: 16px;
+  font-weight: 700;
+  box-shadow: 0 2px 8px rgba(9,21,255,0.2);
+}
+
+.btn-add-spec svg, .btn-submit-item svg {
+  color: #fff !important;
+}
+
+.import-button {
+  background: #0A7B83;
+  color: #fff !important;
+  font-weight: 700;
+  border-radius: 10px;
+  padding: 14px 0;
+  font-size: 17px;
+  text-align: center;
+  border: none;
+  box-shadow: 0 2px 8px rgba(9,21,255,0.10);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  transition: background 0.2s, color 0.2s;
+}
+
+.import-button svg {
+  color: #fff !important;
+}
+
+.stock-nacional-container, .stock-nacional-container * {
+  color: #000 !important;
+}
+
+.stock-nacional-container svg, .stock-nacional-container svg * {
+  color: initial !important;
 } 

@@ -146,7 +146,7 @@ export default function ExcluirArtigo() {
                   setToast({ type: 'error', message: 'Erro de conexão ao excluir todos.' });
                 }
               }}
-              className="mb-6 px-6 py-2 rounded bg-red-700 text-white font-bold text-sm hover:bg-red-800 transition-all shadow"
+              className="mb-6 px-6 py-2 rounded bg-red-700 text-black font-bold text-sm hover:bg-red-800 transition-all shadow"
               style={{ display: 'block', marginLeft: 'auto', marginRight: 'auto' }}
             >
               Excluir Todos
@@ -158,7 +158,7 @@ export default function ExcluirArtigo() {
               localStorage.removeItem('artigos_nao_cadastrados');
               setToast({ type: 'success', message: 'Itens não cadastrados removidos com sucesso!' });
             }}
-            className="mb-4 px-6 py-2 rounded bg-yellow-600 text-white font-bold text-sm hover:bg-yellow-700 transition-all shadow"
+            className="mb-4 px-6 py-2 rounded bg-yellow-600 text-black font-bold text-sm hover:bg-yellow-700 transition-all shadow"
             style={{ display: 'block', marginLeft: 'auto', marginRight: 'auto' }}
           >
             Excluir Itens Não Cadastrados
@@ -167,7 +167,7 @@ export default function ExcluirArtigo() {
           <div style={{ margin: '24px 0', textAlign: 'center' }}>
             <button
               onClick={() => setShowConfirmModal(true)}
-              style={{ background: '#b91c1c', color: '#fff', fontWeight: 700, borderRadius: 8, padding: '12px 32px', fontSize: 17, border: 'none', boxShadow: '0 2px 8px rgba(239,68,68,0.10)', cursor: 'pointer' }}
+              className="mb-4 px-6 py-2 rounded bg-yellow-600 text-black font-bold text-sm hover:bg-yellow-700 transition-all shadow"
             >
               Excluir TODOS os dados do banco
             </button>
@@ -271,7 +271,7 @@ export default function ExcluirArtigo() {
                           <td>
                             <button
                               onClick={() => handleDelete(item.id)}
-                              className="px-4 py-1 rounded bg-red-600 text-white font-semibold text-xs hover:bg-red-700 transition-all"
+                              className="px-4 py-1 rounded bg-red-600 text-black font-semibold text-xs hover:bg-red-700 transition-all"
                             >
                               Excluir
                             </button>

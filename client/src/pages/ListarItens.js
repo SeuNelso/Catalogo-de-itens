@@ -375,9 +375,9 @@ const ListarItens = () => {
         }}>
           <button
             onClick={() => setShowImageModal(true)}
-            style={{ background: '#0915FF', color: '#fff', fontWeight: 700, border: 'none', borderRadius: 8, padding: '10px 28px', fontSize: 16, display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', boxShadow: '0 2px 8px rgba(9,21,255,0.08)', marginBottom: 8 }}
+            className={styles['visual-search-button']}
           >
-            <FaCamera style={{ marginRight: 8 }} /> Tirar foto / Enviar imagem
+            <FaCamera style={{ color: 'white' }} /> Tirar foto / Enviar imagem
           </button>
           <div style={{ color: '#0915FF', fontWeight: 700, fontSize: 22, marginBottom: 0, textAlign: 'center' }}>
             Consulta Visual de Itens
@@ -710,7 +710,7 @@ const ListarItens = () => {
                         </td>
                         <td>
                           <button
-                            className="px-4 py-1 rounded bg-[#0915FF] text-white font-semibold text-xs hover:bg-[#2336ff] transition-all"
+                            className="px-4 py-1 rounded bg-[#0915FF] text-black font-semibold text-xs hover:bg-[#2336ff] transition-all"
                             onClick={() => navigate(`/item/${item.id}`)}
                             style={{ marginRight: 8 }}
                           >
