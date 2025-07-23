@@ -28,13 +28,6 @@ export default function ExcluirArtigo() {
 
   useEffect(() => {
     function handleClickOutside(event) {
-      // Remover referências a filtros não utilizados
-      // if (codigoFiltroRef.current && !codigoFiltroRef.current.contains(event.target)) {
-      //   setShowCodigoFiltro(false);
-      // }
-      // if (descricaoFiltroRef.current && !descricaoFiltroRef.current.contains(event.target)) {
-      //   setShowDescricaoFiltro(false);
-      // }
     }
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
