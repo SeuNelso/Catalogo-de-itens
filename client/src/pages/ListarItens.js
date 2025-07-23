@@ -19,9 +19,6 @@ const ListarItens = () => {
 
   const navigate = useNavigate();
 
-  const codigoFiltroRef = useRef(null);
-  const descricaoFiltroRef = useRef(null);
-
   const [showImageModal, setShowImageModal] = useState(false);
   const [imageLoading, setImageLoading] = useState(false);
   const [imageResults, setImageResults] = useState([]);
