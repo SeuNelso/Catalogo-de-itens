@@ -19,11 +19,6 @@ const ListarItens = () => {
 
   const navigate = useNavigate();
 
-  const [ordemCodigoAsc, setOrdemCodigoAsc] = useState(true);
-  const [codigoFiltro, setCodigoFiltro] = useState('');
-  const [descricaoFiltro, setDescricaoFiltro] = useState('');
-  const [showCodigoFiltro, setShowCodigoFiltro] = useState(false);
-  const [showDescricaoFiltro, setShowDescricaoFiltro] = useState(false);
   const codigoFiltroRef = useRef(null);
   const descricaoFiltroRef = useRef(null);
 
