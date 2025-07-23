@@ -139,9 +139,6 @@ const EditarItem = () => {
       if (especificacoes.length > 0) {
         submitData.append('especificacoes', JSON.stringify(especificacoes));
       }
-      if (imagensRemovidas.length > 0) {
-        submitData.append('imagensRemovidas', JSON.stringify(imagensRemovidas));
-      }
       const response = await fetch(`/api/itens/${id}`, {
         method: 'PUT',
         headers: {
