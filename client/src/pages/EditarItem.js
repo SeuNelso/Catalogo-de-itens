@@ -28,7 +28,6 @@ const EditarItem = () => {
     quantidade: '', // campo adicionado
     tipocontrolo: '' // campo adicionado
   });
-  const [imagensRemovidas, setImagensRemovidas] = useState([]);
 
   // Listas independentes de famílias e subfamílias
   const familias = [

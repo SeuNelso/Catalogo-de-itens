@@ -14,28 +14,11 @@ const DetalhesItem = () => {
   const startXRef = useRef(0);
   const scrollLeftRef = useRef(0);
 
-  // Handlers para mouse
-  const handleMouseDown = (e) => {
-    isDownRef.current = true;
-    imagensScrollRef.current.classList.add('active');
-    startXRef.current = e.pageX - imagensScrollRef.current.offsetLeft;
-    scrollLeftRef.current = imagensScrollRef.current.scrollLeft;
-  };
-  const handleMouseLeave = () => {
-    isDownRef.current = false;
-    imagensScrollRef.current.classList.remove('active');
-  };
-  const handleMouseUp = () => {
-    isDownRef.current = false;
-    imagensScrollRef.current.classList.remove('active');
-  };
-  const handleMouseMove = (e) => {
-    if (!isDownRef.current) return;
-    e.preventDefault();
-    const x = e.pageX - imagensScrollRef.current.offsetLeft;
-    const walk = (x - startXRef.current) * 2;
-    imagensScrollRef.current.scrollLeft = scrollLeftRef.current - walk;
-  };
+  // Remova as funções não utilizadas:
+  // handleMouseDown
+  // handleMouseLeave
+  // handleMouseUp
+  // handleMouseMove
   // Handlers para touch
   const handleTouchStart = (e) => {
     isDownRef.current = true;
