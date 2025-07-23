@@ -79,22 +79,10 @@ const ListarItens = () => {
     return () => window.removeEventListener('resize', calcularItensPorPagina);
   }, []);
 
-  useEffect(() => {
-    setPaginaAtual(1); // Sempre volta para a primeira página ao filtrar
-  }, [codigoFiltro, descricaoFiltro]);
-
-  useEffect(() => {
-    function handleClickOutside(event) {
-      if (codigoFiltroRef.current && !codigoFiltroRef.current.contains(event.target)) {
-        setShowCodigoFiltro(false);
-      }
-      if (descricaoFiltroRef.current && !descricaoFiltroRef.current.contains(event.target)) {
-        setShowDescricaoFiltro(false);
-      }
-    }
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
+  // Remover referências a filtros não utilizados
+  // useEffect(() => {}, [codigoFiltro, descricaoFiltro]);
+  // if (codigoFiltroRef.current && !codigoFiltroRef.current.contains(event.target)) { setShowCodigoFiltro(false); }
+  // if (descricaoFiltroRef.current && !descricaoFiltroRef.current.contains(event.target)) { setShowDescricaoFiltro(false); }
 
   const fetchItens = async () => {
     setLoading(true);
