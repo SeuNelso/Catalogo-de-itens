@@ -13,12 +13,11 @@ const Login = () => {
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState(null);
-  const [isMobile, setIsMobile] = useState(window.innerWidth <= 600);
   const [fieldError, setFieldError] = useState('');
 
   React.useEffect(() => {
     function handleResize() {
-      setIsMobile(window.innerWidth <= 600);
+      // setIsMobile(window.innerWidth <= 600); // This line was removed
     }
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
