@@ -2,8 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import Toast from '../components/Toast';
-import { FaFilter } from 'react-icons/fa';
-import { FaCamera, FaSearch } from 'react-icons/fa';
+import { FaSearch } from 'react-icons/fa';
 import Webcam from 'react-webcam';
 
 const ListarItens = () => {
@@ -141,27 +140,6 @@ const ListarItens = () => {
   }) : [];
   const totalPaginas = Math.ceil(itensFiltrados.length / 10); // itensPorPagina não usado
   const itensPagina = Array.isArray(itensFiltrados) ? itensFiltrados.slice((paginaAtual - 1) * 10, paginaAtual * 10) : []; // itensPorPagina não usado
-
-  const ordenarPorCodigo = () => {
-    setOrdemCodigoAsc(!ordemCodigoAsc);
-    setItens([...itens].sort((a, b) => {
-      if (ordemCodigoAsc) {
-        return (a.codigo || '').localeCompare(b.codigo || '');
-      } else {
-        return (b.codigo || '').localeCompare(a.codigo || '');
-      }
-    }));
-  };
-  const ordenarPorDescricao = () => {
-    setOrdemDescricaoAsc(!ordemDescricaoAsc);
-    setItens([...itens].sort((a, b) => {
-      if (ordemDescricaoAsc) {
-        return (a.nome || '').localeCompare(b.nome || '');
-      } else {
-        return (b.nome || '').localeCompare(a.nome || '');
-      }
-    }));
-  };
 
   // Funções do modal de busca por imagem
   const handleFileSelect = (file) => {
