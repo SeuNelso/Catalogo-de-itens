@@ -638,7 +638,7 @@ app.get('/api/itens/:id', (req, res) => {
               id: img.id,
               caminho: img.caminho.startsWith('http')
                 ? img.caminho
-                : `https://${process.env.AWS_S3_BUCKET}.s3.${process.env.AWS_REGION}.amazonaws.com/${img.caminho}`,
+                : `https://${process.env.R2_BUCKET}.r2.cloudflarestorage.com/${img.caminho}`,
               nome_arquivo: img.nome_arquivo,
               tipo: img.tipo
             })),
@@ -1095,13 +1095,13 @@ app.put('/api/itens/:id', authenticateToken, upload.array('imagens', 10), (req, 
 // Função para deletar imagem do S3
 async function deleteFromS3(key) {
   const s3 = new AWS.S3({
-    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-    region: process.env.AWS_REGION
+    accessKeyId: process.env.R2_ACCESS_KEY,
+    secretAccessKey: process.env.R2_SECRET_KEY,
+    endpoint: process.env.R2_ENDPOINT
   });
   return new Promise((resolve, reject) => {
     s3.deleteObject({
-      Bucket: process.env.AWS_S3_BUCKET,
+      Bucket: process.env.R2_BUCKET,
       Key: key
     }, (err, data) => {
       if (err) reject(err);
@@ -1618,7 +1618,7 @@ app.post('/api/rekognition-labels', authenticateToken, async (req, res) => {
     return res.status(403).json({ error: 'Acesso restrito a administradores ou controllers.' });
   }
   try {
-    const bucket = process.env.AWS_S3_BUCKET;
+    const bucket = process.env.R2_BUCKET;
     const labels = await detectLabelsFromS3(bucket, key);
     res.json({ labels });
   } catch (error) {

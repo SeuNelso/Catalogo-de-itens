@@ -4,12 +4,14 @@ const path = require('path');
 require('dotenv').config();
 
 const s3 = new AWS.S3({
-  accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-  secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-  region: process.env.AWS_REGION
+  endpoint: process.env.R2_ENDPOINT, // Ex: https://d18863b1a98e7a9ca8875305179ad718.r2.cloudflarestorage.com
+  accessKeyId: process.env.R2_ACCESS_KEY,
+  secretAccessKey: process.env.R2_SECRET_KEY,
+  signatureVersion: 'v4',
+  region: 'WEUR'
 });
 
-const BUCKET = process.env.AWS_S3_BUCKET;
+const BUCKET = process.env.R2_BUCKET;
 
 async function uploadToS3(filePath, fileName, mimeType) {
   const fileContent = fs.readFileSync(filePath);

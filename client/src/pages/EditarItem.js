@@ -297,6 +297,28 @@ const EditarItem = () => {
                   ))}
                 </div>
               )}
+              {/* Imagens já cadastradas */}
+              {imagensExistentes.length > 0 && (
+                <div className="flex gap-2 flex-wrap my-2">
+                  {imagensExistentes.map((img, idx) => (
+                    <div key={idx} className="relative w-[80px] h-[80px]">
+                      <img
+                        src={img.url || img}
+                        alt={`imagem-existente-${idx}`}
+                        className="w-[80px] h-[80px] object-cover rounded-lg border border-[#d1d5db]"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setImagensExistentes(prev => prev.filter((_, i) => i !== idx))}
+                        className="absolute -top-2 -right-2 bg-[#ef4444] text-white border-none rounded-full w-6 h-6 flex items-center justify-center font-bold text-xs shadow-md"
+                        aria-label="Remover imagem existente"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
             <div className="flex items-center mb-2 mt-4">
               <span className="mr-3"><FileText className="text-[#0915FF] w-6 h-6" /></span>
