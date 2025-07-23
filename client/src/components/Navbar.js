@@ -47,209 +47,89 @@ const Navbar = () => {
   };
 
   return (
-    <header className="navbar-digi">
-      <div className="navbar-digi-content">
-        <div className="navbar-digi-logo"></div>
-        {loading ? null : (
-        <>
-        <nav className={`navbar-digi-menu ${mobileOpen ? 'open' : ''}`}>
-          {/* Menu Principal */}
-          <div className="navbar-digi-menu-item">
-            <Link to="/" onClick={handleNavigation}>INÍCIO</Link>
-          </div>
+    <header className="w-full bg-[#0915FF] text-white shadow-md fixed top-0 left-0 z-50">
+      <div className="max-w-7xl mx-auto flex items-center justify-between h-14 px-4">
+        <div className="font-extrabold text-xl tracking-widest select-none">CATÁLOGO</div>
+        {/* Desktop Menu */}
+        <nav className="hidden md:flex items-center gap-6 flex-1 justify-center">
+          <Link to="/" className="font-semibold uppercase tracking-wide hover:text-yellow-400 transition">Início</Link>
           {isAuthenticated && (
-            <div className="navbar-digi-menu-item">
-              <Link to="/listar" onClick={handleNavigation}>CATÁLOGO</Link>
-            </div>
+            <Link to="/listar" className="font-semibold uppercase tracking-wide hover:text-yellow-400 transition">Catálogo</Link>
           )}
-          {/* Menu Administrativo Dropdown */}
           {isAdmin && (
-            <div className={`navbar-digi-dropdown ${gerirMenuOpen ? 'open' : ''}`}>
-              <button 
-                className="navbar-digi-dropdown-toggle"
-                onClick={() => setGerirMenuOpen(!gerirMenuOpen)}
-                onBlur={() => setTimeout(() => setGerirMenuOpen(false), 200)}
-              >
-                <Settings size={16} />
-                <span>GERIR</span>
-                <ChevronDown size={16} style={{ transform: gerirMenuOpen ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.2s' }} />
+            <div className="relative group">
+              <button className="flex items-center gap-1 font-semibold uppercase tracking-wide hover:text-yellow-400 transition focus:outline-none">
+                <Settings size={16} /> Gerir <ChevronDown size={16} className="transition-transform group-hover:rotate-180" />
               </button>
-              
-              {gerirMenuOpen && (
-                <div className="navbar-digi-dropdown-menu">
-                  <Link to="/cadastrar" onClick={handleNavigation}>
-                    <Plus size={16} />
-                    Criar Artigo
-                  </Link>
-                  <Link to="/excluir-artigo" onClick={handleNavigation}>
-                    <Trash2 size={16} />
-                    Excluir Artigo
-                  </Link>
-                  <Link to="/admin-usuarios" onClick={handleNavigation}>
-                    <Users size={16} />
-                    Usuários
-                  </Link>
-                </div>
-              )}
+              <div className="absolute left-0 mt-2 bg-white text-[#0915FF] rounded-lg shadow-lg py-2 px-2 min-w-[180px] opacity-0 group-hover:opacity-100 pointer-events-none group-hover:pointer-events-auto transition z-50">
+                <Link to="/cadastrar" className="flex items-center gap-2 px-3 py-2 rounded hover:bg-[#e8edff] font-medium"><Plus size={16}/>Criar Artigo</Link>
+                <Link to="/excluir-artigo" className="flex items-center gap-2 px-3 py-2 rounded hover:bg-[#e8edff] font-medium"><Trash2 size={16}/>Excluir Artigo</Link>
+                <Link to="/admin-usuarios" className="flex items-center gap-2 px-3 py-2 rounded hover:bg-[#e8edff] font-medium"><Users size={16}/>Usuários</Link>
+              </div>
             </div>
           )}
-
-          {/* Menu Importação/Exportação */}
           {isAuthenticated && (
-            <div className={`navbar-digi-dropdown ${dadosMenuOpen ? 'open' : ''}`}>
-              <button 
-                className="navbar-digi-dropdown-toggle"
-                onClick={() => setDadosMenuOpen(!dadosMenuOpen)}
-                onBlur={() => setTimeout(() => setDadosMenuOpen(false), 200)}
-              >
-                <Database size={16} />
-                <span>DADOS</span>
-                <ChevronDown size={16} style={{ transform: dadosMenuOpen ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.2s' }} />
+            <div className="relative group">
+              <button className="flex items-center gap-1 font-semibold uppercase tracking-wide hover:text-yellow-400 transition focus:outline-none">
+                <Database size={16} /> Dados <ChevronDown size={16} className="transition-transform group-hover:rotate-180" />
               </button>
-              
-              {dadosMenuOpen && (
-                <div className="navbar-digi-dropdown-menu">
-                  {isAdmin && (
-                    <Link to="/importar-itens" onClick={handleNavigation}>
-                      <FileText size={16} />
-                      Importar Itens
-                    </Link>
-                  )}
-                  {isController && (
-                    <Link to="/importar-stock-nacional" onClick={handleNavigation}>
-                      <FileText size={16} />
-                      Importar Stock
-                    </Link>
-                  )}
-                  {(isAdmin || isController) && (
-                    <Link to="/importar-dados-itens" onClick={handleNavigation}>
-                      <FileText size={16} />
-                      Importar Dados
-                    </Link>
-                  )}
-                  <Link to="/exportar" onClick={handleNavigation}>
-                    <Download size={16} />
-                    Exportar Dados
-                  </Link>
-                </div>
-              )}
+              <div className="absolute left-0 mt-2 bg-white text-[#0915FF] rounded-lg shadow-lg py-2 px-2 min-w-[200px] opacity-0 group-hover:opacity-100 pointer-events-none group-hover:pointer-events-auto transition z-50">
+                {isAdmin && <Link to="/importar-itens" className="flex items-center gap-2 px-3 py-2 rounded hover:bg-[#e8edff] font-medium"><FileText size={16}/>Importar Itens</Link>}
+                {isController && <Link to="/importar-stock-nacional" className="flex items-center gap-2 px-3 py-2 rounded hover:bg-[#e8edff] font-medium"><FileText size={16}/>Importar Stock</Link>}
+                {(isAdmin || isController) && <Link to="/importar-dados-itens" className="flex items-center gap-2 px-3 py-2 rounded hover:bg-[#e8edff] font-medium"><FileText size={16}/>Importar Dados</Link>}
+                <Link to="/exportar" className="flex items-center gap-2 px-3 py-2 rounded hover:bg-[#e8edff] font-medium"><Download size={16}/>Exportar Dados</Link>
+              </div>
             </div>
           )}
         </nav>
-
-        {/* Área do Usuário - Apenas no Desktop */}
-        {isAuthenticated ? (
-          <div className="navbar-digi-user desktop-only">
-            <span className="navbar-digi-username">
-              {user?.nome || user?.username}
-            </span>
-            <button className="navbar-digi-logout" onClick={handleLogout}>SAIR</button>
-          </div>
-        ) : (
-          <Link to="/login" className="navbar-digi-logout desktop-only">ENTRAR</Link>
-        )}
-
-        {/* Botão Mobile */}
-        <button 
-          className={`navbar-digi-mobile-toggle ${mobileOpen ? 'open' : ''}`}
-          aria-label="Abrir menu" 
-          onClick={() => setMobileOpen(!mobileOpen)}
-        >
-          <span className="navbar-digi-mobile-bar"></span>
-          <span className="navbar-digi-mobile-bar"></span>
-          <span className="navbar-digi-mobile-bar"></span>
+        {/* Usuário Desktop */}
+        <div className="hidden md:flex items-center gap-4">
+          {isAuthenticated ? (
+            <>
+              <span className="font-semibold text-base">{user?.nome || user?.username}</span>
+              <button className="bg-white text-[#0915FF] font-bold rounded px-5 py-2 shadow hover:bg-[#e8edff] transition" onClick={handleLogout}>SAIR</button>
+            </>
+          ) : (
+            <Link to="/login" className="bg-white text-[#0915FF] font-bold rounded px-5 py-2 shadow hover:bg-[#e8edff] transition">ENTRAR</Link>
+          )}
+        </div>
+        {/* Botão Hamburguer Mobile */}
+        <button className="md:hidden flex flex-col justify-center items-center w-10 h-10 rounded hover:bg-white/10 transition ml-2" onClick={() => setMobileOpen(!mobileOpen)} aria-label="Abrir menu">
+          <span className={`block w-7 h-1 bg-white rounded transition-all duration-300 ${mobileOpen ? 'rotate-45 translate-y-2' : ''}`}></span>
+          <span className={`block w-7 h-1 bg-white rounded my-1 transition-all duration-300 ${mobileOpen ? 'opacity-0' : ''}`}></span>
+          <span className={`block w-7 h-1 bg-white rounded transition-all duration-300 ${mobileOpen ? '-rotate-45 -translate-y-2' : ''}`}></span>
         </button>
-        </>
-        )}
       </div>
-
-      {/* Menu Mobile - Inclui área do usuário */}
-      {!loading && mobileOpen && (
-        <div className="navbar-digi-mobile-menu">
-          {/* Menu principal mobile */}
-          <div className="navbar-digi-mobile-items">
-            <div className="navbar-digi-menu-item">
-              <Link to="/" onClick={handleNavigation}>INÍCIO</Link>
+      {/* Menu Mobile */}
+      {mobileOpen && (
+        <div className="md:hidden fixed inset-0 bg-[#0915FF]/95 z-40 flex flex-col pt-20 px-6 gap-6 animate-fade-in">
+          <Link to="/" className="font-semibold uppercase tracking-wide text-lg hover:text-yellow-400 transition" onClick={handleNavigation}>Início</Link>
+          {isAuthenticated && <Link to="/listar" className="font-semibold uppercase tracking-wide text-lg hover:text-yellow-400 transition" onClick={handleNavigation}>Catálogo</Link>}
+          {isAdmin && (
+            <div className="flex flex-col gap-1">
+              <span className="font-bold text-base mb-1">Gerir</span>
+              <Link to="/cadastrar" className="flex items-center gap-2 px-3 py-2 rounded hover:bg-[#e8edff] font-medium" onClick={handleNavigation}><Plus size={16}/>Criar Artigo</Link>
+              <Link to="/excluir-artigo" className="flex items-center gap-2 px-3 py-2 rounded hover:bg-[#e8edff] font-medium" onClick={handleNavigation}><Trash2 size={16}/>Excluir Artigo</Link>
+              <Link to="/admin-usuarios" className="flex items-center gap-2 px-3 py-2 rounded hover:bg-[#e8edff] font-medium" onClick={handleNavigation}><Users size={16}/>Usuários</Link>
             </div>
-            {isAuthenticated && (
-              <div className="navbar-digi-menu-item">
-                <Link to="/listar" onClick={handleNavigation}>CATÁLOGO</Link>
-              </div>
-            )}
-            {isAdmin && (
-              <div className={`navbar-digi-dropdown ${gerirMenuOpen ? 'open' : ''}`}> {/* GERIR */}
-                <button 
-                  className="navbar-digi-dropdown-toggle"
-                  onClick={() => setGerirMenuOpen(!gerirMenuOpen)}
-                  onBlur={() => setTimeout(() => setGerirMenuOpen(false), 200)}
-                >
-                  <Settings size={16} />
-                  <span>GERIR</span>
-                  <ChevronDown size={16} style={{ transform: gerirMenuOpen ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.2s' }} />
-                </button>
-                {gerirMenuOpen && (
-                  <div className="navbar-digi-dropdown-menu">
-                    <Link to="/cadastrar" onClick={handleNavigation}>
-                      <Plus size={16} />
-                      Criar Artigo
-                    </Link>
-                    <Link to="/excluir-artigo" onClick={handleNavigation}>
-                      <Trash2 size={16} />
-                      Excluir Artigo
-                    </Link>
-                    <Link to="/admin-usuarios" onClick={handleNavigation}>
-                      <Users size={16} />
-                      Usuários
-                    </Link>
-                  </div>
-                )}
-              </div>
-            )}
-            {isAuthenticated && (
-              <div className={`navbar-digi-dropdown ${dadosMenuOpen ? 'open' : ''}`}> {/* DADOS */}
-                <button 
-                  className="navbar-digi-dropdown-toggle"
-                  onClick={() => setDadosMenuOpen(!dadosMenuOpen)}
-                  onBlur={() => setTimeout(() => setDadosMenuOpen(false), 200)}
-                >
-                  <Database size={16} />
-                  <span>DADOS</span>
-                  <ChevronDown size={16} style={{ transform: dadosMenuOpen ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.2s' }} />
-                </button>
-                {dadosMenuOpen && (
-                  <div className="navbar-digi-dropdown-menu">
-                    {isAdmin && (
-                      <Link to="/importar-itens" onClick={handleNavigation}>
-                        <FileText size={16} />
-                        Importar Itens
-                      </Link>
-                    )}
-                    {isController && (
-                      <Link to="/importar-stock-nacional" onClick={handleNavigation}>
-                        <FileText size={16} />
-                        Importar Stock
-                      </Link>
-                    )}
-                    {(isAdmin || isController) && (
-                      <Link to="/importar-dados-itens" onClick={handleNavigation}>
-                        <FileText size={16} />
-                        Importar Dados
-                      </Link>
-                    )}
-                    <Link to="/exportar" onClick={handleNavigation}>
-                      <Download size={16} />
-                      Exportar Dados
-                    </Link>
-                  </div>
-                )}
-              </div>
-            )}
-            {/* Linha com usuário e sair */}
-            {isAuthenticated && (
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12, marginTop: 18 }}>
-                <span className="navbar-digi-mobile-username">{user?.nome || user?.username}</span>
-                <button className="navbar-digi-mobile-logout" onClick={handleLogout}>SAIR</button>
-              </div>
+          )}
+          {isAuthenticated && (
+            <div className="flex flex-col gap-1">
+              <span className="font-bold text-base mb-1">Dados</span>
+              {isAdmin && <Link to="/importar-itens" className="flex items-center gap-2 px-3 py-2 rounded hover:bg-[#e8edff] font-medium" onClick={handleNavigation}><FileText size={16}/>Importar Itens</Link>}
+              {isController && <Link to="/importar-stock-nacional" className="flex items-center gap-2 px-3 py-2 rounded hover:bg-[#e8edff] font-medium" onClick={handleNavigation}><FileText size={16}/>Importar Stock</Link>}
+              {(isAdmin || isController) && <Link to="/importar-dados-itens" className="flex items-center gap-2 px-3 py-2 rounded hover:bg-[#e8edff] font-medium" onClick={handleNavigation}><FileText size={16}/>Importar Dados</Link>}
+              <Link to="/exportar" className="flex items-center gap-2 px-3 py-2 rounded hover:bg-[#e8edff] font-medium" onClick={handleNavigation}><Download size={16}/>Exportar Dados</Link>
+            </div>
+          )}
+          <div className="flex flex-col gap-2 mt-6">
+            {isAuthenticated ? (
+              <>
+                <span className="font-semibold text-base">{user?.nome || user?.username}</span>
+                <button className="bg-white text-[#0915FF] font-bold rounded px-5 py-2 shadow hover:bg-[#e8edff] transition" onClick={handleLogout}>SAIR</button>
+              </>
+            ) : (
+              <Link to="/login" className="bg-white text-[#0915FF] font-bold rounded px-5 py-2 shadow hover:bg-[#e8edff] transition">ENTRAR</Link>
             )}
           </div>
         </div>

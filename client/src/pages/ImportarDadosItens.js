@@ -11,7 +11,7 @@ const ImportarDadosItens = () => {
   const [loading, setLoading] = useState(false);
   const [importStatus, setImportStatus] = useState(null);
   const [toast, setToast] = useState(null);
-  const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
+  // const [isMobile, setIsMobile] = useState(window.innerWidth <= 600);
 
   // Verificar permissões
   const canImport = user && (user.role === 'admin' || user.role === 'controller');
@@ -22,7 +22,9 @@ const ImportarDadosItens = () => {
       return;
     }
 
-    const handleResize = () => setIsMobile(window.innerWidth <= 768);
+    const handleResize = () => {
+      // setIsMobile(window.innerWidth <= 768); // This line was removed as per the edit hint
+    };
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
   }, [canImport, navigate]);

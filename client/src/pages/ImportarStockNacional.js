@@ -8,7 +8,6 @@ const ImportarStockNacional = () => {
   const [status, setStatus] = useState('');
   const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(false);
-  const [isMobile, setIsMobile] = useState(window.innerWidth <= 600);
   const { startImport } = useImportProgress();
   const [importId, setImportId] = useState(null);
   const [naoCadastrados, setNaoCadastrados] = useState([]);
@@ -16,7 +15,7 @@ const ImportarStockNacional = () => {
 
   React.useEffect(() => {
     function handleResize() {
-      setIsMobile(window.innerWidth <= 600);
+      // setIsMobile(window.innerWidth <= 600); // This line is removed
     }
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
