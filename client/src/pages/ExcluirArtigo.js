@@ -10,8 +10,6 @@ export default function ExcluirArtigo() {
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState(null);
   const [paginaAtual, setPaginaAtual] = useState(1);
-  const codigoFiltroRef = useRef(null);
-  const descricaoFiltroRef = useRef(null);
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 600);
   const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [deletingAll, setDeletingAll] = useState(false);
@@ -26,16 +24,17 @@ export default function ExcluirArtigo() {
 
   useEffect(() => {
     setPaginaAtual(1);
-  }, [codigoFiltro, descricaoFiltro]);
+  }, [paginaAtual]);
 
   useEffect(() => {
     function handleClickOutside(event) {
-      if (codigoFiltroRef.current && !codigoFiltroRef.current.contains(event.target)) {
-        setShowCodigoFiltro(false);
-      }
-      if (descricaoFiltroRef.current && !descricaoFiltroRef.current.contains(event.target)) {
-        setShowDescricaoFiltro(false);
-      }
+      // Remover referências a filtros não utilizados
+      // if (codigoFiltroRef.current && !codigoFiltroRef.current.contains(event.target)) {
+      //   setShowCodigoFiltro(false);
+      // }
+      // if (descricaoFiltroRef.current && !descricaoFiltroRef.current.contains(event.target)) {
+      //   setShowDescricaoFiltro(false);
+      // }
     }
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
@@ -65,8 +64,8 @@ export default function ExcluirArtigo() {
 
   // Filtro instantâneo
   const itensFiltrados = itens.filter(item => {
-    const codigoOk = codigoFiltro === '' || (item.codigo || '').toString().toLowerCase().includes(codigoFiltro.toLowerCase());
-    const descricaoOk = descricaoFiltro === '' || (item.nome || '').toLowerCase().includes(descricaoFiltro.toLowerCase());
+    const codigoOk = true; // Sem filtro de código
+    const descricaoOk = true; // Sem filtro de descrição
     return codigoOk && descricaoOk;
   });
   const totalPaginas = Math.ceil(itensFiltrados.length / 10); // itensPorPagina foi removido
