@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { Database, Search, Shield, UserPlus } from 'react-feather';
+import { Database, Search, Shield } from 'react-feather';
 import { useAuth } from '../contexts/AuthContext';
 
 

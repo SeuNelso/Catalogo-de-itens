@@ -5,11 +5,10 @@ const ExportarDados = () => {
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState('');
   const [message, setMessage] = useState('');
-  const [isMobile, setIsMobile] = useState(window.innerWidth <= 600);
 
   React.useEffect(() => {
     function handleResize() {
-      setIsMobile(window.innerWidth <= 600);
+      // setIsMobile(window.innerWidth <= 600); // This line was removed
     }
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
