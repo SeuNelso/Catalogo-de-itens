@@ -98,52 +98,23 @@ const ImportarStockNacional = () => {
   };
 
   return (
-    <div className="min-h-screen bg-[#e5eefe] flex flex-col items-center justify-center py-12 px-4">
-      <div style={{
-        background: '#fff',
-        borderRadius: 20,
-        boxShadow: '0 8px 32px rgba(9,21,255,0.08)',
-        border: '1.5px solid #d1d5db',
-        maxWidth: isMobile ? '100%' : '1200px',
-        width: '100%',
-        padding: isMobile ? 18 : 40,
-        margin: isMobile ? '16px 0' : '40px 0',
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        gap: isMobile ? 16 : 28
-      }}>
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
-          <div style={{ background: '#0A7B83', borderRadius: '50%', padding: 14, marginBottom: 8 }}>
-            <Box style={{ color: '#fff', width: 32, height: 32 }} />
+    <div className="min-h-screen bg-gradient-to-br from-[#e0e7ff] via-[#f5f6fa] to-[#e5eefe] flex flex-col items-center justify-center py-4 px-2 sm:px-4">
+      <div className="backdrop-blur-md bg-white/80 rounded-2xl shadow-xl border border-[#d1d5db] w-full max-w-[98vw] sm:max-w-[1000px] p-3 sm:p-5 flex flex-col items-center gap-4 sm:gap-6">
+        <div className="flex flex-col items-center gap-2 sm:gap-3">
+          <div className="bg-[#0A7B83] rounded-full p-3 sm:p-4 mb-2 flex items-center justify-center">
+            <Box className="text-white" style={{ width: 24, height: 24 }} />
           </div>
-          <h1 style={{ color: '#0A7B83', fontWeight: 900, fontSize: isMobile ? 22 : 30, textAlign: 'center', margin: 0, letterSpacing: 1 }}>
-            Importar Stock Nacional
-          </h1>
-          <p style={{ color: '#333', fontSize: isMobile ? 15 : 18, textAlign: 'center', margin: 0, maxWidth: 420, fontWeight: 500 }}>
-            Faça upload de um arquivo Excel (.xlsx ou .csv) no formato de <span style={{ color: '#0A7B83', fontWeight: 700 }}>Stock Nacional</span> para atualizar as quantidades dos itens em cada armazém.<br/>
-            <span style={{ color: '#0A7B83', fontWeight: 700 }}>Atenção:</span> O arquivo deve conter as colunas <span style={{ color: '#0A7B83', fontWeight: 700 }}>Artigo, Descrição</span> e pelo menos um armazém (ex: WH1, WH2, ...).
+          <h1 className="text-[#0A7B83] font-black text-[18px] sm:text-[28px] text-center m-0 tracking-wide">Importar Stock Nacional</h1>
+          <p className="text-[#333] text-[13px] sm:text-[16px] text-center m-0 max-w-[95vw] sm:max-w-[420px] font-medium">
+            Faça upload de um arquivo Excel (.xlsx ou .csv) no formato de <span className="text-[#0A7B83] font-bold">Stock Nacional</span> para atualizar as quantidades dos itens em cada armazém.<br/>
+            <span className="text-[#0A7B83] font-bold">Atenção:</span> O arquivo deve conter as colunas <span className="text-[#0A7B83] font-bold">Artigo, Descrição</span> e pelo menos um armazém (ex: WH1, WH2, ...).
           </p>
-          <a href="/exemplo_stock_nacional.xlsx" download style={{ color: '#0A7B83', fontWeight: 700, fontSize: 15, margin: '10px 0 0 0', textDecoration: 'underline' }}>
-            Baixar exemplo de arquivo
-          </a>
+          <a href="/exemplo_stock_nacional.xlsx" download className="text-[#0A7B83] font-bold text-[12px] sm:text-[14px] mt-2 underline">Baixar exemplo de arquivo</a>
         </div>
-        <form onSubmit={handleSubmit} style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: isMobile ? 12 : 18, background: '#e6fafd' }}>
-          <label htmlFor="stock-upload" style={{
-            border: '2px dashed #d1d5db',
-            borderRadius: 12,
-            padding: isMobile ? 14 : 24,
-            textAlign: 'center',
-            cursor: 'pointer',
-            background: '#f7faff',
-            marginBottom: 8,
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
-            gap: 10
-          }}>
-            <Upload style={{ width: 36, height: 36, color: '#0915FF', marginBottom: 6 }} />
-            <span style={{ color: '#0915FF', fontWeight: 600, fontSize: 16 }}>
+        <form onSubmit={handleSubmit} className="w-full flex flex-col gap-2 sm:gap-3 bg-[#e6fafd] rounded-[10px] p-2 sm:p-3">
+          <label htmlFor="stock-upload" className="border-2 border-dashed border-[#d1d5db] rounded-[10px] p-3 sm:p-4 text-center cursor-pointer bg-[#f7faff] mb-2 flex flex-col items-center gap-2 sm:gap-3">
+            <Upload className="text-[#0915FF] mb-1" style={{ width: 22, height: 22 }} />
+            <span className="text-[#0915FF] font-semibold text-[13px] sm:text-[14px]">
               {file ? file.name : 'Clique ou arraste para selecionar o arquivo'}
             </span>
             <input
@@ -151,47 +122,43 @@ const ImportarStockNacional = () => {
               type="file"
               accept=".xlsx,.xls,.csv"
               onChange={handleFileChange}
-              style={{ display: 'none' }}
+              className="hidden"
             />
           </label>
           <button
             type="submit"
             disabled={loading}
-            className="import-button"
+            className={`rounded-[7px] px-3 sm:px-4 py-2 font-semibold text-[13px] sm:text-[15px] flex items-center justify-center gap-2 focus:outline-none focus:ring-2 transition-colors duration-200 shadow-md ${!loading ? 'bg-[#0A7B83] hover:bg-[#065a60] text-white cursor-pointer' : 'bg-[#e5e7eb] text-[#9ca3af] cursor-not-allowed'}`}
           >
-            <Upload size={18} />
+            <Upload size={14} />
             {loading ? 'Importando...' : 'Importar Arquivo'}
           </button>
           {loading && (
-            <div style={{ textAlign: 'center', margin: '18px 0 0 0', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10 }}>
-              <svg style={{ width: 28, height: 28 }} viewBox="0 0 50 50">
-                <circle cx="25" cy="25" r="20" fill="none" stroke="#0A7B83" strokeWidth="5" strokeDasharray="31.4 31.4" strokeLinecap="round">
-                  <animateTransform attributeName="transform" type="rotate" from="0 25 25" to="360 25 25" dur="1s" repeatCount="indefinite" />
-                </circle>
-              </svg>
-              <span style={{ color: '#0A7B83', fontWeight: 600, fontSize: 16 }}>Processando arquivo, aguarde...</span>
+            <div className="text-center mt-2 flex items-center justify-center gap-2">
+              <span className="inline-block w-5 h-5 border-2 border-transparent border-t-[#0A7B83] rounded-full animate-spin"></span>
+              <span className="text-[#0A7B83] font-semibold text-[13px] sm:text-[14px]">Processando arquivo, aguarde...</span>
             </div>
           )}
         </form>
         {status === 'sucesso' && (
-          <div style={{ color: '#22c55e', display: 'flex', alignItems: 'center', gap: 8, fontWeight: 600, fontSize: isMobile ? 14 : 16 }}>
-            <CheckCircle style={{ width: 20, height: 20 }} /> {message}
+          <div className="text-[#22c55e] flex items-center gap-2 font-semibold text-[13px] sm:text-[14px]">
+            <CheckCircle style={{ width: 16, height: 16 }} /> {message}
           </div>
         )}
         {status === 'erro' && (
-          <div style={{ color: '#ef4444', display: 'flex', alignItems: 'center', gap: 8, fontWeight: 600, fontSize: isMobile ? 14 : 16 }}>
-            <XCircle style={{ width: 20, height: 20 }} /> {message}
+          <div className="text-[#ef4444] flex items-center gap-2 font-semibold text-[13px] sm:text-[14px]">
+            <XCircle style={{ width: 16, height: 16 }} /> {message}
           </div>
         )}
         {naoCadastrados.length > 0 && (
-          <div style={{ marginTop: 24, width: '100%', maxWidth: 600, background: '#fffbe6', border: '1px solid #ffe58f', borderRadius: 12, padding: 18 }}>
-            <h3 style={{ color: '#b45309', fontWeight: 700, fontSize: 18, marginBottom: 10 }}>Artigos não cadastrados encontrados:</h3>
-            <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+          <div className="mt-3 sm:mt-4 w-full max-w-[95vw] sm:max-w-[600px] bg-[#fffbe6] border border-[#ffe58f] rounded-[10px] p-3 sm:p-4">
+            <h3 className="text-[#b45309] font-bold text-[13px] sm:text-[15px] mb-2">Artigos não cadastrados encontrados:</h3>
+            <ul className="list-none p-0 m-0">
               {naoCadastrados.map((art, idx) => (
-                <li key={idx} style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
-                  <span style={{ fontWeight: 600 }}>{art.codigo}</span> - <span>{art.descricao}</span>
+                <li key={idx} className="flex items-center gap-2 mb-2">
+                  <span className="font-semibold">{art.codigo}</span> - <span>{art.descricao}</span>
                   <button
-                    style={{ marginLeft: 'auto', background: '#0A7B83', color: '#fff', border: 'none', borderRadius: 8, padding: '6px 14px', fontWeight: 600, cursor: 'pointer' }}
+                    className="ml-auto bg-[#0A7B83] hover:bg-[#065a60] text-white rounded-[7px] px-3 py-1 font-semibold text-[12px] sm:text-[13px] transition-colors duration-200"
                     onClick={() => navigate(`/cadastrar?codigo=${encodeURIComponent(art.codigo)}&descricao=${encodeURIComponent(art.descricao)}`)}
                   >Cadastrar artigo</button>
                 </li>

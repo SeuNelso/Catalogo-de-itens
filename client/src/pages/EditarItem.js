@@ -57,7 +57,7 @@ const EditarItem = () => {
             altura: data.altura || '',
             unidade: data.unidade || '',
             peso: data.peso || '',
-            unidadePeso: data.unidadePeso || '',
+            unidadePeso: data.unidadepeso || '',
             observacoes: data.observacoes || '',
             unidadearmazenamento: data.unidadearmazenamento || '',
             quantidade: data.quantidade || '', // campo adicionado
@@ -131,9 +131,14 @@ const EditarItem = () => {
     try {
       const token = localStorage.getItem('token');
       const submitData = new FormData();
+      // Log para depuração
+      console.log('Valor selecionado para unidadePeso (edição):', formData.unidadePeso);
       Object.keys(formData).forEach(key => {
-        // Enviar todos os campos, mesmo que vazios
-        submitData.append(key, formData[key] || '');
+        if (key === 'unidadePeso') {
+          submitData.append('unidadepeso', formData[key] ?? '');
+        } else {
+          submitData.append(key, formData[key] ?? '');
+        }
       });
       selectedFiles.forEach(file => {
         submitData.append('imagens', file);
@@ -174,150 +179,42 @@ const EditarItem = () => {
   }
 
   return (
-    <div className={`min-h-screen bg-[#e5e5e5] pb-12 flex flex-col items-center${isMobile ? ' cadastro-mobile-stack' : ''}`}>
+    <div className="min-h-screen bg-[#f3f6fd] flex flex-col items-center justify-center py-4 sm:py-12 px-2 sm:px-4">
       {toast && (
         <Toast type={toast.type} message={toast.message} onClose={() => setToast(null)} />
       )}
-      <div style={{
-        display: isMobile ? 'block' : 'flex',
-        flexDirection: isMobile ? 'column' : 'row',
-        justifyContent: 'center',
-        alignItems: isMobile ? 'stretch' : 'flex-start',
-        gap: isMobile ? 0 : 48,
-        width: '100%',
-        maxWidth: 1200,
-        marginTop: isMobile ? 0 : 40,
-        padding: isMobile ? '0 0 16px 0' : undefined
-      }}>
-        {/* Card de informações básicas à esquerda */}
-        <div style={{
-          background: '#fff',
-          borderRadius: 16,
-          boxShadow: '0 8px 32px rgba(9,21,255,0.08)',
-          padding: isMobile ? 16 : 32,
-          minWidth: isMobile ? 'unset' : 300,
-          maxWidth: isMobile ? '100%' : 400,
-          flex: isMobile ? 'unset' : '0 0 400px',
-          marginTop: isMobile ? 16 : 32,
-          marginLeft: 0,
-          marginRight: isMobile ? 0 : 'auto',
-          width: '100%',
-          display: 'flex',
-          flexDirection: 'column',
-          alignItems: 'center',
-          gap: 18
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', marginBottom: 24 }}>
-            <Package style={{ width: 24, height: 24, color: '#0915FF', marginRight: 12 }} />
-            <h2 style={{ color: '#0915FF', fontWeight: 700, fontSize: 20, margin: 0 }}>
-              Editar Informações do Item
-            </h2>
+      <div className="flex flex-col md:flex-row gap-4 sm:gap-8 w-full max-w-[98vw] sm:max-w-5xl items-start justify-center">
+        {/* Card da esquerda: Informações Básicas */}
+        <div className="bg-white rounded-2xl shadow-lg border border-[#d1d5db] w-full sm:max-w-[420px] p-4 sm:p-8 flex flex-col gap-4 sm:gap-6">
+          <div className="flex items-center mb-2">
+            <span className="mr-3"><Package className="text-[#0915FF] w-7 h-7" /></span>
+            <h2 className="text-black font-extrabold text-lg sm:text-2xl m-0">Informações Básicas</h2>
           </div>
-          <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <form className="w-full flex flex-col gap-3 sm:gap-4" onSubmit={handleSubmit}>
             {/* Código */}
             <div>
-              <label style={{ display: 'block', color: '#374151', fontWeight: 600, marginBottom: 6, fontSize: 14 }}>
-                Código <span style={{ color: '#ef4444' }}>*</span>
-              </label>
-              <input
-                type="text"
-                name="codigo"
-                value={formData.codigo}
-                onChange={handleInputChange}
-                style={{
-                  width: '100%',
-                  border: '1.5px solid #d1d5db',
-                  borderRadius: 8,
-                  padding: '12px 16px',
-                  fontSize: 14,
-                  outline: 'none',
-                  transition: 'border 0.2s'
-                }}
-                placeholder="Digite o código do item"
-                required
-              />
+              <label className="block text-gray-700 font-semibold mb-1 sm:mb-2 text-sm sm:text-base">Código <span className="text-red-500">*</span></label>
+              <input name="codigo" value={formData.codigo} onChange={handleInputChange} className="px-3 py-2 rounded-lg border border-[#d1d5db] text-sm sm:text-base w-full" placeholder="Digite o código do item" required />
             </div>
             {/* Descrição */}
             <div>
-              <label style={{ display: 'block', color: '#374151', fontWeight: 600, marginBottom: 6, fontSize: 14 }}>
-                Descrição <span style={{ color: '#ef4444' }}>*</span>
-              </label>
-              <textarea
-                name="descricao"
-                value={formData.descricao}
-                onChange={handleInputChange}
-                style={{
-                  width: '100%',
-                  border: '1.5px solid #d1d5db',
-                  borderRadius: 8,
-                  padding: '12px 16px',
-                  fontSize: 14,
-                  outline: 'none',
-                  transition: 'border 0.2s',
-                  resize: 'vertical',
-                  minHeight: 80
-                }}
-                placeholder="Descreva o item em detalhes"
-                rows="3"
-                required
-              />
+              <label className="block text-gray-700 font-semibold mb-1 sm:mb-2 text-sm sm:text-base">Descrição <span className="text-red-500">*</span></label>
+              <textarea name="descricao" value={formData.descricao} onChange={handleInputChange} className="px-3 py-2 rounded-lg border border-[#d1d5db] text-sm sm:text-base min-h-[80px] resize-vertical w-full" placeholder="Descreva o item em detalhes" required />
             </div>
             {/* Família e Subfamília */}
-            <div style={{ display: 'flex', gap: 12 }}>
-              <div style={{ flex: 1 }}>
-                <label style={{ display: 'block', color: '#374151', fontWeight: 600, marginBottom: 6, fontSize: 14 }}>
-                  Família
-                </label>
-                <select
-                  name="familia"
-                  value={formData.familia}
-                  onChange={e => setFormData(prev => ({ ...prev, familia: e.target.value }))}
-                  style={{
-                    width: '100%',
-                    border: '1px solid #bfc4ca',
-                    borderRadius: 6,
-                    padding: '8px 12px',
-                    fontSize: 15,
-                    background: '#f7f8fa',
-                    color: '#222',
-                    outline: 'none',
-                    boxShadow: '0 1px 2px rgba(9,21,255,0.03)',
-                    transition: 'border 0.2s, box-shadow 0.2s'
-                  }}
-                  onFocus={e => e.target.style.border = '1.5px solid #0915FF'}
-                  onBlur={e => e.target.style.border = '1px solid #bfc4ca'}
-                  required
-                >
+            <div className="flex gap-2">
+              <div className="flex-1">
+                <label className="block text-gray-700 font-semibold mb-1 sm:mb-2 text-sm sm:text-base">Família</label>
+                <select name="familia" value={formData.familia} onChange={handleInputChange} className="px-3 py-2 rounded-lg border border-[#d1d5db] text-sm sm:text-base bg-[#f7f8fa] w-full" required>
                   <option value="">Selecione a família</option>
                   {familias.map(fam => (
                     <option key={fam} value={fam}>{fam}</option>
                   ))}
                 </select>
               </div>
-              <div style={{ flex: 1 }}>
-                <label style={{ display: 'block', color: '#374151', fontWeight: 600, marginBottom: 6, fontSize: 14 }}>
-                  Subfamília
-                </label>
-                <select
-                  name="subfamilia"
-                  value={formData.subfamilia}
-                  onChange={e => setFormData(prev => ({ ...prev, subfamilia: e.target.value }))}
-                  style={{
-                    width: '100%',
-                    border: '1px solid #bfc4ca',
-                    borderRadius: 6,
-                    padding: '8px 12px',
-                    fontSize: 15,
-                    background: '#f7f8fa',
-                    color: '#222',
-                    outline: 'none',
-                    boxShadow: '0 1px 2px rgba(9,21,255,0.03)',
-                    transition: 'border 0.2s, box-shadow 0.2s'
-                  }}
-                  onFocus={e => e.target.style.border = '1.5px solid #0915FF'}
-                  onBlur={e => e.target.style.border = '1px solid #bfc4ca'}
-                  required
-                >
+              <div className="flex-1">
+                <label className="block text-gray-700 font-semibold mb-1 sm:mb-2 text-sm sm:text-base">Subfamília</label>
+                <select name="subfamilia" value={formData.subfamilia} onChange={handleInputChange} className="px-3 py-2 rounded-lg border border-[#d1d5db] text-sm sm:text-base bg-[#f7f8fa] w-full" required>
                   <option value="">Selecione a subfamília</option>
                   {subfamilias.map(sub => (
                     <option key={sub} value={sub}>{sub}</option>
@@ -327,215 +224,49 @@ const EditarItem = () => {
             </div>
             {/* Setor */}
             <div>
-              <label style={{ display: 'block', color: '#374151', fontWeight: 600, marginBottom: 6, fontSize: 14 }}>
-                Setor
-              </label>
-              <input
-                type="text"
-                name="setor"
-                value={formData.setor}
-                onChange={handleInputChange}
-                style={{
-                  width: '100%',
-                  border: '1.5px solid #d1d5db',
-                  borderRadius: 8,
-                  padding: '12px 16px',
-                  fontSize: 14,
-                  outline: 'none',
-                  transition: 'border 0.2s'
-                }}
-                placeholder="Ex: Fibra, Móvel, Cliente, etc..."
-              />
+              <label className="block text-gray-700 font-semibold mb-1 sm:mb-2 text-sm sm:text-base">Setor</label>
+              <input name="setor" value={formData.setor} onChange={handleInputChange} className="px-3 py-2 rounded-lg border border-[#d1d5db] text-sm sm:text-base w-full" placeholder="Ex: Fibra, Móvel, cliente e etc." maxLength={20} />
             </div>
             {/* Dimensões */}
             <div>
-              <label style={{ display: 'block', color: '#374151', fontWeight: 600, marginBottom: 6, fontSize: 14 }}>
-                Dimensões
-              </label>
-              <div style={{ display: 'flex', gap: 8 }}>
-                <div style={{ flex: 1 }}>
-                  <input
-                    type="number"
-                    name="comprimento"
-                    value={formData.comprimento}
-                    onChange={handleInputChange}
-                    style={{
-                      width: '100%',
-                      border: '1.5px solid #d1d5db',
-                      borderRadius: 8,
-                      padding: '12px 16px',
-                      fontSize: 14,
-                      outline: 'none',
-                      transition: 'border 0.2s'
-                    }}
-                    placeholder="Comprimento"
-                    step="0.1"
-                    min="0"
-                  />
-                </div>
-                <div style={{ flex: 1 }}>
-                  <input
-                    type="number"
-                    name="largura"
-                    value={formData.largura}
-                    onChange={handleInputChange}
-                    style={{
-                      width: '100%',
-                      border: '1.5px solid #d1d5db',
-                      borderRadius: 8,
-                      padding: '12px 16px',
-                      fontSize: 14,
-                      outline: 'none',
-                      transition: 'border 0.2s'
-                    }}
-                    placeholder="Largura"
-                    step="0.1"
-                    min="0"
-                  />
-                </div>
-                <div style={{ flex: 1 }}>
-                  <input
-                    type="number"
-                    name="altura"
-                    value={formData.altura}
-                    onChange={handleInputChange}
-                    style={{
-                      width: '100%',
-                      border: '1.5px solid #d1d5db',
-                      borderRadius: 8,
-                      padding: '12px 16px',
-                      fontSize: 14,
-                      outline: 'none',
-                      transition: 'border 0.2s'
-                    }}
-                    placeholder="Altura"
-                    step="0.1"
-                    min="0"
-                  />
-                </div>
-                <div style={{ flex: 1 }}>
-                  <select
-                    name="unidade"
-                    value={formData.unidade}
-                    onChange={handleInputChange}
-                    style={{
-                      width: '100%',
-                      border: '1.5px solid #d1d5db',
-                      borderRadius: 8,
-                      padding: '12px 16px',
-                      fontSize: 14,
-                      outline: 'none',
-                      transition: 'border 0.2s',
-                      background: '#fff'
-                    }}
-                  >
-                    <option value="">Unidade</option>
-                    <option value="cm">cm</option>
-                    <option value="mm">mm</option>
-                    <option value="m">m</option>
-                    <option value="pol">pol</option>
-                  </select>
-                </div>
+              <label className="block text-gray-700 font-semibold mb-1 sm:mb-2 text-sm sm:text-base">Dimensões</label>
+              <div className="flex gap-2">
+                <input type="number" name="comprimento" value={formData.comprimento || ''} onChange={handleInputChange} placeholder="Comprimento" className="px-3 py-2 rounded-lg border border-[#d1d5db] text-sm sm:text-base w-full" />
+                <input type="number" name="largura" value={formData.largura || ''} onChange={handleInputChange} placeholder="Largura" className="px-3 py-2 rounded-lg border border-[#d1d5db] text-sm sm:text-base w-full" />
+                <input type="number" name="altura" value={formData.altura || ''} onChange={handleInputChange} placeholder="Altura" className="px-3 py-2 rounded-lg border border-[#d1d5db] text-sm sm:text-base w-full" />
+                <select name="unidade" value={formData.unidade} onChange={handleInputChange} className="px-3 py-2 rounded-lg border border-[#d1d5db] text-sm sm:text-base bg-white w-full">
+                  <option value="">Uni</option>
+                  <option value="cm">cm</option>
+                  <option value="mm">mm</option>
+                  <option value="m">m</option>
+                  <option value="pol">pol</option>
+                </select>
               </div>
             </div>
             {/* Peso */}
             <div>
-              <label style={{ display: 'block', color: '#374151', fontWeight: 600, marginBottom: 6, fontSize: 14 }}>
-                Peso
-              </label>
-              <div style={{ display: 'flex', gap: 8 }}>
-                <div style={{ flex: 1 }}>
-                  <input
-                    type="number"
-                    name="peso"
-                    value={formData.peso}
-                    onChange={handleInputChange}
-                    style={{
-                      width: '100%',
-                      border: '1.5px solid #d1d5db',
-                      borderRadius: 8,
-                      padding: '12px 16px',
-                      fontSize: 14,
-                      outline: 'none',
-                      transition: 'border 0.2s'
-                    }}
-                    placeholder="Peso"
-                    step="0.1"
-                    min="0"
-                  />
-                </div>
-                <div style={{ flex: 1 }}>
-                  <select
-                    name="unidadePeso"
-                    value={formData.unidadePeso}
-                    onChange={handleInputChange}
-                    style={{
-                      width: '100%',
-                      border: '1.5px solid #d1d5db',
-                      borderRadius: 8,
-                      padding: '12px 16px',
-                      fontSize: 14,
-                      outline: 'none',
-                      transition: 'border 0.2s',
-                      background: '#fff'
-                    }}
-                  >
-                    <option value="">Unidade</option>
-                    <option value="g">g</option>
-                    <option value="kg">kg</option>
-                    <option value="lb">lb</option>
-                    <option value="oz">oz</option>
-                  </select>
-                </div>
+              <label className="block text-gray-700 font-semibold mb-1 sm:mb-2 text-sm sm:text-base">Peso</label>
+              <div className="flex gap-2">
+                <input type="number" name="peso" value={formData.peso || ''} onChange={handleInputChange} placeholder="Peso" className="px-3 py-2 rounded-lg border border-[#d1d5db] text-sm sm:text-base w-full" />
+                <select name="unidadePeso" value={formData.unidadePeso} onChange={handleInputChange} className="px-3 py-2 rounded-lg border border-[#d1d5db] text-sm sm:text-base bg-white w-full">
+                  <option value="">Selecione</option>
+                  <option value="g">g</option>
+                  <option value="kg">kg</option>
+                  <option value="lb">lb</option>
+                  <option value="oz">oz</option>
+                </select>
               </div>
             </div>
             {/* Observações */}
             <div>
-              <label style={{ display: 'block', color: '#374151', fontWeight: 600, marginBottom: 6, fontSize: 14 }}>
-                Observações
-              </label>
-              <textarea
-                name="observacoes"
-                value={formData.observacoes}
-                onChange={handleInputChange}
-                style={{
-                  width: '100%',
-                  border: '1.5px solid #d1d5db',
-                  borderRadius: 8,
-                  padding: '12px 16px',
-                  fontSize: 14,
-                  outline: 'none',
-                  transition: 'border 0.2s',
-                  resize: 'vertical',
-                  minHeight: 80
-                }}
-                placeholder="Observações adicionais sobre o item. (OPCIONAL)"
-                rows="3"
-              />
+              <label className="block text-gray-700 font-semibold mb-1 sm:mb-2 text-sm sm:text-base">Observações</label>
+              <textarea name="observacoes" value={formData.observacoes} onChange={handleInputChange} placeholder="Observações adicionais sobre o item" className="px-3 py-2 rounded-lg border border-[#d1d5db] text-sm sm:text-base min-h-[80px] resize-vertical w-full" maxLength={70} />
+              <div className="text-xs text-gray-500 mt-1 text-right">{formData.observacoes.length}/70</div>
             </div>
             {/* Unidade base */}
             <div>
-              <label style={{ display: 'block', color: '#374151', fontWeight: 600, marginBottom: 6, fontSize: 14 }}>
-                Unidade base <span style={{ color: '#ef4444' }}>*</span>
-              </label>
-              <select
-                name="unidadearmazenamento"
-                value={formData.unidadearmazenamento}
-                onChange={handleInputChange}
-                style={{
-                  width: '100%',
-                  border: '1px solid #bfc4ca',
-                  borderRadius: 6,
-                  padding: '8px 12px',
-                  fontSize: 15,
-                  background: '#f7f8fa',
-                  color: '#222',
-                  outline: 'none',
-                  boxShadow: '0 1px 2px rgba(9,21,255,0.03)',
-                  transition: 'border 0.2s, box-shadow 0.2s'
-                }}
-                required
-              >
+              <label className="block text-gray-700 font-semibold mb-1 sm:mb-2 text-sm sm:text-base">Unidade base *</label>
+              <select name="unidadearmazenamento" value={formData.unidadearmazenamento} onChange={handleInputChange} required className="px-3 py-2 rounded-lg border border-[#d1d5db] text-sm sm:text-base bg-[#f7f8fa] w-full">
                 <option value="">Selecione</option>
                 <option value="KG">KG</option>
                 <option value="MT">MT</option>
@@ -545,27 +276,8 @@ const EditarItem = () => {
             </div>
             {/* Tipo de controlo */}
             <div>
-              <label style={{ display: 'block', color: '#374151', fontWeight: 600, marginBottom: 6, fontSize: 14 }}>
-                Tipo de controlo <span style={{ color: '#ef4444' }}>*</span>
-              </label>
-              <select
-                name="tipocontrolo"
-                value={formData.tipocontrolo || ''}
-                onChange={handleInputChange}
-                style={{
-                  width: '100%',
-                  border: '1px solid #bfc4ca',
-                  borderRadius: 6,
-                  padding: '8px 12px',
-                  fontSize: 15,
-                  background: '#f7f8fa',
-                  color: '#222',
-                  outline: 'none',
-                  boxShadow: '0 1px 2px rgba(9,21,255,0.03)',
-                  transition: 'border 0.2s, box-shadow 0.2s'
-                }}
-                required
-              >
+              <label className="block text-gray-700 font-semibold mb-1 sm:mb-2 text-sm sm:text-base">Tipo de controlo *</label>
+              <select name="tipocontrolo" value={formData.tipocontrolo || ''} onChange={handleInputChange} required className="px-3 py-2 rounded-lg border border-[#d1d5db] text-sm sm:text-base bg-[#f7f8fa] w-full">
                 <option value="">Selecione</option>
                 <option value="S/N">S/N</option>
                 <option value="LOTE">LOTE</option>
@@ -574,278 +286,54 @@ const EditarItem = () => {
             </div>
           </form>
         </div>
-        {/* Card de imagens e especificações à direita */}
-        <div style={{ flex: 1, minWidth: 350, marginTop: 32 }}>
-          <div style={{ background: '#fff', borderRadius: 16, boxShadow: '0 8px 32px rgba(9,21,255,0.08)', border: '1.5px solid #d1d5db', overflow: 'hidden' }}>
-            {/* Seção de Imagens */}
-            <div style={{ padding: 32 }}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 }}>
-                <div style={{ display: 'flex', alignItems: 'center' }}>
-                  <Package style={{ width: 24, height: 24, color: '#0915FF', marginRight: 12 }} />
-                  <h2 style={{ color: '#0915FF', fontWeight: 700, fontSize: 20, margin: 0 }}>
-                    Imagens do Item
-                  </h2>
-                </div>
-                <div style={{ 
-                  background: (selectedFiles.length + imagensExistentes.length) >= 5 ? '#ef4444' : '#0915FF', 
-                  color: '#fff', 
-                  padding: '4px 12px', 
-                  borderRadius: 12, 
-                  fontSize: 12, 
-                  fontWeight: 600 
-                }}>
-                  {(selectedFiles.length + imagensExistentes.length)}/5 imagens
-                </div>
-              </div>
-              {/* Imagens já vinculadas ao item */}
-              {imagensExistentes.length > 0 && (
-                <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', margin: '10px 0' }}>
-                  {imagensExistentes.map((img, idx) => (
-                    <div key={img.id || idx} style={{ position: 'relative', width: 80, height: 80 }}>
-                      <img
-                        src={img.caminho || img}
-                        alt={`imagem-${idx}`}
-                        style={{ width: 80, height: 80, objectFit: 'cover', borderRadius: 8, border: '1.5px solid #d1d5db' }}
-                      />
-                      <button
-                        type="button"
-                        onClick={() => marcarImagemParaRemocao(img.id)}
-                        style={{
-                          position: 'absolute',
-                          top: -8,
-                          right: -8,
-                          background: '#ef4444',
-                          color: '#fff',
-                          border: 'none',
-                          borderRadius: '50%',
-                          width: 22,
-                          height: 22,
-                          cursor: 'pointer',
-                          fontWeight: 700,
-                          fontSize: 14,
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          boxShadow: '0 2px 8px rgba(239,68,68,0.10)'
-                        }}
-                        aria-label="Remover imagem"
-                      >×</button>
-                    </div>
-                  ))}
-                </div>
-              )}
-              <div style={{ 
-                border: '2px dashed #d1d5db', 
-                borderRadius: 12, 
-                padding: 24, 
-                textAlign: 'center', 
-                marginBottom: 20,
-                opacity: (selectedFiles.length + imagensExistentes.length) >= 5 ? 0.5 : 1,
-                pointerEvents: (selectedFiles.length + imagensExistentes.length) >= 5 ? 'none' : 'auto'
-              }}>
-                <input
-                  type="file"
-                  multiple
-                  accept="image/*"
-                  onChange={handleFileSelect}
-                  style={{ display: 'none' }}
-                  id="image-upload"
-                  disabled={(selectedFiles.length + imagensExistentes.length) >= 5}
-                />
-                <label htmlFor="image-upload" style={{ cursor: (selectedFiles.length + imagensExistentes.length) >= 5 ? 'not-allowed' : 'pointer' }}>
-                  <Upload style={{ 
-                    width: 48, 
-                    height: 48, 
-                    color: (selectedFiles.length + imagensExistentes.length) >= 5 ? '#d1d5db' : '#9ca3af', 
-                    margin: '0 auto 16px auto' 
-                  }} />
-                  <p style={{ 
-                    fontSize: 16, 
-                    fontWeight: 600, 
-                    color: (selectedFiles.length + imagensExistentes.length) >= 5 ? '#9ca3af' : '#374151', 
-                    marginBottom: 8 
-                  }}>
-                    {(selectedFiles.length + imagensExistentes.length) >= 5 ? 'Limite de imagens atingido' : 'Clique para selecionar imagens'}
-                  </p>
-                  <p style={{ color: '#6b7280', fontSize: 14 }}>
-                    {(selectedFiles.length + imagensExistentes.length) >= 5 
-                      ? `Máximo de 5 imagens permitidas (${selectedFiles.length + imagensExistentes.length}/5)`
-                      : `Arraste e solte ou clique para selecionar arquivos (${selectedFiles.length + imagensExistentes.length}/5)`
-                    }
-                  </p>
-                </label>
-              </div>
-              {/* Novas imagens selecionadas */}
+        {/* Card da direita: Imagens e Especificações */}
+        <div className="flex flex-col items-center w-full sm:max-w-[520px]">
+          <div className="bg-white rounded-2xl shadow-lg border border-[#d1d5db] w-full p-4 sm:p-8 flex flex-col gap-4 sm:gap-6 relative">
+            <div className="flex items-center mb-2">
+              <span className="mr-3"><Package className="text-[#0915FF] w-7 h-7" /></span>
+              <h2 className="text-black font-extrabold text-lg sm:text-2xl m-0">Imagens do Item</h2>
+              <span className="absolute right-8 top-8 bg-[#0915FF] text-white text-xs sm:text-sm font-semibold rounded-full px-4 py-1">{selectedFiles.length}/5 imagens</span>
+            </div>
+            <div className="w-full">
+              <label className="block text-gray-700 font-semibold mb-2 text-sm sm:text-base">Imagens (máx. 5)</label>
+              <input type="file" accept="image/*" multiple onChange={handleFileSelect} className="mb-2" />
               {selectedFiles.length > 0 && (
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))', gap: 16 }}>
-                  {selectedFiles.map((file, index) => (
-                    <div key={index} style={{ position: 'relative' }}>
-                      <img
-                        src={URL.createObjectURL(file)}
-                        alt={`Preview ${index + 1}`}
-                        style={{ width: '100%', height: 120, objectFit: 'cover', borderRadius: 8 }}
-                      />
-                      <button
-                        type="button"
-                        onClick={() => removeFile(index)}
-                        style={{
-                          position: 'absolute',
-                          top: 8,
-                          right: 8,
-                          background: '#ef4444',
-                          color: '#fff',
-                          border: 'none',
-                          borderRadius: '50%',
-                          width: 24,
-                          height: 24,
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          cursor: 'pointer'
-                        }}
-                      >
-                        <X style={{ width: 14, height: 14 }} />
-                      </button>
+                <div className="flex gap-2 flex-wrap my-2">
+                  {selectedFiles.map((file, idx) => (
+                    <div key={idx} className="relative w-[80px] h-[80px]">
+                      <img src={URL.createObjectURL(file)} alt={`preview-${idx}`} className="w-[80px] h-[80px] object-cover rounded-lg border border-[#d1d5db]" />
+                      <button type="button" onClick={() => removeFile(idx)} className="absolute -top-2 -right-2 bg-[#ef4444] text-white border-none rounded-full w-6 h-6 flex items-center justify-center font-bold text-xs shadow-md" aria-label="Remover imagem">×</button>
                     </div>
                   ))}
                 </div>
               )}
             </div>
-            {/* Seção de Especificações */}
-            <div style={{ padding: '0 32px 32px 32px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', marginBottom: 24 }}>
-                <FileText style={{ width: 24, height: 24, color: '#0915FF', marginRight: 12 }} />
-                <h2 style={{ color: '#0915FF', fontWeight: 700, fontSize: 20, margin: 0 }}>
-                  Especificações
-                </h2>
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-                {especificacoes.map((spec, index) => (
-                  <div key={index} style={{ display: 'flex', alignItems: 'center', gap: 16, padding: 16, background: '#f9fafb', borderRadius: 8 }}>
-                    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 8 }}>
-                      <input
-                        type="text"
-                        placeholder="Nome da especificação"
-                        value={spec.nome}
-                        onChange={(e) => updateEspecificacao(index, 'nome', e.target.value)}
-                        style={{
-                          width: '100%',
-                          border: '1.5px solid #d1d5db',
-                          borderRadius: 6,
-                          padding: '8px 12px',
-                          fontSize: 14,
-                          outline: 'none'
-                        }}
-                      />
-                      <input
-                        type="text"
-                        placeholder="Valor"
-                        value={spec.valor}
-                        onChange={(e) => updateEspecificacao(index, 'valor', e.target.value)}
-                        style={{
-                          width: '100%',
-                          border: '1.5px solid #d1d5db',
-                          borderRadius: 6,
-                          padding: '8px 12px',
-                          fontSize: 14,
-                          outline: 'none'
-                        }}
-                      />
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => removeEspecificacao(index)}
-                      style={{
-                        color: '#ef4444',
-                        background: 'none',
-                        border: 'none',
-                        cursor: 'pointer',
-                        padding: 4
-                      }}
-                    >
-                      <X style={{ width: 20, height: 20 }} />
-                    </button>
-                  </div>
-                ))}
-                <button
-                  type="button"
-                  onClick={addEspecificacao}
-                  style={{
-                    background: '#0915FF',
-                    color: '#fff',
-                    border: 'none',
-                    borderRadius: 8,
-                    padding: '12px 20px',
-                    fontWeight: 600,
-                    cursor: 'pointer',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 8,
-                    fontSize: 14
-                  }}
-                >
-                  <Plus style={{ width: 16, height: 16 }} />
-                  Adicionar Especificação
-                </button>
-              </div>
+            <div className="flex items-center mb-2 mt-4">
+              <span className="mr-3"><FileText className="text-[#0915FF] w-6 h-6" /></span>
+              <h2 className="text-black font-extrabold text-base sm:text-xl m-0">Especificações</h2>
+            </div>
+            <div className="w-full flex flex-col gap-2 sm:gap-3">
+              {especificacoes.map((spec, index) => (
+                <div key={index} className="flex items-center gap-2 p-2 bg-[#f9fafb] rounded-lg">
+                  <input type="text" placeholder="Nome da especificação" value={spec.nome} onChange={e => updateEspecificacao(index, 'nome', e.target.value)} className="flex-1 border border-[#d1d5db] rounded-md px-2 py-1 text-sm sm:text-base outline-none" />
+                  <input type="text" placeholder="Valor" value={spec.valor} onChange={e => updateEspecificacao(index, 'valor', e.target.value)} className="flex-1 border border-[#d1d5db] rounded-md px-2 py-1 text-sm sm:text-base outline-none" />
+                  <button type="button" onClick={() => removeEspecificacao(index)} className="text-[#ef4444] bg-none border-none cursor-pointer p-1"><X className="w-5 h-5" /></button>
+                </div>
+              ))}
+              <button type="button" onClick={addEspecificacao} className="flex items-center justify-center gap-2 bg-[#0915FF] text-white font-semibold rounded-lg py-2 sm:py-3 w-full text-sm sm:text-base mt-2"><Plus className="w-4 h-4" />Adicionar Especificação</button>
             </div>
           </div>
-          {/* Botão de Salvar */}
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 24 }}>
-            <Link 
-              to="/listar" 
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                color: '#6b7280',
-                textDecoration: 'none',
-                fontWeight: 500,
-                fontSize: 14
-              }}
-            >
-              <ArrowLeft style={{ width: 16, height: 16, marginRight: 8 }} />
-              Voltar ao Catálogo
-            </Link>
-            <button
-              type="submit"
-              disabled={loading}
-              onClick={handleSubmit}
-              style={{
-                background: '#0915FF',
-                color: '#fff',
-                border: 'none',
-                borderRadius: 8,
-                padding: '14px 32px',
-                fontWeight: 700,
-                cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8,
-                fontSize: 16,
-                boxShadow: '0 2px 8px rgba(9,21,255,0.2)'
-              }}
-            >
-              {loading ? (
-                <>
-                  <div style={{ width: 20, height: 20, border: '2px solid #fff', borderTop: '2px solid transparent', borderRadius: '50%', animation: 'spin 1s linear infinite' }}></div>
-                  Salvando...
-                </>
-              ) : (
-                <>
-                  <Save style={{ width: 20, height: 20 }} />
-                  Salvar Alterações
-                </>
-              )}
+          {/* Linha de ações logo abaixo do card de imagens */}
+          <div className="flex w-full justify-between items-center mt-4 px-1">
+            <a href="/listar" className="text-[#0915FF] font-semibold flex items-center gap-2 hover:underline text-sm sm:text-base">
+              <ArrowLeft className="w-5 h-5" /> Voltar ao Catálogo
+            </a>
+            <button type="button" onClick={handleSubmit} disabled={loading} className="bg-[#0915FF] text-white font-bold rounded-lg py-2 sm:py-3 px-4 sm:px-8 text-sm sm:text-lg border-none shadow-md transition-all disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center gap-2">
+              <Save className="w-5 h-5" /> Gravar
             </button>
           </div>
         </div>
       </div>
-      <style jsx>{`
-        @keyframes spin {
-          0% { transform: rotate(0deg); }
-          100% { transform: rotate(360deg); }
-        }
-      `}</style>
     </div>
   );
 };

@@ -55,42 +55,43 @@ const ImportarItens = () => {
   };
 
   return (
-    <div className="min-h-screen bg-[#e5e5e5] flex flex-col items-center py-12 px-4">
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-[#e0e7ff] via-[#f5f6fa] to-[#e5e5e5] py-0 px-2 sm:px-4">
       {toast && <Toast type={toast.type} message={toast.message} onClose={() => setToast(null)} />}
-      <div style={{ background: '#fff', borderRadius: 16, boxShadow: '0 8px 32px rgba(9,21,255,0.08)', padding: 32, maxWidth: 420, width: '100%', marginTop: 40 }}>
-        <h2 style={{ color: '#0915FF', fontWeight: 700, fontSize: 22, marginBottom: 18 }}>Importar Itens em Lote</h2>
-        <p style={{ color: '#444', fontSize: 15, marginBottom: 18 }}>
+      <div className="backdrop-blur-md bg-white/80 rounded-2xl shadow-2xl border border-[#d1d5db] w-full max-w-[95vw] sm:max-w-[420px] p-4 sm:p-6 flex flex-col items-center gap-4 sm:gap-6">
+        <div className="bg-[#0915FF] rounded-full p-3 sm:p-4 mb-2 flex items-center justify-center">
+          <svg xmlns='http://www.w3.org/2000/svg' className='text-white' width='24' height='24' fill='none' viewBox='0 0 24 24' stroke='currentColor'><path strokeLinecap='round' strokeLinejoin='round' strokeWidth='2' d='M12 4v16m8-8H4'/></svg>
+        </div>
+        <h2 className="text-[#0915FF] font-extrabold text-[18px] sm:text-[22px] mb-1 text-center">Importar Itens em Lote</h2>
+        <p className="text-[#444] text-[13px] sm:text-[14px] mb-2 text-center">
           Faça upload de um arquivo Excel (.xlsx) para cadastrar novos itens no sistema.<br/>
           <b>Atenção:</b> Apenas itens <b>novos</b> serão cadastrados. Itens já existentes (mesmo código) serão ignorados.
         </p>
-        <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+        <form onSubmit={handleSubmit} className="flex flex-col gap-2 sm:gap-3 w-full">
           <input
             type="file"
             accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             onChange={handleFileChange}
             disabled={loading}
-            style={{ marginBottom: 8 }}
+            className="mb-1 file:mr-3 file:py-1.5 file:px-3 file:rounded file:border-0 file:bg-[#0915FF] file:text-white file:font-semibold file:text-[13px] file:cursor-pointer file:hover:bg-[#060bcc] file:transition-colors file:duration-200"
           />
           <button
             type="submit"
             disabled={loading || !file}
-            style={{
-              background: '#0915FF', color: '#fff', border: 'none', borderRadius: 8, padding: '12px 0', fontWeight: 600, fontSize: 16, cursor: loading ? 'not-allowed' : 'pointer', marginBottom: 8
-            }}
+            className={`rounded-[7px] px-3 sm:px-4 py-2 font-semibold text-[14px] sm:text-[15px] flex items-center justify-center gap-1.5 focus:outline-none focus:ring-2 transition-colors duration-200 shadow-md ${file && !loading ? 'bg-[#0915FF] hover:bg-[#060bcc] text-white cursor-pointer' : 'bg-[#e5e7eb] text-[#9ca3af] cursor-not-allowed'}`}
           >
             {loading ? 'Importando...' : 'Importar'}
           </button>
         </form>
         {resultado && (
-          <div style={{ marginTop: 24 }}>
-            <h4 style={{ color: '#0915FF', fontWeight: 600, fontSize: 17 }}>Resultado:</h4>
-            <ul style={{ fontSize: 15, color: '#333', margin: '10px 0 0 0', padding: 0, listStyle: 'none' }}>
+          <div className="mt-3 w-full">
+            <h4 className="text-[#0915FF] font-semibold text-[14px] sm:text-[15px] mb-1">Resultado:</h4>
+            <ul className="text-[12px] sm:text-[13px] text-[#333] m-0 p-0 list-none">
               <li><b>Itens cadastrados:</b> {resultado.cadastrados}</li>
               <li><b>Itens ignorados (já existiam):</b> {resultado.ignorados}</li>
               {resultado.erros && resultado.erros.length > 0 && (
-                <li style={{ color: '#ef4444', marginTop: 8 }}>
+                <li className="text-[#ef4444] mt-2">
                   <b>Erros:</b>
-                  <ul style={{ fontSize: 14, color: '#ef4444', margin: 0, paddingLeft: 16 }}>
+                  <ul className="text-[11px] sm:text-[12px] text-[#ef4444] m-0 pl-4">
                     {resultado.erros.map((erro, i) => (
                       <li key={i}>{erro.linha ? `Linha ${erro.linha}: ` : ''}{erro.motivo}{erro.codigo ? ` (Código: ${erro.codigo})` : ''}</li>
                     ))}

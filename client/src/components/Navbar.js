@@ -5,7 +5,7 @@ import { ChevronDown, Settings, Database, Users, FileText, Download, Plus, Trash
 import './NavbarCustom.css';
 
 const Navbar = () => {
-  const { isAuthenticated, logout, user } = useAuth();
+  const { isAuthenticated, logout, user, loading } = useAuth();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [gerirMenuOpen, setGerirMenuOpen] = useState(false);
   const [dadosMenuOpen, setDadosMenuOpen] = useState(false);
@@ -49,20 +49,19 @@ const Navbar = () => {
   return (
     <header className="navbar-digi">
       <div className="navbar-digi-content">
-        <div className="navbar-digi-logo">DIGI</div>
-        
+        <div className="navbar-digi-logo"></div>
+        {loading ? null : (
+        <>
         <nav className={`navbar-digi-menu ${mobileOpen ? 'open' : ''}`}>
           {/* Menu Principal */}
           <div className="navbar-digi-menu-item">
             <Link to="/" onClick={handleNavigation}>INÍCIO</Link>
           </div>
-          
           {isAuthenticated && (
             <div className="navbar-digi-menu-item">
               <Link to="/listar" onClick={handleNavigation}>CATÁLOGO</Link>
             </div>
           )}
-
           {/* Menu Administrativo Dropdown */}
           {isAdmin && (
             <div className={`navbar-digi-dropdown ${gerirMenuOpen ? 'open' : ''}`}>
@@ -160,16 +159,98 @@ const Navbar = () => {
           <span className="navbar-digi-mobile-bar"></span>
           <span className="navbar-digi-mobile-bar"></span>
         </button>
+        </>
+        )}
       </div>
 
       {/* Menu Mobile - Inclui área do usuário */}
-      {mobileOpen && (
+      {!loading && mobileOpen && (
         <div className="navbar-digi-mobile-menu">
-          <div className="navbar-digi-mobile-user">
-            <span className="navbar-digi-mobile-username">
-              {user?.nome || user?.username}
-            </span>
-            <button className="navbar-digi-mobile-logout" onClick={handleLogout}>SAIR</button>
+          {/* Menu principal mobile */}
+          <div className="navbar-digi-mobile-items">
+            <div className="navbar-digi-menu-item">
+              <Link to="/" onClick={handleNavigation}>INÍCIO</Link>
+            </div>
+            {isAuthenticated && (
+              <div className="navbar-digi-menu-item">
+                <Link to="/listar" onClick={handleNavigation}>CATÁLOGO</Link>
+              </div>
+            )}
+            {isAdmin && (
+              <div className={`navbar-digi-dropdown ${gerirMenuOpen ? 'open' : ''}`}> {/* GERIR */}
+                <button 
+                  className="navbar-digi-dropdown-toggle"
+                  onClick={() => setGerirMenuOpen(!gerirMenuOpen)}
+                  onBlur={() => setTimeout(() => setGerirMenuOpen(false), 200)}
+                >
+                  <Settings size={16} />
+                  <span>GERIR</span>
+                  <ChevronDown size={16} style={{ transform: gerirMenuOpen ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.2s' }} />
+                </button>
+                {gerirMenuOpen && (
+                  <div className="navbar-digi-dropdown-menu">
+                    <Link to="/cadastrar" onClick={handleNavigation}>
+                      <Plus size={16} />
+                      Criar Artigo
+                    </Link>
+                    <Link to="/excluir-artigo" onClick={handleNavigation}>
+                      <Trash2 size={16} />
+                      Excluir Artigo
+                    </Link>
+                    <Link to="/admin-usuarios" onClick={handleNavigation}>
+                      <Users size={16} />
+                      Usuários
+                    </Link>
+                  </div>
+                )}
+              </div>
+            )}
+            {isAuthenticated && (
+              <div className={`navbar-digi-dropdown ${dadosMenuOpen ? 'open' : ''}`}> {/* DADOS */}
+                <button 
+                  className="navbar-digi-dropdown-toggle"
+                  onClick={() => setDadosMenuOpen(!dadosMenuOpen)}
+                  onBlur={() => setTimeout(() => setDadosMenuOpen(false), 200)}
+                >
+                  <Database size={16} />
+                  <span>DADOS</span>
+                  <ChevronDown size={16} style={{ transform: dadosMenuOpen ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.2s' }} />
+                </button>
+                {dadosMenuOpen && (
+                  <div className="navbar-digi-dropdown-menu">
+                    {isAdmin && (
+                      <Link to="/importar-itens" onClick={handleNavigation}>
+                        <FileText size={16} />
+                        Importar Itens
+                      </Link>
+                    )}
+                    {isController && (
+                      <Link to="/importar-stock-nacional" onClick={handleNavigation}>
+                        <FileText size={16} />
+                        Importar Stock
+                      </Link>
+                    )}
+                    {(isAdmin || isController) && (
+                      <Link to="/importar-dados-itens" onClick={handleNavigation}>
+                        <FileText size={16} />
+                        Importar Dados
+                      </Link>
+                    )}
+                    <Link to="/exportar" onClick={handleNavigation}>
+                      <Download size={16} />
+                      Exportar Dados
+                    </Link>
+                  </div>
+                )}
+              </div>
+            )}
+            {/* Linha com usuário e sair */}
+            {isAuthenticated && (
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12, marginTop: 18 }}>
+                <span className="navbar-digi-mobile-username">{user?.nome || user?.username}</span>
+                <button className="navbar-digi-mobile-logout" onClick={handleLogout}>SAIR</button>
+              </div>
+            )}
           </div>
         </div>
       )}

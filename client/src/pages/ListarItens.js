@@ -2,7 +2,6 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import Toast from '../components/Toast';
-import styles from './ListarItens.module.css';
 import { FaFilter } from 'react-icons/fa';
 import { FaCamera, FaSearch } from 'react-icons/fa';
 import Webcam from 'react-webcam';
@@ -235,7 +234,7 @@ const ListarItens = () => {
   }, [paginaAtual, mostrarInativos]);
 
   return (
-    <div className={`bg-[#e5e5e5] flex flex-col items-center${isMobile ? ' catalogo-mobile-stack' : ''}`}>
+    <div className="bg-[#f3f6fd] flex flex-col items-center justify-center py-2 px-1 sm:px-4 pt-2">
       {/* Modal de busca por imagem */}
       {showImageModal && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -355,34 +354,21 @@ const ListarItens = () => {
         marginTop: 0
       }}>
         {/* Card de busca visual */}
-        <div style={{
-          background: '#fff',
-          borderRadius: 16,
-          boxShadow: '0 8px 32px rgba(9,21,255,0.08)',
-          padding: 32,
-          minWidth: isMobile ? 'unset' : 300,
-          maxWidth: isMobile ? '100%' : 340,
-          flex: isMobile ? 'unset' : '0 0 340px',
-          marginTop: 0,
-          marginLeft: 0,
-          marginRight: isMobile ? 0 : 'auto',
-          width: isMobile ? '100%' : undefined,
-          display: 'flex',
-          flexDirection: 'column',
-          alignItems: 'center',
-          gap: 18,
-          position: 'relative'
-        }}>
+        <div className="bg-white rounded-[16px] shadow-[0_8px_32px_rgba(9,21,255,0.08)] p-4 sm:p-8 min-w-[90vw] sm:min-w-[300px] max-w-[98vw] sm:max-w-[340px] flex flex-col items-center gap-4 sm:gap-6 relative">
           <button
             onClick={() => setShowImageModal(true)}
-            className={styles['visual-search-button']}
+            className="w-full flex items-center justify-center gap-2 bg-[#0915FF] hover:bg-[#2336ff] text-white font-bold rounded-xl py-3 px-4 shadow-lg transition text-lg mb-4 border-2 border-[#0915FF] focus:outline-none focus:ring-2 focus:ring-[#2336ff]"
           >
-            <FaCamera style={{ color: 'white' }} /> Tirar foto / Enviar imagem
+            <svg className="w-6 h-6" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+              <path d="M15 10l4.553-2.276A2 2 0 0 1 22 9.618V17a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h3.382a2 2 0 0 1 1.447.618L10 7h4l.171-.382A2 2 0 0 1 15.618 5H19a2 2 0 0 1 2 2v2.382a2 2 0 0 1-.618 1.447L15 10z"/>
+              <circle cx="12" cy="13" r="4"/>
+            </svg>
+            Tirar foto / Enviar imagem
           </button>
-          <div style={{ color: '#0915FF', fontWeight: 700, fontSize: 22, marginBottom: 0, textAlign: 'center' }}>
+          <div className="text-blue-600 font-bold text-2xl mb-0 text-center">
             Consulta Visual de Itens
           </div>
-          <div style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', marginTop: 8 }}>
+          <div className="w-full flex items-center justify-center mt-8">
             <input
               type="text"
               placeholder="Busque pelo código ou descrição"
@@ -498,35 +484,27 @@ const ListarItens = () => {
         }}>
           {isMobile ? (
             <div style={{ width: '100%', padding: '8px 0' }}>
-              <div style={{ textAlign: 'center', color: '#0915FF', fontWeight: 700, fontSize: 20, margin: '12px 0 16px 0' }}>Itens em Estoque</div>
+              <div className="text-center text-[#0915FF] font-bold text-lg sm:text-2xl mb-0">Itens em Estoque</div>
               {itensPagina.length === 0 && (
-                <div style={{ textAlign: 'center', color: '#888', margin: '24px 0' }}>Nenhum item encontrado.</div>
+                <div className="text-center text-gray-400 my-6">Nenhum item encontrado.</div>
               )}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 16, alignItems: 'center' }}>
+              <div className="flex flex-col gap-4 sm:gap-6 items-center">
                 {itensPagina.map(item => (
-                  <div key={item.id} style={{ background: '#fff', borderRadius: 12, boxShadow: '0 2px 8px rgba(9,21,255,0.08)', border: '1.5px solid #d1d5db', width: '95%', maxWidth: 400, padding: 16, display: 'flex', flexDirection: 'column', gap: 8 }}>
-                    <div style={{ fontWeight: 700, color: '#0915FF', fontSize: 16 }}>Código: <span style={{ color: '#222' }}>{item.codigo}</span></div>
-                    <div style={{ color: '#444', fontSize: 15, fontWeight: 500 }}>Descrição: <span style={{ color: '#222', fontWeight: 400 }}>{item.nome || item.descricao}</span></div>
-                    <div style={{ fontWeight: 600, color: '#222', fontSize: 15 }}>Quantidade: <span style={{ color: item.quantidade > 0 ? '#1a7f37' : '#b91c1c', background: item.quantidade > 0 ? '#e6fbe6' : '#ffeaea', borderRadius: 6, padding: '2px 10px', marginLeft: 4 }}>{item.quantidade != null && item.quantidade !== '' ? item.quantidade : 0}</span></div>
-                    <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-                      <button onClick={() => navigate(`/item/${item.id}`)} style={{ background: '#0915FF', color: '#fff', border: 'none', borderRadius: 8, padding: '10px 0', fontWeight: 700, fontSize: 15, cursor: 'pointer', width: '100%' }}>Detalhes</button>
+                  <div key={item.id} className="bg-white rounded-xl shadow border border-[#d1d5db] w-full max-w-[400px] p-4 flex flex-col gap-2 sm:gap-3">
+                    <div className="font-bold text-[#0915FF] text-base sm:text-lg">Código: <span className="text-[#222]">{item.codigo}</span></div>
+                    <div className="text-[#444] text-sm sm:text-base font-medium">Descrição: <span className="text-[#222] font-normal">{item.nome || item.descricao}</span></div>
+                    <div className="font-semibold text-[#222] text-sm sm:text-base">Quantidade: <span className={`ml-1 px-2 py-1 rounded ${item.quantidade > 0 ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>{item.quantidade != null && item.quantidade !== '' ? item.quantidade : 0}</span></div>
+                    <div className="flex gap-2 sm:gap-4 mt-2">
+                      <button onClick={() => navigate(`/item/${item.id}`)} className="bg-[#0915FF] text-white rounded-lg px-3 py-2 font-bold text-xs sm:text-base w-full transition hover:bg-[#2336ff]">Detalhes</button>
                       {userCanEdit && (
-                        <button onClick={() => navigate(`/editar/${item.id}`)} style={{ background: '#FFD600', color: '#0915FF', border: 'none', borderRadius: 8, padding: '10px 0', fontWeight: 700, fontSize: 15, cursor: 'pointer', width: '100%' }}>Editar</button>
+                        <button onClick={() => navigate(`/editar/${item.id}`)} className="bg-[#FFD600] text-[#0915FF] rounded-lg px-3 py-2 font-bold text-xs sm:text-base w-full transition hover:bg-yellow-400">Editar</button>
                       )}
                     </div>
                   </div>
                 ))}
               </div>
               {/* Paginação Mobile - Versão Compacta */}
-              <div className="mobile-pagination" style={{ 
-                margin: '18px 0 0 0', 
-                display: 'flex', 
-                justifyContent: 'center',
-                alignItems: 'center',
-                gap: 8,
-                flexWrap: 'wrap',
-                padding: '0 8px'
-              }}>
+              <div className="mobile-pagination mt-4 flex justify-center items-center gap-2 flex-wrap px-2">
                 {/* Botão Anterior */}
                 <button
                   onClick={() => setPaginaAtual(p => Math.max(1, p - 1))}
@@ -601,135 +579,57 @@ const ListarItens = () => {
 
             </div>
           ) : (
-            <div className={styles['catalogo-card']} style={{ margin: 0, boxShadow: '0 8px 32px rgba(9,21,255,0.08)', width: isMobile ? '100%' : '100%' }}>
-              <div className={styles['catalogo-conteudo']} style={{ width: '100%' }}>
-              <div className={styles['catalogo-subtitulo']}>Itens em Estoque</div>
+            <div className="catalogo-card" style={{ margin: 0, boxShadow: '0 8px 32px rgba(9,21,255,0.08)', width: isMobile ? '100%' : '100%' }}>
+              <div className="catalogo-conteudo" style={{ width: '100%' }}>
+              <div className="catalogo-subtitulo text-lg sm:text-xl font-bold mb-2">Itens em Estoque</div>
                 {!isMobile && (
-                  <table className={styles['catalogo-tabela']} style={{ width: '100%', minWidth: 600, maxWidth: '100%' }}>
-                <thead>
-                  <tr>
-                    <th style={{ whiteSpace: 'nowrap', cursor: 'pointer', position: 'relative' }} onClick={() => setShowCodigoFiltro(v => !v)}>
-                      CÓDIGO
-                      <button onClick={e => { e.stopPropagation(); ordenarPorCodigo(); }} style={{ background: 'none', border: 'none', marginLeft: 6, cursor: 'pointer' }} title="Ordenar">
-                        <FaFilter color="#fff" size={14} style={{ verticalAlign: 'middle' }} />
-                      </button>
-                      <br />
-                      {showCodigoFiltro && (
-                        <input
-                          ref={codigoFiltroRef}
-                          type="text"
-                          value={codigoFiltro}
-                          onChange={e => setCodigoFiltro(e.target.value)}
-                          placeholder="Filtrar"
-                          style={{
-                            width: 70,
-                            border: '1px solid #e0e7ef',
-                            borderRadius: 5,
-                            padding: '2px 6px',
-                            fontSize: 12,
-                            marginLeft: 8,
-                            marginTop: 0,
-                            background: '#f7fafd',
-                            color: '#222',
-                            position: 'absolute',
-                            left: 'auto',
-                            right: 0,
-                            top: 8,
-                            zIndex: 10,
-                            boxShadow: '0 2px 8px rgba(9,21,255,0.06)',
-                          }}
-                          autoFocus
-                          onClick={e => e.stopPropagation()}
-                        />
-                      )}
-                    </th>
-                    <th style={{ whiteSpace: 'nowrap', cursor: 'pointer', position: 'relative' }} onClick={() => setShowDescricaoFiltro(v => !v)}>
-                      DESCRIÇÃO
-                      <button onClick={e => { e.stopPropagation(); ordenarPorDescricao(); }} style={{ background: 'none', border: 'none', marginLeft: 6, cursor: 'pointer' }} title="Ordenar">
-                        <FaFilter color="#fff" size={14} style={{ verticalAlign: 'middle' }} />
-                      </button>
-                      <br />
-                      {showDescricaoFiltro && (
-                        <input
-                          ref={descricaoFiltroRef}
-                          type="text"
-                          value={descricaoFiltro}
-                          onChange={e => setDescricaoFiltro(e.target.value)}
-                          placeholder="Filtrar"
-                          style={{
-                            width: 120,
-                            border: '1px solid #e0e7ef',
-                            borderRadius: 5,
-                            padding: '2px 6px',
-                            fontSize: 12,
-                            marginLeft: 8,
-                            marginTop: 0,
-                            background: '#f7fafd',
-                            color: '#222',
-                            position: 'absolute',
-                            left: 'auto',
-                            right: 0,
-                            top: 8,
-                            zIndex: 10,
-                            boxShadow: '0 2px 8px rgba(9,21,255,0.06)',
-                          }}
-                          autoFocus
-                          onClick={e => e.stopPropagation()}
-                        />
-                      )}
-                    </th>
-                    <th>QUANTIDADE</th>
-                    <th>AÇÃO</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {itensPagina.length === 0 ? (
-                    <tr>
-                      <td colSpan={4} style={{ textAlign: 'center', color: '#888', padding: '32px 0' }}>Nenhum item encontrado.</td>
-                    </tr>
-                  ) : (
-                    itensPagina.map(item => (
-                      <tr key={item.id}>
-                        <td title={item.codigo || '-'}>
-                          <Link to={`/item/${item.id}`} className={styles['catalogo-link']}>
-                            {item.codigo || '-'}
-                          </Link>
-                        </td>
-                        <td title={item.nome}>
-                          {item.nome}
-                        </td>
-                        <td title={item.quantidade !== undefined ? String(item.quantidade) : '-'}>
-                          <span className={
-                            item.quantidade > 10
-                              ? `${styles['catalogo-quantidade']} ${styles['verde']}`
-                              : `${styles['catalogo-quantidade']} ${styles['vermelho']}`
-                          }>
-                            {/* Exibir 0 normalmente, apenas ocultar se for null ou undefined */}
-                            {item.quantidade != null && item.quantidade !== '' ? item.quantidade : 0}
-                          </span>
-                        </td>
-                        <td>
-                          <button
-                            className="px-4 py-1 rounded bg-[#0915FF] text-black font-semibold text-xs hover:bg-[#2336ff] transition-all"
-                            onClick={() => navigate(`/item/${item.id}`)}
-                            style={{ marginRight: 8 }}
-                          >
-                            Detalhes
-                          </button>
-                          {userCanEdit && (
-                            <button
-                              className="px-4 py-1 rounded bg-[#FFB800] text-black font-semibold text-xs hover:bg-[#ffe066] transition-all"
-                              onClick={() => navigate(`/editar/${item.id}`)}
-                            >
-                              Editar
-                            </button>
-                          )}
-                        </td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
+                  <div className="overflow-x-auto rounded-2xl shadow-lg bg-white">
+                    <table className="min-w-full text-xs sm:text-[16px]">
+                      <thead>
+                        <tr className="bg-gradient-to-r from-[#0a1fff] to-[#3b82f6] text-white font-bold rounded-t-2xl">
+                          <th className="py-4 px-6 w-32 first:rounded-tl-2xl last:rounded-tr-2xl">CÓDIGO</th>
+                          <th className="py-4 px-6">DESCRIÇÃO</th>
+                          <th className="py-4 px-6 w-32">QUANTIDADE</th>
+                          <th className="py-4 px-6 w-40">AÇÃO</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {itensPagina.length === 0 ? (
+                          <tr>
+                            <td colSpan={4} style={{ textAlign: 'center', color: '#888', padding: '32px 0' }}>Nenhum item encontrado.</td>
+                          </tr>
+                        ) : (
+                          itensPagina.map(item => (
+                            <tr key={item.id} className="hover:bg-blue-50 transition border-b border-[#d1d5db] last:border-b-0">
+                              <td className="py-3 px-6 w-32">
+                                <Link to={`/item/${item.id}`} className="catalogo-link">
+                                  {item.codigo || '-'}
+                                </Link>
+                              </td>
+                              <td className="py-3 px-6 break-words whitespace-pre-line max-w-xs" title={item.nome}>{item.nome}</td>
+                              <td className="py-3 px-6 w-32">
+                                <span className={`inline-flex items-center gap-1 px-3 py-1 rounded-full font-bold text-[15px] shadow-sm ${item.quantidade === 0 ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>
+                                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" class="lucide lucide-check-circle w-4 h-4"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="m9 11 3 3L22 4"/></svg> {item.quantidade != null && item.quantidade !== '' ? item.quantidade : 0}
+                                </span>
+                              </td>
+                              <td className="py-3 px-6 w-40">
+                                <div className="flex items-center gap-2">
+                                  <button className="px-4 py-2 rounded-lg bg-[#0915FF] text-white font-semibold shadow hover:bg-[#2336ff] transition" onClick={() => navigate(`/item/${item.id}`)}>
+                                    Detalhes
+                                  </button>
+                                  {userCanEdit && (
+                                    <button className="px-4 py-2 rounded-lg bg-[#FFB800] text-black font-semibold shadow hover:bg-yellow-400 transition" onClick={() => navigate(`/editar/${item.id}`)}>
+                                      Editar
+                                    </button>
+                                  )}
+                                </div>
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
                 )}
               {/* Adicionar controles de paginação centralizados abaixo da tabela: */}
               {/* Checkbox para mostrar inativos */}

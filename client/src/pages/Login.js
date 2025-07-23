@@ -62,99 +62,54 @@ const Login = () => {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center p-4" style={{
-      background: 'linear-gradient(135deg, #667eea 0%, #764ba2 50%, #ff6cab 100%)',
-      transition: 'background 0.5s',
-      position: 'relative'
-    }}>
+    <div className="min-h-screen flex items-center justify-center p-2 sm:p-4 bg-gradient-to-br from-[#667eea] via-[#764ba2] to-[#ff6cab] transition-all duration-500 relative">
       {toast && (
-        <div style={{
-          position: 'absolute',
-          top: 18,
-          left: '50%',
-          transform: 'translateX(-50%)',
-          zIndex: 20,
-          minWidth: 220,
-          maxWidth: 320,
-          padding: '8px 18px',
-          borderRadius: 8,
-          background: toast.type === 'success' ? 'rgba(34,197,94,0.12)' : 'rgba(239,68,68,0.12)',
-          color: toast.type === 'success' ? '#15803d' : '#b91c1c',
-          fontWeight: 600,
-          fontSize: 14,
-          boxShadow: '0 2px 8px rgba(9,21,255,0.08)',
-          textAlign: 'center',
-          pointerEvents: 'none',
-        }}>
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 min-w-[180px] max-w-xs px-4 py-2 rounded-lg text-center font-semibold text-sm shadow-lg"
+          style={{ background: toast.type === 'success' ? 'rgba(34,197,94,0.12)' : 'rgba(239,68,68,0.12)', color: toast.type === 'success' ? '#15803d' : '#b91c1c' }}>
           {toast.message}
         </div>
       )}
-      <div style={{
-        width: '100%',
-        maxWidth: isMobile ? 380 : 420,
-        margin: '0 auto',
-        borderRadius: 28,
-        background: 'rgba(255,255,255,0.18)',
-        boxShadow: '0 8px 32px 0 rgba(76,99,255,0.18)',
-        backdropFilter: 'blur(16px)',
-        border: '1.5px solid rgba(255,255,255,0.25)',
-        padding: isMobile ? 18 : 36,
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        animation: 'fadeIn 0.7s',
-        gap: isMobile ? 18 : 28
-      }}>
+      <div className="w-full max-w-md sm:max-w-lg md:max-w-xl mx-auto border-2 border-white/20 rounded-3xl bg-white/10 backdrop-blur-xl p-4 sm:p-8 flex flex-col items-center gap-4 sm:gap-6">
         {/* Header */}
-        <div style={{ textAlign: 'center', marginBottom: isMobile ? 18 : 28 }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 10 }}>
-            <Shield style={{ width: 36, height: 36, color: '#fff', marginRight: 10, filter: 'drop-shadow(0 2px 8px #0915FF)' }} />
-            <h1 style={{ fontSize: isMobile ? 26 : 32, fontWeight: 800, color: '#fff', textShadow: '0 2px 8px #2336ff' }}>Área Administrativa</h1>
+        <div className="text-center mb-4 sm:mb-6">
+          <div className="flex items-center justify-center mb-3 sm:mb-4">
+            <Shield className="w-10 h-10 sm:w-12 sm:h-12 text-white mr-3 sm:mr-4 filter drop-shadow-lg" />
+            <h1 className="text-2xl sm:text-4xl font-bold text-white text-shadow-lg">Área Administrativa</h1>
           </div>
-          <p style={{ color: '#f3f4fa', fontSize: isMobile ? 15 : 18, margin: 0, opacity: 0.92 }}>Faça login para acessar o painel de administração</p>
+          <p className="text-base sm:text-lg text-gray-200 opacity-90">Faça login para acessar o painel de administração</p>
         </div>
         {/* Login Form */}
-        <form onSubmit={handleSubmit} style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: isMobile ? 14 : 20 }}>
-          <div style={{ textAlign: 'center', marginBottom: 8 }}>
-            <div style={{ width: 60, height: 60, background: 'linear-gradient(135deg, #0915FF, #764ba2)', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 10px auto', boxShadow: '0 2px 8px #2336ff' }}>
-              <LogIn style={{ width: 32, height: 32, color: '#fff' }} />
+        <form onSubmit={handleSubmit} className="w-full flex flex-col gap-3 sm:gap-4">
+          <div className="text-center mb-3 sm:mb-4">
+            <div className="w-16 h-16 sm:w-20 sm:h-20 bg-gradient-to-r from-blue-600 to-purple-600 rounded-full flex items-center justify-center mx-auto mb-3 sm:mb-4 shadow-lg">
+              <LogIn className="w-8 h-8 sm:w-12 sm:h-12 text-white" />
             </div>
-            <h2 style={{ fontSize: isMobile ? 20 : 24, fontWeight: 700, color: '#0915FF', margin: 0 }}>Bem-vindo de volta</h2>
-            <p style={{ color: '#555', fontSize: isMobile ? 13 : 15, margin: 0 }}>Entre com suas credenciais para continuar</p>
+            <h2 className="text-xl sm:text-2xl font-bold text-blue-600 mb-1">Bem-vindo de volta</h2>
+            <p className="text-gray-600 text-xs sm:text-sm">Entre com suas credenciais para continuar</p>
           </div>
           {/* Username */}
           <div>
-            <label style={{ display: 'flex', alignItems: 'center', color: '#0915FF', fontWeight: 600, marginBottom: 4, fontSize: 15 }}>
-              <User style={{ width: 18, height: 18, marginRight: 6, color: '#2336ff' }} /> Usuário
+            <label className="flex items-center text-blue-600 font-semibold mb-2 text-sm sm:text-base">
+              <User className="w-4 h-4 sm:w-5 sm:h-5 mr-2 text-blue-400" /> Usuário
             </label>
             <input
               type="text"
               name="username"
               value={formData.username}
               onChange={handleInputChange}
-              style={{
-                width: '100%',
-                border: '2px solid #d1d5db',
-                borderRadius: 10,
-                padding: '12px 16px',
-                fontSize: 15,
-                outline: 'none',
-                transition: 'border 0.2s, box-shadow 0.2s',
-                background: 'rgba(255,255,255,0.95)',
-                boxShadow: '0 1px 4px rgba(9,21,255,0.04)'
-              }}
+              className="w-full border-2 border-gray-300 rounded-lg px-3 sm:px-4 py-2 sm:py-3 text-sm sm:text-base outline-none transition-all duration-200 bg-white/90 shadow-sm"
               placeholder="Digite seu usuário"
               required
-              onFocus={e => e.target.style.border = '2px solid #0915FF'}
-              onBlur={e => e.target.style.border = '2px solid #d1d5db'}
+              onFocus={e => e.target.classList.add('border-blue-600')}
+              onBlur={e => e.target.classList.remove('border-blue-600')}
             />
           </div>
           {/* Password */}
           <div>
-            <label style={{ display: 'flex', alignItems: 'center', color: '#0915FF', fontWeight: 600, marginBottom: 4, fontSize: 15 }}>
-              <Lock style={{ width: 18, height: 18, marginRight: 6, color: '#2336ff' }} /> Senha
+            <label className="flex items-center text-blue-600 font-semibold mb-2 text-sm sm:text-base">
+              <Lock className="w-4 h-4 sm:w-5 sm:h-5 mr-2 text-blue-400" /> Senha
             </label>
-            <div style={{ position: 'relative' }}>
+            <div className="relative">
               <input
                 type={showPassword ? 'text' : 'password'}
                 name="password"
@@ -163,61 +118,33 @@ const Login = () => {
                   handleInputChange(e);
                   if (fieldError) setFieldError('');
                 }}
-                style={{
-                  width: '100%',
-                  border: '2px solid #d1d5db',
-                  borderRadius: 10,
-                  padding: '12px 16px',
-                  fontSize: 15,
-                  outline: 'none',
-                  transition: 'border 0.2s, box-shadow 0.2s',
-                  background: 'rgba(255,255,255,0.95)',
-                  boxShadow: '0 1px 4px rgba(9,21,255,0.04)',
-                  paddingRight: 44
-                }}
+                className="w-full border-2 border-gray-300 rounded-lg px-3 sm:px-4 py-2 sm:py-3 text-sm sm:text-base outline-none transition-all duration-200 bg-white/90 shadow-sm pr-10 sm:pr-12"
                 placeholder="Digite sua senha"
                 required
-                onFocus={e => e.target.style.border = '2px solid #0915FF'}
-                onBlur={e => e.target.style.border = '2px solid #d1d5db'}
+                onFocus={e => e.target.classList.add('border-blue-600')}
+                onBlur={e => e.target.classList.remove('border-blue-600')}
               />
               <button
                 type="button"
                 onClick={() => setShowPassword(!showPassword)}
-                style={{ position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', color: '#2336ff', cursor: 'pointer', padding: 0 }}
+                className="absolute right-2 sm:right-3 top-1/2 -translate-y-1/2 bg-transparent border-none text-blue-600 cursor-pointer p-0"
               >
                 {showPassword ? (
-                  <EyeOff style={{ width: 22, height: 22 }} />
+                  <EyeOff className="w-5 h-5 sm:w-6 sm:h-6" />
                 ) : (
-                  <Eye style={{ width: 22, height: 22 }} />
+                  <Eye className="w-5 h-5 sm:w-6 sm:h-6" />
                 )}
               </button>
             </div>
             {fieldError && (
-              <div style={{ color: '#ef4444', fontSize: 13, marginTop: 4, marginLeft: 2 }}>{fieldError}</div>
+              <div className="text-red-500 text-xs sm:text-sm mt-2 ml-1">{fieldError}</div>
             )}
           </div>
           {/* Submit Button */}
           <button
             type="submit"
             disabled={loading}
-            style={{
-              width: '100%',
-              background: 'linear-gradient(90deg, #0915FF 60%, #764ba2 100%)',
-              color: '#fff',
-              fontWeight: 700,
-              borderRadius: 12,
-              padding: '14px 0',
-              fontSize: 17,
-              border: 'none',
-              boxShadow: '0 2px 8px rgba(9,21,255,0.10)',
-              cursor: loading ? 'not-allowed' : 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: 10,
-              marginTop: 8,
-              transition: 'background 0.2s, color 0.2s'
-            }}
+            className="w-full bg-gradient-to-r from-blue-600 to-purple-600 text-white font-bold py-2 sm:py-3 px-3 sm:px-4 rounded-lg text-base sm:text-lg border-none shadow-md transition-all duration-200 flex items-center justify-center gap-2"
           >
             {loading ? (
               <>
@@ -226,25 +153,25 @@ const Login = () => {
               </>
             ) : (
               <>
-                <LogIn style={{ width: 22, height: 22, marginRight: 6 }} />
+                <LogIn className="w-5 h-5 sm:w-6 sm:h-6" />
                 Entrar
               </>
             )}
           </button>
         </form>
         {/* Back to Home */}
-        <div style={{ marginTop: 18, textAlign: 'center' }}>
+        <div className="mt-4 sm:mt-6 text-center">
           <Link 
             to="/" 
-            style={{ color: '#2336ff', fontWeight: 600, fontSize: 15, textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 6 }}
+            className="text-blue-600 font-semibold text-base underline decoration-blue-600 flex items-center justify-center gap-2"
           >
-            <ArrowLeft style={{ width: 18, height: 18 }} />
+            <ArrowLeft className="w-5 h-5" />
             Voltar ao Início
           </Link>
         </div>
         {/* Footer */}
-        <div style={{ textAlign: 'center', marginTop: 18 }}>
-          <p style={{ color: '#fff', opacity: 0.7, fontSize: 13, margin: 0 }}>Sistema de Catálogo Inteligente</p>
+        <div className="text-center mt-4 sm:mt-6">
+          <p className="text-gray-200 opacity-70 text-xs sm:text-sm">Sistema de Catálogo Inteligente</p>
         </div>
       </div>
     </div>

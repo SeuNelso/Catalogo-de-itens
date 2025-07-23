@@ -2,7 +2,6 @@ import React, { useEffect, useState, useRef } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { useNavigate } from 'react-router-dom';
 import Toast from '../components/Toast';
-import styles from './ListarItens.module.css';
 
 export default function ExcluirArtigo() {
   const { user } = useAuth();
@@ -121,10 +120,10 @@ export default function ExcluirArtigo() {
   };
 
   return (
-    <div className="min-h-screen bg-[#e5e5e5] flex flex-col items-center pb-12">
-      <div style={{ width: '100%', maxWidth: isMobile ? '100%' : '1200px', margin: isMobile ? '16px auto 0 auto' : '40px auto 0 auto', display: 'block' }}>
-        <div className={styles['catalogo-card']} style={{ margin: '0 auto', boxShadow: '0 8px 32px rgba(9,21,255,0.08)', display: 'flex', flexDirection: 'column', alignItems: 'center', padding: isMobile ? 12 : undefined, width: '100%' }}>
-          <h1 className="text-2xl font-bold text-[#0915FF] mb-6 text-center">Excluir Artigos</h1>
+    <div className="min-h-screen bg-[#e5e5e5] flex flex-col items-center pb-12 px-2 sm:px-0">
+      <div className="w-full max-w-[98vw] sm:max-w-[1200px] mx-auto mt-4 sm:mt-10">
+        <div className="bg-white rounded-2xl shadow-lg border border-[#d1d5db] mx-auto flex flex-col items-center p-4 sm:p-8 w-full gap-4 sm:gap-6">
+          <h1 className="text-xl sm:text-2xl font-bold text-[#0915FF] mb-4 sm:mb-6 text-center">Excluir Artigos</h1>
           {/* Botão Excluir Todos */}
           {itens.length > 0 && (
             <button
@@ -146,8 +145,7 @@ export default function ExcluirArtigo() {
                   setToast({ type: 'error', message: 'Erro de conexão ao excluir todos.' });
                 }
               }}
-              className="mb-6 px-6 py-2 rounded bg-red-700 text-black font-bold text-sm hover:bg-red-800 transition-all shadow"
-              style={{ display: 'block', marginLeft: 'auto', marginRight: 'auto' }}
+              className="mb-4 px-6 py-2 rounded-lg bg-red-700 text-white font-bold text-sm hover:bg-red-800 transition-all shadow"
             >
               Excluir Todos
             </button>
@@ -158,38 +156,37 @@ export default function ExcluirArtigo() {
               localStorage.removeItem('artigos_nao_cadastrados');
               setToast({ type: 'success', message: 'Itens não cadastrados removidos com sucesso!' });
             }}
-            className="mb-4 px-6 py-2 rounded bg-yellow-600 text-black font-bold text-sm hover:bg-yellow-700 transition-all shadow"
-            style={{ display: 'block', marginLeft: 'auto', marginRight: 'auto' }}
+            className="mb-4 px-6 py-2 rounded-lg bg-yellow-600 text-black font-bold text-sm hover:bg-yellow-700 transition-all shadow"
           >
             Excluir Itens Não Cadastrados
           </button>
           {/* Botão Excluir TODOS os dados */}
-          <div style={{ margin: '24px 0', textAlign: 'center' }}>
+          <div className="my-4 text-center">
             <button
               onClick={() => setShowConfirmModal(true)}
-              className="mb-4 px-6 py-2 rounded bg-yellow-600 text-black font-bold text-sm hover:bg-yellow-700 transition-all shadow"
+              className="mb-4 px-6 py-2 rounded-lg bg-yellow-600 text-black font-bold text-sm hover:bg-yellow-700 transition-all shadow"
             >
               Excluir TODOS os dados do banco
             </button>
           </div>
           {showConfirmModal && (
-            <div style={{ position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh', background: 'rgba(0,0,0,0.35)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <div style={{ background: '#fff', borderRadius: 16, padding: 32, maxWidth: 340, width: '90%', boxShadow: '0 8px 32px rgba(239,68,68,0.18)', textAlign: 'center' }}>
-                <h2 style={{ color: '#b91c1c', fontWeight: 800, fontSize: 22, marginBottom: 18 }}>Tem certeza?</h2>
-                <p style={{ color: '#444', fontSize: 16, marginBottom: 24 }}>
+            <div className="fixed inset-0 bg-black/35 z-50 flex items-center justify-center">
+              <div className="bg-white rounded-2xl p-6 sm:p-8 max-w-xs w-[90vw] shadow-xl text-center">
+                <h2 className="text-red-700 font-extrabold text-lg sm:text-2xl mb-3">Tem certeza?</h2>
+                <p className="text-gray-700 text-sm sm:text-base mb-4">
                   Esta ação irá <b>apagar TODOS os dados do banco</b> (itens, estoques, etc).<br />
                   <b>Não poderá ser desfeita!</b>
                 </p>
                 <button
                   onClick={handleDeleteAll}
                   disabled={deletingAll}
-                  style={{ background: '#b91c1c', color: '#fff', fontWeight: 700, borderRadius: 8, padding: '10px 28px', fontSize: 16, border: 'none', marginRight: 12, cursor: deletingAll ? 'not-allowed' : 'pointer' }}
+                  className="bg-red-700 text-white font-bold rounded-lg px-6 py-2 mr-2 disabled:opacity-60 disabled:cursor-not-allowed"
                 >
                   {deletingAll ? 'Excluindo...' : 'Sim, apagar tudo'}
                 </button>
                 <button
                   onClick={() => setShowConfirmModal(false)}
-                  style={{ background: '#eee', color: '#222', fontWeight: 600, borderRadius: 8, padding: '10px 18px', fontSize: 16, border: 'none', marginLeft: 12, cursor: 'pointer' }}
+                  className="bg-gray-200 text-gray-800 font-semibold rounded-lg px-4 py-2 ml-2"
                 >
                   Cancelar
                 </button>
@@ -199,19 +196,19 @@ export default function ExcluirArtigo() {
           {loading ? (
             <div className="text-center text-gray-500">Carregando...</div>
           ) : (
-            <div className={styles['catalogo-conteudo']} style={{ width: '100%' }}>
+            <div className="w-full">
               {isMobile ? (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 16, alignItems: 'center', width: '100%' }}>
+                <div className="flex flex-col gap-4 items-center w-full">
                   {itensPagina.length === 0 ? (
-                    <div style={{ textAlign: 'center', color: '#888', padding: '32px 0' }}>Nenhum artigo encontrado.</div>
+                    <div className="text-center text-gray-400 py-8">Nenhum artigo encontrado.</div>
                   ) : (
                     itensPagina.map(item => (
-                      <div key={item.id} style={{ background: '#fff', borderRadius: 12, boxShadow: '0 2px 8px rgba(9,21,255,0.08)', border: '1.5px solid #d1d5db', width: '95%', maxWidth: 400, padding: 16, display: 'flex', flexDirection: 'column', gap: 8 }}>
-                        <div style={{ fontWeight: 700, color: '#0915FF', fontSize: 16 }}>Código: <span style={{ color: '#222' }}>{item.codigo}</span></div>
-                        <div style={{ color: '#444', fontSize: 15, fontWeight: 500 }}>Descrição: <span style={{ color: '#222', fontWeight: 400 }}>{item.nome}</span></div>
+                      <div key={item.id} className="bg-white rounded-xl shadow border border-[#d1d5db] w-full max-w-[400px] p-4 flex flex-col gap-2">
+                        <div className="font-bold text-[#0915FF] text-base">Código: <span className="text-[#222]">{item.codigo}</span></div>
+                        <div className="text-[#444] text-sm font-medium">Descrição: <span className="text-[#222] font-normal">{item.nome}</span></div>
                         <button
                           onClick={() => handleDelete(item.id)}
-                          style={{ marginTop: 8, background: '#ef4444', color: '#fff', border: 'none', borderRadius: 8, padding: '10px 0', fontWeight: 700, fontSize: 15, cursor: 'pointer', width: '100%' }}
+                          className="mt-2 bg-red-600 text-white rounded-lg px-3 py-2 font-bold text-xs w-full hover:bg-red-700 transition"
                         >
                           Excluir
                         </button>
@@ -220,74 +217,46 @@ export default function ExcluirArtigo() {
                   )}
                 </div>
               ) : (
-                <table className={styles['catalogo-tabela']} style={{ margin: '0 auto', width: '100%', minWidth: 600, maxWidth: '100%' }}>
-                  <thead>
-                    <tr>
-                      <th style={{ whiteSpace: 'nowrap', textAlign: 'center', fontFamily: 'monospace', position: 'relative', cursor: 'pointer' }} onClick={() => setShowCodigoFiltro(v => !v)}>
-                        CÓDIGO
-                        <br />
-                        {showCodigoFiltro && (
-                          <input
-                            ref={codigoFiltroRef}
-                            type="text"
-                            value={codigoFiltro}
-                            onChange={e => setCodigoFiltro(e.target.value)}
-                            placeholder="Filtrar"
-                            style={{ width: 70, border: '1px solid #e0e7ef', borderRadius: 5, padding: '2px 6px', fontSize: 12, marginTop: 2, background: '#f7fafd', color: '#222', position: 'absolute', left: '50%', transform: 'translateX(-50%)', top: 28, zIndex: 10, boxShadow: '0 2px 8px rgba(9,21,255,0.06)' }}
-                            autoFocus
-                            onClick={e => e.stopPropagation()}
-                          />
-                        )}
-                      </th>
-                      <th style={{ whiteSpace: 'nowrap', textAlign: 'left', position: 'relative', cursor: 'pointer' }} onClick={() => setShowDescricaoFiltro(v => !v)}>
-                        DESCRIÇÃO
-                        <br />
-                        {showDescricaoFiltro && (
-                          <input
-                            ref={descricaoFiltroRef}
-                            type="text"
-                            value={descricaoFiltro}
-                            onChange={e => setDescricaoFiltro(e.target.value)}
-                            placeholder="Filtrar"
-                            style={{ width: 120, border: '1px solid #e0e7ef', borderRadius: 5, padding: '2px 6px', fontSize: 12, marginTop: 2, background: '#f7fafd', color: '#222', position: 'absolute', left: 0, top: 28, zIndex: 10, boxShadow: '0 2px 8px rgba(9,21,255,0.06)' }}
-                            autoFocus
-                            onClick={e => e.stopPropagation()}
-                          />
-                        )}
-                      </th>
-                      <th style={{ whiteSpace: 'nowrap' }}>AÇÃO</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {itensPagina.length === 0 ? (
-                      <tr>
-                        <td colSpan={3} style={{ textAlign: 'center', color: '#888', padding: '32px 0' }}>Nenhum artigo encontrado.</td>
+                <div className="overflow-x-auto rounded-xl">
+                  <table className="min-w-full text-xs sm:text-base">
+                    <thead>
+                      <tr className="bg-gradient-to-r from-[#0a1fff] to-[#3b82f6] text-white font-bold">
+                        <th className="py-3 px-4 text-center font-mono">CÓDIGO</th>
+                        <th className="py-3 px-4 text-left">DESCRIÇÃO</th>
+                        <th className="py-3 px-4">AÇÃO</th>
                       </tr>
-                    ) : (
-                      itensPagina.map(item => (
-                        <tr key={item.id} className="hover:bg-[#F0F4FF] transition">
-                          <td className={styles['catalogo-link']} style={{ fontFamily: 'monospace', color: '#0915FF', textAlign: 'center' }}>{item.codigo}</td>
-                          <td className="description-cell" style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.nome}</td>
-                          <td>
-                            <button
-                              onClick={() => handleDelete(item.id)}
-                              className="px-4 py-1 rounded bg-red-600 text-black font-semibold text-xs hover:bg-red-700 transition-all"
-                            >
-                              Excluir
-                            </button>
-                          </td>
+                    </thead>
+                    <tbody>
+                      {itensPagina.length === 0 ? (
+                        <tr>
+                          <td colSpan={3} className="text-center text-gray-400 py-8">Nenhum artigo encontrado.</td>
                         </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
+                      ) : (
+                        itensPagina.map(item => (
+                          <tr key={item.id} className="hover:bg-blue-50 transition border-b border-[#d1d5db] last:border-b-0">
+                            <td className="py-2 px-4 text-center font-mono text-[#0915FF]">{item.codigo}</td>
+                            <td className="py-2 px-4 whitespace-nowrap overflow-hidden text-ellipsis max-w-xs">{item.nome}</td>
+                            <td className="py-2 px-4">
+                              <button
+                                onClick={() => handleDelete(item.id)}
+                                className="px-4 py-1 rounded-lg bg-red-600 text-white font-semibold text-xs hover:bg-red-700 transition"
+                              >
+                                Excluir
+                              </button>
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
               )}
               {/* Paginação igual ao catálogo */}
-              <div className={styles['paginacao']}>
+              <div className="flex flex-wrap justify-center items-center gap-2 mt-6">
                 <button
                   onClick={() => setPaginaAtual(p => Math.max(1, p - 1))}
                   disabled={paginaAtual === 1}
-                  className={styles['paginacao-btn']}
+                  className="paginacao-btn"
                 >
                   Anterior
                 </button>
@@ -307,8 +276,8 @@ export default function ExcluirArtigo() {
                           onClick={() => setPaginaAtual(p)}
                           className={
                             paginaAtual === p
-                              ? `${styles['paginacao-btn']} ${styles['ativo']}`
-                              : styles['paginacao-btn']
+                              ? "paginacao-btn bg-[#0915FF] text-white font-bold border border-[#0915FF] rounded px-2 mx-1"
+                              : "paginacao-btn border border-[#d1d5db] rounded px-2 mx-1"
                           }
                         >
                           {p}
@@ -319,7 +288,7 @@ export default function ExcluirArtigo() {
                       (p === totalPaginas - mostrar && paginaAtual + vizinhos < totalPaginas - mostrar)
                     ) {
                       botoes.push(
-                        <span key={p} style={{ minWidth: 24, textAlign: 'center', color: '#0915FF' }}>...</span>
+                        <span key={p} className="min-w-[24px] text-center text-[#0915FF]">...</span>
                       );
                     }
                   }
@@ -328,7 +297,7 @@ export default function ExcluirArtigo() {
                 <button
                   onClick={() => setPaginaAtual(p => Math.min(totalPaginas, p + 1))}
                   disabled={paginaAtual === totalPaginas}
-                  className={styles['paginacao-btn']}
+                  className="paginacao-btn"
                 >
                   Próximo
                 </button>

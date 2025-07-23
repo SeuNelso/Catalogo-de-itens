@@ -211,7 +211,7 @@ const fixInvisibleText = () => {
       element.style.setProperty('background', '#fff', 'important');
       element.style.setProperty('font-weight', '700', 'important');
       element.style.setProperty('text-shadow', 'none', 'important');
-      console.log('Botão SAIR corrigido para azul:', element);
+      //console.log('Botão SAIR corrigido para azul:', element);
     }
     // Corrigir ícones cinzas para branco
     else if (isGrayIcon && (hasBlue || parentHasBlue)) {

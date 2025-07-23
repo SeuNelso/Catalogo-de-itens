@@ -3,8 +3,9 @@ import { Link } from 'react-router-dom';
 import { Database, Search, Shield, UserPlus } from 'react-feather';
 import { useAuth } from '../contexts/AuthContext';
 
+
 const Home = () => {
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated, loading } = useAuth();
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
 
   useEffect(() => {
@@ -17,151 +18,39 @@ const Home = () => {
   }, []);
 
   return (
-    <div className="min-h-screen bg-[#e5eefe] flex flex-col items-center justify-center py-6 px-4 sm:py-12 sm:px-4">
-      <div className="Home-card" style={{
-        background: '#fff',
-        borderRadius: isMobile ? 16 : 20,
-        boxShadow: '0 8px 32px rgba(9,21,255,0.08)',
-        border: '1.5px solid #d1d5db',
-        maxWidth: isMobile ? '100%' : 540,
-        width: '100%',
-        padding: isMobile ? 24 : 40,
-        margin: isMobile ? '20px 0' : '40px 0',
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        gap: isMobile ? 24 : 32
-      }}>
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: isMobile ? 8 : 12 }}>
-          <div style={{ 
-            background: '#0915FF', 
-            borderRadius: '50%', 
-            padding: isMobile ? 12 : 16, 
-            marginBottom: isMobile ? 4 : 8 
-          }}>
-            <Database style={{ 
-              color: '#fff', 
-              width: isMobile ? 32 : 40, 
-              height: isMobile ? 32 : 40 
-            }} />
+    <div className="min-h-screen bg-[#f5f6fa] flex items-center justify-center px-2 sm:px-4">
+      <div className="bg-white rounded-[20px] shadow-[0_8px_32px_rgba(9,21,255,0.08)] border border-[#d1d5db] w-full max-w-[95vw] sm:max-w-[540px] p-4 sm:p-8 my-0 flex flex-col items-center gap-6 sm:gap-[32px]">
+        <div className="flex flex-col items-center gap-2 sm:gap-3">
+          <div className="bg-[#0915FF] rounded-full p-4 sm:p-5 mb-2 flex items-center justify-center">
+            <Database className="text-white" size={40} />
           </div>
-          <h1 className="Home-title" style={{ 
-            color: '#0915FF', 
-            fontWeight: 800, 
-            fontSize: isMobile ? 24 : 32, 
-            textAlign: 'center', 
-            margin: 0,
-            lineHeight: 1.2
-          }}>
-            Catálogo Inteligente
-          </h1>
-          <p className="Home-desc" style={{ 
-            color: '#444', 
-            fontSize: isMobile ? 16 : 18, 
-            textAlign: 'center', 
-            margin: 0, 
-            maxWidth: 400,
-            lineHeight: 1.5
-          }}>
+          <h1 className="text-[#0915FF] font-extrabold text-[22px] sm:text-[32px] text-center m-0 leading-[1.2]">Catálogo Inteligente</h1>
+          <p className="text-[#444] text-[15px] sm:text-[18px] text-center m-0 max-w-[90vw] sm:max-w-[400px] leading-[1.5]">
             Sistema moderno para catalogação, identificação visual e gestão de itens.
           </p>
         </div>
-        
-        <div style={{ 
-          width: '100%', 
-          display: 'flex', 
-          flexDirection: 'column', 
-          gap: isMobile ? 16 : 20 
-        }}>
-          {!isAuthenticated && (
+        <div className="w-full flex flex-col gap-3 sm:gap-4">
+          {!isAuthenticated && !loading && (
             <>
-              <Link to="/login" className="Home-link" style={{
-                background: '#0915FF',
-                border: '1.5px solid #0915FF',
-                color: '#fff',
-                fontWeight: 700,
-                borderRadius: isMobile ? 10 : 12,
-                padding: isMobile ? '14px 0' : '18px 0',
-                fontSize: isMobile ? 16 : 18,
-                textAlign: 'center',
-                textDecoration: 'none',
-                boxShadow: '0 4px 12px rgba(9,21,255,0.15)',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: 10,
-                transition: 'all 0.2s ease',
-                width: '100%',
-                minHeight: isMobile ? 48 : 56
-              }}>
-                <Shield style={{ width: isMobile ? 20 : 22, height: isMobile ? 20 : 22 }} />
+              <Link to="/login" className="Home-link bg-[#0915FF] border-none text-white font-bold rounded-[14px] py-3 sm:py-4 text-base sm:text-lg text-center no-underline shadow-md flex items-center justify-center gap-2 transition-all w-full min-h-[44px] sm:min-h-[52px] hover:bg-[#060bcc] focus:bg-[#060bcc]">
+                <Shield size={20} />
                 Login
               </Link>
-              
-              <Link to="/cadastro" className="Home-link" style={{
-                background: '#0915FF',
-                border: '1.5px solid #0915FF',
-                color: '#fff',
-                fontWeight: 700,
-                borderRadius: isMobile ? 10 : 12,
-                padding: isMobile ? '14px 0' : '18px 0',
-                fontSize: isMobile ? 16 : 18,
-                textAlign: 'center',
-                textDecoration: 'none',
-                boxShadow: '0 4px 12px rgba(9,21,255,0.15)',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: 10,
-                transition: 'all 0.2s ease',
-                width: '100%',
-                minHeight: isMobile ? 48 : 56
-              }}>
-                <UserPlus style={{ width: isMobile ? 20 : 22, height: isMobile ? 20 : 22, color: '#fff' }} />
+              {/* <Link to="/cadastro" className="Home-link bg-[#0915FF] border-none text-white font-bold rounded-[14px] py-4 text-lg text-center no-underline shadow-md flex items-center justify-center gap-2 transition-all w-full min-h-[52px] hover:bg-[#060bcc] focus:bg-[#060bcc]">
+                <UserPlus size={22} className="text-white" />
                 Criar Conta
-              </Link>
+              </Link> */}
             </>
           )}
           {isAuthenticated && (
-            <Link to="/listar" className="Home-link" style={{
-              background: '#fff',
-              border: '1.5px solid #0915FF',
-              color: '#0915FF',
-              fontWeight: 700,
-              borderRadius: isMobile ? 10 : 12,
-              padding: isMobile ? '14px 0' : '18px 0',
-              fontSize: isMobile ? 16 : 18,
-              textAlign: 'center',
-              textDecoration: 'none',
-              boxShadow: '0 2px 8px rgba(9,21,255,0.06)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: 10,
-              transition: 'all 0.2s ease',
-              minHeight: isMobile ? 48 : 56
-            }}>
-              <Search style={{ width: isMobile ? 20 : 22, height: isMobile ? 20 : 22 }} />
+            <Link to="/listar" className="Home-link bg-white border border-[#0915FF] text-[#0915FF] font-bold rounded-[14px] py-3 sm:py-4 text-base sm:text-lg text-center no-underline shadow flex items-center justify-center gap-2 transition-all min-h-[44px] sm:min-h-[52px]">
+              <Search size={20} />
               Consultar Catálogo
             </Link>
           )}
         </div>
-        
-        <div style={{ 
-          color: '#888', 
-          fontSize: isMobile ? 13 : 15, 
-          textAlign: 'center', 
-          marginTop: isMobile ? 8 : 12,
-          lineHeight: 1.4,
-          padding: isMobile ? '0 8px' : 0
-        }}>
-          <Shield style={{ 
-            width: isMobile ? 16 : 18, 
-            height: isMobile ? 16 : 18, 
-            color: '#0915FF', 
-            marginRight: 6, 
-            verticalAlign: 'middle' 
-          }} />
+        <div className="text-[#444] text-xs sm:text-sm text-center mt-2 leading-snug px-2 flex items-center justify-center gap-2">
+          <Shield size={16} className="text-[#0915FF] inline align-middle" />
           Acesso seguro e controle de permissões para administradores
         </div>
       </div>

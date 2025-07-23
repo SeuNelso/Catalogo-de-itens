@@ -24,6 +24,7 @@ CREATE TABLE itens (
   peso TEXT,
   unidadePeso TEXT,
   unidadeArmazenamento TEXT,
+  tipocontrolo TEXT,
   data_cadastro TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -106,6 +107,12 @@ const authenticateToken = (req, res, next) => {
     next();
   });
 };
+
+// Middleware global para logar todas as requisições recebidas
+app.use((req, res, next) => {
+  console.log('Requisição recebida:', req.method, req.url);
+  next();
+});
 
 // Middleware
 app.use(cors());
@@ -681,8 +688,8 @@ app.post('/api/itens', authenticateToken, upload.array('imagens', 10), (req, res
   function inserirItem() {
     // Concatenar peso e unidadePeso se ambos existirem
     let pesoFinal = '';
-    if (req.body.peso && req.body.unidadePeso) {
-      pesoFinal = `${req.body.peso} ${req.body.unidadePeso}`;
+    if (req.body.peso && req.body.unidadepeso) {
+      pesoFinal = `${req.body.peso} ${req.body.unidadepeso}`;
     } else if (req.body.peso) {
       pesoFinal = req.body.peso;
     }
@@ -703,17 +710,21 @@ app.post('/api/itens', authenticateToken, upload.array('imagens', 10), (req, res
       altura: req.body.altura ? parseFloat(req.body.altura) : null,
       unidade: req.body.unidade || '',
       peso: pesoFinal,
-      unidadePeso: req.body.unidadePeso || '',
+      unidadepeso: req.body.unidadepeso || '',
       unidadearmazenamento: req.body.unidadeArmazenamento || '',
+      tipocontrolo: req.body.tipocontrolo || '',
       ativo: true // Sempre ativo ao cadastrar
     };
 
+    // Logar o corpo da requisição para depuração
+    console.log('Dados recebidos no cadastro de item:', req.body);
+
     pool.query(`
-      INSERT INTO itens (nome, descricao, categoria, codigo, preco, quantidade, localizacao, observacoes, familia, subfamilia, setor, comprimento, largura, altura, unidade, peso, unidadePeso, unidadearmazenamento, ativo)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+      INSERT INTO itens (nome, descricao, categoria, codigo, preco, quantidade, localizacao, observacoes, familia, subfamilia, setor, comprimento, largura, altura, unidade, peso, unidadepeso, unidadearmazenamento, tipocontrolo, ativo)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
       RETURNING id
     `, [itemData.nome, itemData.descricao, itemData.categoria, itemData.codigo, itemData.preco, itemData.quantidade, itemData.localizacao, itemData.observacoes,
-        itemData.familia, itemData.subfamilia, itemData.setor, itemData.comprimento, itemData.largura, itemData.altura, itemData.unidade, itemData.peso, itemData.unidadePeso, itemData.unidadearmazenamento, itemData.ativo],
+        itemData.familia, itemData.subfamilia, itemData.setor, itemData.comprimento, itemData.largura, itemData.altura, itemData.unidade, itemData.peso, itemData.unidadepeso, itemData.unidadearmazenamento, itemData.tipocontrolo, itemData.ativo],
       (err, result) => {
         if (err) {
           return res.status(500).json({ error: err.message });
@@ -929,6 +940,8 @@ app.get('/api/buscar', (req, res) => {
 
 // Atualizar item (protegido)
 app.put('/api/itens/:id', authenticateToken, upload.array('imagens', 10), (req, res) => {
+  // Logar o corpo da requisição para depuração
+  console.log('Dados recebidos na edição de item:', req.body);
   // Verificar permissão para editar
   if (!req.user || (req.user.role !== 'admin' && req.user.role !== 'controller')) {
     return res.status(403).json({ error: 'Apenas administradores ou controllers podem editar itens.' });
@@ -951,8 +964,9 @@ app.put('/api/itens/:id', authenticateToken, upload.array('imagens', 10), (req, 
     altura,
     unidade,
     peso,
-    unidadePeso,
+    unidadepeso,
     unidadearmazenamento,
+    tipocontrolo,
     especificacoes
   } = req.body;
 
@@ -971,11 +985,11 @@ app.put('/api/itens/:id', authenticateToken, upload.array('imagens', 10), (req, 
     UPDATE itens 
     SET nome = $1, descricao = $2, categoria = $3, codigo = $4, preco = $5, quantidade = $6, localizacao = $7, observacoes = $8,
         familia = $9, subfamilia = $10, setor = $11, comprimento = $12, largura = $13, altura = $14,
-        unidade = $15, peso = $16, unidadePeso = $17, unidadearmazenamento = $18
-    WHERE id = $19
+        unidade = $15, peso = $16, unidadepeso = $17, unidadearmazenamento = $18, tipocontrolo = $19
+    WHERE id = $20
   `, [
     nome || descricao, descricao, categoria || 'Sem categoria', codigo, precoNum, quantidadeNum, localizacao, observacoes,
-    familia, subfamilia, setor, comprimentoNum, larguraNum, alturaNum, unidade, peso, unidadePeso, unidadearmazenamento, itemId
+    familia, subfamilia, setor, comprimentoNum, larguraNum, alturaNum, unidade, peso, unidadepeso, unidadearmazenamento, tipocontrolo, itemId
   ], async (err, result) => {
     if (err) {
       return res.status(500).json({ error: err.message });

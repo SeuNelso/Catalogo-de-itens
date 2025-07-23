@@ -51,20 +51,20 @@ const CadastroUsuario = () => {
   };
 
   return (
-    <div className="min-h-screen bg-[#e5eefe] flex flex-col items-center justify-center py-12 px-4">
-      <div style={{ background: '#fff', borderRadius: 20, boxShadow: '0 8px 32px rgba(9,21,255,0.08)', border: '1.5px solid #d1d5db', maxWidth: 420, width: '100%', padding: 36, margin: '40px 0', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 24 }}>
-        <h1 style={{ color: '#0915FF', fontWeight: 800, fontSize: 26, textAlign: 'center', margin: 0 }}>Criar Conta</h1>
-        <form onSubmit={handleSubmit} style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 16 }}>
-          <input name="nome" value={form.nome} onChange={handleChange} placeholder="Nome completo" required style={{ padding: 10, borderRadius: 8, border: '1.5px solid #d1d5db', fontSize: 16 }} />
-          <input name="numero_colaborador" value={form.numero_colaborador} onChange={handleChange} placeholder="Número de colaborador" required style={{ padding: 10, borderRadius: 8, border: '1.5px solid #d1d5db', fontSize: 16 }} />
-          <input name="senha" value={form.senha} onChange={handleChange} placeholder="Senha" type="password" required style={{ padding: 10, borderRadius: 8, border: '1.5px solid #d1d5db', fontSize: 16 }} />
-          <input name="senha2" value={form.senha2} onChange={handleChange} placeholder="Confirme a senha" type="password" required style={{ padding: 10, borderRadius: 8, border: '1.5px solid #d1d5db', fontSize: 16 }} />
-          <button type="submit" disabled={loading} style={{ background: '#0915FF', color: '#fff', fontWeight: 700, borderRadius: 10, padding: '12px 0', fontSize: 17, border: 'none', boxShadow: '0 2px 8px rgba(9,21,255,0.10)', cursor: loading ? 'not-allowed' : 'pointer', marginTop: 8 }}>
+    <div className="min-h-screen bg-[#e5eefe] flex flex-col items-center justify-center py-4 sm:py-12 px-2 sm:px-4">
+      <div className="bg-white rounded-2xl shadow-lg border border-[#d1d5db] w-full max-w-[95vw] sm:max-w-[420px] p-4 sm:p-8 my-4 sm:my-10 flex flex-col items-center gap-4 sm:gap-6">
+        <h1 className="text-[#0915FF] font-extrabold text-xl sm:text-2xl text-center m-0">Criar Conta</h1>
+        <form onSubmit={handleSubmit} className="w-full flex flex-col gap-3 sm:gap-4">
+          <input name="nome" value={form.nome} onChange={handleChange} placeholder="Nome completo" required className="px-3 py-2 rounded-lg border border-[#d1d5db] text-sm sm:text-base w-full" />
+          <input name="numero_colaborador" value={form.numero_colaborador} onChange={handleChange} placeholder="Número de colaborador" required className="px-3 py-2 rounded-lg border border-[#d1d5db] text-sm sm:text-base w-full" />
+          <input name="senha" value={form.senha} onChange={handleChange} placeholder="Senha" type="password" required className="px-3 py-2 rounded-lg border border-[#d1d5db] text-sm sm:text-base w-full" />
+          <input name="senha2" value={form.senha2} onChange={handleChange} placeholder="Confirme a senha" type="password" required className="px-3 py-2 rounded-lg border border-[#d1d5db] text-sm sm:text-base w-full" />
+          <button type="submit" disabled={loading} className="bg-[#0915FF] text-white font-bold rounded-lg py-2 sm:py-3 text-base sm:text-lg border-none shadow-md mt-2 transition-all disabled:opacity-60 disabled:cursor-not-allowed">
             {loading ? 'Cadastrando...' : 'Criar Conta'}
           </button>
         </form>
-        {status === 'sucesso' && <div style={{ color: '#22c55e', fontWeight: 600, fontSize: 16 }}>{message}</div>}
-        {status === 'erro' && <div style={{ color: '#ef4444', fontWeight: 600, fontSize: 16 }}>{message}</div>}
+        {status === 'sucesso' && <div className="text-green-500 font-semibold text-sm sm:text-base">{message}</div>}
+        {status === 'erro' && <div className="text-red-500 font-semibold text-sm sm:text-base">{message}</div>}
       </div>
     </div>
   );

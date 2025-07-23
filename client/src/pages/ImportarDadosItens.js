@@ -163,72 +163,26 @@ const ImportarDadosItens = () => {
   }
 
   return (
-    <div className={`min-h-screen bg-[#e5e5e5] flex flex-col items-center py-6${isMobile ? ' px-4' : ' px-8'}`}>
+    <div className="min-h-screen bg-gradient-to-br from-[#e0e7ff] via-[#f5f6fa] to-[#e0e7ff] flex flex-col items-center justify-center py-4 px-2 sm:px-4">
       {toast && (
         <Toast type={toast.type} message={toast.message} onClose={() => setToast(null)} />
       )}
-      
-      <div style={{
-        background: '#fff',
-        borderRadius: isMobile ? 16 : 20,
-        boxShadow: '0 8px 32px rgba(9,21,255,0.08)',
-        border: '1.5px solid #d1d5db',
-        maxWidth: isMobile ? '100%' : 800,
-        width: '100%',
-        padding: isMobile ? 20 : 40,
-        margin: isMobile ? '20px 0' : '40px 0'
-      }}>
+      <div className="backdrop-blur-md bg-white/80 rounded-2xl shadow-xl border border-[#d1d5db] w-full max-w-[98vw] sm:max-w-[800px] p-3 sm:p-5 flex flex-col items-center gap-4 sm:gap-6">
         {/* Header */}
-        <div style={{ textAlign: 'center', marginBottom: isMobile ? 24 : 32 }}>
-          <div style={{
-            background: '#0915FF',
-            borderRadius: '50%',
-            padding: isMobile ? 12 : 16,
-            margin: '0 auto',
-            width: 'fit-content',
-            marginBottom: isMobile ? 12 : 16
-          }}>
-            <FileText style={{
-              color: '#fff',
-              stroke: '#fff',
-              width: isMobile ? 32 : 40,
-              height: isMobile ? 32 : 40
-            }} />
+        <div className="text-center mb-3 sm:mb-4">
+          <div className="bg-[#0915FF] rounded-full p-3 sm:p-4 mx-auto w-fit mb-2 flex items-center justify-center">
+            <FileText className="text-white" style={{ width: 24, height: 24 }} />
           </div>
-          <h1 style={{
-            color: '#0915FF',
-            fontWeight: 800,
-            fontSize: isMobile ? 24 : 32,
-            margin: 0,
-            marginBottom: isMobile ? 8 : 12
-          }}>
-            Importar Dados dos Itens
-          </h1>
-          <p style={{
-            color: '#666',
-            fontSize: isMobile ? 16 : 18,
-            margin: 0,
-            lineHeight: 1.5
-          }}>
-            Adicione ou atualize informações detalhadas dos itens existentes
-          </p>
+          <h1 className="text-[#0915FF] font-extrabold text-[18px] sm:text-[28px] m-0 mb-1 sm:mb-2">Importar Dados dos Itens</h1>
+          <p className="text-[#666] text-[13px] sm:text-[16px] m-0 leading-snug">Adicione ou atualize informações detalhadas dos itens existentes</p>
         </div>
-
         {/* Instruções */}
-        <div style={{
-          background: '#f8fafc',
-          border: '1px solid #e2e8f0',
-          borderRadius: 12,
-          padding: isMobile ? 16 : 20,
-          marginBottom: isMobile ? 24 : 32
-        }}>
-          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, marginBottom: 16 }}>
-            <AlertCircle style={{ color: '#f59e0b', width: 20, height: 20, marginTop: 2 }} />
+        <div className="bg-[#f8fafc] border border-[#e2e8f0] rounded-[10px] p-2 sm:p-3 mb-2 sm:mb-3 w-full">
+          <div className="flex items-start gap-2 sm:gap-3 mb-2">
+            <AlertCircle className="text-[#f59e0b]" style={{ width: 16, height: 16, marginTop: 2 }} />
             <div>
-              <h3 style={{ color: '#1f2937', fontWeight: 600, margin: '0 0 8px 0', fontSize: 16 }}>
-                Instruções de Importação
-              </h3>
-              <ul style={{ color: '#6b7280', margin: 0, paddingLeft: 20, lineHeight: 1.6 }}>
+              <h3 className="text-[#1f2937] font-semibold m-0 mb-1 text-[13px] sm:text-[15px]">Instruções de Importação</h3>
+              <ul className="text-[#6b7280] m-0 pl-4 leading-tight text-[12px] sm:text-[13px]">
                 <li>O arquivo deve conter uma coluna <strong>"Código"</strong> para identificar os itens</li>
                 <li>Os itens que não existirem no sistema serão ignorados</li>
                 <li>Campos vazios não serão alterados nos itens existentes</li>
@@ -237,229 +191,104 @@ const ImportarDadosItens = () => {
             </div>
           </div>
         </div>
-
         {/* Download Template */}
-        <div style={{
-          background: '#e6f7ff',
-          border: '1px solid #91d5ff',
-          borderRadius: 12,
-          padding: isMobile ? 16 : 20,
-          marginBottom: isMobile ? 24 : 32
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
-            <Download style={{ color: '#1890ff', width: 20, height: 20 }} />
-            <h3 style={{ color: '#1890ff', fontWeight: 600, margin: 0, fontSize: 16 }}>
-              Template de Importação
-            </h3>
+        <div className="bg-[#e6f7ff] border border-[#91d5ff] rounded-[10px] p-2 sm:p-3 mb-2 sm:mb-3 w-full">
+          <div className="flex items-center gap-2 sm:gap-3 mb-2">
+            <Download className="text-[#1890ff]" style={{ width: 16, height: 16 }} />
+            <h3 className="text-[#1890ff] font-semibold m-0 text-[13px] sm:text-[15px]">Template de Importação</h3>
           </div>
-          <p style={{ color: '#666', margin: '0 0 16px 0', fontSize: 14 }}>
-            Baixe o template Excel para ver o formato correto dos dados
-          </p>
+          <p className="text-[#666] mb-2 text-[12px] sm:text-[13px]">Baixe o template Excel para ver o formato correto dos dados</p>
           <button
             onClick={downloadTemplate}
-            style={{
-              background: '#1890ff',
-              color: '#fff',
-              border: 'none',
-              borderRadius: 8,
-              padding: '10px 20px',
-              fontWeight: 600,
-              cursor: 'pointer',
-              fontSize: 14,
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8
-            }}
+            className="bg-[#1890ff] hover:bg-[#1769c7] transition-colors duration-200 text-white rounded-[7px] px-3 sm:px-4 py-1.5 font-semibold text-[12px] sm:text-[13px] flex items-center gap-1.5 focus:outline-none focus:ring-2 focus:ring-[#1890ff]"
+            type="button"
           >
-            <Download size={16} />
+            <Download size={14} />
             Baixar Template Excel
           </button>
         </div>
-
         {/* Upload de Arquivo */}
-        <div style={{ marginBottom: isMobile ? 24 : 32 }}>
-          <h3 style={{ color: '#1f2937', fontWeight: 600, margin: '0 0 16px 0', fontSize: 18 }}>
-            Selecionar Arquivo
-          </h3>
-          
-          <div style={{
-            border: '2px dashed #d1d5db',
-            borderRadius: 12,
-            padding: isMobile ? 24 : 32,
-            textAlign: 'center',
-            background: selectedFile ? '#f0f9ff' : '#fafafa',
-            borderColor: selectedFile ? '#3b82f6' : '#d1d5db',
-            transition: 'all 0.2s'
-          }}>
+        <div className="mb-2 sm:mb-3 w-full">
+          <h3 className="text-[#1f2937] font-semibold m-0 mb-2 text-[14px] sm:text-[15px]">Selecionar Arquivo</h3>
+          <div className={`border-2 border-dashed ${selectedFile ? 'bg-[#f0f9ff] border-[#3b82f6]' : 'bg-[#fafafa] border-[#d1d5db]'} rounded-[10px] p-4 sm:p-5 text-center transition-all duration-200`}>
             <input
               type="file"
               accept=".xlsx,.xls,.csv"
               onChange={handleFileSelect}
-              style={{ display: 'none' }}
+              className="hidden"
               id="file-upload"
             />
-            
             {!selectedFile ? (
-              <label htmlFor="file-upload" style={{ cursor: 'pointer' }}>
-                <Upload style={{
-                  color: '#6b7280',
-                  width: isMobile ? 48 : 64,
-                  height: isMobile ? 48 : 64,
-                  margin: '0 auto 16px auto',
-                  display: 'block'
-                }} />
-                <p style={{ color: '#6b7280', margin: '0 0 8px 0', fontSize: 16 }}>
-                  Clique para selecionar um arquivo Excel ou CSV
-                </p>
-                <p style={{ color: '#9ca3af', margin: 0, fontSize: 14 }}>
-                  ou arraste e solte aqui
-                </p>
+              <label htmlFor="file-upload" className="cursor-pointer block">
+                <Upload className="text-[#6b7280] mx-auto mb-2" style={{ width: 28, height: 28 }} />
+                <p className="text-[#6b7280] mb-1 text-[13px]">Clique para selecionar um arquivo Excel ou CSV</p>
+                <p className="text-[#9ca3af] m-0 text-[11px]">ou arraste e solte aqui</p>
               </label>
             ) : (
               <div>
-                <CheckCircle style={{
-                  color: '#10b981',
-                  width: isMobile ? 48 : 64,
-                  height: isMobile ? 48 : 64,
-                  margin: '0 auto 16px auto',
-                  display: 'block'
-                }} />
-                <p style={{ color: '#10b981', fontWeight: 600, margin: '0 0 8px 0', fontSize: 16 }}>
-                  Arquivo selecionado
-                </p>
-                <p style={{ color: '#6b7280', margin: '0 0 16px 0', fontSize: 14 }}>
-                  {selectedFile.name}
-                </p>
+                <CheckCircle className="text-[#10b981] mx-auto mb-2" style={{ width: 28, height: 28 }} />
+                <p className="text-[#10b981] font-semibold mb-1 text-[13px]">Arquivo selecionado</p>
+                <p className="text-[#6b7280] mb-2 text-[11px]">{selectedFile.name}</p>
                 <button
                   onClick={() => setSelectedFile(null)}
-                  style={{
-                    background: '#ef4444',
-                    color: '#fff',
-                    border: 'none',
-                    borderRadius: 6,
-                    padding: '6px 12px',
-                    fontWeight: 500,
-                    cursor: 'pointer',
-                    fontSize: 14,
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 6,
-                    margin: '0 auto'
-                  }}
+                  className="bg-[#ef4444] hover:bg-[#b91c1c] transition-colors duration-200 text-white rounded-[5px] px-2.5 py-1 font-medium text-[11px] sm:text-[12px] flex items-center gap-1 mx-auto"
+                  type="button"
                 >
-                  <X size={14} />
+                  <X size={12} />
                   Remover
                 </button>
               </div>
             )}
           </div>
         </div>
-
         {/* Status da Importação */}
         {importStatus && (
-          <div style={{
-            background: importStatus.success ? '#f0fdf4' : '#fef2f2',
-            border: `1px solid ${importStatus.success ? '#bbf7d0' : '#fecaca'}`,
-            borderRadius: 12,
-            padding: isMobile ? 16 : 20,
-            marginBottom: isMobile ? 24 : 32
-          }}>
-            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+          <div className={`${importStatus.success ? 'bg-[#f0fdf4] border-[#bbf7d0]' : 'bg-[#fef2f2] border-[#fecaca]'} border rounded-[10px] p-2 sm:p-3 mb-2 sm:mb-3 w-full`}>
+            <div className="flex items-start gap-2 sm:gap-3">
               {importStatus.success ? (
-                <CheckCircle style={{ color: '#10b981', width: 20, height: 20, marginTop: 2 }} />
+                <CheckCircle className="text-[#10b981]" style={{ width: 14, height: 14, marginTop: 2 }} />
               ) : (
-                <X style={{ color: '#ef4444', width: 20, height: 20, marginTop: 2 }} />
+                <X className="text-[#ef4444]" style={{ width: 14, height: 14, marginTop: 2 }} />
               )}
               <div>
-                <h4 style={{
-                  color: importStatus.success ? '#10b981' : '#ef4444',
-                  fontWeight: 600,
-                  margin: '0 0 8px 0',
-                  fontSize: 16
-                }}>
+                <h4 className={`${importStatus.success ? 'text-[#10b981]' : 'text-[#ef4444]'} font-semibold m-0 mb-1 text-[12px] sm:text-[13px]`}>
                   {importStatus.success ? 'Importação Iniciada' : 'Erro na Importação'}
                 </h4>
-                <p style={{ color: '#6b7280', margin: 0, fontSize: 14 }}>
-                  {importStatus.message}
-                </p>
+                <p className="text-[#6b7280] m-0 text-[11px] sm:text-[12px]">{importStatus.message}</p>
               </div>
             </div>
           </div>
         )}
-
         {/* Botões de Ação */}
-        <div style={{
-          display: 'flex',
-          gap: 12,
-          justifyContent: 'center',
-          flexWrap: 'wrap'
-        }}>
+        <div className="flex gap-2 justify-center flex-wrap w-full">
           <button
             onClick={() => navigate('/listar')}
-            style={{
-              background: '#fff',
-              color: '#6b7280',
-              border: '1.5px solid #d1d5db',
-              borderRadius: 8,
-              padding: isMobile ? '12px 24px' : '14px 28px',
-              fontWeight: 600,
-              cursor: 'pointer',
-              fontSize: isMobile ? 14 : 16,
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8
-            }}
+            className="bg-white text-[#6b7280] border border-[#d1d5db] rounded-[7px] px-3 sm:px-4 py-2 font-semibold text-[13px] sm:text-[14px] flex items-center gap-1.5 focus:outline-none focus:ring-2 focus:ring-[#d1d5db] transition-colors duration-200 hover:bg-[#f3f4f6]"
+            type="button"
           >
-            <ArrowLeft size={16} />
+            <ArrowLeft size={12} />
             Voltar
           </button>
-          
           <button
             onClick={handleImport}
             disabled={(!selectedFile) || loading}
-            style={{
-              background: (selectedFile && !loading) ? '#0915FF' : '#e5e7eb',
-              color: (selectedFile && !loading) ? '#fff' : '#9ca3af',
-              border: 'none',
-              borderRadius: 8,
-              padding: isMobile ? '12px 24px' : '14px 28px',
-              fontWeight: 600,
-              cursor: (selectedFile && !loading) ? 'pointer' : 'not-allowed',
-              fontSize: isMobile ? 14 : 16,
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-              transition: 'all 0.2s'
-            }}
+            className={`rounded-[7px] px-3 sm:px-4 py-2 font-semibold text-[13px] sm:text-[14px] flex items-center gap-1.5 focus:outline-none focus:ring-2 transition-colors duration-200 ${selectedFile && !loading ? 'bg-[#0915FF] hover:bg-[#060bcc] text-white cursor-pointer' : 'bg-[#e5e7eb] text-[#9ca3af] cursor-not-allowed'}`}
+            type="button"
           >
             {loading ? (
               <>
-                <div style={{
-                  width: 16,
-                  height: 16,
-                  border: '2px solid transparent',
-                  borderTop: '2px solid currentColor',
-                  borderRadius: '50%',
-                  animation: 'spin 1s linear infinite'
-                }} />
+                <span className="inline-block w-4 h-4 border-2 border-transparent border-t-current rounded-full animate-spin mr-2"></span>
                 Processando...
               </>
             ) : (
               <>
-                <Upload size={16} />
+                <Upload size={12} />
                 Importar Dados
               </>
             )}
           </button>
         </div>
       </div>
-
-      <style jsx>{`
-        @keyframes spin {
-          from { transform: rotate(0deg); }
-          to { transform: rotate(360deg); }
-        }
-      `}</style>
     </div>
   );
 };

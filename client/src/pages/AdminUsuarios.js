@@ -68,48 +68,52 @@ const AdminUsuarios = () => {
   };
 
   return (
-    <div style={{ maxWidth: 900, margin: '40px auto', background: '#fff', borderRadius: 16, boxShadow: '0 4px 24px #2336ff11', padding: 32 }}>
-      <h2 style={{ fontWeight: 800, fontSize: 28, color: '#0915FF', marginBottom: 24 }}>Administração de Usuários</h2>
-      {loading ? (
-        <div>Carregando usuários...</div>
-      ) : error ? (
-        <div style={{ color: '#ef4444', fontWeight: 600 }}>{error}</div>
-      ) : (
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 16 }}>
-          <thead>
-            <tr style={{ background: '#f3f4fa' }}>
-              <th style={{ padding: 10, borderRadius: 8  }}>ID</th>
-              <th style={{ padding: 10 }}>Nome</th>
-              <th style={{ padding: 10 }}>Número Colaborador</th>
-              <th style={{ padding: 10 }}>Username</th>
-              <th style={{ padding: 10 }}>E-mail</th>
-              <th style={{ padding: 10 }}>Role</th>
-              <th style={{ padding: 10 }}>Ação</th>
-            </tr>
-          </thead>
-          <tbody>
-            {usuarios.map(u => (
-              <tr key={u.id} style={{ borderBottom: '1px solid #e5e7eb' }}>
-                <td style={{ padding: 8 }}>{u.id}</td>
-                <td style={{ padding: 8 }}>{u.nome}</td>
-                <td style={{ padding: 8 }}>{u.numero_colaborador || '-'}</td>
-                <td style={{ padding: 8 }}>{u.username || '-'}</td>
-                <td style={{ padding: 8 }}>{u.email || '-'}</td>
-                <td style={{ padding: 8 }}>
-                  <select value={u.role} onChange={e => handleRoleChange(u.id, e.target.value)} disabled={savingId === u.id} style={{ padding: 6, borderRadius: 6, border: '1px solid #d1d5db' }}>
-                    {roles.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
-                  </select>
-                </td>
-                <td style={{ padding: 8 }}>
-                  <button onClick={() => handleSaveRole(u.id, u.role)} disabled={savingId === u.id} style={{ background: '#0915FF', color: '#fff', border: 'none', borderRadius: 6, padding: '6px 16px', fontWeight: 600, cursor: savingId === u.id ? 'not-allowed' : 'pointer' }}>
-                    {savingId === u.id ? 'Salvando...' : 'Salvar'}
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
+    <div className="min-h-screen bg-[#f3f6fd] flex flex-col items-center justify-center py-4 sm:py-12 px-2 sm:px-4">
+      <div className="w-full max-w-[98vw] sm:max-w-4xl bg-white rounded-2xl shadow-lg p-4 sm:p-8 mt-4 sm:mt-10">
+        <h2 className="font-extrabold text-xl sm:text-2xl text-[#0915FF] mb-4 sm:mb-6">Administração de Usuários</h2>
+        {loading ? (
+          <div>Carregando usuários...</div>
+        ) : error ? (
+          <div className="text-red-500 font-semibold">{error}</div>
+        ) : (
+          <div className="overflow-x-auto rounded-xl">
+            <table className="min-w-full text-xs sm:text-base">
+              <thead>
+                <tr className="bg-gradient-to-r from-[#0a1fff] to-[#3b82f6] text-white font-bold">
+                  <th className="py-3 px-4 rounded-tl-xl">ID</th>
+                  <th className="py-3 px-4">Nome</th>
+                  <th className="py-3 px-4">Número Colaborador</th>
+                  <th className="py-3 px-4">Username</th>
+                  <th className="py-3 px-4">E-mail</th>
+                  <th className="py-3 px-4">Role</th>
+                  <th className="py-3 px-4 rounded-tr-xl">Ação</th>
+                </tr>
+              </thead>
+              <tbody>
+                {usuarios.map(u => (
+                  <tr key={u.id} className="border-b border-[#e5e7eb]">
+                    <td className="py-2 px-4">{u.id}</td>
+                    <td className="py-2 px-4">{u.nome}</td>
+                    <td className="py-2 px-4">{u.numero_colaborador || '-'}</td>
+                    <td className="py-2 px-4">{u.username || '-'}</td>
+                    <td className="py-2 px-4">{u.email || '-'}</td>
+                    <td className="py-2 px-4">
+                      <select value={u.role} onChange={e => handleRoleChange(u.id, e.target.value)} disabled={savingId === u.id} className="px-2 py-1 rounded border border-[#d1d5db] bg-white">
+                        {roles.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
+                      </select>
+                    </td>
+                    <td className="py-2 px-4">
+                      <button onClick={() => handleSaveRole(u.id, u.role)} disabled={savingId === u.id} className="bg-[#0915FF] text-white rounded px-4 py-1 font-semibold text-xs sm:text-base shadow hover:bg-[#2336ff] transition disabled:opacity-60 disabled:cursor-not-allowed">
+                        {savingId === u.id ? 'Salvando...' : 'Salvar'}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
     </div>
   );
 };

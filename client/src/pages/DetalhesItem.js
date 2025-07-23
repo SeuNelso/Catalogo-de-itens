@@ -157,23 +157,22 @@ const DetalhesItem = () => {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-purple-50 detalhes-item-root">
-      <div className="container mx-auto px-4 py-8">
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-purple-50 detalhes-item-root px-2 sm:px-0">
+      <div className="container mx-auto px-2 sm:px-4 py-4 sm:py-8">
         {/* Header */}
-        <div className="mb-8">
+        <div className="mb-6 sm:mb-8">
           <Link 
             to="/listar" 
-            className="inline-flex items-center text-primary hover:text-primary-dark mb-4 transition-colors"
+            className="inline-flex items-center text-primary hover:text-primary-dark mb-4 transition-colors text-sm sm:text-base"
           >
             <ArrowLeft className="w-5 h-5 mr-2" />
             Voltar ao Catálogo
           </Link>
-          
-          <h1 className="text-4xl md:text-5xl font-bold text-gray-900 mb-4">
-            {item.nome}
-          </h1>
-          
-          <div className="flex items-center space-x-4 text-sm text-gray-600">
+          <div className="flex flex-col sm:flex-row items-center gap-2 sm:gap-3 mb-4 sm:mb-6">
+            <Package className="w-7 h-7 sm:w-8 sm:h-8 text-[#0915FF]" />
+            <h1 className="text-2xl sm:text-3xl md:text-4xl font-extrabold text-[#0915FF] text-center sm:text-left">Detalhes do Item</h1>
+          </div>
+          <div className="flex flex-col sm:flex-row items-center gap-2 sm:gap-4 text-xs sm:text-sm text-gray-600">
             <div className="flex items-center">
               <Tag className="w-4 h-4 mr-1" />
               <span>{typeof item.categoria === 'object' && item.categoria !== null ? item.categoria.nome : item.categoria}</span>
@@ -186,246 +185,131 @@ const DetalhesItem = () => {
             )}
           </div>
         </div>
-
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+        <div className="max-w-3xl mx-auto bg-white rounded-2xl shadow-lg p-4 sm:p-8 mt-2 sm:mt-4 flex flex-col gap-4 sm:gap-6">
+          {/* Código e Descrição acima das imagens */}
+          <div className="flex flex-col gap-2 mb-4">
+            <div className="text-[#0915FF] font-extrabold text-lg sm:text-2xl text-center sm:text-left">{item.codigo}</div>
+            <div className="font-bold text-gray-900 text-base sm:text-lg text-center sm:text-left">{item.descricao}</div>
+          </div>
           {/* Images */}
-          <div className="space-y-6">
-            <div
-              className="bg-white rounded-lg shadow-md p-6"
-              style={isMobile ? {
-                width: '290px',
-                height: '191px',
-                margin: '0 auto',
-                padding: '15px',
-                boxSizing: 'border-box',
-                maxWidth: '100%'
-              } : {}}
-            >
-              <h2 className="text-2xl font-bold text-gray-900 mb-4">Imagens</h2>
-              
+          <div className="space-y-4 sm:space-y-6">
+            <div className="bg-white rounded-lg shadow-md p-3 sm:p-6">
+              <h2 className="text-[#0915FF] text-lg sm:text-xl font-bold mb-3 sm:mb-4">Imagens</h2>
               {item.imagens && item.imagens.length > 0 ? (
-                <>
-                  {/* Grid para desktop */}
-                  <div
-                    className="imagens-grid-desktop"
-                    style={{
-                      display: 'none',
-                      gap: 18,
-                      justifyItems: 'center',
-                      alignItems: 'center'
-                    }}
-                  >
-                    {item.imagens.map((imagem, index) => (
-                      <div
-                        key={index}
-                        style={{
-                          width: 120,
-                          height: 120,
-                          overflow: 'hidden',
-                          borderRadius: 10,
-                          background: '#f3f4f6',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center'
-                        }}
-                        onClick={() => setZoomImage(imagem)}
-                      >
-                        {imagem.caminho && imagem.caminho.startsWith('http') && (
-                          <img
-                            src={imagem.caminho}
-                            alt={`Foto ${index + 1} do item ${item.nome}`}
-                            style={{
-                              width: '100%',
-                              height: '100%',
-                              objectFit: 'cover',
-                              cursor: 'pointer'
-                            }}
-                          />
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                  {/* Carrossel para mobile */}
-                  <div
-                    className="imagens-scroll-mobile"
-                    style={{
-                      display: 'flex',
-                      overflowX: 'auto',
-                      gap: 12,
-                      paddingBottom: 8
-                    }}
-                    ref={imagensScrollRef}
-                    onMouseDown={handleMouseDown}
-                    onMouseLeave={handleMouseLeave}
-                    onMouseUp={handleMouseUp}
-                    onMouseMove={handleMouseMove}
-                  >
-                    {item.imagens.map((imagem, index) => (
-                      <div
-                        key={index}
-                        style={{
-                          minWidth: 120,
-                          minHeight: 120,
-                          maxWidth: 120,
-                          maxHeight: 120,
-                          overflow: 'hidden',
-                          borderRadius: 10,
-                          background: '#f3f4f6',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center'
-                        }}
-                        onClick={() => setZoomImage(imagem)}
-                      >
-                        {imagem.caminho && imagem.caminho.startsWith('http') && (
-                          <img
-                            src={imagem.caminho}
-                            alt={`Foto ${index + 1} do item ${item.nome}`}
-                            style={{
-                              width: '100%',
-                              height: '100%',
-                              objectFit: 'cover',
-                              cursor: 'pointer'
-                            }}
-                          />
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </>
+                <div className="overflow-x-auto flex gap-3 sm:gap-4 pb-2">
+                  {item.imagens.map((imagem, index) => (
+                    <div
+                      key={index}
+                      className="min-w-[90px] min-h-[90px] max-w-[120px] max-h-[120px] overflow-hidden rounded-lg bg-[#f3f4f6] flex items-center justify-center cursor-pointer"
+                      onClick={() => setZoomImage(imagem)}
+                    >
+                      {imagem.caminho && imagem.caminho.startsWith('http') && (
+                        <img
+                          src={imagem.caminho}
+                          alt={`Foto ${index + 1} do item ${item.nome}`}
+                          className="w-full h-full object-cover"
+                        />
+                      )}
+                    </div>
+                  ))}
+                </div>
               ) : (
-                <div className="text-center py-12">
-                  <Package className="w-16 h-16 text-gray-800 mx-auto mb-4" />
+                <div className="text-center py-8 sm:py-12">
+                  <Package className="w-12 h-12 sm:w-16 sm:h-16 text-gray-800 mx-auto mb-4" />
                   <p className="text-gray-600">Nenhuma imagem disponível</p>
                 </div>
               )}
             </div>
           </div>
-
           {/* Details */}
-          <div className="space-y-6">
+          <div className="space-y-4 sm:space-y-6">
             {/* Basic Info */}
-            <div className="bg-white rounded-lg shadow-md p-6">
-              <h2 className="text-2xl font-bold text-gray-900 mb-4">Informações Básicas</h2>
-              
-              <div className="space-y-4">
-                <div>
-                  <h3 className="font-semibold text-gray-900 mb-2">Descrição</h3>
-                  <p className="text-gray-600 leading-relaxed">
-                    {item.descricao || ''}
-                  </p>
+            <div className="bg-white rounded-lg shadow-md p-3 sm:p-6">
+              <h2 className="text-[#0915FF] text-lg sm:text-xl font-bold mb-3 sm:mb-4">Informações Básicas</h2>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-2 sm:gap-y-3">
+                <div className="flex items-center mb-1 sm:mb-2">
+                  <span className="text-gray-500 font-semibold text-xs sm:text-base">Família:</span>
+                  <span className="ml-2 text-base sm:text-lg font-bold text-gray-800">{item.familia || '-'}</span>
                 </div>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="flex items-center">
-                    <Hash className="w-4 h-4 text-gray-900 mr-2" />
-                    <div>
-                      <p className="text-sm text-gray-900">Código</p>
-                      <p className="font-medium">{item.codigo || ''}</p>
-                    </div>
-                  </div>
-                  <div className="flex items-center">
-                    <Tag className="w-4 h-4 text-gray-900 mr-2" />
-                    <div>
-                      <p className="text-sm text-gray-900">Setor</p>
-                      <p className="font-medium">{item.setor || ''}</p>
-                    </div>
-                  </div>
-                  <div className="flex items-center">
-                    <Tag className="w-4 h-4 text-gray-900 mr-2" />
-                    <div>
-                      <p className="text-sm text-gray-900">Família</p>
-                      <p className="font-medium">{item.familia || ''}</p>
-                    </div>
-                  </div>
-                  <div className="flex items-center">
-                    <Tag className="w-4 h-4 text-gray-900 mr-2" />
-                    <div>
-                      <p className="text-sm text-gray-900">Subfamília</p>
-                      <p className="font-medium">{item.subfamilia || ''}</p>
-                    </div>
-                  </div>
-                  {/* Remover campo Unidade */}
-                  <div className="flex items-center">
-                    <Tag className="w-4 h-4 text-gray-900 mr-2" />
-                    <div>
-                      <p className="text-sm text-gray-900">Peso</p>
-                      <p className="font-medium">{item.peso || ''} {item.unidadePeso || ''}</p>
-                    </div>
-                  </div>
-                  <div className="flex items-center md:col-span-2">
-                    <Tag className="w-4 h-4 text-gray-900 mr-2" />
-                    <div>
-                      <p className="text-sm text-gray-900">Dimensões</p>
-                      <p className="font-medium">{item.comprimento || ''} x {item.largura || ''} x {item.altura || ''}{item.unidade ? ` ${item.unidade}` : ''}</p>
-                    </div>
-                  </div>
-                  <div className="flex items-center">
-                    <Tag className="w-4 h-4 text-gray-900 mr-2" />
-                    <div>
-                      <p className="text-sm text-gray-900">Unidade de Armazenamento</p>
-                      <p className="font-medium">{item.unidadearmazenamento || '-'}</p>
-                    </div>
-                  </div>
+                <div className="flex items-center mb-1 sm:mb-2">
+                  <span className="text-gray-500 font-semibold text-xs sm:text-base">Subfamília:</span>
+                  <span className="ml-2 text-base sm:text-lg font-bold text-gray-800">{item.subfamilia || '-'}</span>
                 </div>
-                <div className="flex items-center">
-                  <Package className="w-4 h-4 text-gray-900 mr-2" />
-                  <div>
-                    <p className="text-sm text-gray-900">Quantidade</p>
-                    <p className="font-medium">{item.quantidade !== undefined ? item.quantidade : ''}</p>
-                  </div>
+                <div className="flex items-center mb-1 sm:mb-2">
+                  <span className="text-gray-500 font-semibold text-xs sm:text-base">Setor:</span>
+                  <span className="ml-2 text-base sm:text-lg font-bold text-gray-800">{item.setor || '-'}</span>
+                </div>
+                <div></div>
+                <div className="flex items-center mb-1 sm:mb-2">
+                  <span className="text-gray-500 font-semibold text-xs sm:text-base">Dimensões:</span>
+                  <span className="ml-2 text-base sm:text-lg font-bold text-gray-800">{item.comprimento || '-'} × {item.largura || '-'} × {item.altura || '-'} {item.unidade || ''}</span>
+                </div>
+                <div className="flex items-center mb-1 sm:mb-2">
+                  <span className="text-gray-500 font-semibold text-xs sm:text-base">Peso:</span>
+                  <span className="ml-2 text-base sm:text-lg font-bold text-gray-800">{item.peso || '-'}{item.unidadepeso ? <span className='ml-1 text-xs sm:text-base text-gray-500 font-semibold'>({item.unidadepeso})</span> : ''}</span>
+                </div>
+                <div className="flex items-center mb-1 sm:mb-2">
+                  <span className="text-gray-500 font-semibold text-xs sm:text-base">Tipo de controlo:</span>
+                  <span className="ml-2 text-base sm:text-lg font-bold text-gray-800">{item.tipocontrolo || '-'}</span>
+                </div>
+                <div></div>
+                <div className="flex items-center mb-1 sm:mb-2">
+                  <span className="text-gray-500 font-semibold text-xs sm:text-base">Unidade de Armazenamento:</span>
+                  <span className="ml-2 text-base sm:text-lg font-bold text-gray-800">{item.unidadearmazenamento || '-'}</span>
+                </div>
+                <div className="md:col-span-1 flex flex-col mb-1 sm:mb-2">
+                  <span className="text-gray-500 font-semibold text-xs sm:text-base">Observações:</span>
+                  <span className="ml-0 text-base sm:text-lg font-bold text-gray-800 whitespace-pre-line">{item.observacoes || '-'}</span>
                 </div>
               </div>
-              {/* Quantidade por armazém */}
-              {item.armazens && (
-                <div className="mt-6">
-                  <h3 className="font-semibold text-gray-900 mb-2">Quantidade por Armazém</h3>
-                  <table className="min-w-[220px] border border-gray-200 rounded">
-                    <thead>
-                      <tr>
-                        <th className="px-3 py-2 border-b text-left text-sm font-bold text-gray-700">Armazém</th>
-                        <th className="px-3 py-2 border-b text-left text-sm font-bold text-gray-700">Quantidade</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {item.armazens.length === 0 ? (
-                        <tr>
-                          <td colSpan={2} className="px-3 py-2 text-gray-500 text-center">Nenhum armazém cadastrado</td>
-                        </tr>
-                      ) : (
-                        [...item.armazens].sort((a, b) => (a.armazem || '').localeCompare(b.armazem || '')).map((a, idx) => (
-                          <tr key={idx}>
-                            <td className="px-3 py-1 border-b text-gray-700">{a.armazem}</td>
-                            <td className="px-3 py-1 border-b text-gray-900 font-semibold">{a.quantidade}</td>
-                          </tr>
-                        ))
-                      )}
-                    </tbody>
-                  </table>
+              <div className="flex items-center mt-4">
+                <Package className="w-4 h-4 text-gray-900 mr-2" />
+                <div>
+                  <p className="text-xs sm:text-sm text-gray-900">Quantidade</p>
+                  <span className={`px-3 py-1 rounded-full font-bold text-xs sm:text-[15px] shadow-sm ${item.quantidade === 0 ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>{item.quantidade}</span>
                 </div>
-              )}
+              </div>
             </div>
-
+            {/* Quantidade por armazém */}
+            {item.armazens && (
+              <div className="mt-4 sm:mt-6 overflow-x-auto">
+                <h3 className="font-semibold text-gray-900 mb-2">Quantidade por Armazém</h3>
+                <table className="min-w-[220px] border border-gray-200 rounded text-xs sm:text-sm">
+                  <thead>
+                    <tr>
+                      <th className="px-3 py-2 border-b text-left font-bold text-gray-700">Armazém</th>
+                      <th className="px-3 py-2 border-b text-left font-bold text-gray-700">Quantidade</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {item.armazens.length === 0 ? (
+                      <tr>
+                        <td colSpan={2} className="px-3 py-2 text-gray-500 text-center">Nenhum armazém cadastrado</td>
+                      </tr>
+                    ) : (
+                      [...item.armazens].sort((a, b) => (a.armazem || '').localeCompare(b.armazem || '')).map((a, idx) => (
+                        <tr key={idx}>
+                          <td className="px-3 py-1 border-b text-gray-700">{a.armazem}</td>
+                          <td className="px-3 py-1 border-b text-gray-900 font-semibold">{a.quantidade}</td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            )}
             {/* Specifications */}
             {item.especificacoes && item.especificacoes.length > 0 && (
-              <div className="bg-white rounded-lg shadow-md p-6">
-                <h2 className="text-2xl font-bold text-gray-900 mb-4">Especificações</h2>
-                
-                <div className="space-y-3">
+              <div className="bg-white rounded-lg shadow-md p-3 sm:p-6">
+                <h2 className="text-[#0915FF] text-lg sm:text-xl font-bold mb-3 sm:mb-4">Especificações</h2>
+                <div className="space-y-2 sm:space-y-3">
                   {item.especificacoes.map((spec, index) => (
                     <div key={index} className="flex justify-between py-2 border-b border-gray-100 last:border-b-0">
-                      <span className="font-medium text-gray-900">{spec.nome}</span>
-                      <span className="text-gray-600">{spec.valor}</span>
+                      <span className="font-medium text-gray-900 text-xs sm:text-base">{spec.nome}</span>
+                      <span className="text-gray-600 text-xs sm:text-base">{spec.valor}</span>
                     </div>
                   ))}
                 </div>
-              </div>
-            )}
-
-            {/* Observations */}
-            {item.observacoes && (
-              <div className="bg-white rounded-lg shadow-md p-6">
-                <h2 className="text-2xl font-bold text-gray-900 mb-4">Observações</h2>
-                <p className="text-gray-600 leading-relaxed">{item.observacoes}</p>
               </div>
             )}
           </div>
