@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useNavigate, Link, useLocation } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { X, Plus, Save, ArrowLeft, Package, FileText } from 'react-feather';
 import Toast from '../components/Toast';
 
@@ -190,10 +190,9 @@ const CadastrarItem = () => {
     }));
   }, [location.search]);
 
-  const [isMobile, setIsMobile] = useState(window.innerWidth <= 600);
   React.useEffect(() => {
     function handleResize() {
-      setIsMobile(window.innerWidth <= 600);
+      // setIsMobile(window.innerWidth <= 600); // This line is removed
     }
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);

@@ -10,10 +10,6 @@ export default function ExcluirArtigo() {
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState(null);
   const [paginaAtual, setPaginaAtual] = useState(1);
-  const [showCodigoFiltro, setShowCodigoFiltro] = useState(false);
-  const [showDescricaoFiltro, setShowDescricaoFiltro] = useState(false);
-  const [codigoFiltro, setCodigoFiltro] = useState('');
-  const [descricaoFiltro, setDescricaoFiltro] = useState('');
   const codigoFiltroRef = useRef(null);
   const descricaoFiltroRef = useRef(null);
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 600);

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate, useParams, Link } from 'react-router-dom';
-import { Upload, X, Plus, Save, ArrowLeft, Package, FileText } from 'react-feather';
+import { useNavigate, useParams } from 'react-router-dom';
+import { X, Plus, Save, ArrowLeft, Package, FileText } from 'react-feather';
 import Toast from '../components/Toast';
 
 const EditarItem = () => {
@@ -28,7 +28,6 @@ const EditarItem = () => {
     quantidade: '', // campo adicionado
     tipocontrolo: '' // campo adicionado
   });
-  const [isMobile, setIsMobile] = useState(window.innerWidth <= 600);
   const [imagensRemovidas, setImagensRemovidas] = useState([]);
 
   // Listas independentes de famílias e subfamílias
@@ -79,7 +78,7 @@ const EditarItem = () => {
 
   useEffect(() => {
     function handleResize() {
-      setIsMobile(window.innerWidth <= 600);
+      // setIsMobile(window.innerWidth <= 600); // This line was removed
     }
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
@@ -106,11 +105,6 @@ const EditarItem = () => {
 
   const removeFile = (index) => {
     setSelectedFiles(prev => prev.filter((_, i) => i !== index));
-  };
-
-  const marcarImagemParaRemocao = (imgId) => {
-    setImagensRemovidas(prev => [...prev, imgId]);
-    setImagensExistentes(prev => prev.filter(img => img.id !== imgId));
   };
 
   const addEspecificacao = () => {

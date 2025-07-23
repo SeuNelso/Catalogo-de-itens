@@ -5,10 +5,8 @@ import { ChevronDown, Settings, Database, Users, FileText, Download, Plus, Trash
 import './NavbarCustom.css';
 
 const Navbar = () => {
-  const { isAuthenticated, logout, user, loading } = useAuth();
+  const { isAuthenticated, logout, user } = useAuth();
   const [mobileOpen, setMobileOpen] = useState(false);
-  const [gerirMenuOpen, setGerirMenuOpen] = useState(false);
-  const [dadosMenuOpen, setDadosMenuOpen] = useState(false);
   const navigate = useNavigate();
 
   const handleLogout = () => {
@@ -30,8 +28,6 @@ const Navbar = () => {
     const handleClickOutside = (event) => {
       if (mobileOpen && !event.target.closest('.navbar-digi')) {
         setMobileOpen(false);
-        setGerirMenuOpen(false);
-        setDadosMenuOpen(false);
       }
     };
 
@@ -42,8 +38,6 @@ const Navbar = () => {
   // Fechar menu mobile ao navegar
   const handleNavigation = () => {
     setMobileOpen(false);
-    setGerirMenuOpen(false);
-    setDadosMenuOpen(false);
   };
 
   return (

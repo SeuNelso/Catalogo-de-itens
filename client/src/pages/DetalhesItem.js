@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { ArrowLeft, Package, Calendar, Tag, Hash } from 'react-feather';
+import { ArrowLeft, Package, Calendar, Tag } from 'react-feather';
 
 const DetalhesItem = () => {
   const { id } = useParams();
@@ -98,15 +98,6 @@ const DetalhesItem = () => {
       container.removeEventListener('touchmove', onTouchMove);
     };
   }, []);
-
-  // Adicionar um state para detectar se é mobile
-  const [isMobile, setIsMobile] = useState(window.innerWidth < 700);
-  useEffect(() => {
-    const handleResize = () => setIsMobile(window.innerWidth < 700);
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
-  }, []);
-
 
   const formatDate = (dateString) => {
     if (!dateString) return 'N/A';
