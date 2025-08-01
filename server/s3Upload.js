@@ -8,7 +8,13 @@ const s3 = new AWS.S3({
   accessKeyId: process.env.R2_ACCESS_KEY,
   secretAccessKey: process.env.R2_SECRET_KEY,
   signatureVersion: 'v4',
-  region: 'WEUR'
+  region: 'auto',
+  s3ForcePathStyle: true,
+  // Configurações específicas para Cloudflare R2
+  maxRetries: 3,
+  httpOptions: {
+    timeout: 30000
+  }
 });
 
 const BUCKET = process.env.R2_BUCKET;

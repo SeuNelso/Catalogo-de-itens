@@ -1,15 +1,20 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { X, Plus, Save, ArrowLeft, Package, FileText } from 'react-feather';
+import { X, Plus, Save, ArrowLeft, Package } from 'react-feather';
 import Toast from '../components/Toast';
+import ItensCompostos from '../components/ItensCompostos';
 
 const EditarItem = () => {
   const { id } = useParams();
   const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
+  const [item, setItem] = useState(null);
   const [selectedFiles, setSelectedFiles] = useState([]);
   const [imagensExistentes, setImagensExistentes] = useState([]);
-  const [especificacoes, setEspecificacoes] = useState([]);
+  const [imagensRemovidas, setImagensRemovidas] = useState([]);
+  const [substituirImagens, setSubstituirImagens] = useState(false);
+  const [imagemCompleta, setImagemCompleta] = useState(null);
+
   const [toast, setToast] = useState(null);
   const [formData, setFormData] = useState({
     codigo: '',
@@ -44,6 +49,7 @@ const EditarItem = () => {
         const response = await fetch(`/api/itens/${id}`);
         if (response.ok) {
           const data = await response.json();
+          setItem(data);
           setFormData({
             codigo: data.codigo || '',
             descricao: data.descricao || '',
@@ -61,7 +67,7 @@ const EditarItem = () => {
             quantidade: data.quantidade || '', // campo adicionado
             tipocontrolo: data.tipocontrolo || '' // campo adicionado
           });
-          setEspecificacoes(data.especificacoes || []);
+
           setImagensExistentes(data.imagens || []);
         } else {
           setToast({ type: 'error', message: 'Item não encontrado' });
@@ -95,28 +101,29 @@ const EditarItem = () => {
       setToast({ type: 'error', message: 'Alguns arquivos não são imagens válidas' });
       return;
     }
-    if (selectedFiles.length + validFiles.length + imagensExistentes.length > 5) {
-      setToast({ type: 'error', message: 'Máximo de 5 imagens permitidas por item' });
-      return;
+    
+    // Se substituirImagens está ativo, limpar imagens existentes e selecionadas
+    if (substituirImagens) {
+      // Adicionar todas as imagens existentes à lista de removidas
+      setImagensRemovidas(prev => [...prev, ...imagensExistentes]);
+      setImagensExistentes([]);
+      setSelectedFiles(validFiles);
+      setToast({ type: 'info', message: 'Imagens existentes serão substituídas pelas novas imagens' });
+    } else {
+      // Verificar limite de 5 imagens
+      if (selectedFiles.length + validFiles.length + imagensExistentes.length > 5) {
+        setToast({ type: 'error', message: `Máximo de 5 imagens permitidas por item. Você já tem ${imagensExistentes.length} imagens existentes e ${selectedFiles.length} novas selecionadas.` });
+        return;
+      }
+      setSelectedFiles(prev => [...prev, ...validFiles]);
     }
-    setSelectedFiles(prev => [...prev, ...validFiles]);
   };
 
   const removeFile = (index) => {
     setSelectedFiles(prev => prev.filter((_, i) => i !== index));
   };
 
-  const addEspecificacao = () => {
-    setEspecificacoes(prev => [...prev, { nome: '', valor: '', obrigatorio: false }]);
-  };
 
-  const removeEspecificacao = (index) => {
-    setEspecificacoes(prev => prev.filter((_, i) => i !== index));
-  };
-
-  const updateEspecificacao = (index, field, value) => {
-    setEspecificacoes(prev => prev.map((spec, i) => i === index ? { ...spec, [field]: value } : spec));
-  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -136,8 +143,17 @@ const EditarItem = () => {
       selectedFiles.forEach(file => {
         submitData.append('imagens', file);
       });
-      if (especificacoes.length > 0) {
-        submitData.append('especificacoes', JSON.stringify(especificacoes));
+
+      // Adicionar imagem do item completo se existir
+      if (imagemCompleta) {
+        submitData.append('imagemCompleta', imagemCompleta);
+      }
+
+      if (imagensRemovidas.length > 0) {
+        submitData.append('imagensRemovidas', JSON.stringify(imagensRemovidas.map(img => img.id)));
+      }
+      if (substituirImagens) {
+        submitData.append('substituirImagens', 'true');
       }
       const response = await fetch(`/api/itens/${id}`, {
         method: 'PUT',
@@ -282,11 +298,29 @@ const EditarItem = () => {
             <div className="flex items-center mb-2">
               <span className="mr-3"><Package className="text-[#0915FF] w-7 h-7" /></span>
               <h2 className="text-black font-extrabold text-lg sm:text-2xl m-0">Imagens do Item</h2>
-              <span className="absolute right-8 top-8 bg-[#0915FF] text-white text-xs sm:text-sm font-semibold rounded-full px-4 py-1">{selectedFiles.length}/5 imagens</span>
+              <span className="absolute right-8 top-8 bg-[#0915FF] text-white text-xs sm:text-sm font-semibold rounded-full px-4 py-1">{selectedFiles.length + imagensExistentes.length}/5 imagens</span>
             </div>
             <div className="w-full">
               <label className="block text-gray-700 font-semibold mb-2 text-sm sm:text-base">Imagens (máx. 5)</label>
               <input type="file" accept="image/*" multiple onChange={handleFileSelect} className="mb-2" />
+              
+              {/* Opção para substituir imagens existentes */}
+              {imagensExistentes.length > 0 && (
+                <div className="mb-3 p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
+                  <label className="flex items-center gap-2 text-sm text-yellow-800 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={substituirImagens}
+                      onChange={(e) => setSubstituirImagens(e.target.checked)}
+                      className="rounded border-yellow-300 text-yellow-600 focus:ring-yellow-500"
+                    />
+                    <span className="font-medium">Substituir imagens existentes</span>
+                  </label>
+                  <p className="text-xs text-yellow-700 mt-1 ml-6">
+                    Quando ativado, as novas imagens substituirão todas as imagens existentes
+                  </p>
+                </div>
+              )}
               {selectedFiles.length > 0 && (
                 <div className="flex gap-2 flex-wrap my-2">
                   {selectedFiles.map((file, idx) => (
@@ -303,13 +337,25 @@ const EditarItem = () => {
                   {imagensExistentes.map((img, idx) => (
                     <div key={idx} className="relative w-[80px] h-[80px]">
                       <img
-                        src={img.url || img}
+                        src={img.caminho || img.url || img}
                         alt={`imagem-existente-${idx}`}
                         className="w-[80px] h-[80px] object-cover rounded-lg border border-[#d1d5db]"
+                        onError={(e) => {
+                          console.error('Erro ao carregar imagem:', img.caminho || img.url || img);
+                          e.target.style.display = 'none';
+                          const placeholder = document.createElement('div');
+                          placeholder.className = 'w-full h-full bg-gray-200 flex items-center justify-center text-gray-500 text-xs';
+                          placeholder.textContent = 'Erro';
+                          e.target.parentNode.appendChild(placeholder);
+                        }}
                       />
                       <button
                         type="button"
-                        onClick={() => setImagensExistentes(prev => prev.filter((_, i) => i !== idx))}
+                        onClick={() => {
+                          const imagemRemovida = imagensExistentes[idx];
+                          setImagensExistentes(prev => prev.filter((_, i) => i !== idx));
+                          setImagensRemovidas(prev => [...prev, imagemRemovida]);
+                        }}
                         className="absolute -top-2 -right-2 bg-[#ef4444] text-white border-none rounded-full w-6 h-6 flex items-center justify-center font-bold text-xs shadow-md"
                         aria-label="Remover imagem existente"
                       >
@@ -320,20 +366,14 @@ const EditarItem = () => {
                 </div>
               )}
             </div>
-            <div className="flex items-center mb-2 mt-4">
-              <span className="mr-3"><FileText className="text-[#0915FF] w-6 h-6" /></span>
-              <h2 className="text-black font-extrabold text-base sm:text-xl m-0">Especificações</h2>
-            </div>
-            <div className="w-full flex flex-col gap-2 sm:gap-3">
-              {especificacoes.map((spec, index) => (
-                <div key={index} className="flex items-center gap-2 p-2 bg-[#f9fafb] rounded-lg">
-                  <input type="text" placeholder="Nome da especificação" value={spec.nome} onChange={e => updateEspecificacao(index, 'nome', e.target.value)} className="flex-1 border border-[#d1d5db] rounded-md px-2 py-1 text-sm sm:text-base outline-none" />
-                  <input type="text" placeholder="Valor" value={spec.valor} onChange={e => updateEspecificacao(index, 'valor', e.target.value)} className="flex-1 border border-[#d1d5db] rounded-md px-2 py-1 text-sm sm:text-base outline-none" />
-                  <button type="button" onClick={() => removeEspecificacao(index)} className="text-[#ef4444] bg-none border-none cursor-pointer p-1"><X className="w-5 h-5" /></button>
-                </div>
-              ))}
-              <button type="button" onClick={addEspecificacao} className="flex items-center justify-center gap-2 bg-[#0915FF] text-white font-semibold rounded-lg py-2 sm:py-3 w-full text-sm sm:text-base mt-2"><Plus className="w-4 h-4" />Adicionar Especificação</button>
-            </div>
+            
+                        {/* Itens Compostos */}
+            <ItensCompostos
+              itemId={id}
+              isEditing={true}
+              onImagemCompletaChange={setImagemCompleta}
+              imagensCompostas={item?.imagensCompostas || []}
+            />
           </div>
           {/* Linha de ações logo abaixo do card de imagens */}
           <div className="flex w-full justify-between items-center mt-4 px-1">

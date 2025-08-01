@@ -85,6 +85,8 @@ const { uploadToS3 } = require('./s3Upload');
 const vision = require('@google-cloud/vision');
 const { detectLabelsFromS3 } = require('./rekognition');
 const AWS = require('aws-sdk');
+const https = require('https');
+const http = require('http');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -115,7 +117,10 @@ app.use((req, res, next) => {
 });
 
 // Middleware
-app.use(cors());
+app.use(cors({
+  origin: ['http://localhost:3000', 'http://localhost:5000'],
+  credentials: true
+}));
 app.use(express.json());
 app.use('/uploads', express.static('uploads'));
 app.use(express.static(path.join(__dirname, '../client/build')));
@@ -603,10 +608,47 @@ app.get('/api/itens', (req, res) => {
   });
 });
 
+// Rota de proxy para imagens do Cloudflare R2
+app.get('/api/imagem/:filename(*)', (req, res) => {
+  const filename = decodeURIComponent(req.params.filename);
+  
+  console.log('Solicitando imagem:', filename);
+  
+  // Configurar o cliente S3 para R2
+  const s3Client = new AWS.S3({
+    endpoint: process.env.R2_ENDPOINT,
+    accessKeyId: process.env.R2_ACCESS_KEY,
+    secretAccessKey: process.env.R2_SECRET_KEY,
+    region: 'auto',
+    signatureVersion: 'v4'
+  });
+  
+  const params = {
+    Bucket: process.env.R2_BUCKET,
+    Key: filename
+  };
+  
+  s3Client.getObject(params, (err, data) => {
+    if (err) {
+      console.error('Erro ao buscar imagem do R2:', err);
+      return res.status(404).json({ error: 'Imagem não encontrada' });
+    }
+    
+    // Determinar o tipo de conteúdo
+    const contentType = data.ContentType || 'image/jpeg';
+    
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Cache-Control', 'public, max-age=31536000');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Content-Length', data.ContentLength);
+    
+    res.send(data.Body);
+  });
+});
+
 // Buscar item por ID
 app.get('/api/itens/:id', (req, res) => {
   const itemId = req.params.id;
-  
   // Buscar item
   pool.query('SELECT * FROM itens WHERE id = $1', [itemId], (err, result) => {
     if (err) {
@@ -615,35 +657,82 @@ app.get('/api/itens/:id', (req, res) => {
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Item não encontrado' });
     }
-    
-    // Buscar imagens
-    pool.query('SELECT * FROM imagens_itens WHERE item_id = $1', [itemId], (err, imagensResult) => {
+    // Buscar imagens (normais e de itens compostos)
+    pool.query('SELECT * FROM imagens_itens WHERE item_id = $1 ORDER BY is_completo ASC', [itemId], (err, imagensResult) => {
       if (err) {
         return res.status(500).json({ error: err.message });
       }
-      
-      // Buscar especificações
-      pool.query('SELECT * FROM especificacoes WHERE item_id = $1', [itemId], (err, especificacoesResult) => {
+      // Buscar armazéns
+      pool.query('SELECT armazem, quantidade FROM armazens_item WHERE item_id = $1', [itemId], (err, armazensResult) => {
         if (err) {
           return res.status(500).json({ error: err.message });
         }
-        // Buscar armazéns
-        pool.query('SELECT armazem, quantidade FROM armazens_item WHERE item_id = $1', [itemId], (err, armazensResult) => {
+        // Detecção automática COMPLETAMENTE DESABILITADA para evitar duplicação
+        const codigo = result.rows[0].codigo;
+        console.log(`🔒 Detecção automática DESABILITADA para item ${codigo}. Imagens existentes: ${imagensResult.rows.length}`);
+        if (imagensResult.rows.length > 0) {
+          console.log('📋 Imagens existentes no banco:');
+          imagensResult.rows.forEach((img, index) => {
+            console.log(`   ${index + 1}. ID: ${img.id}, Nome: ${img.nome_arquivo}, Caminho: ${img.caminho}`);
+          });
+        }
+        const imagensProcessadas = imagensResult.rows.map(img => {
+          let caminhoFinal;
+          if (img.caminho.startsWith('/api/imagem/')) {
+            caminhoFinal = img.caminho;
+          } else if (img.caminho.startsWith('http')) {
+            if (img.caminho.includes('r2.cloudflarestorage.com')) {
+              const urlParts = img.caminho.split('/');
+              const filename = decodeURIComponent(urlParts[urlParts.length - 1]);
+              caminhoFinal = `/api/imagem/${encodeURIComponent(filename)}`;
+            } else {
+              caminhoFinal = img.caminho;
+            }
+          } else {
+            caminhoFinal = `/api/imagem/${encodeURIComponent(img.caminho)}`;
+          }
+          console.log('Processando imagem:', {
+            id: img.id,
+            caminhoOriginal: img.caminho,
+            caminhoFinal: caminhoFinal,
+            nome_arquivo: img.nome_arquivo,
+            is_completo: img.is_completo
+          });
+          return {
+            id: img.id,
+            caminho: caminhoFinal,
+            nome_arquivo: img.nome_arquivo,
+            tipo: img.tipo,
+            is_completo: img.is_completo || false
+          };
+        });
+
+        // Separar imagens normais das imagens de itens compostos
+        const imagensNormais = imagensProcessadas.filter(img => !img.is_completo);
+        const imagensCompostas = imagensProcessadas.filter(img => img.is_completo);
+        // Buscar componentes do item
+        pool.query(`
+          SELECT 
+            ic.id,
+            ic.quantidade_componente,
+            i.id as item_id,
+            i.codigo,
+            i.descricao,
+            i.unidadearmazenamento
+          FROM itens_compostos ic
+          JOIN itens i ON ic.item_componente_id = i.id
+          WHERE ic.item_principal_id = $1
+          ORDER BY i.codigo
+        `, [itemId], (err, componentesResult) => {
           if (err) {
             return res.status(500).json({ error: err.message });
           }
           res.json({
             ...result.rows[0],
-            imagens: imagensResult.rows.map(img => ({
-              id: img.id,
-              caminho: img.caminho.startsWith('http')
-                ? img.caminho
-                : `https://${process.env.R2_BUCKET}.r2.cloudflarestorage.com/${img.caminho}`,
-              nome_arquivo: img.nome_arquivo,
-              tipo: img.tipo
-            })),
-            especificacoes: especificacoesResult.rows,
-            armazens: armazensResult.rows || []
+            imagens: imagensNormais,
+            imagensCompostas: imagensCompostas,
+            armazens: armazensResult.rows || [],
+            componentes: componentesResult.rows
           });
         });
       });
@@ -652,7 +741,10 @@ app.get('/api/itens/:id', (req, res) => {
 });
 
 // Cadastrar novo item (protegido)
-app.post('/api/itens', authenticateToken, upload.array('imagens', 10), (req, res) => {
+app.post('/api/itens', authenticateToken, upload.fields([
+  { name: 'imagens', maxCount: 10 },
+  { name: 'imagemCompleta', maxCount: 1 }
+]), (req, res) => {
   const {
     nome,
     descricao,
@@ -661,8 +753,7 @@ app.post('/api/itens', authenticateToken, upload.array('imagens', 10), (req, res
     preco,
     quantidade,
     localizacao,
-    observacoes,
-    especificacoes
+    observacoes
   } = req.body;
 
   // Validações obrigatórias
@@ -733,26 +824,51 @@ app.post('/api/itens', authenticateToken, upload.array('imagens', 10), (req, res
         const itemId = result.rows[0].id;
 
         // Salvar imagens no AWS S3
-        if (req.files && req.files.length > 0) {
-          const imagensPromises = req.files.map(async (file) => {
+        console.log('🔄 === INÍCIO DO UPLOAD DE IMAGENS (CADASTRO) ===');
+        console.log('req.files:', req.files);
+        console.log('Arquivos para upload no cadastro:', req.files ? Object.keys(req.files).length : 0);
+        
+        // Processar imagens normais
+        const imagensNormais = req.files.imagens || [];
+        if (imagensNormais.length > 0) {
+          imagensNormais.forEach((file, index) => {
+            console.log(`   ${index + 1}. ${file.originalname} (${file.mimetype})`);
+          });
+          
+          const imagensPromises = imagensNormais.map(async (file) => {
             try {
-              // Upload para AWS S3
+              // Buscar o código do item para usar no nome do arquivo
+              const codigoResult = await pool.query('SELECT codigo FROM itens WHERE id = $1', [itemId]);
+              const codigo = codigoResult.rows[0]?.codigo || itemId;
+              
+              // Upload para AWS S3 com nome baseado no código
+              console.log(`📤 Upload para R2: ${file.originalname}`);
               const s3Result = await uploadToS3(
                 file.path,
-                `${itemId}_${Date.now()}_${file.originalname}`,
+                `${codigo}_${Date.now()}_${file.originalname}`,
                 file.mimetype
               );
+              console.log(`✅ Upload concluído: ${s3Result.url}`);
+              
               // Salvar informações no banco
+              console.log(`💾 Salvando imagem no banco (cadastro): ${file.originalname}`);
               return new Promise((resolve, reject) => {
                 pool.query(
                   `INSERT INTO imagens_itens (item_id, nome_arquivo, caminho, tipo)
-                   VALUES ($1, $2, $3, $4)`,
+                   VALUES ($1, $2, $3, $4) RETURNING id`,
                   [itemId, file.originalname, s3Result.url, file.mimetype],
-                  (err) => {
+                  (err, result) => {
                     if (err) reject(err);
                     else {
+                      console.log(`✅ Imagem salva no banco com ID: ${result.rows[0].id}`);
                       // Remover arquivo local após upload
-                      fs.unlink(file.path, (unlinkErr) => {});
+                      fs.unlink(file.path, (unlinkErr) => {
+                        if (unlinkErr) {
+                          console.error('Erro ao remover arquivo local:', unlinkErr);
+                        } else {
+                          console.log(`🗑️  Arquivo local removido: ${file.path}`);
+                        }
+                      });
                       resolve();
                     }
                   }
@@ -764,44 +880,51 @@ app.post('/api/itens', authenticateToken, upload.array('imagens', 10), (req, res
             }
           });
 
-          Promise.all(imagensPromises).then(() => {
-            // Salvar especificações
-            if (especificacoes) {
+          Promise.all(imagensPromises).then(async () => {
+            // Verificar total de imagens após upload
+            const totalImagens = await pool.query('SELECT COUNT(*) as total FROM imagens_itens WHERE item_id = $1', [itemId]);
+            console.log(`📊 Total de imagens no item ${itemId} após cadastro: ${totalImagens.rows[0].total}`);
+            console.log('🔄 === FIM DO UPLOAD DE IMAGENS (CADASTRO) ===');
+            
+            // Processar imagem do item completo se existir
+            if (req.files && req.files.find(f => f.fieldname === 'imagemCompleta')) {
+              const imagemCompleta = req.files.find(f => f.fieldname === 'imagemCompleta');
               try {
-                const especArray = JSON.parse(especificacoes);
-                const especPromises = especArray.map(espec => {
-                  return new Promise((resolve, reject) => {
-                    pool.query(`
-                      INSERT INTO especificacoes (item_id, nome_especificacao, valor, obrigatorio)
-                      VALUES ($1, $2, $3, $4)
-                    `, [itemId, espec.nome, espec.valor, espec.obrigatorio ? 1 : 0], (err) => {
-                      if (err) reject(err);
-                      else resolve();
-                    });
-                  });
+                console.log(`📤 Upload da imagem do item completo: ${imagemCompleta.originalname}`);
+                const s3Result = await uploadToS3(
+                  imagemCompleta.path,
+                  `IC_${codigo}_${Date.now()}_${imagemCompleta.originalname}`,
+                  imagemCompleta.mimetype
+                );
+                console.log(`✅ Upload da imagem completa concluído: ${s3Result.url}`);
+                
+                // Salvar no banco com flag especial
+                await pool.query(
+                  `INSERT INTO imagens_itens (item_id, nome_arquivo, caminho, tipo, is_completo)
+                   VALUES ($1, $2, $3, $4, $5)`,
+                  [itemId, imagemCompleta.originalname, s3Result.url, imagemCompleta.mimetype, true]
+                );
+                
+                // Remover arquivo local
+                fs.unlink(imagemCompleta.path, (err) => {
+                  if (err) console.error('Erro ao remover arquivo local da imagem completa:', err);
                 });
-
-                Promise.all(especPromises).then(() => {
-                  res.status(201).json({ 
-                    message: 'Item cadastrado com sucesso',
-                    itemId: itemId 
-                  });
-                }).catch(err => {
-                  res.status(500).json({ error: err.message });
-                });
-              } catch (err) {
-                res.status(400).json({ error: 'Formato de especificações inválido' });
+              } catch (error) {
+                console.error('Erro no upload da imagem completa:', error);
               }
-            } else {
-              res.status(201).json({ 
-                message: 'Item cadastrado com sucesso',
-                itemId: itemId 
-              });
             }
+            
+            res.status(201).json({ 
+              message: 'Item cadastrado com sucesso',
+              itemId: itemId 
+            });
           }).catch(err => {
             res.status(500).json({ error: err.message });
           });
         } else {
+          console.log('ℹ️  Nenhuma imagem enviada no cadastro');
+          console.log('🔄 === FIM DO UPLOAD DE IMAGENS (CADASTRO) ===');
+          
           res.status(201).json({ 
             message: 'Item cadastrado com sucesso',
             itemId: itemId 
@@ -939,7 +1062,10 @@ app.get('/api/buscar', (req, res) => {
 });
 
 // Atualizar item (protegido)
-app.put('/api/itens/:id', authenticateToken, upload.array('imagens', 10), (req, res) => {
+app.put('/api/itens/:id', authenticateToken, upload.fields([
+  { name: 'imagens', maxCount: 10 },
+  { name: 'imagemCompleta', maxCount: 1 }
+]), (req, res) => {
   // Logar o corpo da requisição para depuração
   console.log('Dados recebidos na edição de item:', req.body);
   // Verificar permissão para editar
@@ -998,97 +1124,169 @@ app.put('/api/itens/:id', authenticateToken, upload.array('imagens', 10), (req, 
       return res.status(404).json({ error: 'Item não encontrado' });
     }
 
-    // Remover imagens marcadas para exclusão
-    if (req.body.imagensRemovidas) {
+    // Verificar se deve substituir todas as imagens existentes
+    const substituirImagens = req.body.substituirImagens === 'true';
+    
+    if (substituirImagens) {
+      console.log('🔄 Substituindo todas as imagens existentes do item:', itemId);
       try {
-        const imagensRemovidas = JSON.parse(req.body.imagensRemovidas);
-        for (const imgId of imagensRemovidas) {
-          // Buscar caminho da imagem
-          const { rows } = await pool.query('SELECT caminho FROM imagens_itens WHERE id = $1 AND item_id = $2', [imgId, itemId]);
-          if (rows.length > 0) {
-            let key = rows[0].caminho;
-            // Se for URL completa, extrair apenas o nome do arquivo
-            if (key.startsWith('http')) {
-              const url = new URL(key);
-              key = decodeURIComponent(url.pathname.replace(/^\//, ''));
-            }
-            await deleteFromS3(key);
-            await pool.query('DELETE FROM imagens_itens WHERE id = $1', [imgId]);
+        // Buscar todas as imagens existentes do item
+        const { rows: imagensExistentes } = await pool.query('SELECT id, caminho, nome_arquivo FROM imagens_itens WHERE item_id = $1', [itemId]);
+        
+        // Deletar todas as imagens existentes do R2 e do banco
+        for (const img of imagensExistentes) {
+          let key = img.caminho;
+          // Se for URL do proxy, extrair o nome do arquivo
+          if (key.startsWith('/api/imagem/')) {
+            key = decodeURIComponent(key.replace('/api/imagem/', ''));
+          } else if (key.startsWith('http')) {
+            // Se for URL completa do R2, extrair apenas o nome do arquivo
+            const urlParts = key.split('/');
+            key = decodeURIComponent(urlParts[urlParts.length - 1]);
+          } else {
+            // Se for apenas o nome do arquivo
+            key = img.nome_arquivo || key;
           }
+          console.log('Tentando deletar imagem do R2 (substituição):', key);
+          await deleteFromS3(key);
         }
+        
+        // Deletar todas as imagens do banco
+        await pool.query('DELETE FROM imagens_itens WHERE item_id = $1', [itemId]);
+        console.log(`✅ ${imagensExistentes.length} imagens existentes removidas para substituição`);
       } catch (err) {
-        return res.status(500).json({ error: 'Erro ao remover imagens: ' + err.message });
+        console.error('Erro ao substituir imagens:', err);
+        return res.status(500).json({ error: 'Erro ao substituir imagens: ' + err.message });
+      }
+    } else {
+      // Remover imagens marcadas para exclusão (comportamento normal)
+      if (req.body.imagensRemovidas) {
+        try {
+          const imagensRemovidas = JSON.parse(req.body.imagensRemovidas);
+          for (const imgId of imagensRemovidas) {
+            // Buscar caminho da imagem
+            const { rows } = await pool.query('SELECT caminho, nome_arquivo FROM imagens_itens WHERE id = $1 AND item_id = $2', [imgId, itemId]);
+            if (rows.length > 0) {
+              let key = rows[0].caminho;
+              // Se for URL do proxy, extrair o nome do arquivo
+              if (key.startsWith('/api/imagem/')) {
+                key = decodeURIComponent(key.replace('/api/imagem/', ''));
+              } else if (key.startsWith('http')) {
+                // Se for URL completa do R2, extrair apenas o nome do arquivo
+                const urlParts = key.split('/');
+                key = decodeURIComponent(urlParts[urlParts.length - 1]);
+              } else {
+                // Se for apenas o nome do arquivo
+                key = rows[0].nome_arquivo || key;
+              }
+              console.log('Tentando deletar imagem do R2:', key);
+              await deleteFromS3(key);
+              await pool.query('DELETE FROM imagens_itens WHERE id = $1', [imgId]);
+            }
+          }
+        } catch (err) {
+          return res.status(500).json({ error: 'Erro ao remover imagens: ' + err.message });
+        }
       }
     }
 
     // Salvar novas imagens, se enviadas
+    console.log('🔄 === INÍCIO DO UPLOAD DE IMAGENS ===');
     console.log('req.files:', req.files);
     console.log('req.file:', req.file);
-    let arquivos = [];
-    if (req.files && req.files.length > 0) {
-      arquivos = req.files;
-    } else if (req.file) {
-      arquivos = [req.file];
+    console.log('req.body.substituirImagens:', req.body.substituirImagens);
+    console.log('req.body.imagensRemovidas:', req.body.imagensRemovidas);
+    
+    // Processar imagens normais
+    const imagensNormais = req.files?.imagens || [];
+    const imagemCompleta = req.files?.imagemCompleta?.[0] || null;
+    
+    console.log('📁 Imagens normais para upload:', imagensNormais.length);
+    imagensNormais.forEach((file, index) => {
+      console.log(`   ${index + 1}. ${file.originalname} (${file.mimetype})`);
+    });
+    
+    if (imagemCompleta) {
+      console.log('📁 Imagem completa para upload:', imagemCompleta.originalname);
     }
-    console.log('Arquivos para upload:', arquivos.length);
-    if (arquivos.length > 0) {
-      try {
-        const imagensPromises = arquivos.map(async (file) => {
-          // Upload para AWS S3
-          const s3Result = await uploadToS3(
-            file.path,
-            `${itemId}_${Date.now()}_${file.originalname}`,
-            file.mimetype
-          );
-          // Salvar informações no banco
-          await pool.query(
-            `INSERT INTO imagens_itens (item_id, nome_arquivo, caminho, tipo)
-             VALUES ($1, $2, $3, $4)`,
-            [itemId, file.originalname, s3Result.url, file.mimetype]
-          );
-          // Remover arquivo local após upload
-          fs.unlink(file.path, (unlinkErr) => {});
-        });
-        await Promise.all(imagensPromises);
+    
+    if (imagensNormais.length > 0 || imagemCompleta) {
+              try {
+          // Processar imagens normais
+          if (imagensNormais.length > 0) {
+            const imagensPromises = imagensNormais.map(async (file) => {
+              // Buscar o código do item para usar no nome do arquivo
+              const codigoResult = await pool.query('SELECT codigo FROM itens WHERE id = $1', [itemId]);
+              const codigo = codigoResult.rows[0]?.codigo || itemId;
+              
+              // Upload para AWS S3 com nome baseado no código
+              const s3Result = await uploadToS3(
+                file.path,
+                `${codigo}_${Date.now()}_${file.originalname}`,
+                file.mimetype
+              );
+              // Salvar informações no banco
+              console.log(`💾 Salvando imagem normal no banco: ${file.originalname}`);
+              const insertResult = await pool.query(
+                `INSERT INTO imagens_itens (item_id, nome_arquivo, caminho, tipo, is_completo)
+                 VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+                [itemId, file.originalname, s3Result.url, file.mimetype, false]
+              );
+              console.log(`✅ Imagem normal salva no banco com ID: ${insertResult.rows[0].id}`);
+              
+              // Remover arquivo local após upload
+              fs.unlink(file.path, (unlinkErr) => {
+                if (unlinkErr) {
+                  console.error('Erro ao remover arquivo local:', unlinkErr);
+                } else {
+                  console.log(`🗑️  Arquivo local removido: ${file.path}`);
+                }
+              });
+            });
+            await Promise.all(imagensPromises);
+          }
+          
+          // Processar imagem completa se existir
+          if (imagemCompleta) {
+            const codigoResult = await pool.query('SELECT codigo FROM itens WHERE id = $1', [itemId]);
+            const codigo = codigoResult.rows[0]?.codigo || itemId;
+            
+            // Upload para AWS S3 com nome baseado no código
+            const s3Result = await uploadToS3(
+              imagemCompleta.path,
+              `IC_${codigo}_${Date.now()}_${imagemCompleta.originalname}`,
+              imagemCompleta.mimetype
+            );
+            // Salvar informações no banco
+            console.log(`💾 Salvando imagem completa no banco: ${imagemCompleta.originalname}`);
+            const insertResult = await pool.query(
+              `INSERT INTO imagens_itens (item_id, nome_arquivo, caminho, tipo, is_completo)
+               VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+              [itemId, imagemCompleta.originalname, s3Result.url, imagemCompleta.mimetype, true]
+            );
+            console.log(`✅ Imagem completa salva no banco com ID: ${insertResult.rows[0].id}`);
+            
+            // Remover arquivo local após upload
+            fs.unlink(imagemCompleta.path, (unlinkErr) => {
+              if (unlinkErr) {
+                console.error('Erro ao remover arquivo local:', unlinkErr);
+              } else {
+                console.log(`🗑️  Arquivo local removido: ${imagemCompleta.path}`);
+              }
+            });
+          }
+        
+        // Verificar total de imagens após upload
+        const totalImagens = await pool.query('SELECT COUNT(*) as total FROM imagens_itens WHERE item_id = $1', [itemId]);
+        console.log(`📊 Total de imagens no item ${itemId} após upload: ${totalImagens.rows[0].total}`);
+        console.log('🔄 === FIM DO UPLOAD DE IMAGENS ===');
       } catch (err) {
         console.error('Erro ao salvar imagens:', err);
         return res.status(500).json({ error: 'Erro ao salvar imagens: ' + err.message });
       }
     }
 
-    // Atualizar especificações se enviadas
-    if (especificacoes) {
-      try {
-        const especArray = JSON.parse(especificacoes);
-        // Apagar especificações antigas
-        pool.query('DELETE FROM especificacoes WHERE item_id = $1', [itemId], (err) => {
-          if (err) {
-            return res.status(500).json({ error: 'Erro ao apagar especificações antigas.' });
-          }
-          // Inserir novas especificações
-          const especPromises = especArray.map(espec => {
-            return new Promise((resolve, reject) => {
-              pool.query(`
-                INSERT INTO especificacoes (item_id, nome_especificacao, valor, obrigatorio)
-                VALUES ($1, $2, $3, $4)
-              `, [itemId, espec.nome, espec.valor, espec.obrigatorio ? 1 : 0], (err) => {
-                if (err) reject(err);
-                else resolve();
-              });
-            });
-          });
-          Promise.all(especPromises).then(() => {
-            res.json({ message: 'Item atualizado com sucesso' });
-          }).catch(err => {
-            res.status(500).json({ error: err.message });
-          });
-        });
-      } catch (err) {
-        return res.status(400).json({ error: 'Formato de especificações inválido' });
-      }
-    } else {
-      res.json({ message: 'Item atualizado com sucesso' });
-    }
+    res.json({ message: 'Item atualizado com sucesso' });
   });
 });
 
@@ -1097,15 +1295,23 @@ async function deleteFromS3(key) {
   const s3 = new AWS.S3({
     accessKeyId: process.env.R2_ACCESS_KEY,
     secretAccessKey: process.env.R2_SECRET_KEY,
-    endpoint: process.env.R2_ENDPOINT
+    endpoint: process.env.R2_ENDPOINT,
+    region: 'auto',
+    signatureVersion: 'v4',
+    s3ForcePathStyle: true
   });
   return new Promise((resolve, reject) => {
     s3.deleteObject({
       Bucket: process.env.R2_BUCKET,
       Key: key
     }, (err, data) => {
-      if (err) reject(err);
-      else resolve(data);
+      if (err) {
+        console.error('Erro ao deletar do R2:', err);
+        reject(err);
+      } else {
+        console.log('Imagem deletada do R2 com sucesso:', key);
+        resolve(data);
+      }
     });
   });
 }
@@ -1132,7 +1338,7 @@ app.delete('/api/itens/:id', authenticateToken, async (req, res) => {
     }
     // Excluir registros do banco
     await pool.query('DELETE FROM imagens_itens WHERE item_id = $1', [itemId]);
-    await pool.query('DELETE FROM especificacoes WHERE item_id = $1', [itemId]);
+
     await pool.query('DELETE FROM armazens_item WHERE item_id = $1', [itemId]);
     const { rowCount } = await pool.query('DELETE FROM itens WHERE id = $1', [itemId]);
     if (rowCount === 0) {
@@ -1165,18 +1371,12 @@ app.delete('/api/itens', authenticateToken, (req, res) => {
           console.error('Erro ao apagar imagens:', err2.message);
           return res.status(500).json({ error: 'Erro ao apagar imagens.' });
         }
-        pool.query('DELETE FROM especificacoes', [], (err3) => {
-          if (err3) {
-            console.error('Erro ao apagar especificações:', err3.message);
-            return res.status(500).json({ error: 'Erro ao apagar especificações.' });
+        pool.query('DELETE FROM itens', [], (err4) => {
+          if (err4) {
+            console.error('Erro ao apagar itens:', err4.message);
+            return res.status(500).json({ error: 'Erro ao apagar itens.' });
           }
-          pool.query('DELETE FROM itens', [], (err4) => {
-            if (err4) {
-              console.error('Erro ao apagar itens:', err4.message);
-              return res.status(500).json({ error: 'Erro ao apagar itens.' });
-            }
-            res.json({ message: 'Todos os itens foram excluídos com sucesso.' });
-          });
+          res.json({ message: 'Todos os itens foram excluídos com sucesso.' });
         });
       });
     });
@@ -1624,6 +1824,671 @@ app.post('/api/rekognition-labels', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('Erro no Rekognition:', error);
     res.status(500).json({ error: 'Erro ao analisar imagem no Rekognition.' });
+  }
+});
+
+// Rota para importar imagens automaticamente baseadas na nomenclatura do código do item
+app.post('/api/importar-imagens-automaticas', authenticateToken, async (req, res) => {
+  try {
+    const { codigo } = req.body;
+    
+    if (!codigo) {
+      return res.status(400).json({ error: 'Código do item é obrigatório' });
+    }
+
+    // Buscar o item pelo código
+    const itemResult = await pool.query('SELECT id FROM itens WHERE codigo = $1', [codigo]);
+    if (itemResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Item não encontrado com este código' });
+    }
+
+    const itemId = itemResult.rows[0].id;
+    const bucket = process.env.R2_BUCKET;
+    
+    // Configurar cliente S3 para R2
+    const s3Client = new AWS.S3({
+      endpoint: process.env.R2_ENDPOINT,
+      accessKeyId: process.env.R2_ACCESS_KEY,
+      secretAccessKey: process.env.R2_SECRET_KEY,
+      region: 'auto',
+      signatureVersion: 'v4'
+    });
+
+    // Listar objetos no bucket que correspondem ao padrão do código
+    const listParams = {
+      Bucket: bucket,
+      Prefix: `${codigo}_`
+    };
+
+    console.log(`🔍 [IMPORTAÇÃO] Procurando imagens no bucket com prefixo: ${codigo}_`);
+    console.log(`📦 [IMPORTAÇÃO] Bucket: ${bucket}`);
+
+    const listResult = await s3Client.listObjectsV2(listParams).promise();
+    const imagensEncontradas = listResult.Contents || [];
+
+    console.log(`📊 [IMPORTAÇÃO] Total de imagens encontradas no bucket: ${imagensEncontradas.length}`);
+    
+    if (imagensEncontradas.length > 0) {
+      console.log('📋 [IMPORTAÇÃO] Imagens encontradas:');
+      imagensEncontradas.forEach((img, index) => {
+        console.log(`   ${index + 1}. ${img.Key} (${img.Size} bytes)`);
+      });
+    }
+
+    if (imagensEncontradas.length === 0) {
+      console.log(`❌ [IMPORTAÇÃO] Nenhuma imagem encontrada com prefixo: ${codigo}_`);
+      return res.status(404).json({ 
+        error: 'Nenhuma imagem encontrada no bucket com o padrão de nomenclatura',
+        message: `Procurando por imagens com prefixo: ${codigo}_`
+      });
+    }
+
+    let imagensImportadas = 0;
+    let imagensJaExistentes = 0;
+
+    for (const objeto of imagensEncontradas) {
+      const nomeArquivo = objeto.Key;
+      
+      console.log(`🔍 [IMPORTAÇÃO] Processando imagem: ${nomeArquivo}`);
+      
+      // Verificar se a imagem já está cadastrada no banco para QUALQUER item
+      const existingImage = await pool.query(
+        'SELECT id, item_id FROM imagens_itens WHERE nome_arquivo = $1',
+        [nomeArquivo]
+      );
+
+      if (existingImage.rows.length > 0) {
+        // Buscar informações do item que já possui esta imagem
+        const itemExistente = await pool.query(
+          'SELECT codigo, descricao FROM itens WHERE id = $1',
+          [existingImage.rows[0].item_id]
+        );
+        
+        const itemInfo = itemExistente.rows[0];
+        console.log(`⚠️  [IMPORTAÇÃO] Imagem ${nomeArquivo} já está relacionada ao item ${itemInfo.codigo} (${itemInfo.descricao})`);
+        imagensJaExistentes++;
+        continue;
+      }
+
+      console.log(`✅ [IMPORTAÇÃO] Imagem ${nomeArquivo} não encontrada no banco, importando...`);
+
+      // Determinar o tipo MIME baseado na extensão
+      const extensao = nomeArquivo.split('.').pop().toLowerCase();
+      let tipoMime = 'image/jpeg';
+      if (extensao === 'png') tipoMime = 'image/png';
+      else if (extensao === 'gif') tipoMime = 'image/gif';
+      else if (extensao === 'webp') tipoMime = 'image/webp';
+
+      // Construir URL do proxy para a imagem
+      const urlImagem = `/api/imagem/${encodeURIComponent(nomeArquivo)}`;
+
+      console.log(`📝 [IMPORTAÇÃO] Salvando no banco: itemId=${itemId}, nomeArquivo=${nomeArquivo}, urlImagem=${urlImagem}, tipoMime=${tipoMime}`);
+
+      // Inserir no banco de dados
+      await pool.query(
+        'INSERT INTO imagens_itens (item_id, nome_arquivo, caminho, tipo) VALUES ($1, $2, $3, $4)',
+        [itemId, nomeArquivo, urlImagem, tipoMime]
+      );
+
+      imagensImportadas++;
+      console.log(`✅ [IMPORTAÇÃO] Imagem ${nomeArquivo} importada com sucesso!`);
+    }
+
+    res.json({
+      message: 'Importação concluída',
+      totalEncontradas: imagensEncontradas.length,
+      imagensImportadas,
+      imagensJaExistentes,
+      codigo,
+      itemId
+    });
+
+  } catch (error) {
+    console.error('Erro na importação automática:', error);
+    res.status(500).json({ 
+      error: 'Erro ao importar imagens automaticamente',
+      details: error.message 
+    });
+  }
+});
+
+// Rota para listar imagens disponíveis no bucket para um código específico
+app.get('/api/imagens-bucket/:codigo', authenticateToken, async (req, res) => {
+  try {
+    const { codigo } = req.params;
+    
+    if (!codigo) {
+      return res.status(400).json({ error: 'Código do item é obrigatório' });
+    }
+
+    const bucket = process.env.R2_BUCKET;
+    
+    // Configurar cliente S3 para R2
+    const s3Client = new AWS.S3({
+      endpoint: process.env.R2_ENDPOINT,
+      accessKeyId: process.env.R2_ACCESS_KEY,
+      secretAccessKey: process.env.R2_SECRET_KEY,
+      region: 'auto',
+      signatureVersion: 'v4'
+    });
+
+    // Listar objetos no bucket que correspondem ao padrão do código
+    const listParams = {
+      Bucket: bucket,
+      Prefix: `${codigo}_`
+    };
+
+    const listResult = await s3Client.listObjectsV2(listParams).promise();
+    const imagensEncontradas = listResult.Contents || [];
+
+    // Buscar o item para verificar se existe
+    const itemResult = await pool.query('SELECT id, descricao FROM itens WHERE codigo = $1', [codigo]);
+    const itemExiste = itemResult.rows.length > 0;
+    const itemInfo = itemExiste ? itemResult.rows[0] : null;
+
+    // Verificar quais imagens já estão cadastradas no banco para QUALQUER item
+    const imagensResult = await pool.query(`
+      SELECT ii.nome_arquivo, ii.item_id, i.codigo, i.descricao 
+      FROM imagens_itens ii 
+      JOIN itens i ON ii.item_id = i.id 
+      WHERE ii.nome_arquivo = ANY($1)
+    `, [imagensEncontradas.map(obj => obj.Key)]);
+
+    const imagensCadastradas = {};
+    imagensResult.rows.forEach(row => {
+      imagensCadastradas[row.nome_arquivo] = {
+        itemId: row.item_id,
+        codigo: row.codigo,
+        descricao: row.descricao
+      };
+    });
+
+    const imagensComStatus = imagensEncontradas.map(objeto => {
+      const jaCadastrada = imagensCadastradas[objeto.Key];
+      return {
+        nome: objeto.Key,
+        tamanho: objeto.Size,
+        dataModificacao: objeto.LastModified,
+        jaCadastrada: !!jaCadastrada,
+        itemRelacionado: jaCadastrada ? {
+          codigo: jaCadastrada.codigo,
+          descricao: jaCadastrada.descricao
+        } : null
+      };
+    });
+
+    res.json({
+      codigo,
+      itemExiste,
+      itemInfo,
+      totalImagens: imagensEncontradas.length,
+      imagens: imagensComStatus
+    });
+
+  } catch (error) {
+    console.error('Erro ao listar imagens do bucket:', error);
+    res.status(500).json({ 
+      error: 'Erro ao listar imagens do bucket',
+      details: error.message 
+    });
+  }
+});
+
+// Função para detectar e importar imagens automaticamente
+async function detectarEImportarImagensAutomaticas(itemId, codigo) {
+  try {
+    const bucket = process.env.R2_BUCKET;
+    
+    // Configurar cliente S3 para R2
+    const s3Client = new AWS.S3({
+      endpoint: process.env.R2_ENDPOINT,
+      accessKeyId: process.env.R2_ACCESS_KEY,
+      secretAccessKey: process.env.R2_SECRET_KEY,
+      region: 'auto',
+      signatureVersion: 'v4'
+    });
+
+    // Listar objetos no bucket que correspondem ao padrão do código
+    const listParams = {
+      Bucket: bucket,
+      Prefix: `${codigo}_`
+    };
+
+    console.log(`🔍 Procurando imagens no bucket com prefixo: ${codigo}_`);
+    console.log(`📦 Bucket: ${bucket}`);
+
+    const listResult = await s3Client.listObjectsV2(listParams).promise();
+    const imagensEncontradas = listResult.Contents || [];
+
+    console.log(`📊 Total de imagens encontradas no bucket: ${imagensEncontradas.length}`);
+    
+    if (imagensEncontradas.length > 0) {
+      console.log('📋 Imagens encontradas:');
+      imagensEncontradas.forEach((img, index) => {
+        console.log(`   ${index + 1}. ${img.Key} (${img.Size} bytes)`);
+      });
+    }
+
+    if (imagensEncontradas.length === 0) {
+      console.log(`❌ Nenhuma imagem encontrada com prefixo: ${codigo}_`);
+      return { importadas: 0, jaExistentes: 0 };
+    }
+
+    let imagensImportadas = 0;
+    let imagensJaExistentes = 0;
+
+    for (const objeto of imagensEncontradas) {
+      const nomeArquivo = objeto.Key;
+      
+      console.log(`🔍 Processando imagem: ${nomeArquivo}`);
+      
+      // Verificar se a imagem já está cadastrada no banco para QUALQUER item
+      const existingImage = await pool.query(
+        'SELECT id, item_id FROM imagens_itens WHERE nome_arquivo = $1',
+        [nomeArquivo]
+      );
+
+      if (existingImage.rows.length > 0) {
+        // Buscar informações do item que já possui esta imagem
+        const itemExistente = await pool.query(
+          'SELECT codigo, descricao FROM itens WHERE id = $1',
+          [existingImage.rows[0].item_id]
+        );
+        
+        const itemInfo = itemExistente.rows[0];
+        console.log(`⚠️  Imagem ${nomeArquivo} já está relacionada ao item ${itemInfo.codigo} (${itemInfo.descricao})`);
+        imagensJaExistentes++;
+        continue;
+      }
+
+      console.log(`✅ Imagem ${nomeArquivo} não encontrada no banco, importando...`);
+
+      // Determinar o tipo MIME baseado na extensão
+      const extensao = nomeArquivo.split('.').pop().toLowerCase();
+      let tipoMime = 'image/jpeg';
+      if (extensao === 'png') tipoMime = 'image/png';
+      else if (extensao === 'gif') tipoMime = 'image/gif';
+      else if (extensao === 'webp') tipoMime = 'image/webp';
+
+      // Construir URL do proxy para a imagem
+      const urlImagem = `/api/imagem/${encodeURIComponent(nomeArquivo)}`;
+
+      console.log(`📝 Salvando no banco: itemId=${itemId}, nomeArquivo=${nomeArquivo}, urlImagem=${urlImagem}, tipoMime=${tipoMime}`);
+
+      // Inserir no banco de dados
+      await pool.query(
+        'INSERT INTO imagens_itens (item_id, nome_arquivo, caminho, tipo) VALUES ($1, $2, $3, $4)',
+        [itemId, nomeArquivo, urlImagem, tipoMime]
+      );
+
+      imagensImportadas++;
+      console.log(`✅ Imagem ${nomeArquivo} importada com sucesso!`);
+    }
+
+    return { importadas: imagensImportadas, jaExistentes: imagensJaExistentes };
+  } catch (error) {
+    console.error('Erro na detecção automática de imagens:', error);
+    return { importadas: 0, jaExistentes: 0, erro: error.message };
+  }
+}
+
+// Função para detectar e importar imagens de itens compostos (IC_)
+async function detectarEImportarImagensCompostas(itemId, codigo) {
+  try {
+    const bucket = process.env.R2_BUCKET;
+    
+    // Configurar cliente S3 para R2
+    const s3Client = new AWS.S3({
+      endpoint: process.env.R2_ENDPOINT,
+      accessKeyId: process.env.R2_ACCESS_KEY,
+      secretAccessKey: process.env.R2_SECRET_KEY,
+      region: 'auto',
+      signatureVersion: 'v4'
+    });
+
+    // Listar objetos no bucket que correspondem ao padrão IC_codigo
+    const listParams = {
+      Bucket: bucket,
+      Prefix: `IC_${codigo}_`
+    };
+
+    console.log(`🔍 [COMPOSTO] Procurando imagens no bucket com prefixo: IC_${codigo}_`);
+    console.log(`📦 [COMPOSTO] Bucket: ${bucket}`);
+
+    const listResult = await s3Client.listObjectsV2(listParams).promise();
+    const imagensEncontradas = listResult.Contents || [];
+
+    console.log(`📊 [COMPOSTO] Total de imagens encontradas no bucket: ${imagensEncontradas.length}`);
+    
+    if (imagensEncontradas.length > 0) {
+      console.log('📋 [COMPOSTO] Imagens encontradas:');
+      imagensEncontradas.forEach((img, index) => {
+        console.log(`   ${index + 1}. ${img.Key} (${img.Size} bytes)`);
+      });
+    }
+
+    if (imagensEncontradas.length === 0) {
+      console.log(`❌ [COMPOSTO] Nenhuma imagem encontrada com prefixo: IC_${codigo}_`);
+      return { importadas: 0, jaExistentes: 0 };
+    }
+
+    let imagensImportadas = 0;
+    let imagensJaExistentes = 0;
+
+    for (const objeto of imagensEncontradas) {
+      const nomeArquivo = objeto.Key;
+      
+      console.log(`🔍 [COMPOSTO] Processando imagem: ${nomeArquivo}`);
+      
+      // Verificar se a imagem já está cadastrada no banco para QUALQUER item
+      const existingImage = await pool.query(
+        'SELECT id, item_id FROM imagens_itens WHERE nome_arquivo = $1',
+        [nomeArquivo]
+      );
+
+      if (existingImage.rows.length > 0) {
+        // Buscar informações do item que já possui esta imagem
+        const itemExistente = await pool.query(
+          'SELECT codigo, descricao FROM itens WHERE id = $1',
+          [existingImage.rows[0].item_id]
+        );
+        
+        const itemInfo = itemExistente.rows[0];
+        console.log(`⚠️  [COMPOSTO] Imagem ${nomeArquivo} já está relacionada ao item ${itemInfo.codigo} (${itemInfo.descricao})`);
+        imagensJaExistentes++;
+        continue;
+      }
+
+      console.log(`✅ [COMPOSTO] Imagem ${nomeArquivo} não encontrada no banco, importando...`);
+
+      // Determinar o tipo MIME baseado na extensão
+      const extensao = nomeArquivo.split('.').pop().toLowerCase();
+      let tipoMime = 'image/jpeg';
+      if (extensao === 'png') tipoMime = 'image/png';
+      else if (extensao === 'gif') tipoMime = 'image/gif';
+      else if (extensao === 'webp') tipoMime = 'image/webp';
+
+      // Construir URL do proxy para a imagem
+      const urlImagem = `/api/imagem/${encodeURIComponent(nomeArquivo)}`;
+
+      console.log(`📝 [COMPOSTO] Salvando no banco: itemId=${itemId}, nomeArquivo=${nomeArquivo}, urlImagem=${urlImagem}, tipoMime=${tipoMime}`);
+
+      // Inserir no banco de dados com flag is_completo = true
+      await pool.query(
+        'INSERT INTO imagens_itens (item_id, nome_arquivo, caminho, tipo, is_completo) VALUES ($1, $2, $3, $4, $5)',
+        [itemId, nomeArquivo, urlImagem, tipoMime, true]
+      );
+
+      imagensImportadas++;
+      console.log(`✅ [COMPOSTO] Imagem ${nomeArquivo} importada com sucesso!`);
+    }
+
+    return { importadas: imagensImportadas, jaExistentes: imagensJaExistentes };
+  } catch (error) {
+    console.error('Erro na detecção automática de imagens compostas:', error);
+    return { importadas: 0, jaExistentes: 0, erro: error.message };
+  }
+}
+
+// Rota para forçar detecção automática de imagens para um item específico
+app.post('/api/detectar-imagens/:itemId', authenticateToken, async (req, res) => {
+  try {
+    const itemId = req.params.itemId;
+    
+    // Buscar o item
+    const itemResult = await pool.query('SELECT id, codigo FROM itens WHERE id = $1', [itemId]);
+    if (itemResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Item não encontrado' });
+    }
+    
+    const item = itemResult.rows[0];
+    const resultado = await detectarEImportarImagensAutomaticas(item.id, item.codigo);
+    
+    res.json({
+      message: 'Detecção automática concluída',
+      itemId: item.id,
+      codigo: item.codigo,
+      ...resultado
+    });
+    
+  } catch (error) {
+    console.error('Erro na detecção forçada:', error);
+    res.status(500).json({ 
+      error: 'Erro na detecção automática',
+      details: error.message 
+    });
+  }
+});
+
+// Rota para forçar detecção automática de imagens de itens compostos
+app.post('/api/detectar-imagens-compostas/:itemId', authenticateToken, async (req, res) => {
+  try {
+    const itemId = req.params.itemId;
+    
+    // Buscar o item
+    const itemResult = await pool.query('SELECT id, codigo FROM itens WHERE id = $1', [itemId]);
+    if (itemResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Item não encontrado' });
+    }
+    
+    const item = itemResult.rows[0];
+    const resultado = await detectarEImportarImagensCompostas(item.id, item.codigo);
+    
+    res.json({
+      message: 'Detecção automática de imagens compostas concluída',
+      itemId: item.id,
+      codigo: item.codigo,
+      ...resultado
+    });
+    
+  } catch (error) {
+    console.error('Erro na detecção forçada de imagens compostas:', error);
+    res.status(500).json({ 
+      error: 'Erro na detecção automática de imagens compostas',
+      details: error.message 
+    });
+  }
+});
+
+// ===== ROTAS PARA ITENS COMPOSTOS =====
+
+// Buscar itens para seleção de componentes
+app.get('/api/itens-para-componentes', authenticateToken, async (req, res) => {
+  try {
+    const { rows } = await pool.query(`
+      SELECT id, codigo, descricao, unidadearmazenamento 
+      FROM itens 
+      WHERE ativo = true 
+      ORDER BY codigo
+    `);
+    
+    res.json(rows);
+  } catch (error) {
+    console.error('Erro ao buscar itens para componentes:', error);
+    res.status(500).json({ error: 'Erro ao buscar itens' });
+  }
+});
+
+// Buscar componentes de um item
+app.get('/api/itens/:id/componentes', authenticateToken, async (req, res) => {
+  try {
+    const itemId = req.params.id;
+    
+    const { rows } = await pool.query(`
+      SELECT 
+        ic.id,
+        ic.quantidade_componente,
+        i.id as item_id,
+        i.codigo,
+        i.descricao,
+        i.unidadearmazenamento
+      FROM itens_compostos ic
+      JOIN itens i ON ic.item_componente_id = i.id
+      WHERE ic.item_principal_id = $1
+      ORDER BY i.codigo
+    `, [itemId]);
+    
+    res.json(rows);
+  } catch (error) {
+    console.error('Erro ao buscar componentes:', error);
+    res.status(500).json({ error: 'Erro ao buscar componentes' });
+  }
+});
+
+// Adicionar componente a um item
+app.post('/api/itens/:id/componentes', authenticateToken, async (req, res) => {
+  try {
+    const itemId = req.params.id;
+    const { item_componente_id, quantidade_componente = 1 } = req.body;
+    
+         if (!item_componente_id) {
+       return res.status(400).json({ error: 'ID do item é obrigatório' });
+     }
+    
+         // Verificar se não está tentando adicionar o próprio item como componente
+     if (parseInt(itemId) === parseInt(item_componente_id)) {
+       return res.status(400).json({ error: 'Um item não pode fazer parte da sua própria composição' });
+     }
+    
+    // Verificar se já existe essa relação
+    const existing = await pool.query(
+      'SELECT id FROM itens_compostos WHERE item_principal_id = $1 AND item_componente_id = $2',
+      [itemId, item_componente_id]
+    );
+    
+         if (existing.rows.length > 0) {
+       return res.status(400).json({ error: 'Este item já foi adicionado à composição' });
+     }
+    
+         // Inserir item na composição
+     await pool.query(
+       'INSERT INTO itens_compostos (item_principal_id, item_componente_id, quantidade_componente) VALUES ($1, $2, $3)',
+       [itemId, item_componente_id, quantidade_componente]
+     );
+     
+     res.json({ message: 'Item adicionado à composição com sucesso' });
+  } catch (error) {
+    console.error('Erro ao adicionar componente:', error);
+    res.status(500).json({ error: 'Erro ao adicionar componente' });
+  }
+});
+
+// Remover componente de um item
+app.delete('/api/itens/:id/componentes/:componenteId', authenticateToken, async (req, res) => {
+  try {
+    const itemId = req.params.id;
+    const componenteId = req.params.componenteId;
+    
+    const { rowCount } = await pool.query(
+      'DELETE FROM itens_compostos WHERE item_principal_id = $1 AND id = $2',
+      [itemId, componenteId]
+    );
+    
+         if (rowCount === 0) {
+       return res.status(404).json({ error: 'Item não encontrado na composição' });
+     }
+     
+     res.json({ message: 'Item removido da composição com sucesso' });
+  } catch (error) {
+    console.error('Erro ao remover componente:', error);
+    res.status(500).json({ error: 'Erro ao remover componente' });
+  }
+});
+
+// Atualizar quantidade de um componente
+app.put('/api/itens/:id/componentes/:componenteId', authenticateToken, async (req, res) => {
+  try {
+    const itemId = req.params.id;
+    const componenteId = req.params.componenteId;
+    const { quantidade_componente } = req.body;
+    
+         if (!quantidade_componente || quantidade_componente <= 0) {
+       return res.status(400).json({ error: 'Quantidade necessária deve ser maior que zero' });
+     }
+    
+    const { rowCount } = await pool.query(
+      'UPDATE itens_compostos SET quantidade_componente = $1 WHERE item_principal_id = $2 AND id = $3',
+      [quantidade_componente, itemId, componenteId]
+    );
+    
+         if (rowCount === 0) {
+       return res.status(404).json({ error: 'Item não encontrado na composição' });
+     }
+     
+     res.json({ message: 'Quantidade necessária atualizada com sucesso' });
+  } catch (error) {
+    console.error('Erro ao atualizar quantidade:', error);
+    res.status(500).json({ error: 'Erro ao atualizar quantidade' });
+  }
+});
+
+// Buscar itens que usam este item como componente
+app.get('/api/itens/:id/componente-de', authenticateToken, async (req, res) => {
+  try {
+    const itemId = req.params.id;
+    
+    const result = await pool.query(`
+      SELECT 
+        i.id,
+        i.codigo,
+        i.descricao,
+        ic.quantidade_componente
+      FROM itens i
+      INNER JOIN itens_compostos ic ON i.id = ic.item_principal_id
+      WHERE ic.item_componente_id = $1
+      ORDER BY i.codigo
+    `, [itemId]);
+    
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Erro ao buscar itens que usam este componente:', error);
+    res.status(500).json({ error: 'Erro ao buscar itens que usam este componente' });
+  }
+});
+
+// Rota para detectar imagens para todos os itens
+app.post('/api/detectar-imagens-todos', authenticateToken, async (req, res) => {
+  try {
+    // Verificar se é admin
+    if (!req.user || req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Apenas administradores podem executar esta operação' });
+    }
+    
+    // Buscar todos os itens
+    const itensResult = await pool.query('SELECT id, codigo FROM itens ORDER BY codigo');
+    const itens = itensResult.rows;
+    
+    let totalImportadas = 0;
+    let totalJaExistentes = 0;
+    const resultados = [];
+    
+    for (const item of itens) {
+      const resultado = await detectarEImportarImagensAutomaticas(item.id, item.codigo);
+      totalImportadas += resultado.importadas;
+      totalJaExistentes += resultado.jaExistentes;
+      
+      if (resultado.importadas > 0) {
+        resultados.push({
+          codigo: item.codigo,
+          importadas: resultado.importadas
+        });
+      }
+    }
+    
+    res.json({
+      message: 'Detecção automática concluída para todos os itens',
+      totalItens: itens.length,
+      totalImportadas,
+      totalJaExistentes,
+      itensComNovasImagens: resultados
+    });
+    
+  } catch (error) {
+    console.error('Erro na detecção para todos os itens:', error);
+    res.status(500).json({ 
+      error: 'Erro na detecção automática',
+      details: error.message 
+    });
   }
 });
 

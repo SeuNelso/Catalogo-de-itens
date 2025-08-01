@@ -1,14 +1,16 @@
 import React, { useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { X, Plus, Save, ArrowLeft, Package, FileText } from 'react-feather';
+import { X, Plus, Save, ArrowLeft, Package } from 'react-feather';
 import Toast from '../components/Toast';
+import ItensCompostos from '../components/ItensCompostos';
 
 const CadastrarItem = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const [loading, setLoading] = useState(false);
   const [selectedFiles, setSelectedFiles] = useState([]);
-  const [especificacoes, setEspecificacoes] = useState([]);
+  const [imagemCompleta, setImagemCompleta] = useState(null);
+
   const [toast, setToast] = useState(null);
   
   const [formData, setFormData] = useState({
@@ -59,19 +61,7 @@ const CadastrarItem = () => {
     setSelectedFiles(prev => prev.filter((_, i) => i !== index));
   };
 
-  const addEspecificacao = () => {
-    setEspecificacoes(prev => [...prev, { nome: '', valor: '', obrigatorio: false }]);
-  };
 
-  const removeEspecificacao = (index) => {
-    setEspecificacoes(prev => prev.filter((_, i) => i !== index));
-  };
-
-  const updateEspecificacao = (index, field, value) => {
-    setEspecificacoes(prev => prev.map((spec, i) => 
-      i === index ? { ...spec, [field]: value } : spec
-    ));
-  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -101,10 +91,12 @@ const CadastrarItem = () => {
         submitData.append('imagens', file);
       });
 
-      // Adicionar especificações
-      if (especificacoes.length > 0) {
-        submitData.append('especificacoes', JSON.stringify(especificacoes));
+      // Adicionar imagem do item completo se existir
+      if (imagemCompleta) {
+        submitData.append('imagemCompleta', imagemCompleta);
       }
+
+
 
       const response = await fetch('/api/itens', {
         method: 'POST',
@@ -139,7 +131,7 @@ const CadastrarItem = () => {
           tipocontrolo: ''
         });
         setSelectedFiles([]);
-        setEspecificacoes([]);
+
 
         // Redirecionar após 2 segundos
         setTimeout(() => {
@@ -327,20 +319,15 @@ const CadastrarItem = () => {
                 </div>
               )}
             </div>
-            <div className="flex items-center mb-2 mt-4">
-              <span className="mr-3"><FileText className="text-[#0915FF] w-6 h-6" /></span>
-              <h2 className="text-black font-extrabold text-base sm:text-xl m-0">Especificações</h2>
-            </div>
-            <div className="w-full flex flex-col gap-2 sm:gap-3">
-              {especificacoes.map((spec, index) => (
-                <div key={index} className="flex items-center gap-2 p-2 bg-[#f9fafb] rounded-lg">
-                  <input type="text" placeholder="Nome da especificação" value={spec.nome} onChange={e => updateEspecificacao(index, 'nome', e.target.value)} className="flex-1 border border-[#d1d5db] rounded-md px-2 py-1 text-sm sm:text-base outline-none" />
-                  <input type="text" placeholder="Valor" value={spec.valor} onChange={e => updateEspecificacao(index, 'valor', e.target.value)} className="flex-1 border border-[#d1d5db] rounded-md px-2 py-1 text-sm sm:text-base outline-none" />
-                  <button type="button" onClick={() => removeEspecificacao(index)} className="text-[#ef4444] bg-none border-none cursor-pointer p-1"><X className="w-5 h-5" /></button>
-                </div>
-              ))}
-              <button type="button" onClick={addEspecificacao} className="flex items-center justify-center gap-2 bg-[#0915FF] text-white font-semibold rounded-lg py-2 sm:py-3 w-full text-sm sm:text-base mt-2"><Plus className="w-4 h-4" />Adicionar Especificação</button>
-            </div>
+            
+                        {/* Itens Compostos */}
+            <ItensCompostos
+              itemId={null}
+              isEditing={true}
+              onImagemCompletaChange={setImagemCompleta}
+              imagensCompostas={[]}
+            />
+
           </div>
           {/* Linha de ações logo abaixo do card de imagens */}
           <div className="flex w-full justify-between items-center mt-4 px-1">

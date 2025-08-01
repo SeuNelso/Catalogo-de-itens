@@ -430,12 +430,12 @@ main {
   box-shadow: var(--shadow-lg);
 }
 
+/* Removido efeito de hover nas imagens */
 img, .image-preview img, .group img {
-  transition: transform 0.25s cubic-bezier(0.4,0,0.2,1), box-shadow 0.25s cubic-bezier(0.4,0,0.2,1);
+  /* Sem transições de hover */
 }
 img:hover, .image-preview img:hover, .group:hover img {
-  transform: scale(1.07) rotate(-1deg);
-  box-shadow: 0 6px 24px 0 rgba(9,21,255,0.10);
+  /* Sem efeitos de hover */
 } 
 
 /* Responsividade para a Home */

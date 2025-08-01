@@ -18,6 +18,8 @@ import ImportarDadosItens from './pages/ImportarDadosItens';
 import CadastroUsuario from './pages/CadastroUsuario';
 import AdminUsuarios from './pages/AdminUsuarios';
 import ImportarItens from './pages/ImportarItens';
+import ImportarImagensAutomaticas from './pages/ImportarImagensAutomaticas';
+import DetectarImagensAutomaticas from './pages/DetectarImagensAutomaticas';
 import ExportarDados from './pages/ExportarDados';
 import './App.css';
 
@@ -88,6 +90,22 @@ function App() {
                   element={
                     <ProtectedRoute allowedRoles={['admin', 'controller']}>
                       <ImportarDadosItens />
+                    </ProtectedRoute>
+                  } 
+                />
+                <Route 
+                  path="/importar-imagens-automaticas" 
+                  element={
+                    <ProtectedRoute allowedRoles={['admin', 'controller']}>
+                      <ImportarImagensAutomaticas />
+                    </ProtectedRoute>
+                  } 
+                />
+                <Route 
+                  path="/detectar-imagens-automaticas" 
+                  element={
+                    <ProtectedRoute allowedRoles={['admin', 'controller']}>
+                      <DetectarImagensAutomaticas />
                     </ProtectedRoute>
                   } 
                 />

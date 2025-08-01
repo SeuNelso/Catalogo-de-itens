@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { ArrowLeft, Package, Calendar, Tag } from 'react-feather';
+import ItensCompostos from '../components/ItensCompostos';
 
 const DetalhesItem = () => {
   const { id } = useParams();
@@ -8,6 +9,7 @@ const DetalhesItem = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [zoomImage, setZoomImage] = useState(null);
+  const [itensQueUsamEsteComponente, setItensQueUsamEsteComponente] = useState([]);
   const imagensScrollRef = useRef(null);
   // Variáveis de controle do drag
   const isDownRef = useRef(false);
@@ -49,20 +51,43 @@ const DetalhesItem = () => {
       const response = await fetch(`/api/itens/${id}`);
       if (response.ok) {
         const data = await response.json();
+        console.log('Dados do item recebidos:', data);
+        console.log('Imagens do item:', data.imagens);
         setItem(data);
       } else {
         setError('Item não encontrado');
       }
     } catch (error) {
+      console.error('Erro ao carregar item:', error);
       setError('Erro ao carregar item');
     } finally {
       setLoading(false);
     }
   }, [id]);
 
+  // Buscar itens que usam este item como componente
+  const fetchItensQueUsamEsteComponente = useCallback(async () => {
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch(`/api/itens/${id}/componente-de`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        setItensQueUsamEsteComponente(data);
+      }
+    } catch (error) {
+      console.error('Erro ao buscar itens que usam este componente:', error);
+    }
+  }, [id]);
+
   useEffect(() => {
     fetchItem();
-  }, [fetchItem]);
+    fetchItensQueUsamEsteComponente();
+  }, [fetchItem, fetchItensQueUsamEsteComponente]);
 
   // Adiciona listeners de touch com passive: false para garantir o preventDefault
   useEffect(() => {
@@ -177,12 +202,30 @@ const DetalhesItem = () => {
                       className="min-w-[90px] min-h-[90px] max-w-[120px] max-h-[120px] overflow-hidden rounded-lg bg-[#f3f4f6] flex items-center justify-center cursor-pointer"
                       onClick={() => setZoomImage(imagem)}
                     >
-                      {imagem.caminho && imagem.caminho.startsWith('http') && (
+                      {imagem.caminho ? (
                         <img
                           src={imagem.caminho}
                           alt={`Foto ${index + 1} do item ${item.nome}`}
                           className="w-full h-full object-cover"
+                          onError={(e) => {
+                            console.error('Erro ao carregar imagem:', imagem.caminho);
+                            e.target.style.display = 'none';
+                            // Adicionar um placeholder de erro
+                            const placeholder = document.createElement('div');
+                            placeholder.className = 'w-full h-full bg-gray-200 flex items-center justify-center text-gray-500 text-xs';
+                            placeholder.textContent = 'Imagem não disponível';
+                            e.target.parentNode.appendChild(placeholder);
+                          }}
+                          onLoad={() => {
+                            console.log('Imagem carregada com sucesso:', imagem.caminho);
+                          }}
+                          crossOrigin="anonymous"
+                          referrerPolicy="no-referrer"
                         />
+                      ) : (
+                        <div className="w-full h-full bg-gray-200 flex items-center justify-center text-gray-500 text-xs">
+                          Sem imagem
+                        </div>
                       )}
                     </div>
                   ))}
@@ -272,15 +315,37 @@ const DetalhesItem = () => {
                 </table>
               </div>
             )}
-            {/* Specifications */}
-            {item.especificacoes && item.especificacoes.length > 0 && (
-              <div className="bg-white rounded-lg shadow-md p-3 sm:p-6">
-                <h2 className="text-[#0915FF] text-lg sm:text-xl font-bold mb-3 sm:mb-4">Especificações</h2>
-                <div className="space-y-2 sm:space-y-3">
-                  {item.especificacoes.map((spec, index) => (
-                    <div key={index} className="flex justify-between py-2 border-b border-gray-100 last:border-b-0">
-                      <span className="font-medium text-gray-900 text-xs sm:text-base">{spec.nome}</span>
-                      <span className="text-gray-600 text-xs sm:text-base">{spec.valor}</span>
+            
+            {/* Itens Compostos */}
+            <ItensCompostos 
+              itemId={id} 
+              isEditing={false} 
+              imagensCompostas={item?.imagensCompostas || []}
+            />
+
+            {/* Itens que usam este item como componente */}
+            {itensQueUsamEsteComponente.length > 0 && (
+              <div className="bg-white rounded-2xl shadow-lg border border-[#d1d5db] p-4 sm:p-8 mb-6">
+                <div className="flex items-center mb-4">
+                  <Package className="text-[#0915FF] w-6 h-6 mr-3" />
+                  <h3 className="text-lg font-semibold text-gray-900">Componente de</h3>
+                  <span className="text-xs text-gray-500 ml-2">(Itens que usam este item como componente)</span>
+                </div>
+                
+                <div className="space-y-3">
+                  {itensQueUsamEsteComponente.map((itemPrincipal) => (
+                    <div key={itemPrincipal.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg group">
+                      <div className="flex-1 cursor-pointer hover:bg-gray-100 transition-colors duration-200 p-2 rounded" onClick={() => window.location.href = `/item/${itemPrincipal.id}`}>
+                        <div className="font-medium text-gray-900 flex items-center gap-2 group-hover:text-blue-600 transition-colors duration-200">
+                          {itemPrincipal.codigo} - {itemPrincipal.descricao}
+                          <svg className="w-4 h-4 text-blue-600 opacity-0 group-hover:opacity-100 transition-opacity duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                          </svg>
+                        </div>
+                        <div className="text-sm text-gray-600 group-hover:text-blue-500 transition-colors duration-200">
+                          Quantidade necessária: {Math.round(itemPrincipal.quantidade_componente)}
+                        </div>
+                      </div>
                     </div>
                   ))}
                 </div>
