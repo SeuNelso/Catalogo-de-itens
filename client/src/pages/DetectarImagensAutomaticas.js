@@ -9,30 +9,7 @@ const DetectarImagensAutomaticas = () => {
   const [toast, setToast] = useState(null);
   const [resultadoTodos, setResultadoTodos] = useState(null);
 
-  const detectarImagensItem = async (itemId) => {
-    setLoading(true);
-    try {
-      const token = localStorage.getItem('token');
-      const response = await fetch(`/api/detectar-imagens/${itemId}`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      });
 
-      if (response.ok) {
-        const data = await response.json();
-        setToast({ type: 'success', message: 'Detecção automática concluída!' });
-      } else {
-        const errorData = await response.json();
-        setToast({ type: 'error', message: errorData.error || 'Erro na detecção automática' });
-      }
-    } catch (error) {
-      setToast({ type: 'error', message: 'Erro de conexão' });
-    } finally {
-      setLoading(false);
-    }
-  };
 
   const detectarImagensTodos = async () => {
     setLoading(true);
