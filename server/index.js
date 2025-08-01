@@ -696,13 +696,8 @@ app.get('/api/itens/:id', (req, res) => {
           if (img.caminho.startsWith('/api/imagem/')) {
             caminhoFinal = img.caminho;
           } else if (img.caminho.startsWith('http')) {
-            if (img.caminho.includes('r2.cloudflarestorage.com')) {
-              const urlParts = img.caminho.split('/');
-              const filename = decodeURIComponent(urlParts[urlParts.length - 1]);
-              caminhoFinal = `/api/imagem/${encodeURIComponent(filename)}`;
-            } else {
-              caminhoFinal = img.caminho;
-            }
+            // URLs diretas do R2 devem permanecer como estão
+            caminhoFinal = img.caminho;
           } else {
             caminhoFinal = `/api/imagem/${encodeURIComponent(img.caminho)}`;
           }
