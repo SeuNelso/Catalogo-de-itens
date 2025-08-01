@@ -608,42 +608,57 @@ app.get('/api/itens', (req, res) => {
   });
 });
 
-// Rota de proxy para imagens do Cloudflare R2
+// Rota de proxy para imagens do Cloudflare R2 ou local
 app.get('/api/imagem/:filename(*)', (req, res) => {
   const filename = decodeURIComponent(req.params.filename);
   
   console.log('Solicitando imagem:', filename);
   
-  // Configurar o cliente S3 para R2
-  const s3Client = new AWS.S3({
-    endpoint: process.env.R2_ENDPOINT,
-    accessKeyId: process.env.R2_ACCESS_KEY,
-    secretAccessKey: process.env.R2_SECRET_KEY,
-    region: 'auto',
-    signatureVersion: 'v4'
-  });
+  // Primeiro, tentar servir do diretório local
+  const localPath = path.join(__dirname, 'uploads', filename);
+  if (fs.existsSync(localPath)) {
+    console.log('Servindo imagem local:', localPath);
+    return res.sendFile(localPath);
+  }
   
-  const params = {
-    Bucket: process.env.R2_BUCKET,
-    Key: filename
-  };
-  
-  s3Client.getObject(params, (err, data) => {
-    if (err) {
-      console.error('Erro ao buscar imagem do R2:', err);
-      return res.status(404).json({ error: 'Imagem não encontrada' });
-    }
+  // Se não existir localmente e as variáveis de R2 estiverem configuradas, tentar R2
+  if (process.env.R2_ENDPOINT && process.env.R2_ACCESS_KEY && process.env.R2_SECRET_KEY && process.env.R2_BUCKET) {
+    console.log('Tentando buscar do R2:', filename);
     
-    // Determinar o tipo de conteúdo
-    const contentType = data.ContentType || 'image/jpeg';
+    // Configurar o cliente S3 para R2
+    const s3Client = new AWS.S3({
+      endpoint: process.env.R2_ENDPOINT,
+      accessKeyId: process.env.R2_ACCESS_KEY,
+      secretAccessKey: process.env.R2_SECRET_KEY,
+      region: 'auto',
+      signatureVersion: 'v4'
+    });
     
-    res.setHeader('Content-Type', contentType);
-    res.setHeader('Cache-Control', 'public, max-age=31536000');
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Content-Length', data.ContentLength);
+    const params = {
+      Bucket: process.env.R2_BUCKET,
+      Key: filename
+    };
     
-    res.send(data.Body);
-  });
+    s3Client.getObject(params, (err, data) => {
+      if (err) {
+        console.error('Erro ao buscar imagem do R2:', err);
+        return res.status(404).json({ error: 'Imagem não encontrada' });
+      }
+      
+      // Determinar o tipo de conteúdo
+      const contentType = data.ContentType || 'image/jpeg';
+      
+      res.setHeader('Content-Type', contentType);
+      res.setHeader('Cache-Control', 'public, max-age=31536000');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Content-Length', data.ContentLength);
+      
+      res.send(data.Body);
+    });
+  } else {
+    console.error('Variáveis de R2 não configuradas e imagem não encontrada localmente');
+    return res.status(404).json({ error: 'Imagem não encontrada' });
+  }
 });
 
 // Buscar item por ID
