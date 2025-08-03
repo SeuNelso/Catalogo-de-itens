@@ -88,6 +88,22 @@ const AWS = require('aws-sdk');
 const https = require('https');
 const http = require('http');
 
+// Função helper para criar cliente S3 configurado
+function createS3Client() {
+  return new AWS.S3({
+    endpoint: process.env.R2_ENDPOINT,
+    accessKeyId: process.env.R2_ACCESS_KEY,
+    secretAccessKey: process.env.R2_SECRET_KEY,
+    signatureVersion: 'v4',
+    region: 'auto',
+    s3ForcePathStyle: true,
+    maxRetries: 3,
+    httpOptions: {
+      timeout: 30000
+    }
+  });
+}
+
 const app = express();
 const PORT = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET || 'sua-chave-secreta-aqui';
@@ -615,13 +631,7 @@ app.get('/api/imagem/:filename(*)', (req, res) => {
   console.log('Solicitando imagem:', filename);
   
   // Configurar o cliente S3 para R2
-  const s3Client = new AWS.S3({
-    endpoint: process.env.R2_ENDPOINT,
-    accessKeyId: process.env.R2_ACCESS_KEY,
-    secretAccessKey: process.env.R2_SECRET_KEY,
-    region: 'auto',
-    signatureVersion: 'v4'
-  });
+  const s3Client = createS3Client();
   
   const params = {
     Bucket: process.env.R2_BUCKET,
@@ -1293,16 +1303,23 @@ app.put('/api/itens/:id', authenticateToken, upload.fields([
 // Função para deletar imagem do S3
 async function deleteFromS3(key) {
   const s3 = new AWS.S3({
+    endpoint: process.env.R2_ENDPOINT,
     accessKeyId: process.env.R2_ACCESS_KEY,
     secretAccessKey: process.env.R2_SECRET_KEY,
-    endpoint: process.env.R2_ENDPOINT,
-    region: 'auto',
     signatureVersion: 'v4',
-    s3ForcePathStyle: true
+    region: 'auto',
+    s3ForcePathStyle: true,
+    maxRetries: 3,
+    httpOptions: {
+      timeout: 30000
+    }
   });
+  
+  const BUCKET = process.env.R2_BUCKET;
+  
   return new Promise((resolve, reject) => {
     s3.deleteObject({
-      Bucket: process.env.R2_BUCKET,
+      Bucket: BUCKET,
       Key: key
     }, (err, data) => {
       if (err) {
@@ -1846,13 +1863,7 @@ app.post('/api/importar-imagens-automaticas', authenticateToken, async (req, res
     const bucket = process.env.R2_BUCKET;
     
     // Configurar cliente S3 para R2
-    const s3Client = new AWS.S3({
-      endpoint: process.env.R2_ENDPOINT,
-      accessKeyId: process.env.R2_ACCESS_KEY,
-      secretAccessKey: process.env.R2_SECRET_KEY,
-      region: 'auto',
-      signatureVersion: 'v4'
-    });
+    const s3Client = createS3Client();
 
     // Listar objetos no bucket que correspondem ao padrão do código
     const listParams = {
@@ -1964,13 +1975,7 @@ app.get('/api/imagens-bucket/:codigo', authenticateToken, async (req, res) => {
     const bucket = process.env.R2_BUCKET;
     
     // Configurar cliente S3 para R2
-    const s3Client = new AWS.S3({
-      endpoint: process.env.R2_ENDPOINT,
-      accessKeyId: process.env.R2_ACCESS_KEY,
-      secretAccessKey: process.env.R2_SECRET_KEY,
-      region: 'auto',
-      signatureVersion: 'v4'
-    });
+    const s3Client = createS3Client();
 
     // Listar objetos no bucket que correspondem ao padrão do código
     const listParams = {
@@ -2040,13 +2045,7 @@ async function detectarEImportarImagensAutomaticas(itemId, codigo) {
     const bucket = process.env.R2_BUCKET;
     
     // Configurar cliente S3 para R2
-    const s3Client = new AWS.S3({
-      endpoint: process.env.R2_ENDPOINT,
-      accessKeyId: process.env.R2_ACCESS_KEY,
-      secretAccessKey: process.env.R2_SECRET_KEY,
-      region: 'auto',
-      signatureVersion: 'v4'
-    });
+    const s3Client = createS3Client();
 
     // Listar objetos no bucket que correspondem ao padrão do código
     const listParams = {
@@ -2138,13 +2137,7 @@ async function detectarEImportarImagensCompostas(itemId, codigo) {
     const bucket = process.env.R2_BUCKET;
     
     // Configurar cliente S3 para R2
-    const s3Client = new AWS.S3({
-      endpoint: process.env.R2_ENDPOINT,
-      accessKeyId: process.env.R2_ACCESS_KEY,
-      secretAccessKey: process.env.R2_SECRET_KEY,
-      region: 'auto',
-      signatureVersion: 'v4'
-    });
+    const s3Client = createS3Client();
 
     // Listar objetos no bucket que correspondem ao padrão IC_codigo
     const listParams = {
