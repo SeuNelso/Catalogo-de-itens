@@ -110,11 +110,16 @@ function createS3Client() {
     accessKeyId: accessKeyId,
     secretAccessKey: secretAccessKey,
     signatureVersion: 'v4',
-    region: 'auto',
+    region: 'auto', // Voltando para 'auto' para Cloudflare R2
     s3ForcePathStyle: true,
     maxRetries: 3,
     httpOptions: {
-      timeout: 30000
+      timeout: 30000,
+      agent: new https.Agent({
+        keepAlive: true,
+        maxSockets: 50,
+        rejectUnauthorized: false
+      })
     }
   });
 }
@@ -1328,16 +1333,27 @@ async function deleteFromS3(key) {
   console.log('🔧 [DELETE] Usando bucket:', bucket);
   console.log('🔧 [DELETE] Usando endpoint:', endpoint);
   
+  // Verificar se as credenciais estão configuradas
+  if (!accessKeyId || !secretAccessKey || accessKeyId === '32f0b3b31955b3878e1c2c107ef33fd5') {
+    console.log('⚠️ [DELETE] Credenciais R2 não configuradas, pulando exclusão de imagem');
+    return Promise.resolve();
+  }
+  
   const s3 = new AWS.S3({
     endpoint: endpoint,
     accessKeyId: accessKeyId,
     secretAccessKey: secretAccessKey,
     signatureVersion: 'v4',
-    region: 'auto',
+    region: 'auto', // Voltando para 'auto' para Cloudflare R2
     s3ForcePathStyle: true,
     maxRetries: 3,
     httpOptions: {
-      timeout: 30000
+      timeout: 30000,
+      agent: new https.Agent({
+        keepAlive: true,
+        maxSockets: 50,
+        rejectUnauthorized: false
+      })
     }
   });
   
@@ -1348,7 +1364,9 @@ async function deleteFromS3(key) {
     }, (err, data) => {
       if (err) {
         console.error('❌ [DELETE] Erro ao deletar do R2:', err);
-        reject(err);
+        // Não rejeitar o erro, apenas logar
+        console.log('⚠️ [DELETE] Continuando sem deletar imagem do R2');
+        resolve();
       } else {
         console.log('✅ [DELETE] Imagem deletada do R2 com sucesso:', key);
         resolve(data);

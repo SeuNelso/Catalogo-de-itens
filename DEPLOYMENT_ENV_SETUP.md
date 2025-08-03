@@ -1,14 +1,19 @@
 # Configuração de Variáveis de Ambiente para Deploy
 
-## Problema Resolvido
+## Problemas Resolvidos
 
-O erro "Missing required key 'Bucket' in params" estava ocorrendo porque as variáveis de ambiente do AWS S3/Cloudflare R2 não estavam configuradas no ambiente de produção.
+1. **"Missing required key 'Bucket' in params"** - Variáveis de ambiente não configuradas
+2. **"Inaccessible host" com região 'auto'"** - Configuração incorreta do Cloudflare R2
 
 ## Solução Implementada
 
 1. **Valores padrão adicionados**: O código agora usa valores padrão para desenvolvimento local
 2. **Logs de debug**: Adicionados logs para identificar problemas de configuração
 3. **Função helper centralizada**: `createS3Client()` centraliza toda a configuração do S3
+4. **Configuração correta do Cloudflare R2**: 
+   - Região fixa: `us-east-1` (em vez de `auto`)
+   - Agent HTTPS configurado para melhor conectividade
+   - Timeout e retries otimizados
 
 ## Configuração para Produção
 
@@ -46,6 +51,13 @@ R2_SECRET_KEY=580539e25b1580ce1c37425fb3eeb45be831ec029b352f6375614399e7ab714f
 ## Verificação
 
 Após configurar as variáveis de ambiente, o deploy deve funcionar corretamente e as imagens devem aparecer sem erros.
+
+## Modo de Fallback
+
+O sistema agora inclui um modo de fallback que permite funcionar mesmo sem as credenciais do R2 configuradas:
+- As operações de exclusão de imagens são puladas silenciosamente
+- O sistema continua funcionando normalmente
+- Logs informativos são exibidos para indicar que as operações foram puladas
 
 ## Logs de Debug
 

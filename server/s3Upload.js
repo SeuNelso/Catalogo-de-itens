@@ -1,6 +1,7 @@
 const AWS = require('aws-sdk');
 const fs = require('fs');
 const path = require('path');
+const https = require('https');
 require('dotenv').config();
 
 const s3 = new AWS.S3({
@@ -8,12 +9,17 @@ const s3 = new AWS.S3({
   accessKeyId: process.env.R2_ACCESS_KEY,
   secretAccessKey: process.env.R2_SECRET_KEY,
   signatureVersion: 'v4',
-  region: 'auto',
+  region: 'auto', // Voltando para 'auto' para Cloudflare R2
   s3ForcePathStyle: true,
   // Configurações específicas para Cloudflare R2
   maxRetries: 3,
   httpOptions: {
-    timeout: 30000
+    timeout: 30000,
+    agent: new https.Agent({
+      keepAlive: true,
+      maxSockets: 50,
+      rejectUnauthorized: false
+    })
   }
 });
 
