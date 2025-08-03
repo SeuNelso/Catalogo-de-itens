@@ -1,4 +1,12 @@
 require('dotenv').config();
+
+// Log das variáveis de ambiente para debug
+console.log('🔧 [ENV] Verificando variáveis de ambiente:');
+console.log('🔧 [ENV] R2_BUCKET:', process.env.R2_BUCKET);
+console.log('🔧 [ENV] R2_ENDPOINT:', process.env.R2_ENDPOINT);
+console.log('🔧 [ENV] R2_ACCESS_KEY:', process.env.R2_ACCESS_KEY ? '***PRESENTE***' : '***AUSENTE***');
+console.log('🔧 [ENV] R2_SECRET_KEY:', process.env.R2_SECRET_KEY ? '***PRESENTE***' : '***AUSENTE***');
+
 /*
 -- SCRIPT DE CRIAÇÃO DAS TABELAS NO POSTGRESQL (use no Railway Console ou cliente SQL)
 
@@ -90,10 +98,17 @@ const http = require('http');
 
 // Função helper para criar cliente S3 configurado
 function createS3Client() {
+  // Valores padrão para desenvolvimento local
+  const endpoint = process.env.R2_ENDPOINT || 'https://d18863b1a98e7a9ca8875305179ad718.r2.cloudflarestorage.com';
+  const accessKeyId = process.env.R2_ACCESS_KEY || '32f0b3b31955b3878e1c2c107ef33fd5';
+  const secretAccessKey = process.env.R2_SECRET_KEY || '580539e25b1580ce1c37425fb3eeb45be831ec029b352f6375614399e7ab714f';
+  
+  console.log('🔧 [S3] Criando cliente S3 com endpoint:', endpoint);
+  
   return new AWS.S3({
-    endpoint: process.env.R2_ENDPOINT,
-    accessKeyId: process.env.R2_ACCESS_KEY,
-    secretAccessKey: process.env.R2_SECRET_KEY,
+    endpoint: endpoint,
+    accessKeyId: accessKeyId,
+    secretAccessKey: secretAccessKey,
     signatureVersion: 'v4',
     region: 'auto',
     s3ForcePathStyle: true,
@@ -1302,10 +1317,21 @@ app.put('/api/itens/:id', authenticateToken, upload.fields([
 
 // Função para deletar imagem do S3
 async function deleteFromS3(key) {
+  console.log('🔧 [DELETE] Iniciando deleteFromS3 com key:', key);
+  
+  // Valores padrão para desenvolvimento local
+  const bucket = process.env.R2_BUCKET || 'catalogo-imagens';
+  const endpoint = process.env.R2_ENDPOINT || 'https://d18863b1a98e7a9ca8875305179ad718.r2.cloudflarestorage.com';
+  const accessKeyId = process.env.R2_ACCESS_KEY || '32f0b3b31955b3878e1c2c107ef33fd5';
+  const secretAccessKey = process.env.R2_SECRET_KEY || '580539e25b1580ce1c37425fb3eeb45be831ec029b352f6375614399e7ab714f';
+  
+  console.log('🔧 [DELETE] Usando bucket:', bucket);
+  console.log('🔧 [DELETE] Usando endpoint:', endpoint);
+  
   const s3 = new AWS.S3({
-    endpoint: process.env.R2_ENDPOINT,
-    accessKeyId: process.env.R2_ACCESS_KEY,
-    secretAccessKey: process.env.R2_SECRET_KEY,
+    endpoint: endpoint,
+    accessKeyId: accessKeyId,
+    secretAccessKey: secretAccessKey,
     signatureVersion: 'v4',
     region: 'auto',
     s3ForcePathStyle: true,
@@ -1315,18 +1341,16 @@ async function deleteFromS3(key) {
     }
   });
   
-  const BUCKET = process.env.R2_BUCKET;
-  
   return new Promise((resolve, reject) => {
     s3.deleteObject({
-      Bucket: BUCKET,
+      Bucket: bucket,
       Key: key
     }, (err, data) => {
       if (err) {
-        console.error('Erro ao deletar do R2:', err);
+        console.error('❌ [DELETE] Erro ao deletar do R2:', err);
         reject(err);
       } else {
-        console.log('Imagem deletada do R2 com sucesso:', key);
+        console.log('✅ [DELETE] Imagem deletada do R2 com sucesso:', key);
         resolve(data);
       }
     });
