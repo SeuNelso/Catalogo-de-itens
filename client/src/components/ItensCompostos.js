@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { Plus, Edit2, Trash2, Package, Camera, ExternalLink } from 'react-feather';
+import React, { useState, useEffect } from 'react';
+import { Plus, X, Edit2, Trash2, Package, Camera, ExternalLink } from 'react-feather';
 import { useNavigate } from 'react-router-dom';
 import Toast from './Toast';
 
@@ -14,6 +14,7 @@ const ItensCompostos = ({ itemId, isEditing = false, onImagemCompletaChange, ima
   const [editingComponente, setEditingComponente] = useState(null);
   const [toast, setToast] = useState(null);
   const [isItemComposto, setIsItemComposto] = useState(false);
+  const [imagemCompleta, setImagemCompleta] = useState(null);
   const [imagemPreview, setImagemPreview] = useState(null);
 
   // Função para lidar com mudança do checkbox
@@ -39,6 +40,7 @@ const ItensCompostos = ({ itemId, isEditing = false, onImagemCompletaChange, ima
     const file = e.target.files[0];
     if (file) {
       if (file.type.startsWith('image/')) {
+        setImagemCompleta(file);
         setImagemPreview(URL.createObjectURL(file));
         // Notificar o componente pai sobre a mudança
         if (onImagemCompletaChange) {
@@ -52,6 +54,7 @@ const ItensCompostos = ({ itemId, isEditing = false, onImagemCompletaChange, ima
 
   // Função para remover imagem
   const handleRemoveImagem = () => {
+    setImagemCompleta(null);
     setImagemPreview(null);
     // Notificar o componente pai sobre a remoção
     if (onImagemCompletaChange) {
@@ -65,7 +68,7 @@ const ItensCompostos = ({ itemId, isEditing = false, onImagemCompletaChange, ima
   };
 
   // Buscar componentes do item
-  const fetchComponentes = useCallback(async () => {
+  const fetchComponentes = async () => {
     try {
       const token = localStorage.getItem('token');
       const response = await fetch(`/api/itens/${itemId}/componentes`, {
@@ -81,10 +84,10 @@ const ItensCompostos = ({ itemId, isEditing = false, onImagemCompletaChange, ima
     } catch (error) {
       console.error('Erro ao buscar componentes:', error);
     }
-  }, [itemId]);
+  };
 
   // Buscar itens disponíveis para componentes
-  const fetchItensDisponiveis = useCallback(async () => {
+  const fetchItensDisponiveis = async () => {
     try {
       const token = localStorage.getItem('token');
       const response = await fetch('/api/itens-para-componentes', {
@@ -105,11 +108,11 @@ const ItensCompostos = ({ itemId, isEditing = false, onImagemCompletaChange, ima
     } catch (error) {
       console.error('Erro ao buscar itens disponíveis:', error);
     }
-  }, [itemId, componentes]);
+  };
 
   useEffect(() => {
     fetchComponentes();
-  }, [fetchComponentes]);
+  }, [itemId]);
 
   useEffect(() => {
     // Se há componentes, o item é composto
@@ -125,7 +128,7 @@ const ItensCompostos = ({ itemId, isEditing = false, onImagemCompletaChange, ima
     if (showAdicionar) {
       fetchItensDisponiveis();
     }
-  }, [showAdicionar, fetchItensDisponiveis]);
+  }, [showAdicionar, componentes]);
 
      const adicionarComponente = async () => {
      if (!selectedItem || quantidade <= 0 || !Number.isInteger(parseFloat(quantidade))) {

@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { Save, ArrowLeft, Package } from 'react-feather';
+import { X, Plus, Save, ArrowLeft, Package } from 'react-feather';
 import Toast from '../components/Toast';
 import ItensCompostos from '../components/ItensCompostos';
 

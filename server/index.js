@@ -608,101 +608,42 @@ app.get('/api/itens', (req, res) => {
   });
 });
 
-// Rota de proxy para imagens do Cloudflare R2 ou local
+// Rota de proxy para imagens do Cloudflare R2
 app.get('/api/imagem/:filename(*)', (req, res) => {
   const filename = decodeURIComponent(req.params.filename);
   
   console.log('Solicitando imagem:', filename);
   
-  // Primeiro, tentar servir do diretório local
-  const localPath = path.join(__dirname, 'uploads', filename);
-  if (fs.existsSync(localPath)) {
-    console.log('Servindo imagem local:', localPath);
-    return res.sendFile(localPath);
-  }
+  // Configurar o cliente S3 para R2
+  const s3Client = new AWS.S3({
+    endpoint: process.env.R2_ENDPOINT,
+    accessKeyId: process.env.R2_ACCESS_KEY,
+    secretAccessKey: process.env.R2_SECRET_KEY,
+    region: 'auto',
+    signatureVersion: 'v4'
+  });
   
-  // Se a imagem não existe localmente, tentar criar uma imagem de teste para itens específicos
-  if (filename.includes('3001908') && filename.endsWith('.png')) {
-    console.log('Criando imagem de teste:', filename);
-    
-    try {
-      // Criar diretório se não existir
-      const uploadsDir = path.join(__dirname, 'uploads');
-      if (!fs.existsSync(uploadsDir)) {
-        fs.mkdirSync(uploadsDir, { recursive: true });
-      }
-      
-      // Criar canvas
-      const { createCanvas } = require('canvas');
-      const canvas = createCanvas(400, 300);
-      const ctx = canvas.getContext('2d');
-      
-      // Preencher fundo
-      ctx.fillStyle = '#f0f0f0';
-      ctx.fillRect(0, 0, 400, 300);
-      
-      // Adicionar texto
-      ctx.fillStyle = '#333333';
-      ctx.font = '24px Arial';
-      ctx.textAlign = 'center';
-      ctx.fillText('IMAGEM DE TESTE', 200, 120);
-      ctx.fillText('Item 3001908', 200, 150);
-      ctx.fillText(filename, 200, 180);
-      
-      // Adicionar borda
-      ctx.strokeStyle = '#cccccc';
-      ctx.lineWidth = 2;
-      ctx.strokeRect(10, 10, 380, 280);
-      
-      // Salvar arquivo
-      const buffer = canvas.toBuffer('image/png');
-      fs.writeFileSync(localPath, buffer);
-      
-      console.log('Imagem de teste criada:', localPath);
-      return res.sendFile(localPath);
-    } catch (error) {
-      console.error('Erro ao criar imagem de teste:', error);
+  const params = {
+    Bucket: process.env.R2_BUCKET,
+    Key: filename
+  };
+  
+  s3Client.getObject(params, (err, data) => {
+    if (err) {
+      console.error('Erro ao buscar imagem do R2:', err);
+      return res.status(404).json({ error: 'Imagem não encontrada' });
     }
-  }
-  
-  // Se não existir localmente e as variáveis de R2 estiverem configuradas, tentar R2
-  if (process.env.R2_ENDPOINT && process.env.R2_ACCESS_KEY && process.env.R2_SECRET_KEY && process.env.R2_BUCKET) {
-    console.log('Tentando buscar do R2:', filename);
     
-    // Configurar o cliente S3 para R2
-    const s3Client = new AWS.S3({
-      endpoint: process.env.R2_ENDPOINT,
-      accessKeyId: process.env.R2_ACCESS_KEY,
-      secretAccessKey: process.env.R2_SECRET_KEY,
-      region: 'auto',
-      signatureVersion: 'v4'
-    });
+    // Determinar o tipo de conteúdo
+    const contentType = data.ContentType || 'image/jpeg';
     
-    const params = {
-      Bucket: process.env.R2_BUCKET,
-      Key: filename
-    };
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Cache-Control', 'public, max-age=31536000');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Content-Length', data.ContentLength);
     
-    s3Client.getObject(params, (err, data) => {
-      if (err) {
-        console.error('Erro ao buscar imagem do R2:', err);
-        return res.status(404).json({ error: 'Imagem não encontrada' });
-      }
-      
-      // Determinar o tipo de conteúdo
-      const contentType = data.ContentType || 'image/jpeg';
-      
-      res.setHeader('Content-Type', contentType);
-      res.setHeader('Cache-Control', 'public, max-age=31536000');
-      res.setHeader('Access-Control-Allow-Origin', '*');
-      res.setHeader('Content-Length', data.ContentLength);
-      
-      res.send(data.Body);
-    });
-  } else {
-    console.error('Variáveis de R2 não configuradas e imagem não encontrada localmente');
-    return res.status(404).json({ error: 'Imagem não encontrada' });
-  }
+    res.send(data.Body);
+  });
 });
 
 // Buscar item por ID
@@ -740,8 +681,13 @@ app.get('/api/itens/:id', (req, res) => {
           if (img.caminho.startsWith('/api/imagem/')) {
             caminhoFinal = img.caminho;
           } else if (img.caminho.startsWith('http')) {
-            // URLs diretas do R2 devem permanecer como estão
-            caminhoFinal = img.caminho;
+            if (img.caminho.includes('r2.cloudflarestorage.com')) {
+              const urlParts = img.caminho.split('/');
+              const filename = decodeURIComponent(urlParts[urlParts.length - 1]);
+              caminhoFinal = `/api/imagem/${encodeURIComponent(filename)}`;
+            } else {
+              caminhoFinal = img.caminho;
+            }
           } else {
             caminhoFinal = `/api/imagem/${encodeURIComponent(img.caminho)}`;
           }
@@ -2476,27 +2422,63 @@ app.put('/api/itens/:id/componentes/:componenteId', authenticateToken, async (re
   }
 });
 
-// Buscar itens que usam este item como componente
-app.get('/api/itens/:id/componente-de', authenticateToken, async (req, res) => {
+// Rota para limpar imagens órfãs (imagens no banco que não existem no R2)
+app.post('/api/limpar-imagens-orfas', authenticateToken, async (req, res) => {
   try {
-    const itemId = req.params.id;
+    // Verificar se é admin
+    if (!req.user || req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Apenas administradores podem executar esta operação' });
+    }
+
+    // Buscar todas as imagens do banco
+    const result = await pool.query('SELECT id, nome_arquivo, caminho FROM imagens ORDER BY id');
+    const imagens = result.rows;
     
-    const result = await pool.query(`
-      SELECT 
-        i.id,
-        i.codigo,
-        i.descricao,
-        ic.quantidade_componente
-      FROM itens i
-      INNER JOIN itens_compostos ic ON i.id = ic.item_principal_id
-      WHERE ic.item_componente_id = $1
-      ORDER BY i.codigo
-    `, [itemId]);
-    
-    res.json(result.rows);
+    let totalVerificadas = 0;
+    let totalRemovidas = 0;
+    const imagensRemovidas = [];
+
+    for (const imagem of imagens) {
+      totalVerificadas++;
+      
+      try {
+        // Verificar se a imagem existe no R2
+        await s3.headObject({
+          Bucket: process.env.R2_BUCKET_NAME,
+          Key: imagem.nome_arquivo
+        }).promise();
+        
+        console.log(`✅ Imagem existe no R2: ${imagem.nome_arquivo}`);
+      } catch (error) {
+        if (error.code === 'NoSuchKey' || error.code === 'NotFound') {
+          // Imagem não existe no R2, remover do banco
+          await pool.query('DELETE FROM imagens WHERE id = $1', [imagem.id]);
+          totalRemovidas++;
+          imagensRemovidas.push({
+            id: imagem.id,
+            nome: imagem.nome_arquivo,
+            caminho: imagem.caminho
+          });
+          console.log(`🗑️  Removida imagem órfã: ${imagem.nome_arquivo}`);
+        } else {
+          console.error(`❌ Erro ao verificar imagem ${imagem.nome_arquivo}:`, error.message);
+        }
+      }
+    }
+
+    res.json({
+      message: 'Limpeza de imagens órfãs concluída',
+      totalVerificadas,
+      totalRemovidas,
+      imagensRemovidas
+    });
+
   } catch (error) {
-    console.error('Erro ao buscar itens que usam este componente:', error);
-    res.status(500).json({ error: 'Erro ao buscar itens que usam este componente' });
+    console.error('Erro na limpeza de imagens órfãs:', error);
+    res.status(500).json({ 
+      error: 'Erro na limpeza de imagens órfãs',
+      details: error.message 
+    });
   }
 });
 

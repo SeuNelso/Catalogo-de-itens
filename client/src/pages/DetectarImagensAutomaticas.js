@@ -1,15 +1,40 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { RefreshCw, ArrowLeft } from 'react-feather';
+import { Search, RefreshCw, ArrowLeft, CheckCircle, AlertCircle, Package, Users } from 'react-feather';
 import Toast from '../components/Toast';
 
 const DetectarImagensAutomaticas = () => {
   const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState(null);
+  const [resultadoDetecao, setResultadoDetecao] = useState(null);
   const [resultadoTodos, setResultadoTodos] = useState(null);
 
+  const detectarImagensItem = async (itemId) => {
+    setLoading(true);
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch(`/api/detectar-imagens/${itemId}`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
 
+      if (response.ok) {
+        const data = await response.json();
+        setResultadoDetecao(data);
+        setToast({ type: 'success', message: 'Detecção automática concluída!' });
+      } else {
+        const errorData = await response.json();
+        setToast({ type: 'error', message: errorData.error || 'Erro na detecção automática' });
+      }
+    } catch (error) {
+      setToast({ type: 'error', message: 'Erro de conexão' });
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const detectarImagensTodos = async () => {
     setLoading(true);

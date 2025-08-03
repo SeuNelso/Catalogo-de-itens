@@ -9,7 +9,6 @@ const DetalhesItem = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [zoomImage, setZoomImage] = useState(null);
-  const [itensQueUsamEsteComponente, setItensQueUsamEsteComponente] = useState([]);
   const imagensScrollRef = useRef(null);
   // Variáveis de controle do drag
   const isDownRef = useRef(false);
@@ -65,29 +64,9 @@ const DetalhesItem = () => {
     }
   }, [id]);
 
-  // Buscar itens que usam este item como componente
-  const fetchItensQueUsamEsteComponente = useCallback(async () => {
-    try {
-      const token = localStorage.getItem('token');
-      const response = await fetch(`/api/itens/${id}/componente-de`, {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      });
-      
-      if (response.ok) {
-        const data = await response.json();
-        setItensQueUsamEsteComponente(data);
-      }
-    } catch (error) {
-      console.error('Erro ao buscar itens que usam este componente:', error);
-    }
-  }, [id]);
-
   useEffect(() => {
     fetchItem();
-    fetchItensQueUsamEsteComponente();
-  }, [fetchItem, fetchItensQueUsamEsteComponente]);
+  }, [fetchItem]);
 
   // Adiciona listeners de touch com passive: false para garantir o preventDefault
   useEffect(() => {
@@ -322,35 +301,6 @@ const DetalhesItem = () => {
               isEditing={false} 
               imagensCompostas={item?.imagensCompostas || []}
             />
-
-            {/* Itens que usam este item como componente */}
-            {itensQueUsamEsteComponente.length > 0 && (
-              <div className="bg-white rounded-2xl shadow-lg border border-[#d1d5db] p-4 sm:p-8 mb-6">
-                <div className="flex items-center mb-4">
-                  <Package className="text-[#0915FF] w-6 h-6 mr-3" />
-                  <h3 className="text-lg font-semibold text-gray-900">Componente de</h3>
-                  <span className="text-xs text-gray-500 ml-2">(Itens que usam este item como componente)</span>
-                </div>
-                
-                <div className="space-y-3">
-                  {itensQueUsamEsteComponente.map((itemPrincipal) => (
-                    <div key={itemPrincipal.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg group">
-                      <div className="flex-1 cursor-pointer hover:bg-gray-100 transition-colors duration-200 p-2 rounded" onClick={() => window.location.href = `/item/${itemPrincipal.id}`}>
-                        <div className="font-medium text-gray-900 flex items-center gap-2 group-hover:text-blue-600 transition-colors duration-200">
-                          {itemPrincipal.codigo} - {itemPrincipal.descricao}
-                          <svg className="w-4 h-4 text-blue-600 opacity-0 group-hover:opacity-100 transition-opacity duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-                          </svg>
-                        </div>
-                        <div className="text-sm text-gray-600 group-hover:text-blue-500 transition-colors duration-200">
-                          Quantidade necessária: {Math.round(itemPrincipal.quantidade_componente)}
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
           </div>
         </div>
       </div>
