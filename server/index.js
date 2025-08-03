@@ -648,24 +648,39 @@ app.get('/api/itens', (req, res) => {
 app.get('/api/imagem/:filename(*)', (req, res) => {
   const filename = decodeURIComponent(req.params.filename);
   
-  console.log('Solicitando imagem:', filename);
+  console.log('🔧 [PROXY] Solicitando imagem:', filename);
+  
+  // Verificar se as credenciais estão configuradas
+  if (!process.env.R2_ACCESS_KEY || !process.env.R2_SECRET_KEY || 
+      process.env.R2_ACCESS_KEY === '32f0b3b31955b3878e1c2c107ef33fd5') {
+    console.log('⚠️ [PROXY] Credenciais R2 não configuradas, retornando imagem padrão');
+    return res.status(404).json({ 
+      error: 'Imagem não disponível - credenciais R2 não configuradas',
+      message: 'Configure as variáveis de ambiente R2_ACCESS_KEY e R2_SECRET_KEY para acessar as imagens'
+    });
+  }
   
   // Configurar o cliente S3 para R2
   const s3Client = createS3Client();
   
   const params = {
-    Bucket: process.env.R2_BUCKET,
+    Bucket: process.env.R2_BUCKET || 'catalogo-imagens',
     Key: filename
   };
   
   s3Client.getObject(params, (err, data) => {
     if (err) {
-      console.error('Erro ao buscar imagem do R2:', err);
-      return res.status(404).json({ error: 'Imagem não encontrada' });
+      console.error('❌ [PROXY] Erro ao buscar imagem do R2:', err);
+      return res.status(404).json({ 
+        error: 'Imagem não encontrada',
+        details: err.message 
+      });
     }
     
     // Determinar o tipo de conteúdo
     const contentType = data.ContentType || 'image/jpeg';
+    
+    console.log('✅ [PROXY] Imagem encontrada:', filename);
     
     res.setHeader('Content-Type', contentType);
     res.setHeader('Cache-Control', 'public, max-age=31536000');

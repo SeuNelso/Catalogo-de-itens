@@ -55,9 +55,18 @@ Após configurar as variáveis de ambiente, o deploy deve funcionar corretamente
 ## Modo de Fallback
 
 O sistema agora inclui um modo de fallback que permite funcionar mesmo sem as credenciais do R2 configuradas:
-- As operações de exclusão de imagens são puladas silenciosamente
+
+### Operações que funcionam sem R2:
+- ✅ **Exclusão de imagens**: Pulgada silenciosamente
+- ✅ **Upload de imagens**: Retorna URL simulada
+- ✅ **Visualização de imagens**: Retorna erro informativo
+- ✅ **Todas as outras funcionalidades**: Funcionam normalmente
+
+### Comportamento:
+- As operações são puladas silenciosamente
 - O sistema continua funcionando normalmente
 - Logs informativos são exibidos para indicar que as operações foram puladas
+- Mensagens de erro claras são mostradas ao usuário
 
 ## Logs de Debug
 
@@ -66,5 +75,8 @@ O código agora inclui logs detalhados que ajudarão a identificar problemas:
 - `🔧 [ENV]` - Logs das variáveis de ambiente
 - `🔧 [S3]` - Logs da criação do cliente S3
 - `🔧 [DELETE]` - Logs das operações de exclusão
-- `✅ [DELETE]` - Confirmação de sucesso
-- `❌ [DELETE]` - Erros encontrados 
+- `🔧 [UPLOAD]` - Logs das operações de upload
+- `🔧 [PROXY]` - Logs das operações de visualização
+- `✅ [DELETE/UPLOAD/PROXY]` - Confirmação de sucesso
+- `❌ [DELETE/UPLOAD/PROXY]` - Erros encontrados
+- `⚠️ [DELETE/UPLOAD/PROXY]` - Operações puladas (modo fallback) 
