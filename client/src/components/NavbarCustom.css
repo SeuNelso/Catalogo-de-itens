@@ -118,6 +118,49 @@
   text-shadow: none !important;
 }
 
+/* Centralizar botões no menu mobile */
+@media (max-width: 768px) {
+  .navbar-digi-user {
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: center !important;
+    justify-content: center !important;
+    gap: 12px !important;
+    padding: 16px 20px !important;
+    border-top: 1px solid rgba(255, 255, 255, 0.1) !important;
+    margin-top: 16px !important;
+    text-align: center !important;
+  }
+  
+  .navbar-digi-username {
+    font-size: 16px !important;
+    font-weight: 600 !important;
+    color: #fff !important;
+    margin-bottom: 8px !important;
+  }
+  
+  .navbar-digi-logout {
+    width: 100% !important;
+    max-width: 200px !important;
+    text-align: center !important;
+    padding: 12px 24px !important;
+    font-size: 16px !important;
+    font-weight: 700 !important;
+    margin: 0 !important;
+    border-radius: 8px !important;
+    background: #fff !important;
+    color: #0915FF !important;
+    transition: all 0.2s ease !important;
+  }
+  
+  .navbar-digi-logout:hover {
+    background: #e8edff !important;
+    color: #0915FF !important;
+    transform: translateY(-1px) !important;
+    box-shadow: 0 4px 12px rgba(9, 21, 255, 0.15) !important;
+  }
+}
+
 .navbar-digi-logout:hover,
 .navbar-digi-logout:hover *,
 .navbar-digi-mobile-logout:hover,
