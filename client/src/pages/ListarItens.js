@@ -826,78 +826,79 @@ const ListarItens = () => {
             <div className="catalogo-card" style={{ margin: 0, boxShadow: '0 8px 32px rgba(9,21,255,0.08)', width: isMobile ? '100%' : '100%' }}>
               <div className="catalogo-conteudo" style={{ width: '100%' }}>
               <div className="catalogo-subtitulo text-lg sm:text-xl font-bold mb-2">Itens em Estoque</div>
-                {!isMobile && (
-                  <div className="overflow-x-auto rounded-2xl shadow-lg bg-white">
-                    <table className="min-w-full text-xs sm:text-[16px]">
-                      <thead>
-                        <tr className="bg-gradient-to-r from-[#0a1fff] to-[#3b82f6] text-white font-bold rounded-t-2xl">
-                          <th 
-                            className="py-4 px-6 w-32 first:rounded-tl-2xl cursor-pointer hover:bg-blue-600 transition-colors"
-                            onClick={() => handleOrdenacao('codigo')}
-                          >
-                            <div className="flex items-center justify-center gap-2">
-                              CÓDIGO
-                              {ordenacao.campo === 'codigo' && (
-                                <span className="text-sm">{ordenacao.direcao === 'asc' ? '↑' : '↓'}</span>
-                              )}
-                            </div>
-                          </th>
-                          <th 
-                            className="py-4 px-6 cursor-pointer hover:bg-blue-600 transition-colors"
-                            onClick={() => handleOrdenacao('nome')}
-                          >
-                            <div className="flex items-center justify-center gap-2">
-                              DESCRIÇÃO
-                              {ordenacao.campo === 'nome' && (
-                                <span className="text-sm">{ordenacao.direcao === 'asc' ? '↑' : '↓'}</span>
-                              )}
-                            </div>
-                          </th>
-                          <th 
-                            className="py-4 px-6 w-32 cursor-pointer hover:bg-blue-600 transition-colors"
-                            onClick={() => handleOrdenacao('setor')}
-                          >
-                            <div className="flex items-center justify-center gap-2">
-                              SETOR
-                              {ordenacao.campo === 'setor' && (
-                                <span className="text-sm">{ordenacao.direcao === 'asc' ? '↑' : '↓'}</span>
-                              )}
-                            </div>
-                          </th>
-                          <th 
-                            className="py-4 px-6 w-32 cursor-pointer hover:bg-blue-600 transition-colors"
-                            onClick={() => handleOrdenacao('quantidade')}
-                          >
-                            <div className="flex items-center justify-center gap-2">
-                              QUANTIDADE
-                              {ordenacao.campo === 'quantidade' && (
-                                <span className="text-sm">{ordenacao.direcao === 'asc' ? '↑' : '↓'}</span>
-                              )}
-                            </div>
-                          </th>
-                          <th className="py-4 px-6 w-40 last:rounded-tr-2xl">
-                            <div className="flex items-center justify-center gap-2">
-                              AÇÃO
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setOrdenacao({ campo: null, direcao: 'asc' });
-                                }}
-                                className="text-xs bg-red-500 text-white px-2 py-1 rounded hover:bg-red-600 transition-colors"
-                                title="Limpar ordenação"
-                              >
-                                Limpar
-                              </button>
-                            </div>
-                          </th>
+                
+                {/* Desktop Table */}
+                <div className="hidden md:block overflow-x-auto rounded-2xl shadow-lg bg-white">
+                  <table className="min-w-full text-xs sm:text-[16px]">
+                    <thead>
+                      <tr className="bg-gradient-to-r from-[#0a1fff] to-[#3b82f6] text-white font-bold rounded-t-2xl">
+                        <th 
+                          className="py-4 px-6 w-32 first:rounded-tl-2xl cursor-pointer hover:bg-blue-600 transition-colors"
+                          onClick={() => handleOrdenacao('codigo')}
+                        >
+                          <div className="flex items-center justify-center gap-2">
+                            CÓDIGO
+                            {ordenacao.campo === 'codigo' && (
+                              <span className="text-sm">{ordenacao.direcao === 'asc' ? '↑' : '↓'}</span>
+                            )}
+                          </div>
+                        </th>
+                        <th 
+                          className="py-4 px-6 cursor-pointer hover:bg-blue-600 transition-colors"
+                          onClick={() => handleOrdenacao('nome')}
+                        >
+                          <div className="flex items-center justify-center gap-2">
+                            DESCRIÇÃO
+                            {ordenacao.campo === 'nome' && (
+                              <span className="text-sm">{ordenacao.direcao === 'asc' ? '↑' : '↓'}</span>
+                            )}
+                          </div>
+                        </th>
+                        <th 
+                          className="py-4 px-6 w-32 cursor-pointer hover:bg-blue-600 transition-colors"
+                          onClick={() => handleOrdenacao('setor')}
+                        >
+                          <div className="flex items-center justify-center gap-2">
+                            SETOR
+                            {ordenacao.campo === 'setor' && (
+                              <span className="text-sm">{ordenacao.direcao === 'asc' ? '↑' : '↓'}</span>
+                            )}
+                          </div>
+                        </th>
+                        <th 
+                          className="py-4 px-6 w-32 cursor-pointer hover:bg-blue-600 transition-colors"
+                          onClick={() => handleOrdenacao('quantidade')}
+                        >
+                          <div className="flex items-center justify-center gap-2">
+                            QUANTIDADE
+                            {ordenacao.campo === 'quantidade' && (
+                              <span className="text-sm">{ordenacao.direcao === 'asc' ? '↑' : '↓'}</span>
+                            )}
+                          </div>
+                        </th>
+                        <th className="py-4 px-6 w-40 last:rounded-tr-2xl">
+                          <div className="flex items-center justify-center gap-2">
+                            AÇÃO
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setOrdenacao({ campo: null, direcao: 'asc' });
+                              }}
+                              className="text-xs bg-red-500 text-white px-2 py-1 rounded hover:bg-red-600 transition-colors"
+                              title="Limpar ordenação"
+                            >
+                              Limpar
+                            </button>
+                          </div>
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {itensPagina.length === 0 ? (
+                        <tr>
+                          <td colSpan={5} style={{ textAlign: 'center', color: '#888', padding: '32px 0' }}>Nenhum item encontrado.</td>
                         </tr>
-                      </thead>
-                      <tbody>
-                        {itensPagina.length === 0 ? (
-                          <tr>
-                            <td colSpan={5} style={{ textAlign: 'center', color: '#888', padding: '32px 0' }}>Nenhum item encontrado.</td>
-                          </tr>
-                        ) : (
+                      ) : (
                           itensPagina.map(item => (
                             <tr key={item.id} className="hover:bg-blue-50 transition border-b border-[#d1d5db] last:border-b-0">
                               <td className="py-3 px-6 w-32">
@@ -933,6 +934,71 @@ const ListarItens = () => {
                         )}
                       </tbody>
                     </table>
+                  </div>
+
+                  {/* Mobile Cards */}
+                  <div className="md:hidden space-y-4">
+                    {itensPagina.length === 0 ? (
+                      <div className="text-center text-gray-500 py-8">Nenhum item encontrado.</div>
+                    ) : (
+                      itensPagina.map(item => (
+                        <div key={item.id} className="bg-white rounded-lg p-4 border border-gray-200 shadow-sm">
+                          <div className="space-y-3">
+                            {/* Código */}
+                            <div className="flex justify-between items-center">
+                              <span className="text-sm font-semibold text-gray-600">Código:</span>
+                              <Link to={`/item/${item.id}`} className="text-sm text-blue-600 font-medium">
+                                {item.codigo || '-'}
+                              </Link>
+                            </div>
+                            
+                            {/* Descrição */}
+                            <div className="flex justify-between items-start">
+                              <span className="text-sm font-semibold text-gray-600">Descrição:</span>
+                              <span className="text-sm text-right flex-1 ml-2">{item.nome}</span>
+                            </div>
+                            
+                            {/* Setor */}
+                            <div className="flex justify-between items-center">
+                              <span className="text-sm font-semibold text-gray-600">Setor:</span>
+                              <span className="inline-flex items-center gap-1 px-3 py-1 rounded-full font-bold text-xs shadow-sm bg-blue-100 text-blue-700">
+                                {item.setor || '-'}
+                              </span>
+                            </div>
+                            
+                            {/* Quantidade */}
+                            <div className="flex justify-between items-center">
+                              <span className="text-sm font-semibold text-gray-600">Quantidade:</span>
+                              <span className={`inline-flex items-center gap-1 px-3 py-1 rounded-full font-bold text-xs shadow-sm ${item.quantidade === 0 ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>
+                                <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                  <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+                                  <path d="m9 11 3 3L22 4"/>
+                                </svg>
+                                {item.quantidade != null && item.quantidade !== '' ? item.quantidade : 0}
+                              </span>
+                            </div>
+                            
+                            {/* Ações */}
+                            <div className="pt-2 space-y-2">
+                              <button 
+                                className="w-full px-4 py-2 rounded-lg bg-[#0915FF] text-white font-semibold shadow hover:bg-[#2336ff] transition text-sm"
+                                onClick={() => navigate(`/item/${item.id}`)}
+                              >
+                                Ver Detalhes
+                              </button>
+                              {userCanEdit && (
+                                <button 
+                                  className="w-full px-4 py-2 rounded-lg bg-[#FFB800] text-black font-semibold shadow hover:bg-yellow-400 transition text-sm"
+                                  onClick={() => navigate(`/editar/${item.id}`)}
+                                >
+                                  Editar Item
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      ))
+                    )}
                   </div>
                 )}
               {/* Adicionar controles de paginação centralizados abaixo da tabela: */}

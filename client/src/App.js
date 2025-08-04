@@ -110,7 +110,14 @@ function App() {
                   } 
                 />
                 <Route path="/exportar" element={<ExportarDados />} />
-                <Route path="/cadastro" element={<CadastroUsuario />} />
+                <Route 
+                  path="/cadastro" 
+                  element={
+                    <ProtectedRoute allowedRoles={['admin']}>
+                      <CadastroUsuario />
+                    </ProtectedRoute>
+                  } 
+                />
                 <Route 
                   path="/admin-usuarios" 
                   element={
