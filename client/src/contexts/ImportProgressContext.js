@@ -8,8 +8,8 @@ export function ImportProgressProvider({ children }) {
   const [progress, setProgress] = useState(null); // { total, processados, status, erros }
   const pollingRef = useRef(null);
 
-  // Iniciar importação: recebe importId
-  const startImport = (id) => {
+  // Iniciar importação: recebe importId e rota opcional
+  const startImport = (id, customRoute = null) => {
     setImportId(id);
     setStatus('progresso');
     setProgress(null);
@@ -17,7 +17,8 @@ export function ImportProgressProvider({ children }) {
     pollingRef.current = setInterval(async () => {
       try {
         const token = localStorage.getItem('token');
-        const resp = await fetch(`/api/importar-excel-status/${id}`, {
+        const route = customRoute || `/api/importar-excel-status/${id}`;
+        const resp = await fetch(route, {
           headers: { 'Authorization': `Bearer ${token}` }
         });
         if (resp.ok) {

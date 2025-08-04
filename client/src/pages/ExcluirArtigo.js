@@ -140,9 +140,24 @@ export default function ExcluirArtigo() {
           )}
           {/* Botão Excluir itens não cadastrados */}
           <button
-            onClick={() => {
-              localStorage.removeItem('artigos_nao_cadastrados');
-              setToast({ type: 'success', message: 'Itens não cadastrados removidos com sucesso!' });
+            onClick={async () => {
+              try {
+                const token = localStorage.getItem('token');
+                const response = await fetch('/api/itens-nao-cadastrados', {
+                  method: 'DELETE',
+                  headers: {
+                    'Authorization': `Bearer ${token}`
+                  }
+                });
+                
+                if (response.ok) {
+                  setToast({ type: 'success', message: 'Itens não cadastrados removidos com sucesso!' });
+                } else {
+                  setToast({ type: 'error', message: 'Erro ao remover itens não cadastrados.' });
+                }
+              } catch (error) {
+                setToast({ type: 'error', message: 'Erro de conexão ao remover itens não cadastrados.' });
+              }
             }}
             className="mb-4 px-6 py-2 rounded-lg bg-yellow-600 text-black font-bold text-sm hover:bg-yellow-700 transition-all shadow"
           >

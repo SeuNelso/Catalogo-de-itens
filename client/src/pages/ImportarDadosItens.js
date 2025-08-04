@@ -3,6 +3,8 @@ import { useNavigate } from 'react-router-dom';
 import { Upload, FileText, Download, AlertCircle, CheckCircle, X, ArrowLeft } from 'react-feather';
 import { useAuth } from '../contexts/AuthContext';
 import Toast from '../components/Toast';
+import ImportProgressBar from '../components/ImportProgressBar';
+import { useImportProgress } from '../contexts/ImportProgressContext';
 
 const ImportarDadosItens = () => {
   const navigate = useNavigate();
@@ -11,6 +13,7 @@ const ImportarDadosItens = () => {
   const [loading, setLoading] = useState(false);
   const [importStatus, setImportStatus] = useState(null);
   const [toast, setToast] = useState(null);
+  const { startImport, status: contextStatus, progress } = useImportProgress();
   // const [isMobile, setIsMobile] = useState(window.innerWidth <= 600);
 
   // Verificar permissões
@@ -72,6 +75,12 @@ const ImportarDadosItens = () => {
 
       if (response.ok) {
         const data = await response.json();
+        
+        // Iniciar barra de progresso
+        if (data.importId) {
+          startImport(data.importId, `/api/importar-dados-itens-status/${data.importId}`);
+        }
+        
         setImportStatus({
           success: true,
           message: 'Importação iniciada com sucesso!',
@@ -79,6 +88,7 @@ const ImportarDadosItens = () => {
           details: data
         });
         setToast({ type: 'success', message: 'Importação iniciada com sucesso!' });
+        setSelectedFile(null);
       } else {
         const error = await response.json();
         setImportStatus({
@@ -169,6 +179,7 @@ const ImportarDadosItens = () => {
       {toast && (
         <Toast type={toast.type} message={toast.message} onClose={() => setToast(null)} />
       )}
+      <ImportProgressBar />
       <div className="backdrop-blur-md bg-white/80 rounded-2xl shadow-xl border border-[#d1d5db] w-full max-w-[98vw] sm:max-w-[800px] p-3 sm:p-5 flex flex-col items-center gap-4 sm:gap-6">
         {/* Header */}
         <div className="text-center mb-3 sm:mb-4">
@@ -244,19 +255,33 @@ const ImportarDadosItens = () => {
           </div>
         </div>
         {/* Status da Importação */}
-        {importStatus && (
-          <div className={`${importStatus.success ? 'bg-[#f0fdf4] border-[#bbf7d0]' : 'bg-[#fef2f2] border-[#fecaca]'} border rounded-[10px] p-2 sm:p-3 mb-2 sm:mb-3 w-full`}>
+        {(importStatus || contextStatus) && (
+          <div className={`${
+            (importStatus?.success || contextStatus === 'sucesso') ? 'bg-[#f0fdf4] border-[#bbf7d0]' :
+            (contextStatus === 'erro') ? 'bg-[#fef2f2] border-[#fecaca]' :
+            'bg-[#eff6ff] border-[#bfdbfe]'
+          } border rounded-[10px] p-2 sm:p-3 mb-2 sm:mb-3 w-full`}>
             <div className="flex items-start gap-2 sm:gap-3">
-              {importStatus.success ? (
+              {(importStatus?.success || contextStatus === 'sucesso') ? (
                 <CheckCircle className="text-[#10b981]" style={{ width: 14, height: 14, marginTop: 2 }} />
-              ) : (
+              ) : (contextStatus === 'erro') ? (
                 <X className="text-[#ef4444]" style={{ width: 14, height: 14, marginTop: 2 }} />
+              ) : (
+                <div className="w-4 h-4 border-2 border-[#3b82f6] border-t-transparent rounded-full animate-spin" style={{ marginTop: 2 }}></div>
               )}
               <div>
-                <h4 className={`${importStatus.success ? 'text-[#10b981]' : 'text-[#ef4444]'} font-semibold m-0 mb-1 text-[12px] sm:text-[13px]`}>
-                  {importStatus.success ? 'Importação Iniciada' : 'Erro na Importação'}
+                <h4 className={`${
+                  (importStatus?.success || contextStatus === 'sucesso') ? 'text-[#10b981]' :
+                  (contextStatus === 'erro') ? 'text-[#ef4444]' :
+                  'text-[#3b82f6]'
+                } font-semibold m-0 mb-1 text-[12px] sm:text-[13px]`}>
+                  {(importStatus?.success || contextStatus === 'sucesso') ? 'Importação Concluída!' :
+                   (contextStatus === 'erro') ? 'Erro na Importação' :
+                   'Importando...'}
                 </h4>
-                <p className="text-[#6b7280] m-0 text-[11px] sm:text-[12px]">{importStatus.message}</p>
+                <p className="text-[#6b7280] m-0 text-[11px] sm:text-[12px]">
+                  {importStatus?.message || (progress && `${progress.processados} de ${progress.total} processados`)}
+                </p>
               </div>
             </div>
           </div>

@@ -69,6 +69,14 @@ CREATE TABLE usuarios (
   role TEXT DEFAULT 'admin',
   data_criacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE itens_nao_cadastrados (
+  id SERIAL PRIMARY KEY,
+  codigo TEXT NOT NULL,
+  descricao TEXT NOT NULL,
+  armazens JSONB,
+  data_importacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 */
 const express = require('express');
 const cors = require('cors');
@@ -222,7 +230,15 @@ app.post('/api/importar-excel', authenticateToken, excelUpload.single('arquivo')
       const workbook = XLSX.readFile(req.file.path);
       const sheetName = workbook.SheetNames[0];
       const sheet = workbook.Sheets[sheetName];
-      const data = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+      
+      // Configurar para ignorar as primeiras 6 linhas (cabeçalho) e começar na linha 7
+      const data = XLSX.utils.sheet_to_json(sheet, { 
+        defval: '',
+        range: 6 // Começar a partir da linha 7 (índice 6)
+      });
+      
+      console.log(`📊 Importação iniciada: ${data.length} linhas de dados encontradas (ignorando cabeçalho das primeiras 6 linhas)`);
+      
       importStatus[importId].status = 'importando';
       importStatus[importId].total = data.length;
       let processados = 0;
@@ -246,7 +262,7 @@ app.post('/api/importar-excel', authenticateToken, excelUpload.single('arquivo')
             const quantidade = Number(row['TOTAL']) || 0;
             const ordem_importacao = idx;
             if (!codigo || !nome) {
-              importStatus[importId].erros.push({ codigo: codigo || 'N/A', descricao: nome || 'N/A', motivo: 'Artigo não cadastrado', linha: idx + 2 });
+              importStatus[importId].erros.push({ codigo: codigo || 'N/A', descricao: nome || 'N/A', motivo: 'Artigo não cadastrado', linha: idx + 8 }); // +8 porque começamos na linha 7 (índice 6) + 2 para ajuste
               processados++;
               importStatus[importId].processados = processados;
               return;
@@ -263,7 +279,7 @@ app.post('/api/importar-excel', authenticateToken, excelUpload.single('arquivo')
               }
             });
             if (!existe.rows.length) {
-              importStatus[importId].erros.push({ codigo: codigo, descricao: nome || 'N/A', motivo: 'Artigo não cadastrado', linha: idx + 2, armazens });
+              importStatus[importId].erros.push({ codigo: codigo, descricao: nome || 'N/A', motivo: 'Artigo não cadastrado', linha: idx + 8, armazens }); // +8 porque começamos na linha 7 (índice 6) + 2 para ajuste
               processados++;
               importStatus[importId].processados = processados;
               return;
@@ -284,7 +300,7 @@ app.post('/api/importar-excel', authenticateToken, excelUpload.single('arquivo')
             processados++;
             importStatus[importId].processados = processados;
           } catch (err) {
-            importStatus[importId].erros.push({ codigo: row['Artigo'] || 'N/A', descricao: row['Descrição'] || 'N/A', motivo: 'Erro ao importar', erro: err?.message || String(err), linha: idx + 2 });
+            importStatus[importId].erros.push({ codigo: row['Artigo'] || 'N/A', descricao: row['Descrição'] || 'N/A', motivo: 'Erro ao importar', erro: err?.message || String(err), linha: idx + 8 }); // +8 porque começamos na linha 7 (índice 6) + 2 para ajuste
             processados++;
             importStatus[importId].processados = processados;
           }
@@ -309,6 +325,35 @@ app.get('/api/importar-excel-status/:id', authenticateToken, (req, res) => {
     return res.status(404).json({ error: 'Importação não encontrada.' });
   }
   res.json(importStatus[importId]);
+});
+
+// Endpoint para consultar status da importação de itens
+app.get('/api/importar-itens-status/:importId', authenticateToken, (req, res) => {
+  if (!req.user || (req.user.role !== 'admin' && req.user.role !== 'controller')) {
+    return res.status(403).json({ error: 'Acesso negado.' });
+  }
+
+  const { importId } = req.params;
+  
+  // Teste temporário para simular dados de progresso
+  if (importId === 'test-id') {
+    return res.json({
+      status: 'progresso',
+      total: 100,
+      processados: Math.floor(Math.random() * 100),
+      cadastrados: 10,
+      ignorados: 5,
+      erros: []
+    });
+  }
+  
+  const status = importStatus[importId];
+  
+  if (!status) {
+    return res.status(404).json({ error: 'Importação não encontrada.' });
+  }
+
+  res.json(status);
 });
 
 // --- Importação de novos itens via Excel ---
@@ -358,6 +403,33 @@ app.post('/api/importar-itens', authenticateToken, excelUploadItens.single('arqu
           const nome = descricao;
           const categoria = row['Categoria']?.toString().trim() || 'Sem categoria';
           const quantidade = Number(row['TOTAL']) || 0;
+          
+          // Novos campos do template atualizado (apenas colunas que existem na tabela)
+          const preco = row['Preço'] ? Number(row['Preço']) : null;
+          const localizacao = row['Localização']?.toString().trim() || null;
+          const observacoes = row['Observações']?.toString().trim() || null;
+          const familia = row['Família']?.toString().trim() || null;
+          const subfamilia = row['Subfamília']?.toString().trim() || null;
+          const setor = row['Setor']?.toString().trim() || null;
+          const comprimento = row['Comprimento'] ? Number(row['Comprimento']) : null;
+          const largura = row['Largura'] ? Number(row['Largura']) : null;
+          const altura = row['Altura'] ? Number(row['Altura']) : null;
+          const unidade = row['Unidade']?.toString().trim() || null;
+          const peso = row['Peso']?.toString().trim() || null;
+          const unidadePeso = row['Unidade Peso']?.toString().trim() || null;
+          const unidadeArmazenamento = row['Unidade Armazenamento']?.toString().trim() || null;
+          const tipocontrolo = row['Tipo Controle']?.toString().trim() || null;
+          
+          // Debug: Log dos valores para verificar se estão sendo lidos corretamente
+          console.log('Debug - Valores lidos do Excel:', {
+            codigo,
+            familia: row['Família'],
+            subfamilia: row['Subfamília'],
+            unidadeArmazenamento: row['Unidade Armazenamento'],
+            tipocontrolo: row['Tipo Controle'],
+            observacoes: row['Observações']
+          });
+          
           if (!codigo || !nome) {
             importStatus[importId].erros.push({ linha: idx + 2, motivo: 'Código ou descrição ausente', codigo: codigo || 'N/A' });
             processados++;
@@ -371,10 +443,22 @@ app.post('/api/importar-itens', authenticateToken, excelUploadItens.single('arqu
             importStatus[importId].processados = processados;
             return;
           }
-          // Inserir novo item
+          // Inserir novo item com todos os campos (apenas colunas que existem)
+          console.log('Inserindo item com valores:', {
+            nome, descricao, categoria, codigo, quantidade, preco,
+            localizacao, observacoes, familia, subfamilia, setor, comprimento,
+            largura, altura, unidade, peso, unidadePeso, unidadeArmazenamento, tipocontrolo
+          });
+          
           const result = await pool.query(
-            `INSERT INTO itens (nome, descricao, categoria, codigo, quantidade) VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-            [nome, descricao, categoria, codigo, quantidade]
+            `INSERT INTO itens (
+              nome, descricao, categoria, codigo, quantidade, preco, 
+              localizacao, observacoes, familia, subfamilia, setor, comprimento, 
+              largura, altura, unidade, peso, unidadepeso, unidadearmazenamento, tipocontrolo
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19) RETURNING id`,
+            [nome, descricao, categoria, codigo, quantidade, preco, 
+             localizacao, observacoes, familia, subfamilia, setor, comprimento, 
+             largura, altura, unidade, peso, unidadePeso, unidadeArmazenamento, tipocontrolo]
           );
           const itemId = result.rows[0].id;
           // Inserir armazéns (colunas WH) em paralelo
@@ -414,6 +498,86 @@ app.post('/api/importar-itens', authenticateToken, excelUploadItens.single('arqu
       importStatus[importId].terminadoEm = new Date();
     }
   });
+});
+
+// --- Download do template de importação ---
+app.get('/api/download-template', authenticateToken, (req, res) => {
+  if (!req.user || (req.user.role !== 'admin' && req.user.role !== 'controller')) {
+    return res.status(403).json({ error: 'Acesso negado.' });
+  }
+
+  try {
+    const XLSX = require('xlsx');
+    
+    // Criar dados de exemplo para o template (apenas colunas que existem na tabela)
+    const dadosExemplo = [
+      {
+        'Artigo': 'ART001',
+        'Descrição': 'Produto de exemplo',
+        'Categoria': 'Categoria exemplo',
+        'Preço': 100.50,
+        'TOTAL': 10,
+        'Localização': 'Prateleira A1',
+        'Observações': 'Observações do item',
+        'Família': 'Família exemplo',
+        'Subfamília': 'Subfamília exemplo',
+        'Setor': 'Setor exemplo',
+        'Comprimento': 10.5,
+        'Largura': 5.2,
+        'Altura': 3.1,
+        'Unidade': 'cm',
+        'Peso': '2.5',
+        'Unidade Peso': 'kg',
+        'Unidade Armazenamento': 'un',
+        'Tipo Controle': 'Manual',
+        'WH1': 5,
+        'WH2': 3,
+        'WH3': 2
+      }
+    ];
+
+    // Criar workbook
+    const workbook = XLSX.utils.book_new();
+    const worksheet = XLSX.utils.json_to_sheet(dadosExemplo);
+
+    // Definir largura das colunas (apenas colunas que existem na tabela)
+    const colWidths = [
+      { wch: 12 }, // Artigo
+      { wch: 30 }, // Descrição
+      { wch: 15 }, // Categoria
+      { wch: 10 }, // Preço
+      { wch: 8 },  // TOTAL
+      { wch: 15 }, // Localização
+      { wch: 25 }, // Observações
+      { wch: 15 }, // Família
+      { wch: 15 }, // Subfamília
+      { wch: 15 }, // Setor
+      { wch: 12 }, // Comprimento
+      { wch: 12 }, // Largura
+      { wch: 12 }, // Altura
+      { wch: 10 }, // Unidade
+      { wch: 10 }, // Peso
+      { wch: 15 }, // Unidade Peso
+      { wch: 20 }, // Unidade Armazenamento
+      { wch: 15 }, // Tipo Controle
+      { wch: 8 },  // WH1
+      { wch: 8 },  // WH2
+      { wch: 8 }   // WH3
+    ];
+    worksheet['!cols'] = colWidths;
+
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Template');
+
+    // Gerar buffer
+    const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', 'attachment; filename="template_importacao_itens.xlsx"');
+    res.send(buffer);
+  } catch (error) {
+    console.error('Erro ao gerar template:', error);
+    res.status(500).json({ error: 'Erro ao gerar template.' });
+  }
 });
 
 // --- Importação de dados dos itens existentes ---
@@ -491,17 +655,27 @@ app.post('/api/importar-dados-itens', authenticateToken, dadosItensUpload.single
 
           // Preparar dados para atualização
           const updateData = {};
-          const camposPermitidos = [
-            'familia', 'subfamilia', 'setor', 'comprimento', 'largura', 'altura', 
-            'unidade', 'peso', 'unidadePeso', 'unidadearmazenamento', 'observacoes'
-          ];
+          
+          // Mapeamento específico dos nomes das colunas do template para os campos do banco
+          const mapeamentoCampos = {
+            'Família': 'familia',
+            'Subfamília': 'subfamilia', 
+            'Setor': 'setor',
+            'Comprimento': 'comprimento',
+            'Largura': 'largura',
+            'Altura': 'altura',
+            'Unidade': 'unidade',
+            'Peso': 'peso',
+            'Unidade Peso': 'unidadePeso',
+            'Unidade Armazenamento': 'unidadearmazenamento',
+            'Observações': 'observacoes'
+          };
 
-          camposPermitidos.forEach(campo => {
-            const valorColuna = row[campo.charAt(0).toUpperCase() + campo.slice(1)] || 
-                               row[campo] || 
-                               row[campo.toUpperCase()];
-            if (valorColuna && valorColuna.toString().trim() !== '') {
-              updateData[campo] = valorColuna.toString().trim();
+          // Tentar mapear cada campo
+          Object.entries(mapeamentoCampos).forEach(([nomeColuna, campoBanco]) => {
+            const valor = row[nomeColuna];
+            if (valor && valor.toString().trim() !== '') {
+              updateData[campoBanco] = valor.toString().trim();
             }
           });
 
@@ -2529,6 +2703,74 @@ app.post('/api/limpar-imagens-orfas', authenticateToken, async (req, res) => {
       error: 'Erro na limpeza de imagens órfãs',
       details: error.message 
     });
+  }
+});
+
+// Rota para salvar itens não cadastrados
+app.post('/api/itens-nao-cadastrados', authenticateToken, async (req, res) => {
+  try {
+    if (!req.user || (req.user.role !== 'admin' && req.user.role !== 'controller')) {
+      return res.status(403).json({ error: 'Acesso negado.' });
+    }
+
+    const { itens } = req.body;
+    
+    if (!Array.isArray(itens)) {
+      return res.status(400).json({ error: 'Dados inválidos.' });
+    }
+
+    // Salvar no banco de dados
+    await pool.query('DELETE FROM itens_nao_cadastrados');
+    
+    for (const item of itens) {
+      await pool.query(
+        'INSERT INTO itens_nao_cadastrados (codigo, descricao, armazens, data_importacao) VALUES ($1, $2, $3, $4)',
+        [item.codigo, item.descricao, JSON.stringify(item.armazens || {}), new Date()]
+      );
+    }
+
+    res.json({ message: 'Itens não cadastrados salvos com sucesso', total: itens.length });
+  } catch (error) {
+    console.error('Erro ao salvar itens não cadastrados:', error);
+    res.status(500).json({ error: 'Erro ao salvar itens não cadastrados' });
+  }
+});
+
+// Rota para buscar itens não cadastrados
+app.get('/api/itens-nao-cadastrados', authenticateToken, async (req, res) => {
+  try {
+    if (!req.user || (req.user.role !== 'admin' && req.user.role !== 'controller')) {
+      return res.status(403).json({ error: 'Acesso negado.' });
+    }
+
+    const result = await pool.query('SELECT * FROM itens_nao_cadastrados ORDER BY data_importacao DESC');
+    
+    const itens = result.rows.map(row => ({
+      codigo: row.codigo,
+      descricao: row.descricao,
+      armazens: row.armazens ? JSON.parse(row.armazens) : {},
+      data_importacao: row.data_importacao
+    }));
+
+    res.json(itens);
+  } catch (error) {
+    console.error('Erro ao buscar itens não cadastrados:', error);
+    res.status(500).json({ error: 'Erro ao buscar itens não cadastrados' });
+  }
+});
+
+// Rota para remover itens não cadastrados
+app.delete('/api/itens-nao-cadastrados', authenticateToken, async (req, res) => {
+  try {
+    if (!req.user || (req.user.role !== 'admin' && req.user.role !== 'controller')) {
+      return res.status(403).json({ error: 'Acesso negado.' });
+    }
+
+    await pool.query('DELETE FROM itens_nao_cadastrados');
+    res.json({ message: 'Itens não cadastrados removidos com sucesso' });
+  } catch (error) {
+    console.error('Erro ao remover itens não cadastrados:', error);
+    res.status(500).json({ error: 'Erro ao remover itens não cadastrados' });
   }
 });
 

@@ -108,10 +108,41 @@ const CadastrarItem = () => {
 
       if (response.ok) {
         setToast({ type: 'success', message: 'Item cadastrado com sucesso!' });
-        // Remover do localStorage de não cadastrados
-        const artigosNaoCadastrados = JSON.parse(localStorage.getItem('artigos_nao_cadastrados') || '[]');
-        const novos = artigosNaoCadastrados.filter(a => a.codigo !== formData.codigo);
-        localStorage.setItem('artigos_nao_cadastrados', JSON.stringify(novos));
+        
+        // Remover do servidor se existir na lista de não cadastrados
+        try {
+          const token = localStorage.getItem('token');
+          const responseNaoCadastrados = await fetch('/api/itens-nao-cadastrados', {
+            headers: {
+              'Authorization': `Bearer ${token}`
+            }
+          });
+          
+          if (responseNaoCadastrados.ok) {
+            const itensNaoCadastrados = await responseNaoCadastrados.json();
+            const itemParaRemover = itensNaoCadastrados.find(item => item.codigo === formData.codigo);
+            
+            if (itemParaRemover) {
+              // Remover apenas este item específico
+              const novosItens = itensNaoCadastrados.filter(item => item.codigo !== formData.codigo);
+              
+              const responseUpdate = await fetch('/api/itens-nao-cadastrados', {
+                method: 'POST',
+                headers: {
+                  'Authorization': `Bearer ${token}`,
+                  'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ itens: novosItens })
+              });
+              
+              if (responseUpdate.ok) {
+                console.log('Item removido da lista de não cadastrados');
+              }
+            }
+          }
+        } catch (error) {
+          console.error('Erro ao remover item da lista de não cadastrados:', error);
+        }
         // Limpar formulário
         setFormData({
           codigo: '',
@@ -159,27 +190,47 @@ const CadastrarItem = () => {
     const descricao = params.get('descricao');
     let armazens = [];
     let quantidade = '';
-    if (codigo) {
-      // Buscar no localStorage o item não cadastrado
-      const artigosNaoCadastrados = JSON.parse(localStorage.getItem('artigos_nao_cadastrados') || '[]');
-      const artigo = artigosNaoCadastrados.find(a => a.codigo === codigo);
-      if (artigo && Array.isArray(artigo.armazens)) {
-        armazens = artigo.armazens;
-        quantidade = armazens.reduce((soma, a) => soma + (parseFloat(a.quantidade) || 0), 0);
-      } else if (artigo && artigo.armazens && typeof artigo.armazens === 'object') {
-        // Se vier como objeto, converte para array de objetos
-        armazens = Object.entries(artigo.armazens).map(([nome, quantidade]) => ({ nome, quantidade }));
-        quantidade = armazens.reduce((soma, a) => soma + (parseFloat(a.quantidade) || 0), 0);
+    
+    const buscarItemNaoCadastrado = async () => {
+      if (codigo) {
+        // Buscar no servidor o item não cadastrado
+        try {
+          const token = localStorage.getItem('token');
+          const response = await fetch('/api/itens-nao-cadastrados', {
+            headers: {
+              'Authorization': `Bearer ${token}`
+            }
+          });
+          
+          if (response.ok) {
+            const artigosNaoCadastrados = await response.json();
+            const artigo = artigosNaoCadastrados.find(a => a.codigo === codigo);
+            
+            if (artigo && Array.isArray(artigo.armazens)) {
+              armazens = artigo.armazens;
+              quantidade = armazens.reduce((soma, a) => soma + (parseFloat(a.quantidade) || 0), 0);
+            } else if (artigo && artigo.armazens && typeof artigo.armazens === 'object') {
+              // Se vier como objeto, converte para array de objetos
+              armazens = Object.entries(artigo.armazens).map(([nome, quantidade]) => ({ nome, quantidade }));
+              quantidade = armazens.reduce((soma, a) => soma + (parseFloat(a.quantidade) || 0), 0);
+            }
+          }
+        } catch (error) {
+          console.error('Erro ao buscar item não cadastrado:', error);
+        }
       }
-    }
-    setFormData(prev => ({
-      ...prev,
-      codigo: codigo || prev.codigo,
-      descricao: descricao || prev.descricao,
-      armazens: armazens.length > 0 ? armazens : prev.armazens, // novo campo
-      quantidade: quantidade !== '' ? quantidade : prev.quantidade // novo campo
-      // tipocontrolo permanece inalterado
-    }));
+      
+      setFormData(prev => ({
+        ...prev,
+        codigo: codigo || prev.codigo,
+        descricao: descricao || prev.descricao,
+        armazens: armazens.length > 0 ? armazens : prev.armazens, // novo campo
+        quantidade: quantidade !== '' ? quantidade : prev.quantidade // novo campo
+        // tipocontrolo permanece inalterado
+      }));
+    };
+    
+    buscarItemNaoCadastrado();
   }, [location.search]);
 
   React.useEffect(() => {

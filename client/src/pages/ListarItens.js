@@ -11,6 +11,12 @@ const ListarItens = () => {
   const [toast, setToast] = useState(null);
   const [paginaAtual, setPaginaAtual] = useState(1);
   const [loading, setLoading] = useState(false);
+  
+  // Estados para ordenação de colunas
+  const [ordenacao, setOrdenacao] = useState({
+    campo: null,
+    direcao: 'asc' // 'asc' ou 'desc'
+  });
   // Remover variáveis não utilizadas
   // const [quantidadeFiltro, setQuantidadeFiltro] = useState(''); // não usado
   // const [itensPorPagina, setItensPorPagina] = useState(10); // não usado
@@ -40,14 +46,29 @@ const ListarItens = () => {
   const [naoCadastrados, setNaoCadastrados] = useState([]);
   const [mostrarInativos, setMostrarInativos] = useState(false);
 
-  // Buscar artigos não cadastrados do localStorage ao montar
+  // Buscar artigos não cadastrados do servidor ao montar
   useEffect(() => {
-    const salvos = localStorage.getItem('artigos_nao_cadastrados');
-    if (salvos) {
+    const fetchNaoCadastrados = async () => {
       try {
-        setNaoCadastrados(JSON.parse(salvos));
-      } catch {}
-    }
+        const token = localStorage.getItem('token');
+        const response = await fetch('/api/itens-nao-cadastrados', {
+          headers: {
+            'Authorization': `Bearer ${token}`
+          }
+        });
+        
+        if (response.ok) {
+          const data = await response.json();
+          setNaoCadastrados(data);
+        } else {
+          console.error('Erro ao buscar itens não cadastrados:', response.statusText);
+        }
+      } catch (error) {
+        console.error('Erro ao buscar itens não cadastrados:', error);
+      }
+    };
+
+    fetchNaoCadastrados();
   }, []);
 
   useEffect(() => {
@@ -106,7 +127,47 @@ const ListarItens = () => {
     }
   };
 
-  // Filtro de itens ativos/inativos
+  // Função para ordenar itens
+  const ordenarItens = (itens) => {
+    if (!ordenacao.campo) return itens;
+    
+    return [...itens].sort((a, b) => {
+      let valorA, valorB;
+      
+      switch (ordenacao.campo) {
+        case 'codigo':
+          valorA = a.codigo || '';
+          valorB = b.codigo || '';
+          break;
+        case 'nome':
+          valorA = a.nome || '';
+          valorB = b.nome || '';
+          break;
+        case 'setor':
+          valorA = a.setor || '';
+          valorB = b.setor || '';
+          break;
+        case 'quantidade':
+          valorA = a.quantidade || 0;
+          valorB = b.quantidade || 0;
+          break;
+        default:
+          return 0;
+      }
+      
+      // Comparação para strings
+      if (typeof valorA === 'string' && typeof valorB === 'string') {
+        valorA = valorA.toLowerCase();
+        valorB = valorB.toLowerCase();
+      }
+      
+      if (valorA < valorB) return ordenacao.direcao === 'asc' ? -1 : 1;
+      if (valorA > valorB) return ordenacao.direcao === 'asc' ? 1 : -1;
+      return 0;
+    });
+  };
+
+  // Filtro de itens ativos/inativos e busca geral
   const itensFiltrados = Array.isArray(itens) ? itens.filter(item => {
     if (!mostrarInativos && !item.ativo) return false;
     const termo = searchTerm.trim().toLowerCase();
@@ -117,8 +178,11 @@ const ListarItens = () => {
       (item.descricao && item.descricao.toLowerCase().includes(termo))
     );
   }) : [];
-  const totalPaginas = Math.ceil(itensFiltrados.length / 10); // itensPorPagina não usado
-  const itensPagina = Array.isArray(itensFiltrados) ? itensFiltrados.slice((paginaAtual - 1) * 10, paginaAtual * 10) : []; // itensPorPagina não usado
+
+  // Aplicar ordenação
+  const itensOrdenados = ordenarItens(itensFiltrados);
+  const totalPaginas = Math.ceil(itensOrdenados.length / 10); // itensPorPagina não usado
+  const itensPagina = Array.isArray(itensOrdenados) ? itensOrdenados.slice((paginaAtual - 1) * 10, paginaAtual * 10) : []; // itensPorPagina não usado
 
   // Funções do modal de busca por imagem
   const handleFileSelect = (file) => {
@@ -189,6 +253,28 @@ const ListarItens = () => {
     fetchItens();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [paginaAtual, mostrarInativos]);
+
+  // Resetar página quando ordenação mudar
+  useEffect(() => {
+    setPaginaAtual(1);
+  }, [ordenacao]);
+
+  // Função para lidar com ordenação
+  const handleOrdenacao = (campo) => {
+    if (ordenacao.campo === campo) {
+      // Se clicar no mesmo campo, alterna a direção
+      setOrdenacao({
+        campo,
+        direcao: ordenacao.direcao === 'asc' ? 'desc' : 'asc'
+      });
+    } else {
+      // Se clicar em um campo diferente, define como ascendente
+      setOrdenacao({
+        campo,
+        direcao: 'asc'
+      });
+    }
+  };
 
   return (
     <div className="bg-[#f3f6fd] flex flex-col items-center justify-center py-2 px-1 sm:px-4 pt-2">
@@ -364,7 +450,7 @@ const ListarItens = () => {
             </button>
           </div>
           {/* Itens não cadastrados - agora abaixo do card de busca visual */}
-          {naoCadastrados.length > 0 && isAdmin && (
+          {naoCadastrados.length > 0 && (isAdmin || user?.role === 'controller') && (
             <div style={{
               margin: '18px 0 0 0',
               width: '100%',
@@ -450,6 +536,7 @@ const ListarItens = () => {
                   <div key={item.id} className="bg-white rounded-xl shadow border border-[#d1d5db] w-full max-w-[400px] p-4 flex flex-col gap-2 sm:gap-3">
                     <div className="font-bold text-[#0915FF] text-base sm:text-lg">Código: <span className="text-[#222]">{item.codigo}</span></div>
                     <div className="text-[#444] text-sm sm:text-base font-medium">Descrição: <span className="text-[#222] font-normal">{item.nome || item.descricao}</span></div>
+                    <div className="font-semibold text-[#222] text-sm sm:text-base">Setor: <span className="ml-1 px-2 py-1 rounded bg-blue-100 text-blue-700">{item.setor || '-'}</span></div>
                     <div className="font-semibold text-[#222] text-sm sm:text-base">Quantidade: <span className={`ml-1 px-2 py-1 rounded ${item.quantidade > 0 ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>{item.quantidade != null && item.quantidade !== '' ? item.quantidade : 0}</span></div>
                     <div className="flex gap-2 sm:gap-4 mt-2">
                       <button onClick={() => navigate(`/item/${item.id}`)} className="bg-[#0915FF] text-white rounded-lg px-3 py-2 font-bold text-xs sm:text-base w-full transition hover:bg-[#2336ff]">Detalhes</button>
@@ -544,16 +631,71 @@ const ListarItens = () => {
                     <table className="min-w-full text-xs sm:text-[16px]">
                       <thead>
                         <tr className="bg-gradient-to-r from-[#0a1fff] to-[#3b82f6] text-white font-bold rounded-t-2xl">
-                          <th className="py-4 px-6 w-32 first:rounded-tl-2xl last:rounded-tr-2xl">CÓDIGO</th>
-                          <th className="py-4 px-6">DESCRIÇÃO</th>
-                          <th className="py-4 px-6 w-32">QUANTIDADE</th>
-                          <th className="py-4 px-6 w-40">AÇÃO</th>
+                          <th 
+                            className="py-4 px-6 w-32 first:rounded-tl-2xl cursor-pointer hover:bg-blue-600 transition-colors"
+                            onClick={() => handleOrdenacao('codigo')}
+                          >
+                            <div className="flex items-center justify-center gap-2">
+                              CÓDIGO
+                              {ordenacao.campo === 'codigo' && (
+                                <span className="text-sm">{ordenacao.direcao === 'asc' ? '↑' : '↓'}</span>
+                              )}
+                            </div>
+                          </th>
+                          <th 
+                            className="py-4 px-6 cursor-pointer hover:bg-blue-600 transition-colors"
+                            onClick={() => handleOrdenacao('nome')}
+                          >
+                            <div className="flex items-center justify-center gap-2">
+                              DESCRIÇÃO
+                              {ordenacao.campo === 'nome' && (
+                                <span className="text-sm">{ordenacao.direcao === 'asc' ? '↑' : '↓'}</span>
+                              )}
+                            </div>
+                          </th>
+                          <th 
+                            className="py-4 px-6 w-32 cursor-pointer hover:bg-blue-600 transition-colors"
+                            onClick={() => handleOrdenacao('setor')}
+                          >
+                            <div className="flex items-center justify-center gap-2">
+                              SETOR
+                              {ordenacao.campo === 'setor' && (
+                                <span className="text-sm">{ordenacao.direcao === 'asc' ? '↑' : '↓'}</span>
+                              )}
+                            </div>
+                          </th>
+                          <th 
+                            className="py-4 px-6 w-32 cursor-pointer hover:bg-blue-600 transition-colors"
+                            onClick={() => handleOrdenacao('quantidade')}
+                          >
+                            <div className="flex items-center justify-center gap-2">
+                              QUANTIDADE
+                              {ordenacao.campo === 'quantidade' && (
+                                <span className="text-sm">{ordenacao.direcao === 'asc' ? '↑' : '↓'}</span>
+                              )}
+                            </div>
+                          </th>
+                          <th className="py-4 px-6 w-40 last:rounded-tr-2xl">
+                            <div className="flex items-center justify-center gap-2">
+                              AÇÃO
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setOrdenacao({ campo: null, direcao: 'asc' });
+                                }}
+                                className="text-xs bg-red-500 text-white px-2 py-1 rounded hover:bg-red-600 transition-colors"
+                                title="Limpar ordenação"
+                              >
+                                Limpar
+                              </button>
+                            </div>
+                          </th>
                         </tr>
                       </thead>
                       <tbody>
                         {itensPagina.length === 0 ? (
                           <tr>
-                            <td colSpan={4} style={{ textAlign: 'center', color: '#888', padding: '32px 0' }}>Nenhum item encontrado.</td>
+                            <td colSpan={5} style={{ textAlign: 'center', color: '#888', padding: '32px 0' }}>Nenhum item encontrado.</td>
                           </tr>
                         ) : (
                           itensPagina.map(item => (
@@ -564,6 +706,11 @@ const ListarItens = () => {
                                 </Link>
                               </td>
                               <td className="py-3 px-6 break-words whitespace-pre-line max-w-xs" title={item.nome}>{item.nome}</td>
+                              <td className="py-3 px-6 w-32">
+                                <span className="inline-flex items-center gap-1 px-3 py-1 rounded-full font-bold text-[15px] shadow-sm bg-blue-100 text-blue-700">
+                                  {item.setor || '-'}
+                                </span>
+                              </td>
                               <td className="py-3 px-6 w-32">
                                 <span className={`inline-flex items-center gap-1 px-3 py-1 rounded-full font-bold text-[15px] shadow-sm ${item.quantidade === 0 ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>
                                   <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" class="lucide lucide-check-circle w-4 h-4"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="m9 11 3 3L22 4"/></svg> {item.quantidade != null && item.quantidade !== '' ? item.quantidade : 0}

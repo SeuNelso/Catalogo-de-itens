@@ -3,6 +3,7 @@ import { useImportProgress } from '../contexts/ImportProgressContext';
 
 const ImportProgressBar = () => {
   const { status, progress } = useImportProgress();
+  
   if (status !== 'progresso' || !progress || !progress.total) return null;
   const percent = Math.round((progress.processados / progress.total) * 100);
   return (

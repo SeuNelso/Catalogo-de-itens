@@ -163,144 +163,141 @@ const DetalhesItem = () => {
             )}
           </div>
         </div>
-        <div className="max-w-3xl mx-auto bg-white rounded-2xl shadow-lg p-4 sm:p-8 mt-2 sm:mt-4 flex flex-col gap-4 sm:gap-6">
-          {/* Código e Descrição acima das imagens */}
-          <div className="flex flex-col gap-2 mb-4">
-            <div className="text-[#0915FF] font-extrabold text-lg sm:text-2xl text-center sm:text-left">{item.codigo}</div>
-            <div className="font-bold text-gray-900 text-base sm:text-lg text-center sm:text-left">{item.descricao}</div>
-          </div>
-          {/* Images */}
-          <div className="space-y-4 sm:space-y-6">
-            <div className="bg-white rounded-lg shadow-md p-3 sm:p-6">
-              <h2 className="text-[#0915FF] text-lg sm:text-xl font-bold mb-3 sm:mb-4">Imagens</h2>
-              {item.imagens && item.imagens.length > 0 ? (
-                <div className="overflow-x-auto flex gap-3 sm:gap-4 pb-2">
-                  {item.imagens.map((imagem, index) => (
-                    <div
-                      key={index}
-                      className="min-w-[90px] min-h-[90px] max-w-[120px] max-h-[120px] overflow-hidden rounded-lg bg-[#f3f4f6] flex items-center justify-center cursor-pointer"
-                      onClick={() => setZoomImage(imagem)}
-                    >
-                      {imagem.caminho ? (
-                        <img
-                          src={imagem.caminho}
-                          alt={`Foto ${index + 1} do item ${item.nome}`}
-                          className="w-full h-full object-cover"
-                          onError={(e) => {
-                            console.error('Erro ao carregar imagem:', imagem.caminho);
-                            e.target.style.display = 'none';
-                            // Adicionar um placeholder de erro
-                            const placeholder = document.createElement('div');
-                            placeholder.className = 'w-full h-full bg-gray-200 flex items-center justify-center text-gray-500 text-xs';
-                            placeholder.textContent = 'Imagem não disponível';
-                            e.target.parentNode.appendChild(placeholder);
-                          }}
-                          onLoad={() => {
-                            console.log('Imagem carregada com sucesso:', imagem.caminho);
-                          }}
-                          crossOrigin="anonymous"
-                          referrerPolicy="no-referrer"
-                        />
-                      ) : (
-                        <div className="w-full h-full bg-gray-200 flex items-center justify-center text-gray-500 text-xs">
-                          Sem imagem
-                        </div>
-                      )}
+        <div className="max-w-7xl mx-auto mt-2 sm:mt-4">
+          {/* Layout principal em duas colunas */}
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 sm:gap-6">
+            {/* Coluna Esquerda - Fotos, Informações Básicas e Itens Compostos */}
+            <div className="space-y-4 sm:space-y-6">
+              {/* Código e Descrição */}
+              <div className="bg-white rounded-2xl shadow-lg p-4 sm:p-8">
+                <div className="flex flex-col gap-2 mb-4">
+                  <div className="text-[#0915FF] font-extrabold text-lg sm:text-2xl text-center sm:text-left">{item.codigo}</div>
+                  <div className="font-bold text-gray-900 text-base sm:text-lg text-center sm:text-left">{item.descricao}</div>
+                </div>
+              </div>
+
+              {/* Images */}
+              <div className="bg-white rounded-2xl shadow-lg p-4 sm:p-8">
+                <h2 className="text-[#0915FF] text-lg sm:text-xl font-bold mb-3 sm:mb-4">Imagens</h2>
+                {item.imagens && item.imagens.length > 0 ? (
+                  <div className="overflow-x-auto flex gap-3 sm:gap-4 pb-2">
+                    {item.imagens.map((imagem, index) => (
+                      <div
+                        key={index}
+                        className="min-w-[90px] min-h-[90px] max-w-[120px] max-h-[120px] overflow-hidden rounded-lg bg-[#f3f4f6] flex items-center justify-center cursor-pointer"
+                        onClick={() => setZoomImage(imagem)}
+                      >
+                        {imagem.caminho ? (
+                          <img
+                            src={imagem.caminho}
+                            alt={`Foto ${index + 1} do item ${item.nome}`}
+                            className="w-full h-full object-cover"
+                            onError={(e) => {
+                              console.error('Erro ao carregar imagem:', imagem.caminho);
+                              e.target.style.display = 'none';
+                              // Adicionar um placeholder de erro
+                              const placeholder = document.createElement('div');
+                              placeholder.className = 'w-full h-full bg-gray-200 flex items-center justify-center text-gray-500 text-xs';
+                              placeholder.textContent = 'Imagem não disponível';
+                              e.target.parentNode.appendChild(placeholder);
+                            }}
+                            onLoad={() => {
+                              console.log('Imagem carregada com sucesso:', imagem.caminho);
+                            }}
+                            crossOrigin="anonymous"
+                            referrerPolicy="no-referrer"
+                          />
+                        ) : (
+                          <div className="w-full h-full bg-gray-200 flex items-center justify-center text-gray-500 text-xs">
+                            Sem imagem
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-center py-8 sm:py-12">
+                    <Package className="w-12 h-12 sm:w-16 sm:h-16 text-gray-800 mx-auto mb-4" />
+                    <p className="text-gray-600">Nenhuma imagem disponível</p>
+                  </div>
+                )}
+              </div>
+
+              {/* Informações Básicas */}
+              <div className="bg-white rounded-2xl shadow-lg p-4 sm:p-8">
+                <h2 className="text-[#0915FF] text-lg sm:text-xl font-bold mb-3 sm:mb-4">Informações Básicas</h2>
+                <div className="grid grid-cols-1 gap-y-2 sm:gap-y-3">
+                  <div className="flex items-center mb-1 sm:mb-2">
+                    <span className="text-gray-500 font-semibold text-xs sm:text-base">Família:</span>
+                    <span className="ml-2 text-base sm:text-lg font-bold text-gray-800">{item.familia || '-'}</span>
+                  </div>
+                  <div className="flex items-center mb-1 sm:mb-2">
+                    <span className="text-gray-500 font-semibold text-xs sm:text-base">Subfamília:</span>
+                    <span className="ml-2 text-base sm:text-lg font-bold text-gray-800">{item.subfamilia || '-'}</span>
+                  </div>
+                  <div className="flex items-center mb-1 sm:mb-2">
+                    <span className="text-gray-500 font-semibold text-xs sm:text-base">Setor:</span>
+                    <span className="ml-2 text-base sm:text-lg font-bold text-gray-800">{item.setor || '-'}</span>
+                  </div>
+                  <div className="flex items-center mb-1 sm:mb-2">
+                    <span className="text-gray-500 font-semibold text-xs sm:text-base">Dimensões:</span>
+                    <span className="ml-2 text-base sm:text-lg font-bold text-gray-800">{item.comprimento || '-'} × {item.largura || '-'} × {item.altura || '-'} {item.unidade || ''}</span>
+                  </div>
+                  <div className="flex items-center mb-1 sm:mb-2">
+                    <span className="text-gray-500 font-semibold text-xs sm:text-base">Peso:</span>
+                    <span className="ml-2 text-base sm:text-lg font-bold text-gray-800">{item.peso || '-'}{item.unidadepeso ? <span className='ml-1 text-xs sm:text-base text-gray-500 font-semibold'>({item.unidadepeso})</span> : ''}</span>
+                  </div>
+                  <div className="flex items-center mb-1 sm:mb-2">
+                    <span className="text-gray-500 font-semibold text-xs sm:text-base">Tipo de controlo:</span>
+                    <span className="ml-2 text-base sm:text-lg font-bold text-gray-800">{item.tipocontrolo || '-'}</span>
+                  </div>
+                  <div className="flex items-center mb-1 sm:mb-2">
+                    <span className="text-gray-500 font-semibold text-xs sm:text-base">Unidade de Armazenamento:</span>
+                    <span className="ml-2 text-base sm:text-lg font-bold text-gray-800">{item.unidadearmazenamento || '-'}</span>
+                  </div>
+                  <div className="flex flex-col mb-1 sm:mb-2">
+                    <span className="text-gray-500 font-semibold text-xs sm:text-base">Observações:</span>
+                    <span className="ml-0 text-base sm:text-lg font-bold text-gray-800 whitespace-pre-line">{item.observacoes || '-'}</span>
+                  </div>
+                </div>
+                <div className="flex items-center mt-4">
+                  <Package className="w-4 h-4 text-gray-900 mr-2" />
+                  <div>
+                    <p className="text-xs sm:text-sm text-gray-900">Quantidade Total</p>
+                    <span className={`px-3 py-1 rounded-full font-bold text-xs sm:text-[15px] shadow-sm ${item.quantidade === 0 ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>{item.quantidade}</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Itens Compostos */}
+              <ItensCompostos 
+                itemId={id} 
+                isEditing={false} 
+                imagensCompostas={item?.imagensCompostas || []}
+              />
+            </div>
+
+            {/* Coluna Direita - Quantidades por Armazém */}
+            <div className="bg-white rounded-2xl shadow-lg p-4 sm:p-8">
+              <h2 className="text-[#0915FF] text-lg sm:text-xl font-bold mb-3 sm:mb-4">Quantidades por Armazém</h2>
+              {item.armazens && item.armazens.length > 0 ? (
+                <div className="space-y-2">
+                  {[...item.armazens].sort((a, b) => (a.armazem || '').localeCompare(b.armazem || '')).map((a, idx) => (
+                    <div key={idx} className="flex items-center justify-between p-2 bg-gray-50 rounded-lg">
+                      <span className="text-sm font-medium text-gray-700">{a.armazem}</span>
+                      <span className={`px-3 py-1 rounded-full font-bold text-sm ${a.quantidade === 0 ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>
+                        {a.quantidade}
+                      </span>
                     </div>
                   ))}
                 </div>
               ) : (
-                <div className="text-center py-8 sm:py-12">
-                  <Package className="w-12 h-12 sm:w-16 sm:h-16 text-gray-800 mx-auto mb-4" />
-                  <p className="text-gray-600">Nenhuma imagem disponível</p>
+                <div className="text-center py-8">
+                  <Package className="w-12 h-12 text-gray-400 mx-auto mb-2" />
+                  <p className="text-gray-500 text-sm">Nenhum armazém cadastrado</p>
                 </div>
               )}
             </div>
-          </div>
-          {/* Details */}
-          <div className="space-y-4 sm:space-y-6">
-            {/* Basic Info */}
-            <div className="bg-white rounded-lg shadow-md p-3 sm:p-6">
-              <h2 className="text-[#0915FF] text-lg sm:text-xl font-bold mb-3 sm:mb-4">Informações Básicas</h2>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-2 sm:gap-y-3">
-                <div className="flex items-center mb-1 sm:mb-2">
-                  <span className="text-gray-500 font-semibold text-xs sm:text-base">Família:</span>
-                  <span className="ml-2 text-base sm:text-lg font-bold text-gray-800">{item.familia || '-'}</span>
-                </div>
-                <div className="flex items-center mb-1 sm:mb-2">
-                  <span className="text-gray-500 font-semibold text-xs sm:text-base">Subfamília:</span>
-                  <span className="ml-2 text-base sm:text-lg font-bold text-gray-800">{item.subfamilia || '-'}</span>
-                </div>
-                <div className="flex items-center mb-1 sm:mb-2">
-                  <span className="text-gray-500 font-semibold text-xs sm:text-base">Setor:</span>
-                  <span className="ml-2 text-base sm:text-lg font-bold text-gray-800">{item.setor || '-'}</span>
-                </div>
-                <div></div>
-                <div className="flex items-center mb-1 sm:mb-2">
-                  <span className="text-gray-500 font-semibold text-xs sm:text-base">Dimensões:</span>
-                  <span className="ml-2 text-base sm:text-lg font-bold text-gray-800">{item.comprimento || '-'} × {item.largura || '-'} × {item.altura || '-'} {item.unidade || ''}</span>
-                </div>
-                <div className="flex items-center mb-1 sm:mb-2">
-                  <span className="text-gray-500 font-semibold text-xs sm:text-base">Peso:</span>
-                  <span className="ml-2 text-base sm:text-lg font-bold text-gray-800">{item.peso || '-'}{item.unidadepeso ? <span className='ml-1 text-xs sm:text-base text-gray-500 font-semibold'>({item.unidadepeso})</span> : ''}</span>
-                </div>
-                <div className="flex items-center mb-1 sm:mb-2">
-                  <span className="text-gray-500 font-semibold text-xs sm:text-base">Tipo de controlo:</span>
-                  <span className="ml-2 text-base sm:text-lg font-bold text-gray-800">{item.tipocontrolo || '-'}</span>
-                </div>
-                <div></div>
-                <div className="flex items-center mb-1 sm:mb-2">
-                  <span className="text-gray-500 font-semibold text-xs sm:text-base">Unidade de Armazenamento:</span>
-                  <span className="ml-2 text-base sm:text-lg font-bold text-gray-800">{item.unidadearmazenamento || '-'}</span>
-                </div>
-                <div className="md:col-span-1 flex flex-col mb-1 sm:mb-2">
-                  <span className="text-gray-500 font-semibold text-xs sm:text-base">Observações:</span>
-                  <span className="ml-0 text-base sm:text-lg font-bold text-gray-800 whitespace-pre-line">{item.observacoes || '-'}</span>
-                </div>
-              </div>
-              <div className="flex items-center mt-4">
-                <Package className="w-4 h-4 text-gray-900 mr-2" />
-                <div>
-                  <p className="text-xs sm:text-sm text-gray-900">Quantidade</p>
-                  <span className={`px-3 py-1 rounded-full font-bold text-xs sm:text-[15px] shadow-sm ${item.quantidade === 0 ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>{item.quantidade}</span>
-                </div>
-              </div>
-            </div>
-            {/* Quantidade por armazém */}
-            {item.armazens && (
-              <div className="mt-4 sm:mt-6 overflow-x-auto">
-                <h3 className="font-semibold text-gray-900 mb-2">Quantidade por Armazém</h3>
-                <table className="min-w-[220px] border border-gray-200 rounded text-xs sm:text-sm">
-                  <thead>
-                    <tr>
-                      <th className="px-3 py-2 border-b text-left font-bold text-gray-700">Armazém</th>
-                      <th className="px-3 py-2 border-b text-left font-bold text-gray-700">Quantidade</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {item.armazens.length === 0 ? (
-                      <tr>
-                        <td colSpan={2} className="px-3 py-2 text-gray-500 text-center">Nenhum armazém cadastrado</td>
-                      </tr>
-                    ) : (
-                      [...item.armazens].sort((a, b) => (a.armazem || '').localeCompare(b.armazem || '')).map((a, idx) => (
-                        <tr key={idx}>
-                          <td className="px-3 py-1 border-b text-gray-700">{a.armazem}</td>
-                          <td className="px-3 py-1 border-b text-gray-900 font-semibold">{a.quantidade}</td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            )}
-            
-            {/* Itens Compostos */}
-            <ItensCompostos 
-              itemId={id} 
-              isEditing={false} 
-              imagensCompostas={item?.imagensCompostas || []}
-            />
           </div>
         </div>
       </div>

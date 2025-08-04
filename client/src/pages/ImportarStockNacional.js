@@ -40,9 +40,28 @@ const ImportarStockNacional = () => {
           const naoCad = (data.erros || []).filter(e => e.motivo === 'Artigo não cadastrado');
           console.log('Erros da importação:', data.erros); // <-- Adicionado para depuração
           setNaoCadastrados(naoCad);
-          // Salvar no localStorage para ListarItens
+          
+          // Salvar no servidor para sincronização entre dispositivos
           if (naoCad.length > 0) {
-            localStorage.setItem('artigos_nao_cadastrados', JSON.stringify(naoCad));
+            try {
+              const token = localStorage.getItem('token');
+              const response = await fetch('/api/itens-nao-cadastrados', {
+                method: 'POST',
+                headers: {
+                  'Authorization': `Bearer ${token}`,
+                  'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ itens: naoCad })
+              });
+              
+              if (response.ok) {
+                console.log('Itens não cadastrados sincronizados com sucesso');
+              } else {
+                console.error('Erro ao sincronizar itens não cadastrados:', response.statusText);
+              }
+            } catch (error) {
+              console.error('Erro ao sincronizar itens não cadastrados:', error);
+            }
           }
         }
       }
