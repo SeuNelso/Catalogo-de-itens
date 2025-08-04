@@ -12,4 +12,8 @@
 
 html, body {
   font-family: 'Inter', Arial, Helvetica, sans-serif;
+}
+
+body {
+  padding-top: 56px;
 } 
