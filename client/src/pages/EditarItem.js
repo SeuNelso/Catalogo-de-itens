@@ -12,7 +12,7 @@ const EditarItem = () => {
   const [selectedFiles, setSelectedFiles] = useState([]);
   const [imagensExistentes, setImagensExistentes] = useState([]);
   const [imagensRemovidas, setImagensRemovidas] = useState([]);
-  const [substituirImagens, setSubstituirImagens] = useState(false);
+
   const [imagemCompleta, setImagemCompleta] = useState(null);
 
   const [toast, setToast] = useState(null);
@@ -102,21 +102,12 @@ const EditarItem = () => {
       return;
     }
     
-    // Se substituirImagens está ativo, limpar imagens existentes e selecionadas
-    if (substituirImagens) {
-      // Adicionar todas as imagens existentes à lista de removidas
-      setImagensRemovidas(prev => [...prev, ...imagensExistentes]);
-      setImagensExistentes([]);
-      setSelectedFiles(validFiles);
-      setToast({ type: 'info', message: 'Imagens existentes serão substituídas pelas novas imagens' });
-    } else {
-      // Verificar limite de 5 imagens
-      if (selectedFiles.length + validFiles.length + imagensExistentes.length > 5) {
-        setToast({ type: 'error', message: `Máximo de 5 imagens permitidas por item. Você já tem ${imagensExistentes.length} imagens existentes e ${selectedFiles.length} novas selecionadas.` });
-        return;
-      }
-      setSelectedFiles(prev => [...prev, ...validFiles]);
+    // Verificar limite de 5 imagens
+    if (selectedFiles.length + validFiles.length + imagensExistentes.length > 5) {
+      setToast({ type: 'error', message: `Máximo de 5 imagens permitidas por item. Você já tem ${imagensExistentes.length} imagens existentes e ${selectedFiles.length} novas selecionadas.` });
+      return;
     }
+    setSelectedFiles(prev => [...prev, ...validFiles]);
   };
 
   const removeFile = (index) => {
@@ -151,9 +142,6 @@ const EditarItem = () => {
 
       if (imagensRemovidas.length > 0) {
         submitData.append('imagensRemovidas', JSON.stringify(imagensRemovidas.map(img => img.id)));
-      }
-      if (substituirImagens) {
-        submitData.append('substituirImagens', 'true');
       }
       const response = await fetch(`/api/itens/${id}`, {
         method: 'PUT',
@@ -303,24 +291,6 @@ const EditarItem = () => {
             <div className="w-full">
               <label className="block text-gray-700 font-semibold mb-2 text-sm sm:text-base">Imagens (máx. 5)</label>
               <input type="file" accept="image/*" multiple onChange={handleFileSelect} className="mb-2" />
-              
-              {/* Opção para substituir imagens existentes */}
-              {imagensExistentes.length > 0 && (
-                <div className="mb-3 p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
-                  <label className="flex items-center gap-2 text-sm text-yellow-800 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={substituirImagens}
-                      onChange={(e) => setSubstituirImagens(e.target.checked)}
-                      className="rounded border-yellow-300 text-yellow-600 focus:ring-yellow-500"
-                    />
-                    <span className="font-medium">Substituir imagens existentes</span>
-                  </label>
-                  <p className="text-xs text-yellow-700 mt-1 ml-6">
-                    Quando ativado, as novas imagens substituirão todas as imagens existentes
-                  </p>
-                </div>
-              )}
               {selectedFiles.length > 0 && (
                 <div className="flex gap-2 flex-wrap my-2">
                   {selectedFiles.map((file, idx) => (

@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { Plus, Edit2, Trash2, Package, Camera, ExternalLink } from 'react-feather';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { Plus, Edit2, Trash2, Package, Camera, ExternalLink, Search, ChevronDown } from 'react-feather';
 import { useNavigate } from 'react-router-dom';
 import Toast from './Toast';
 
@@ -15,6 +15,13 @@ const ItensCompostos = ({ itemId, isEditing = false, onImagemCompletaChange, ima
   const [toast, setToast] = useState(null);
   const [isItemComposto, setIsItemComposto] = useState(false);
   const [imagemPreview, setImagemPreview] = useState(null);
+  
+  // Estados para autocomplete
+  const [searchTerm, setSearchTerm] = useState('');
+  const [showDropdown, setShowDropdown] = useState(false);
+  const [filteredItems, setFilteredItems] = useState([]);
+  const [selectedItemIndex, setSelectedItemIndex] = useState(-1);
+  const dropdownRef = useRef(null);
 
   // Função para lidar com mudança do checkbox
   const handleCheckboxChange = async (checked) => {
@@ -56,6 +63,35 @@ const ItensCompostos = ({ itemId, isEditing = false, onImagemCompletaChange, ima
     // Notificar o componente pai sobre a remoção
     if (onImagemCompletaChange) {
       onImagemCompletaChange(null);
+    }
+  };
+
+  // Função para remover imagem existente
+  const handleRemoveImagemExistente = async (imagemId) => {
+    if (!window.confirm('Tem certeza que deseja excluir esta imagem?')) return;
+    
+    setLoading(true);
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch(`/api/imagens/${imagemId}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      
+      if (response.ok) {
+        setToast({ type: 'success', message: 'Imagem excluída com sucesso!' });
+        // Recarregar a página para atualizar as imagens
+        window.location.reload();
+      } else {
+        const error = await response.json();
+        setToast({ type: 'error', message: error.error || 'Erro ao excluir imagem' });
+      }
+    } catch (error) {
+      setToast({ type: 'error', message: 'Erro de conexão' });
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -107,6 +143,68 @@ const ItensCompostos = ({ itemId, isEditing = false, onImagemCompletaChange, ima
     }
   }, [itemId, componentes]);
 
+  // Função para filtrar itens baseado no termo de pesquisa
+  const filterItems = useCallback((term) => {
+    if (!term.trim()) {
+      setFilteredItems(itensDisponiveis.slice(0, 10)); // Mostra apenas os primeiros 10
+      return;
+    }
+    
+    const filtered = itensDisponiveis.filter(item => 
+      item.codigo?.toLowerCase().includes(term.toLowerCase()) ||
+      item.descricao?.toLowerCase().includes(term.toLowerCase())
+    );
+    setFilteredItems(filtered.slice(0, 10)); // Limita a 10 resultados
+  }, [itensDisponiveis]);
+
+  // Função para lidar com mudança no input de pesquisa
+  const handleSearchChange = (value) => {
+    setSearchTerm(value);
+    setSelectedItemIndex(-1);
+    filterItems(value);
+    setShowDropdown(true);
+  };
+
+  // Função para selecionar um item
+  const handleItemSelect = (item) => {
+    setSelectedItem(item.id.toString());
+    setSearchTerm(`${item.codigo} - ${item.descricao}`);
+    setShowDropdown(false);
+    setSelectedItemIndex(-1);
+  };
+
+  // Função para lidar com navegação por teclado
+  const handleKeyDown = (e) => {
+    if (!showDropdown) return;
+    
+    switch (e.key) {
+      case 'ArrowDown':
+        e.preventDefault();
+        setSelectedItemIndex(prev => 
+          prev < filteredItems.length - 1 ? prev + 1 : prev
+        );
+        break;
+      case 'ArrowUp':
+        e.preventDefault();
+        setSelectedItemIndex(prev => prev > 0 ? prev - 1 : -1);
+        break;
+      case 'Enter':
+        e.preventDefault();
+        if (selectedItemIndex >= 0 && filteredItems[selectedItemIndex]) {
+          handleItemSelect(filteredItems[selectedItemIndex]);
+        }
+        break;
+      case 'Escape':
+        setShowDropdown(false);
+        setSelectedItemIndex(-1);
+        break;
+      default:
+        break;
+    }
+  };
+
+
+
   useEffect(() => {
     fetchComponentes();
   }, [itemId, fetchComponentes]);
@@ -126,6 +224,26 @@ const ItensCompostos = ({ itemId, isEditing = false, onImagemCompletaChange, ima
       fetchItensDisponiveis();
     }
   }, [showAdicionar, fetchItensDisponiveis]);
+
+  // Inicializar itens filtrados quando itensDisponiveis mudar
+  useEffect(() => {
+    filterItems(searchTerm);
+  }, [itensDisponiveis, filterItems, searchTerm]);
+
+  // Fechar dropdown quando clicar fora
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
+        setShowDropdown(false);
+        setSelectedItemIndex(-1);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, []);
 
      const adicionarComponente = async () => {
      if (!selectedItem || quantidade <= 0 || !Number.isInteger(parseFloat(quantidade))) {
@@ -250,69 +368,20 @@ const ItensCompostos = ({ itemId, isEditing = false, onImagemCompletaChange, ima
       {/* Seção de composição - só aparece se o checkbox estiver marcado */}
       {isItemComposto && (
         <>
-          {/* Seção de imagem do item completo */}
-          {isEditing ? (
-            <div className="mb-6 p-4 bg-green-50 border border-green-200 rounded-lg">
-              <div className="flex items-center mb-3">
-                <Camera className="text-green-600 w-5 h-5 mr-2" />
-                <h4 className="font-semibold text-green-900">Imagem do Item Completo</h4>
-              </div>
-              <p className="text-sm text-green-700 mb-3">
-                Adicione uma foto que represente o item completo montado
-              </p>
-              
-              <div className="space-y-3">
-                {!imagemPreview ? (
-                  <div className="border-2 border-dashed border-green-300 rounded-lg p-4 text-center">
-                    <input
-                      type="file"
-                      accept="image/*"
-                      onChange={handleImagemSelect}
-                      className="hidden"
-                      id="imagem-completa"
-                    />
-                    <label
-                      htmlFor="imagem-completa"
-                      className="cursor-pointer flex flex-col items-center gap-2"
-                    >
-                      <Camera className="text-green-500 w-8 h-8" />
-                      <span className="text-sm text-green-600 font-medium">
-                        Clique para selecionar uma imagem
-                      </span>
-                      <span className="text-xs text-green-500">
-                        JPG, PNG, GIF (máx. 5MB)
-                      </span>
-                    </label>
-                  </div>
-                ) : (
-                  <div className="relative">
-                    <img
-                      src={imagemPreview}
-                      alt="Preview da imagem do item completo"
-                      className="w-full max-w-xs h-auto rounded-lg border border-green-300"
-                    />
-                    <button
-                      onClick={handleRemoveImagem}
-                      className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full w-6 h-6 flex items-center justify-center text-sm hover:bg-red-600"
-                    >
-                      ×
-                    </button>
-                  </div>
-                )}
-              </div>
+          {/* Seção de Imagem do Item Completo */}
+          <div className="mb-6 p-4 bg-green-50 border border-green-200 rounded-lg">
+            <div className="flex items-center mb-3">
+              <Camera className="text-green-600 w-5 h-5 mr-2" />
+              <h4 className="font-semibold text-green-900">Imagem do Item Completo</h4>
             </div>
-          ) : (
-            // Exibir imagem do item completo em modo de visualização
-            imagensCompostas.length > 0 && (
-              <div className="mb-6 p-4 bg-green-50 border border-green-200 rounded-lg">
-                <div className="flex items-center mb-3">
-                  <Camera className="text-green-600 w-5 h-5 mr-2" />
-                  <h4 className="font-semibold text-green-900">Imagem do Item Completo</h4>
-                </div>
-                <p className="text-sm text-green-700 mb-3">
-                  Foto do item completo montado
-                </p>
-                
+            <p className="text-sm text-green-700 mb-3">
+              Foto do item completo montado
+            </p>
+            
+            {/* Exibir imagens existentes */}
+            {imagensCompostas.length > 0 && (
+              <div className="mb-4">
+                <p className="text-xs text-green-600 mb-2">Imagens existentes:</p>
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                   {imagensCompostas.map((imagem, index) => (
                     <div key={imagem.id} className="relative group">
@@ -332,12 +401,65 @@ const ItensCompostos = ({ itemId, isEditing = false, onImagemCompletaChange, ima
                           </span>
                         </div>
                       </div>
+                      {/* Botão de excluir para modo de edição */}
+                      {isEditing && (
+                        <button
+                          onClick={() => handleRemoveImagemExistente(imagem.id)}
+                          className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full w-6 h-6 flex items-center justify-center text-sm hover:bg-red-600 z-10"
+                          title="Excluir imagem"
+                        >
+                          ×
+                        </button>
+                      )}
                     </div>
                   ))}
                 </div>
               </div>
-            )
-          )}
+            )}
+            
+            {/* Interface para upload de nova imagem (apenas no modo de edição) */}
+            {isEditing && (
+              <div className="space-y-3">
+                {!imagemPreview ? (
+                  <div className="border-2 border-dashed border-green-300 rounded-lg p-4 text-center">
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={handleImagemSelect}
+                      className="hidden"
+                      id="imagem-completa"
+                    />
+                    <label
+                      htmlFor="imagem-completa"
+                      className="cursor-pointer flex flex-col items-center gap-2"
+                    >
+                      <Camera className="text-green-500 w-8 h-8" />
+                      <span className="text-sm text-green-600 font-medium">
+                        Clique para selecionar uma nova imagem
+                      </span>
+                      <span className="text-xs text-green-500">
+                        JPG, PNG, GIF (máx. 5MB)
+                      </span>
+                    </label>
+                  </div>
+                ) : (
+                  <div className="relative">
+                    <img
+                      src={imagemPreview}
+                      alt="Preview da nova imagem do item completo"
+                      className="w-full max-w-xs h-auto rounded-lg border border-green-300"
+                    />
+                    <button
+                      onClick={handleRemoveImagem}
+                      className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full w-6 h-6 flex items-center justify-center text-sm hover:bg-red-600"
+                    >
+                      ×
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
 
           <div className="flex items-center mb-4">
             <Package className="text-[#0915FF] w-6 h-6 mr-3" />
@@ -359,58 +481,93 @@ const ItensCompostos = ({ itemId, isEditing = false, onImagemCompletaChange, ima
       {/* Formulário para adicionar componente */}
       {showAdicionar && (
         <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-4">
-                     <h4 className="font-semibold text-blue-900 mb-3">Adicionar Item à Composição</h4>
+          <h4 className="font-semibold text-blue-900 mb-3">Adicionar Item à Composição</h4>
           
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <div>
+          <div className="space-y-4">
+            <div className="relative">
               <label className="block text-sm font-medium text-blue-800 mb-1">Item</label>
-              <select
-                value={selectedItem}
-                onChange={(e) => setSelectedItem(e.target.value)}
+              <div className="relative">
+                <div className="flex items-center border border-blue-300 rounded-lg bg-white">
+                  <Search className="w-4 h-4 text-gray-400 ml-3" />
+                  <input
+                    type="text"
+                    value={searchTerm}
+                    onChange={(e) => handleSearchChange(e.target.value)}
+                    onKeyDown={handleKeyDown}
+                    onFocus={() => setShowDropdown(true)}
+                    placeholder="Digite o código ou descrição..."
+                    className="flex-1 px-3 py-2 text-sm border-none outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowDropdown(!showDropdown)}
+                    className="p-2 text-gray-400 hover:text-gray-600"
+                  >
+                    <ChevronDown className="w-4 h-4" />
+                  </button>
+                </div>
+                
+                {/* Dropdown de resultados */}
+                {showDropdown && filteredItems.length > 0 && (
+                  <div 
+                    ref={dropdownRef}
+                    className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-60 overflow-y-auto"
+                    style={{ zIndex: 1000 }}
+                  >
+                    {filteredItems.map((item, index) => (
+                      <div
+                        key={item.id}
+                        className={`px-3 py-2 cursor-pointer hover:bg-blue-50 ${
+                          index === selectedItemIndex ? 'bg-blue-100' : ''
+                        }`}
+                        onClick={() => handleItemSelect(item)}
+                      >
+                        <div className="font-medium text-gray-900">
+                          {item.codigo} - {item.descricao}
+                        </div>
+                        <div className="text-xs text-gray-500">
+                          {item.setor && `Setor: ${item.setor}`}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+            
+            <div>
+              <label className="block text-sm font-medium text-blue-800 mb-1">Quantidade Necessária</label>
+              <input
+                type="number"
+                min="1"
+                step="1"
+                value={quantidade}
+                onChange={(e) => setQuantidade(e.target.value)}
                 className="w-full px-3 py-2 border border-blue-300 rounded-lg text-sm"
-              >
-                <option value="">Selecione um item</option>
-                {itensDisponiveis.map(item => (
-                  <option key={item.id} value={item.id}>
-                    {item.codigo} - {item.descricao}
-                  </option>
-                ))}
-              </select>
+                placeholder="Ex: 2"
+              />
+              <p className="text-xs text-blue-600 mt-1">Quantidade inteira do componente necessária para 1 unidade do item principal</p>
             </div>
-            
-                         <div>
-               <label className="block text-sm font-medium text-blue-800 mb-1">Quantidade Necessária</label>
-                               <input
-                  type="number"
-                  min="1"
-                  step="1"
-                  value={quantidade}
-                  onChange={(e) => setQuantidade(e.target.value)}
-                  className="w-full px-3 py-2 border border-blue-300 rounded-lg text-sm"
-                  placeholder="Ex: 2"
-                />
-                               <p className="text-xs text-blue-600 mt-1">Quantidade inteira do componente necessária para 1 unidade do item principal</p>
-             </div>
-            
-            <div className="flex items-end gap-2">
-              <button
-                onClick={adicionarComponente}
-                disabled={loading || !selectedItem}
-                className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm disabled:opacity-50"
-              >
-                {loading ? 'Adicionando...' : 'Adicionar'}
-              </button>
-              <button
-                onClick={() => {
-                  setShowAdicionar(false);
-                  setSelectedItem('');
-                  setQuantidade(1);
-                }}
-                className="bg-gray-500 text-white px-4 py-2 rounded-lg text-sm"
-              >
-                Cancelar
-              </button>
-            </div>
+          </div>
+          
+          <div className="flex justify-end gap-2 mt-4">
+            <button
+              onClick={adicionarComponente}
+              disabled={loading || !selectedItem}
+              className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm disabled:opacity-50 hover:bg-blue-700 transition-colors"
+            >
+              {loading ? 'Adicionando...' : 'Adicionar'}
+            </button>
+            <button
+              onClick={() => {
+                setShowAdicionar(false);
+                setSelectedItem('');
+                setQuantidade(1);
+              }}
+              className="bg-gray-500 text-white px-4 py-2 rounded-lg text-sm hover:bg-gray-600 transition-colors"
+            >
+              Cancelar
+            </button>
           </div>
         </div>
       )}

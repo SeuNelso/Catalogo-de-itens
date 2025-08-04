@@ -1000,7 +1000,6 @@ const ListarItens = () => {
                       ))
                     )}
                   </div>
-                )}
               {/* Adicionar controles de paginação centralizados abaixo da tabela: */}
               {/* Checkbox para mostrar inativos */}
               <div style={{ margin: '16px 0', display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -1124,7 +1123,7 @@ const ListarItens = () => {
           </div>
             </div>
           )}
-        </div>
+        </div>  
       </div>
       {toast && (
         <Toast type={toast.type} message={toast.message} onClose={() => setToast(null)} />

@@ -1343,69 +1343,33 @@ app.put('/api/itens/:id', authenticateToken, upload.fields([
       return res.status(404).json({ error: 'Item não encontrado' });
     }
 
-    // Verificar se deve substituir todas as imagens existentes
-    const substituirImagens = req.body.substituirImagens === 'true';
-    
-    if (substituirImagens) {
-      console.log('🔄 Substituindo todas as imagens existentes do item:', itemId);
+        // Remover imagens marcadas para exclusão
+    if (req.body.imagensRemovidas) {
       try {
-        // Buscar todas as imagens existentes do item
-        const { rows: imagensExistentes } = await pool.query('SELECT id, caminho, nome_arquivo FROM imagens_itens WHERE item_id = $1', [itemId]);
-        
-        // Deletar todas as imagens existentes do R2 e do banco
-        for (const img of imagensExistentes) {
-          let key = img.caminho;
-          // Se for URL do proxy, extrair o nome do arquivo
-          if (key.startsWith('/api/imagem/')) {
-            key = decodeURIComponent(key.replace('/api/imagem/', ''));
-          } else if (key.startsWith('http')) {
-            // Se for URL completa do R2, extrair apenas o nome do arquivo
-            const urlParts = key.split('/');
-            key = decodeURIComponent(urlParts[urlParts.length - 1]);
-          } else {
-            // Se for apenas o nome do arquivo
-            key = img.nome_arquivo || key;
-          }
-          console.log('Tentando deletar imagem do R2 (substituição):', key);
-          await deleteFromS3(key);
-        }
-        
-        // Deletar todas as imagens do banco
-        await pool.query('DELETE FROM imagens_itens WHERE item_id = $1', [itemId]);
-        console.log(`✅ ${imagensExistentes.length} imagens existentes removidas para substituição`);
-      } catch (err) {
-        console.error('Erro ao substituir imagens:', err);
-        return res.status(500).json({ error: 'Erro ao substituir imagens: ' + err.message });
-      }
-    } else {
-      // Remover imagens marcadas para exclusão (comportamento normal)
-      if (req.body.imagensRemovidas) {
-        try {
-          const imagensRemovidas = JSON.parse(req.body.imagensRemovidas);
-          for (const imgId of imagensRemovidas) {
-            // Buscar caminho da imagem
-            const { rows } = await pool.query('SELECT caminho, nome_arquivo FROM imagens_itens WHERE id = $1 AND item_id = $2', [imgId, itemId]);
-            if (rows.length > 0) {
-              let key = rows[0].caminho;
-              // Se for URL do proxy, extrair o nome do arquivo
-              if (key.startsWith('/api/imagem/')) {
-                key = decodeURIComponent(key.replace('/api/imagem/', ''));
-              } else if (key.startsWith('http')) {
-                // Se for URL completa do R2, extrair apenas o nome do arquivo
-                const urlParts = key.split('/');
-                key = decodeURIComponent(urlParts[urlParts.length - 1]);
-              } else {
-                // Se for apenas o nome do arquivo
-                key = rows[0].nome_arquivo || key;
-              }
-              console.log('Tentando deletar imagem do R2:', key);
-              await deleteFromS3(key);
-              await pool.query('DELETE FROM imagens_itens WHERE id = $1', [imgId]);
+        const imagensRemovidas = JSON.parse(req.body.imagensRemovidas);
+        for (const imgId of imagensRemovidas) {
+          // Buscar caminho da imagem
+          const { rows } = await pool.query('SELECT caminho, nome_arquivo FROM imagens_itens WHERE id = $1 AND item_id = $2', [imgId, itemId]);
+          if (rows.length > 0) {
+            let key = rows[0].caminho;
+            // Se for URL do proxy, extrair o nome do arquivo
+            if (key.startsWith('/api/imagem/')) {
+              key = decodeURIComponent(key.replace('/api/imagem/', ''));
+            } else if (key.startsWith('http')) {
+              // Se for URL completa do R2, extrair apenas o nome do arquivo
+              const urlParts = key.split('/');
+              key = decodeURIComponent(urlParts[urlParts.length - 1]);
+            } else {
+              // Se for apenas o nome do arquivo
+              key = rows[0].nome_arquivo || key;
             }
+            console.log('Tentando deletar imagem do R2:', key);
+            await deleteFromS3(key);
+            await pool.query('DELETE FROM imagens_itens WHERE id = $1', [imgId]);
           }
-        } catch (err) {
-          return res.status(500).json({ error: 'Erro ao remover imagens: ' + err.message });
         }
+      } catch (err) {
+        return res.status(500).json({ error: 'Erro ao remover imagens: ' + err.message });
       }
     }
 
@@ -1413,7 +1377,7 @@ app.put('/api/itens/:id', authenticateToken, upload.fields([
     console.log('🔄 === INÍCIO DO UPLOAD DE IMAGENS ===');
     console.log('req.files:', req.files);
     console.log('req.file:', req.file);
-    console.log('req.body.substituirImagens:', req.body.substituirImagens);
+
     console.log('req.body.imagensRemovidas:', req.body.imagensRemovidas);
     
     // Processar imagens normais
@@ -2511,6 +2475,48 @@ app.post('/api/detectar-imagens-compostas/:itemId', authenticateToken, async (re
       error: 'Erro na detecção automática de imagens compostas',
       details: error.message 
     });
+  }
+});
+
+// ===== ROTAS PARA IMAGENS =====
+
+// Excluir imagem
+app.delete('/api/imagens/:id', authenticateToken, async (req, res) => {
+  const { id } = req.params;
+  
+  try {
+    // Buscar informações da imagem
+    const { rows } = await pool.query('SELECT caminho, nome_arquivo, item_id FROM imagens_itens WHERE id = $1', [id]);
+    
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'Imagem não encontrada' });
+    }
+    
+    const imagem = rows[0];
+    
+    // Deletar do R2
+    let key = imagem.caminho;
+    if (key.startsWith('/api/imagem/')) {
+      key = decodeURIComponent(key.replace('/api/imagem/', ''));
+    } else if (key.startsWith('http')) {
+      const urlParts = key.split('/');
+      key = decodeURIComponent(urlParts[urlParts.length - 1]);
+    } else {
+      key = imagem.nome_arquivo || key;
+    }
+    
+    console.log('Tentando deletar imagem do R2:', key);
+    await deleteFromS3(key);
+    
+    // Deletar do banco
+    await pool.query('DELETE FROM imagens_itens WHERE id = $1', [id]);
+    
+    console.log(`✅ Imagem ${id} excluída com sucesso`);
+    res.json({ message: 'Imagem excluída com sucesso' });
+    
+  } catch (error) {
+    console.error('Erro ao excluir imagem:', error);
+    res.status(500).json({ error: 'Erro ao excluir imagem: ' + error.message });
   }
 });
 
