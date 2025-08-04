@@ -12,6 +12,19 @@ const ListarItens = () => {
   const [paginaAtual, setPaginaAtual] = useState(1);
   const [loading, setLoading] = useState(false);
   
+  // Estados para filtros
+  const [filtros, setFiltros] = useState({
+    familia: '',
+    subfamilia: '',
+    setor: '',
+    quantidadeMin: '',
+    quantidadeMax: '',
+    categoria: '',
+    unidadeArmazenamento: '',
+    tipocontrolo: ''
+  });
+  const [mostrarFiltros, setMostrarFiltros] = useState(false);
+  
   // Estados para ordenação de colunas
   const [ordenacao, setOrdenacao] = useState({
     campo: null,
@@ -167,20 +180,46 @@ const ListarItens = () => {
     });
   };
 
-  // Filtro de itens ativos/inativos e busca geral
+  // Função para aplicar filtros
+  const aplicarFiltros = (itens) => {
+    return itens.filter(item => {
+      // Filtro por termo de busca (já é case insensitive)
+      const termo = searchTerm.trim().toLowerCase();
+      const matchBusca = !termo || 
+        (item.codigo && item.codigo.toLowerCase().includes(termo)) ||
+        (item.nome && item.nome.toLowerCase().includes(termo)) ||
+        (item.descricao && item.descricao.toLowerCase().includes(termo));
+
+      if (!matchBusca) return false;
+
+      // Filtros específicos (todos case insensitive)
+      if (filtros.familia && (!item.familia || !item.familia.toLowerCase().includes(filtros.familia.toLowerCase()))) return false;
+      if (filtros.subfamilia && (!item.subfamilia || !item.subfamilia.toLowerCase().includes(filtros.subfamilia.toLowerCase()))) return false;
+      if (filtros.setor && (!item.setor || !item.setor.toLowerCase().includes(filtros.setor.toLowerCase()))) return false;
+      if (filtros.categoria && (!item.categoria || !item.categoria.toLowerCase().includes(filtros.categoria.toLowerCase()))) return false;
+      if (filtros.unidadeArmazenamento && (!item.unidadearmazenamento || !item.unidadearmazenamento.toLowerCase().includes(filtros.unidadeArmazenamento.toLowerCase()))) return false;
+      if (filtros.tipocontrolo && (!item.tipocontrolo || !item.tipocontrolo.toLowerCase().includes(filtros.tipocontrolo.toLowerCase()))) return false;
+
+      // Filtro por quantidade
+      const quantidade = item.quantidade || 0;
+      if (filtros.quantidadeMin && quantidade < parseInt(filtros.quantidadeMin)) return false;
+      if (filtros.quantidadeMax && quantidade > parseInt(filtros.quantidadeMax)) return false;
+
+      return true;
+    });
+  };
+
+  // Filtro de itens ativos/inativos e aplicação dos filtros
   const itensFiltrados = Array.isArray(itens) ? itens.filter(item => {
     if (!mostrarInativos && !item.ativo) return false;
-    const termo = searchTerm.trim().toLowerCase();
-    if (!termo) return true;
-    return (
-      (item.codigo && item.codigo.toLowerCase().includes(termo)) ||
-      (item.nome && item.nome.toLowerCase().includes(termo)) ||
-      (item.descricao && item.descricao.toLowerCase().includes(termo))
-    );
+    return true;
   }) : [];
 
+  // Aplicar filtros adicionais
+  const itensComFiltros = aplicarFiltros(itensFiltrados);
+
   // Aplicar ordenação
-  const itensOrdenados = ordenarItens(itensFiltrados);
+  const itensOrdenados = ordenarItens(itensComFiltros);
   const totalPaginas = Math.ceil(itensOrdenados.length / 10); // itensPorPagina não usado
   const itensPagina = Array.isArray(itensOrdenados) ? itensOrdenados.slice((paginaAtual - 1) * 10, paginaAtual * 10) : []; // itensPorPagina não usado
 
@@ -274,6 +313,29 @@ const ListarItens = () => {
         direcao: 'asc'
       });
     }
+  };
+
+  // Funções para filtros
+  const handleFiltroChange = (campo, valor) => {
+    setFiltros(prev => ({
+      ...prev,
+      [campo]: valor
+    }));
+    setPaginaAtual(1); // Reset para primeira página ao filtrar
+  };
+
+  const limparFiltros = () => {
+    setFiltros({
+      familia: '',
+      subfamilia: '',
+      setor: '',
+      quantidadeMin: '',
+      quantidadeMax: '',
+      categoria: '',
+      unidadeArmazenamento: '',
+      tipocontrolo: ''
+    });
+    setPaginaAtual(1);
   };
 
   return (
@@ -448,6 +510,144 @@ const ListarItens = () => {
             >
               <FaSearch />
             </button>
+          </div>
+
+          {/* Sistema de Filtros */}
+          <div className="w-full mt-4">
+            <button
+              onClick={() => setMostrarFiltros(!mostrarFiltros)}
+              className="w-full flex items-center justify-center gap-2 bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium rounded-lg py-2 px-4 transition-colors"
+            >
+              <span>{mostrarFiltros ? '▼' : '▶'}</span>
+              {mostrarFiltros ? 'Ocultar Filtros' : 'Mostrar Filtros Avançados'}
+            </button>
+            
+            {mostrarFiltros && (
+              <div className="mt-4 bg-white rounded-lg border border-gray-200 shadow-sm">
+                <div className="p-4 border-b border-gray-200">
+                  <h3 className="text-lg font-bold text-gray-800">Filtros Avançados</h3>
+                </div>
+                
+                {/* Container com scroll */}
+                <div className="max-h-80 overflow-y-auto">
+                  <div className="p-3 space-y-2">
+                    {/* Família */}
+                    <div className="flex flex-col sm:flex-row items-start sm:items-center bg-gray-50 rounded-lg p-2">
+                      <label className="w-full sm:w-28 text-sm font-semibold text-gray-700 mb-1 sm:mb-0">Família:</label>
+                      <input
+                        type="text"
+                        value={filtros.familia}
+                        onChange={(e) => handleFiltroChange('familia', e.target.value)}
+                        className="w-full sm:w-40 px-2 py-1.5 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-white"
+                        placeholder="Ex: Consumível"
+                      />
+                    </div>
+
+                    {/* Subfamília */}
+                    <div className="flex flex-col sm:flex-row items-start sm:items-center bg-gray-50 rounded-lg p-2">
+                      <label className="w-full sm:w-28 text-sm font-semibold text-gray-700 mb-1 sm:mb-0">Subfamília:</label>
+                      <input
+                        type="text"
+                        value={filtros.subfamilia}
+                        onChange={(e) => handleFiltroChange('subfamilia', e.target.value)}
+                        className="w-full sm:w-40 px-2 py-1.5 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-white"
+                        placeholder="Ex: Acessórios"
+                      />
+                    </div>
+
+                    {/* Setor */}
+                    <div className="flex flex-col sm:flex-row items-start sm:items-center bg-gray-50 rounded-lg p-2">
+                      <label className="w-full sm:w-28 text-sm font-semibold text-gray-700 mb-1 sm:mb-0">Setor:</label>
+                      <input
+                        type="text"
+                        value={filtros.setor}
+                        onChange={(e) => handleFiltroChange('setor', e.target.value)}
+                        className="w-full sm:w-40 px-2 py-1.5 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-white"
+                        placeholder="Ex: TI"
+                      />
+                    </div>
+
+                    {/* Categoria */}
+                    <div className="flex flex-col sm:flex-row items-start sm:items-center bg-gray-50 rounded-lg p-2">
+                      <label className="w-full sm:w-28 text-sm font-semibold text-gray-700 mb-1 sm:mb-0">Categoria:</label>
+                      <input
+                        type="text"
+                        value={filtros.categoria}
+                        onChange={(e) => handleFiltroChange('categoria', e.target.value)}
+                        className="w-full sm:w-40 px-2 py-1.5 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-white"
+                        placeholder="Ex: Equipamentos"
+                      />
+                    </div>
+
+                    {/* Quantidade Mínima */}
+                    <div className="flex flex-col sm:flex-row items-start sm:items-center bg-gray-50 rounded-lg p-2">
+                      <label className="w-full sm:w-28 text-sm font-semibold text-gray-700 mb-1 sm:mb-0">Qtd. Mínima:</label>
+                      <input
+                        type="number"
+                        value={filtros.quantidadeMin}
+                        onChange={(e) => handleFiltroChange('quantidadeMin', e.target.value)}
+                        className="w-full sm:w-40 px-2 py-1.5 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-white"
+                        placeholder="0"
+                        min="0"
+                      />
+                    </div>
+
+                    {/* Quantidade Máxima */}
+                    <div className="flex flex-col sm:flex-row items-start sm:items-center bg-gray-50 rounded-lg p-2">
+                      <label className="w-full sm:w-28 text-sm font-semibold text-gray-700 mb-1 sm:mb-0">Qtd. Máxima:</label>
+                      <input
+                        type="number"
+                        value={filtros.quantidadeMax}
+                        onChange={(e) => handleFiltroChange('quantidadeMax', e.target.value)}
+                        className="w-full sm:w-40 px-2 py-1.5 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-white"
+                        placeholder="999"
+                        min="0"
+                      />
+                    </div>
+
+                    {/* Unidade de Armazenamento */}
+                    <div className="flex flex-col sm:flex-row items-start sm:items-center bg-gray-50 rounded-lg p-2">
+                      <label className="w-full sm:w-28 text-sm font-semibold text-gray-700 mb-1 sm:mb-0">Unidade:</label>
+                      <input
+                        type="text"
+                        value={filtros.unidadeArmazenamento}
+                        onChange={(e) => handleFiltroChange('unidadeArmazenamento', e.target.value)}
+                        className="w-full sm:w-40 px-2 py-1.5 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-white"
+                        placeholder="Ex: MT"
+                      />
+                    </div>
+
+                    {/* Tipo de Controle */}
+                    <div className="flex flex-col sm:flex-row items-start sm:items-center bg-gray-50 rounded-lg p-2">
+                      <label className="w-full sm:w-28 text-sm font-semibold text-gray-700 mb-1 sm:mb-0">Tipo Controle:</label>
+                      <input
+                        type="text"
+                        value={filtros.tipocontrolo}
+                        onChange={(e) => handleFiltroChange('tipocontrolo', e.target.value)}
+                        className="w-full sm:w-40 px-2 py-1.5 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-white"
+                        placeholder="Ex: Manual"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Botões de ação */}
+                <div className="flex justify-end gap-2 p-4 border-t border-gray-200 bg-gray-50">
+                  <button
+                    onClick={limparFiltros}
+                    className="px-3 py-1.5 text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 rounded-md transition-colors border border-gray-300"
+                  >
+                    Limpar
+                  </button>
+                  <button
+                    onClick={() => setMostrarFiltros(false)}
+                    className="px-3 py-1.5 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-md transition-colors"
+                  >
+                    Aplicar
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
           {/* Itens não cadastrados - agora abaixo do card de busca visual */}
           {naoCadastrados.length > 0 && (isAdmin || user?.role === 'controller') && (
