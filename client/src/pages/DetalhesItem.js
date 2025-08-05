@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { ArrowLeft, Package, Calendar, Tag } from 'react-feather';
+import { ArrowLeft, Package, Calendar, Tag, Link as LinkIcon } from 'react-feather';
 import ItensCompostos from '../components/ItensCompostos';
 
 const DetalhesItem = () => {
@@ -9,6 +9,8 @@ const DetalhesItem = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [zoomImage, setZoomImage] = useState(null);
+  const [itensQueCompoe, setItensQueCompoe] = useState([]);
+  const [loadingCompoe, setLoadingCompoe] = useState(false);
   const imagensScrollRef = useRef(null);
   // Variáveis de controle do drag
   const isDownRef = useRef(false);
@@ -64,9 +66,45 @@ const DetalhesItem = () => {
     }
   }, [id]);
 
+  // Buscar itens que este item compõe
+  const fetchItensQueCompoe = useCallback(async () => {
+    console.log('🔍 Iniciando busca de itens que compõe para item ID:', id);
+    setLoadingCompoe(true);
+    try {
+      const token = localStorage.getItem('token');
+      console.log('🔑 Token encontrado:', !!token);
+      
+      const response = await fetch(`/api/itens/${id}/compoe`, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        }
+      });
+      
+      console.log('📡 Response status:', response.status);
+      
+      if (response.ok) {
+        const data = await response.json();
+        console.log('✅ Dados recebidos de itens que compõe:', data);
+        console.log('📊 Quantidade de itens encontrados:', data.length);
+        setItensQueCompoe(data);
+      } else {
+        console.error('❌ Erro na resposta:', response.status, response.statusText);
+        const errorText = await response.text();
+        console.error('❌ Detalhes do erro:', errorText);
+      }
+    } catch (error) {
+      console.error('❌ Erro ao buscar itens que compõe:', error);
+    } finally {
+      setLoadingCompoe(false);
+      console.log('🏁 Busca de itens que compõe finalizada');
+    }
+  }, [id]);
+
   useEffect(() => {
     fetchItem();
-  }, [fetchItem]);
+    fetchItensQueCompoe();
+  }, [fetchItem, fetchItensQueCompoe]);
 
   // Adiciona listeners de touch com passive: false para garantir o preventDefault
   useEffect(() => {
@@ -176,6 +214,8 @@ const DetalhesItem = () => {
                 </div>
               </div>
 
+
+
               {/* Images */}
               <div className="bg-white rounded-2xl shadow-lg p-4 sm:p-8">
                 <h2 className="text-[#0915FF] text-lg sm:text-xl font-bold mb-3 sm:mb-4">Imagens</h2>
@@ -268,6 +308,42 @@ const DetalhesItem = () => {
                   </div>
                 </div>
               </div>
+
+              {/* Seção: Componente de */}
+              {itensQueCompoe.length > 0 && (
+                <div className="bg-white rounded-2xl shadow-lg p-4 sm:p-8">
+                  <div className="flex items-center mb-4">
+                    <Package className="text-blue-600 w-6 h-6 mr-3" />
+                    <h2 className="text-blue-600 text-lg sm:text-xl font-bold">Componente de</h2>
+                  </div>
+                  <p className="text-sm text-gray-600 mb-4">
+                    (Itens que usam este item como componente)
+                  </p>
+                  <div className="space-y-3">
+                    {itensQueCompoe.map((itemComposto) => (
+                      <div key={itemComposto.id} className="border border-blue-200 rounded-lg p-3 bg-blue-50 hover:bg-blue-100 transition-colors duration-200">
+                        <Link 
+                          to={`/item/${itemComposto.item_principal_id}`}
+                          className="block"
+                        >
+                          <div className="flex items-center justify-between">
+                            <div className="flex-1">
+                              <div className="font-semibold text-gray-900 flex items-center gap-2">
+                                <span className="text-sm font-bold text-blue-600">#{itemComposto.codigo}</span>
+                                <span>{itemComposto.descricao}</span>
+                                <LinkIcon className="w-4 h-4 text-blue-600" />
+                              </div>
+                              <div className="text-sm text-gray-600 mt-1">
+                                <span className="font-medium">Quantidade necessária:</span> {Math.round(itemComposto.quantidade_componente)} {item.unidadearmazenamento || 'unidades'}
+                              </div>
+                            </div>
+                          </div>
+                        </Link>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               {/* Itens Compostos */}
               <ItensCompostos 

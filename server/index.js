@@ -133,7 +133,7 @@ function createS3Client() {
 }
 
 const app = express();
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 3001;
 const JWT_SECRET = process.env.JWT_SECRET || 'sua-chave-secreta-aqui';
 
 // Middleware para verificar token JWT
@@ -162,7 +162,7 @@ app.use((req, res, next) => {
 
 // Middleware
 app.use(cors({
-  origin: ['http://localhost:3000', 'http://localhost:5000'],
+  origin: '*',
   credentials: true
 }));
 app.use(express.json());
@@ -2551,6 +2551,17 @@ app.get('/api/itens/:id/componentes', authenticateToken, async (req, res) => {
         i.id as item_id,
         i.codigo,
         i.descricao,
+        i.familia,
+        i.subfamilia,
+        i.setor,
+        i.comprimento,
+        i.largura,
+        i.altura,
+        i.unidade,
+        i.peso,
+        i.unidadepeso,
+        i.tipocontrolo,
+        i.observacoes,
         i.unidadearmazenamento
       FROM itens_compostos ic
       JOIN itens i ON ic.item_componente_id = i.id
@@ -2622,6 +2633,35 @@ app.delete('/api/itens/:id/componentes/:componenteId', authenticateToken, async 
   } catch (error) {
     console.error('Erro ao remover componente:', error);
     res.status(500).json({ error: 'Erro ao remover componente' });
+  }
+});
+
+// Buscar itens que um item específico compõe
+app.get('/api/itens/:id/compoe', authenticateToken, async (req, res) => {
+  try {
+    const itemId = req.params.id;
+    
+    const { rows } = await pool.query(`
+      SELECT 
+        ic.id,
+        ic.quantidade_componente,
+        i.id as item_principal_id,
+        i.codigo,
+        i.descricao,
+        i.familia,
+        i.subfamilia,
+        i.setor,
+        i.unidadearmazenamento
+      FROM itens_compostos ic
+      JOIN itens i ON ic.item_principal_id = i.id
+      WHERE ic.item_componente_id = $1
+      ORDER BY i.codigo
+    `, [itemId]);
+    
+    res.json(rows);
+  } catch (error) {
+    console.error('Erro ao buscar itens que compõe:', error);
+    res.status(500).json({ error: 'Erro ao buscar itens que compõe' });
   }
 });
 

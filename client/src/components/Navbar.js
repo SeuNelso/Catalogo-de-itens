@@ -38,6 +38,87 @@ const Navbar = () => {
     console.log('Dados dropdown state:', dadosOpen);
   }, [dadosOpen]);
 
+  // Fechar dropdowns quando clica fora deles
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      const gerirDropdown = document.querySelector('.gerir-dropdown');
+      const dadosDropdown = document.querySelector('.dados-dropdown');
+      
+      if (gerirOpen && gerirDropdown && !gerirDropdown.contains(event.target)) {
+        setGerirOpen(false);
+      }
+      
+      if (dadosOpen && dadosDropdown && !dadosDropdown.contains(event.target)) {
+        setDadosOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [gerirOpen, dadosOpen]);
+
+  // Fechar dropdowns quando o mouse sai deles (com delay)
+  useEffect(() => {
+    let gerirTimeout;
+    let dadosTimeout;
+
+    const handleMouseLeave = (event) => {
+      const gerirDropdown = document.querySelector('.gerir-dropdown');
+      const dadosDropdown = document.querySelector('.dados-dropdown');
+      
+      // Verificar se o mouse realmente saiu do dropdown
+      if (gerirOpen && gerirDropdown && !gerirDropdown.contains(event.relatedTarget)) {
+        gerirTimeout = setTimeout(() => {
+          setGerirOpen(false);
+        }, 150); // 150ms delay
+      }
+      
+      if (dadosOpen && dadosDropdown && !dadosDropdown.contains(event.relatedTarget)) {
+        dadosTimeout = setTimeout(() => {
+          setDadosOpen(false);
+        }, 150); // 150ms delay
+      }
+    };
+
+    const handleMouseEnter = () => {
+      // Cancelar timeout se o mouse voltar
+      if (gerirTimeout) {
+        clearTimeout(gerirTimeout);
+      }
+      if (dadosTimeout) {
+        clearTimeout(dadosTimeout);
+      }
+    };
+
+    const gerirDropdown = document.querySelector('.gerir-dropdown');
+    const dadosDropdown = document.querySelector('.dados-dropdown');
+    
+    if (gerirDropdown) {
+      gerirDropdown.addEventListener('mouseleave', handleMouseLeave);
+      gerirDropdown.addEventListener('mouseenter', handleMouseEnter);
+    }
+    
+    if (dadosDropdown) {
+      dadosDropdown.addEventListener('mouseleave', handleMouseLeave);
+      dadosDropdown.addEventListener('mouseenter', handleMouseEnter);
+    }
+
+    return () => {
+      if (gerirDropdown) {
+        gerirDropdown.removeEventListener('mouseleave', handleMouseLeave);
+        gerirDropdown.removeEventListener('mouseenter', handleMouseEnter);
+      }
+      if (dadosDropdown) {
+        dadosDropdown.removeEventListener('mouseleave', handleMouseLeave);
+        dadosDropdown.removeEventListener('mouseenter', handleMouseEnter);
+      }
+      if (gerirTimeout) clearTimeout(gerirTimeout);
+      if (dadosTimeout) clearTimeout(dadosTimeout);
+    };
+  }, [gerirOpen, dadosOpen]);
+
   return (
     <header className="w-full bg-[#0915FF] text-white fixed top-0 left-0 z-50 shadow-lg h-14 flex items-center">
       <div className="w-full max-w-7xl mx-auto flex items-center justify-between h-14 px-4 sm:px-6">
@@ -68,7 +149,7 @@ const Navbar = () => {
                 <ChevronDown size={14} className={`ml-1 text-white transition-transform duration-200 lg:w-4 lg:h-4 ${gerirOpen ? 'rotate-180' : ''}`} />
               </button>
               {gerirOpen && (
-                <div className="absolute top-full left-0 bg-[#0915FF] border border-gray-200 rounded-lg shadow-lg min-w-48 lg:min-w-56 xl:min-w-64 z-50 p-2 mt-1">
+                <div className="absolute top-full left-0 bg-[#0915FF] border border-gray-200 rounded-lg shadow-lg min-w-48 lg:min-w-56 xl:min-w-64 z-50 p-2 -mt-1 pt-2">
                   {/* Seção: Gestão de Artigos */}
                   <div className="mb-3">
                     <div className="text-xs text-white/70 font-medium px-3 py-1 uppercase tracking-wider">Gestão de Artigos</div>
@@ -109,7 +190,7 @@ const Navbar = () => {
                 <ChevronDown size={14} className={`ml-1 text-white transition-transform duration-200 lg:w-4 lg:h-4 ${dadosOpen ? 'rotate-180' : ''}`} />
               </button>
               {dadosOpen && (
-                <div className="absolute top-full left-0 bg-[#0915FF] border border-gray-200 rounded-lg shadow-lg min-w-48 lg:min-w-56 xl:min-w-64 z-50 p-2 mt-1">
+                <div className="absolute top-full left-0 bg-[#0915FF] border border-gray-200 rounded-lg shadow-lg min-w-48 lg:min-w-56 xl:min-w-64 z-50 p-2 -mt-1 pt-2">
                   {/* Seção: Importação de Dados */}
                   <div className="mb-3">
                     <div className="text-xs text-white/70 font-medium px-3 py-1 uppercase tracking-wider">Importação</div>

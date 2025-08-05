@@ -15,6 +15,7 @@ const AdminUsuarios = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [savingId, setSavingId] = useState(null);
+  const [deletingId, setDeletingId] = useState(null);
 
   useEffect(() => {
     if (!isAuthenticated || user.role !== 'admin') {
@@ -67,6 +68,36 @@ const AdminUsuarios = () => {
     }
   };
 
+  const handleDeleteUser = async (id, nome) => {
+    const confirmacao = window.confirm(`Tem certeza que deseja excluir o usuário "${nome}"? Esta ação não pode ser desfeita.`);
+    
+    if (!confirmacao) return;
+
+    setDeletingId(id);
+    setError('');
+    try {
+      const res = await fetch(`/api/usuarios/${id}`, {
+        method: 'DELETE',
+        headers: {
+          Authorization: `Bearer ${localStorage.getItem('token')}`
+        }
+      });
+      
+      if (!res.ok) {
+        const errorData = await res.json();
+        throw new Error(errorData.message || 'Erro ao excluir usuário');
+      }
+      
+      // Remove o usuário da lista local
+      setUsuarios(usuarios.filter(u => u.id !== id));
+      
+    } catch (err) {
+      setError(err.message || 'Erro ao excluir usuário');
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-[#f3f6fd] flex flex-col items-center justify-center py-4 sm:py-12 px-2 sm:px-4">
       <div className="w-full max-w-[98vw] sm:max-w-4xl bg-white rounded-2xl shadow-lg p-4 sm:p-8 mt-4 sm:mt-10">
@@ -97,7 +128,7 @@ const AdminUsuarios = () => {
                     <th className="py-3 px-4">Username</th>
                     <th className="py-3 px-4">E-mail</th>
                     <th className="py-3 px-4">Role</th>
-                    <th className="py-3 px-4 rounded-tr-xl">Ação</th>
+                    <th className="py-3 px-4 rounded-tr-xl">Ações</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -114,9 +145,22 @@ const AdminUsuarios = () => {
                         </select>
                       </td>
                       <td className="py-2 px-4">
-                        <button onClick={() => handleSaveRole(u.id, u.role)} disabled={savingId === u.id} className="bg-[#0915FF] text-white rounded px-4 py-1 font-semibold text-xs sm:text-base shadow hover:bg-[#2336ff] transition disabled:opacity-60 disabled:cursor-not-allowed">
-                          {savingId === u.id ? 'Salvando...' : 'Salvar'}
-                        </button>
+                        <div className="flex gap-2">
+                          <button 
+                            onClick={() => handleSaveRole(u.id, u.role)} 
+                            disabled={savingId === u.id} 
+                            className="bg-[#0915FF] text-white rounded px-3 py-1 font-semibold text-xs shadow hover:bg-[#2336ff] transition disabled:opacity-60 disabled:cursor-not-allowed"
+                          >
+                            {savingId === u.id ? 'Salvando...' : 'Salvar'}
+                          </button>
+                          <button 
+                            onClick={() => handleDeleteUser(u.id, u.nome)} 
+                            disabled={deletingId === u.id} 
+                            className="bg-red-600 text-white rounded px-3 py-1 font-semibold text-xs shadow hover:bg-red-700 transition disabled:opacity-60 disabled:cursor-not-allowed"
+                          >
+                            {deletingId === u.id ? 'Excluindo...' : '🗑️ Excluir'}
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -160,13 +204,20 @@ const AdminUsuarios = () => {
                         {roles.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
                       </select>
                     </div>
-                    <div className="pt-2">
+                    <div className="pt-2 space-y-2">
                       <button 
                         onClick={() => handleSaveRole(u.id, u.role)} 
                         disabled={savingId === u.id} 
                         className="w-full bg-[#0915FF] text-white rounded-lg px-4 py-2 font-semibold text-sm shadow hover:bg-[#2336ff] transition disabled:opacity-60 disabled:cursor-not-allowed"
                       >
                         {savingId === u.id ? 'Salvando...' : 'Salvar Alterações'}
+                      </button>
+                      <button 
+                        onClick={() => handleDeleteUser(u.id, u.nome)} 
+                        disabled={deletingId === u.id} 
+                        className="w-full bg-red-600 text-white rounded-lg px-4 py-2 font-semibold text-sm shadow hover:bg-red-700 transition disabled:opacity-60 disabled:cursor-not-allowed"
+                      >
+                        {deletingId === u.id ? 'Excluindo...' : '🗑️ Excluir Usuário'}
                       </button>
                     </div>
                   </div>
