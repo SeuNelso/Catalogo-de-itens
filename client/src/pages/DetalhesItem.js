@@ -10,7 +10,6 @@ const DetalhesItem = () => {
   const [error, setError] = useState(null);
   const [zoomImage, setZoomImage] = useState(null);
   const [itensQueCompoe, setItensQueCompoe] = useState([]);
-  const [loadingCompoe, setLoadingCompoe] = useState(false);
   const imagensScrollRef = useRef(null);
   // Variáveis de controle do drag
   const isDownRef = useRef(false);
@@ -69,7 +68,6 @@ const DetalhesItem = () => {
   // Buscar itens que este item compõe
   const fetchItensQueCompoe = useCallback(async () => {
     console.log('🔍 Iniciando busca de itens que compõe para item ID:', id);
-    setLoadingCompoe(true);
     try {
       const token = localStorage.getItem('token');
       console.log('🔑 Token encontrado:', !!token);
@@ -96,7 +94,6 @@ const DetalhesItem = () => {
     } catch (error) {
       console.error('❌ Erro ao buscar itens que compõe:', error);
     } finally {
-      setLoadingCompoe(false);
       console.log('🏁 Busca de itens que compõe finalizada');
     }
   }, [id]);
