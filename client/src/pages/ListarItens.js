@@ -63,21 +63,30 @@ const ListarItens = () => {
   useEffect(() => {
     const fetchNaoCadastrados = async () => {
       try {
+        console.log('🔍 Buscando itens não cadastrados...');
         const token = localStorage.getItem('token');
+        console.log('🔑 Token encontrado:', !!token);
+        
         const response = await fetch('/api/itens-nao-cadastrados', {
           headers: {
             'Authorization': `Bearer ${token}`
           }
         });
         
+        console.log('📡 Response status:', response.status);
+        
         if (response.ok) {
           const data = await response.json();
+          console.log('✅ Itens não cadastrados recebidos:', data);
+          console.log('📊 Quantidade de itens não cadastrados:', data.length);
           setNaoCadastrados(data);
         } else {
-          console.error('Erro ao buscar itens não cadastrados:', response.statusText);
+          console.error('❌ Erro ao buscar itens não cadastrados:', response.statusText);
+          const errorText = await response.text();
+          console.error('❌ Detalhes do erro:', errorText);
         }
       } catch (error) {
-        console.error('Erro ao buscar itens não cadastrados:', error);
+        console.error('❌ Erro ao buscar itens não cadastrados:', error);
       }
     };
 
@@ -649,7 +658,13 @@ const ListarItens = () => {
               </div>
             )}
           </div>
-          {/* Itens não cadastrados - agora abaixo do card de busca visual */}
+          {/* Itens não cadastrados - sempre visível para admins e controllers */}
+          {console.log('🔍 Verificando seção itens não cadastrados:', { 
+            naoCadastrados: naoCadastrados.length, 
+            isAdmin, 
+            userRole: user?.role,
+            shouldShow: naoCadastrados.length > 0 && (isAdmin || user?.role === 'controller')
+          })}
           {naoCadastrados.length > 0 && (isAdmin || user?.role === 'controller') && (
             <div style={{
               margin: '18px 0 0 0',

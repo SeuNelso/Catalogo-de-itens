@@ -1189,7 +1189,7 @@ app.post('/api/itens', authenticateToken, upload.fields([
       }
     }
   }
-);
+});
 
 // Buscar itens por imagem (reconhecimento) - PÚBLICO
 app.post('/api/reconhecer', upload.single('imagem'), async (req, res) => {
@@ -2832,17 +2832,8 @@ app.get('/api/itens-nao-cadastrados', authenticateToken, async (req, res) => {
     }
 
     console.log('✅ Usuário autorizado, executando query...');
-    
-    // Buscar itens não cadastrados que não estão na tabela de itens cadastrados
-    const result = await pool.query(`
-      SELECT inc.* 
-      FROM itens_nao_cadastrados inc
-      WHERE NOT EXISTS (
-        SELECT 1 FROM itens i WHERE i.codigo = inc.codigo
-      )
-      ORDER BY inc.data_importacao DESC
-    `);
-    console.log('📊 Resultado da query:', result.rows.length, 'itens não cadastrados encontrados');
+    const result = await pool.query('SELECT * FROM itens_nao_cadastrados ORDER BY data_importacao DESC');
+    console.log('📊 Resultado da query:', result.rows.length, 'itens encontrados');
     
     const itens = result.rows.map((row, index) => {
       console.log(`📝 Processando item ${index + 1}:`, {

@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { ChevronDown, Settings, Database, Users, FileText, Download, Plus, Trash2, Image, RefreshCw, Menu, X } from 'react-feather';
+import { ChevronDown, Settings, Database, Users, FileText, Download, Plus, Trash2, Image, RefreshCw, Menu, X, AlertTriangle } from 'react-feather';
 
 const Navbar = () => {
   const { isAuthenticated, logout, user } = useAuth();
@@ -162,6 +162,12 @@ const Navbar = () => {
                         <Trash2 size={14} className="lg:w-4 lg:h-4" />
                         Excluir Artigo
                       </Link>
+                      {(isAdmin || isController) && (
+                        <Link to="/itens-nao-cadastrados" onClick={() => setGerirOpen(false)} className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded">
+                          <AlertTriangle size={14} className="lg:w-4 lg:h-4" />
+                          Itens Não Cadastrados
+                        </Link>
+                      )}
                     </div>
                   </div>
                   

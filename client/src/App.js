@@ -21,6 +21,7 @@ import ImportarItens from './pages/ImportarItens';
 import ImportarImagensAutomaticas from './pages/ImportarImagensAutomaticas';
 import DetectarImagensAutomaticas from './pages/DetectarImagensAutomaticas';
 import ExportarDados from './pages/ExportarDados';
+import ItensNaoCadastrados from './pages/ItensNaoCadastrados';
 import './App.css';
 
 function App() {
@@ -123,6 +124,14 @@ function App() {
                   element={
                     <ProtectedRoute allowedRoles={['admin']}>
                       <AdminUsuarios />
+                    </ProtectedRoute>
+                  } 
+                />
+                <Route 
+                  path="/itens-nao-cadastrados" 
+                  element={
+                    <ProtectedRoute allowedRoles={['admin', 'controller']}>
+                      <ItensNaoCadastrados />
                     </ProtectedRoute>
                   } 
                 />
