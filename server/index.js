@@ -815,34 +815,85 @@ app.get('/api/verify-token', authenticateToken, (req, res) => {
   res.json({ valid: true, user: req.user });
 });
 
-// Listar todos os itens (público) SEM paginação
+// Listar todos os itens (público) COM paginação
 app.get('/api/itens', (req, res) => {
   const incluirInativos = req.query.incluirInativos === 'true';
-  const whereAtivo = incluirInativos ? '' : 'WHERE i.ativo = true';
+  const page = parseInt(req.query.page) || 1;
+  const limit = parseInt(req.query.limit) || 10;
+  const offset = (page - 1) * limit;
+  const searchTerm = req.query.search || '';
+  
+  let whereConditions = [];
+  let params = [];
+  let paramIndex = 1;
+  
+  // Condição para itens ativos/inativos
+  if (!incluirInativos) {
+    whereConditions.push('i.ativo = true');
+  }
+  
+  // Condição de pesquisa
+  if (searchTerm.trim()) {
+    whereConditions.push(`(LOWER(i.codigo) LIKE LOWER($${paramIndex}) OR LOWER(i.nome) LIKE LOWER($${paramIndex}))`);
+    params.push(`%${searchTerm.trim()}%`);
+    paramIndex++;
+  }
+  
+  const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(' AND ')}` : '';
+  
+  // Query para contar total de itens
+  const countQuery = `
+    SELECT COUNT(DISTINCT i.id) as total
+    FROM itens i
+    ${whereClause}
+  `;
+  
+  // Query principal com paginação
   const query = `
     SELECT i.*, 
            STRING_AGG(DISTINCT img.caminho, ',') as imagens,
            COUNT(DISTINCT img.id) as total_imagens
     FROM itens i
     LEFT JOIN imagens_itens img ON i.id = img.item_id
-    ${whereAtivo}
+    ${whereClause}
     GROUP BY i.id
     ORDER BY 
       (i.codigo ~ '^[0-9]') DESC, -- Prioriza códigos que começam com número
       i.codigo ASC,
       i.ordem_importacao ASC, 
       i.data_cadastro DESC
+    LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
   `;
+  
+  // Adicionar parâmetros de paginação
+  params.push(limit, offset);
 
-  pool.query(query, [], (err, result) => {
+  // Primeiro, contar o total de itens
+  pool.query(countQuery, params.slice(0, paramIndex - 1), (err, countResult) => {
     if (err) {
       return res.status(500).json({ error: err.message });
     }
-    const itens = result.rows.map(row => ({
-      ...row,
-      imagens: row.imagens ? row.imagens.split(',') : []
-    }));
-    res.json({ itens, total: itens.length });
+    
+    const total = parseInt(countResult.rows[0].total);
+    
+    // Depois, buscar os itens com paginação
+    pool.query(query, params, (err, result) => {
+      if (err) {
+        return res.status(500).json({ error: err.message });
+      }
+      const itens = result.rows.map(row => ({
+        ...row,
+        imagens: row.imagens ? row.imagens.split(',') : []
+      }));
+      res.json({ 
+        itens, 
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+        searchTerm
+      });
+    });
   });
 });
 
@@ -1812,14 +1863,14 @@ app.get('/api/exportar-itens', authenticateToken, async (req, res) => {
     
     // Definir cabeçalhos
     worksheet.columns = [
-      { header: 'Código', key: 'codigo', width: 12 },
-      { header: 'Descrição', key: 'descricao', width: 40 },
-      { header: 'Unidade base', key: 'unidade_base', width: 16 },
-      { header: 'Família', key: 'familia', width: 18 },
-      { header: 'Subfamília', key: 'subfamilia', width: 18 },
-      { header: 'Setor', key: 'setor', width: 18 },
-      { header: 'Ativo', key: 'ativo', width: 8 },
-      { header: 'Quantidade', key: 'quantidade', width: 12 }
+      { header: 'Código', key: 'codigo', width: 12 }, // Artigo
+      { header: 'Descrição', key: 'descricao', width: 40 }, // Descrição
+      { header: 'Unidade base', key: 'unidade_base', width: 16 }, // Unidade base
+      { header: 'Família', key: 'familia', width: 18 }, // Família
+      { header: 'Subfamília', key: 'subfamilia', width: 18 }, // Subfamília
+      { header: 'Setor', key: 'setor', width: 18 }, // Setor
+      { header: 'Ativo', key: 'ativo', width: 8 }, // Ativo
+      { header: 'Quantidade', key: 'quantidade', width: 12 } // Quantidade
     ];
     
     // Adicionar dados

@@ -470,7 +470,9 @@ const ListarItens = () => {
         {/* Card de busca visual */}
         <div className="bg-white rounded-[16px] shadow-[0_8px_32px_rgba(9,21,255,0.08)] p-4 sm:p-8 min-w-[90vw] sm:min-w-[300px] max-w-[98vw] sm:max-w-[340px] flex flex-col items-center gap-4 sm:gap-6 relative">
           <button
-            onClick={() => setShowImageModal(true)}
+            onClick={() => {
+              alert('📸 Funcionalidade em desenvolvimento!\n\nA consulta visual por imagem estará disponível em breve. Esta funcionalidade permitirá buscar itens através de fotos ou imagens enviadas.');
+            }}
             className="w-full flex items-center justify-center gap-2 bg-[#0915FF] hover:bg-[#2336ff] text-white font-bold rounded-xl py-3 px-4 shadow-lg transition text-lg mb-4 border-2 border-[#0915FF] focus:outline-none focus:ring-2 focus:ring-[#2336ff]"
           >
             <svg className="w-6 h-6" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
