@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import Toast from '../components/Toast';
@@ -126,7 +126,7 @@ const ListarItens = () => {
   // if (codigoFiltroRef.current && !codigoFiltroRef.current.contains(event.target)) { setShowCodigoFiltro(false); }
   // if (descricaoFiltroRef.current && !descricaoFiltroRef.current.contains(event.target)) { setShowDescricaoFiltro(false); }
 
-  const fetchItens = async () => {
+  const fetchItens = useCallback(async () => {
     setLoading(true);
     try {
       const searchParam = debouncedSearchTerm.trim() ? `&search=${encodeURIComponent(debouncedSearchTerm.trim())}` : '';
@@ -148,7 +148,7 @@ const ListarItens = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [paginaAtual, debouncedSearchTerm, mostrarInativos]);
 
   // Função para ordenar itens
   const ordenarItens = (itens) => {
@@ -269,7 +269,7 @@ const ListarItens = () => {
   useEffect(() => {
     fetchItens();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [paginaAtual, mostrarInativos]);
+  }, [fetchItens]); // Removido paginaAtual e mostrarInativos pois estão no useCallback
 
   // Debounce para o termo de busca
   useEffect(() => {
@@ -286,7 +286,7 @@ const ListarItens = () => {
       setPaginaAtual(1); // Reset para primeira página
       fetchItens();
     }
-  }, [debouncedSearchTerm]); // Recarrega quando o termo de busca com debounce mudar
+  }, [debouncedSearchTerm, fetchItens]); // Adicionado fetchItens às dependências
 
   // Resetar página quando ordenação mudar
   useEffect(() => {

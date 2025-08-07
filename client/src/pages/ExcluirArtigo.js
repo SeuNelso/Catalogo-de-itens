@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { useNavigate } from 'react-router-dom';
 import Toast from '../components/Toast';
@@ -21,7 +21,7 @@ export default function ExcluirArtigo() {
       return;
     }
     fetchItens();
-  }, [user, navigate, paginaAtual]); // Adicionado paginaAtual às dependências
+  }, [user, navigate, fetchItens]); // Removido paginaAtual pois está no useCallback
 
   // Debounce para o termo de pesquisa
   useEffect(() => {
@@ -38,7 +38,7 @@ export default function ExcluirArtigo() {
       setPaginaAtual(1); // Reset para primeira página
       fetchItens();
     }
-  }, [debouncedSearchTerm]); // Recarrega quando o termo de pesquisa com debounce mudar
+  }, [debouncedSearchTerm, user, fetchItens]); // Adicionado user e fetchItens às dependências
 
   useEffect(() => {
     function handleClickOutside(event) {
@@ -55,7 +55,7 @@ export default function ExcluirArtigo() {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
-  const fetchItens = async () => {
+  const fetchItens = useCallback(async () => {
     try {
       const searchParam = debouncedSearchTerm.trim() ? `&search=${encodeURIComponent(debouncedSearchTerm.trim())}` : '';
       const response = await fetch(`/api/itens?incluirInativos=true&page=${paginaAtual}&limit=10${searchParam}`);
@@ -72,7 +72,7 @@ export default function ExcluirArtigo() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [debouncedSearchTerm, paginaAtual]);
 
   // Usar diretamente os itens do servidor (já filtrados)
   const itensPagina = itens;
