@@ -7,6 +7,7 @@ import Webcam from 'react-webcam';
 
 const ListarItens = () => {
   const [searchTerm, setSearchTerm] = useState('');
+  const [debouncedSearchTerm, setDebouncedSearchTerm] = useState(''); // Termo de busca com debounce
   const [itens, setItens] = useState([]);
   const [toast, setToast] = useState(null);
   const [paginaAtual, setPaginaAtual] = useState(1);
@@ -58,6 +59,7 @@ const ListarItens = () => {
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 600);
   const [naoCadastrados, setNaoCadastrados] = useState([]);
   const [mostrarInativos, setMostrarInativos] = useState(false);
+  const [totalPaginas, setTotalPaginas] = useState(1); // Adicionado para controlar o total de páginas
 
   // Buscar artigos não cadastrados do servidor ao montar
   useEffect(() => {
@@ -127,22 +129,21 @@ const ListarItens = () => {
   const fetchItens = async () => {
     setLoading(true);
     try {
-      const url = mostrarInativos ? `/api/itens?incluirInativos=true&page=${paginaAtual}&limit=10` : `/api/itens?page=${paginaAtual}&limit=10`;
-      const response = await fetch(url); // itensPorPagina não usado
+      const searchParam = debouncedSearchTerm.trim() ? `&search=${encodeURIComponent(debouncedSearchTerm.trim())}` : '';
+      const url = mostrarInativos ? `/api/itens?incluirInativos=true&page=${paginaAtual}&limit=10${searchParam}` : `/api/itens?page=${paginaAtual}&limit=10${searchParam}`;
+      const response = await fetch(url);
       if (response.ok) {
         const data = await response.json();
-        let arr = [];
-        if (Array.isArray(data.itens)) arr = data.itens;
-        else if (Array.isArray(data)) arr = data;
-        setItens(arr);
-        // setTotalItens(data.total || arr.length); // não usado
+        setItens(data.itens || []);
+        // Atualizar total de páginas baseado na resposta do servidor
+        if (data.totalPages) {
+          setTotalPaginas(data.totalPages);
+        }
       } else {
         setItens([]);
-        // setTotalItens(0); // não usado
       }
     } catch (error) {
       setItens([]);
-      // setTotalItens(0); // não usado
       setToast({ type: 'error', message: 'Erro ao carregar itens.' });
     } finally {
       setLoading(false);
@@ -189,48 +190,16 @@ const ListarItens = () => {
     });
   };
 
-  // Função para aplicar filtros
-  const aplicarFiltros = (itens) => {
-    return itens.filter(item => {
-      // Filtro por termo de busca (já é case insensitive)
-      const termo = searchTerm.trim().toLowerCase();
-      const matchBusca = !termo || 
-        (item.codigo && item.codigo.toLowerCase().includes(termo)) ||
-        (item.nome && item.nome.toLowerCase().includes(termo)) ||
-        (item.descricao && item.descricao.toLowerCase().includes(termo));
-
-      if (!matchBusca) return false;
-
-      // Filtros específicos (todos case insensitive)
-      if (filtros.familia && (!item.familia || !item.familia.toLowerCase().includes(filtros.familia.toLowerCase()))) return false;
-      if (filtros.subfamilia && (!item.subfamilia || !item.subfamilia.toLowerCase().includes(filtros.subfamilia.toLowerCase()))) return false;
-      if (filtros.setor && (!item.setor || !item.setor.toLowerCase().includes(filtros.setor.toLowerCase()))) return false;
-      if (filtros.categoria && (!item.categoria || !item.categoria.toLowerCase().includes(filtros.categoria.toLowerCase()))) return false;
-      if (filtros.unidadeArmazenamento && (!item.unidadearmazenamento || !item.unidadearmazenamento.toLowerCase().includes(filtros.unidadeArmazenamento.toLowerCase()))) return false;
-      if (filtros.tipocontrolo && (!item.tipocontrolo || !item.tipocontrolo.toLowerCase().includes(filtros.tipocontrolo.toLowerCase()))) return false;
-
-      // Filtro por quantidade
-      const quantidade = item.quantidade || 0;
-      if (filtros.quantidadeMin && quantidade < parseInt(filtros.quantidadeMin)) return false;
-      if (filtros.quantidadeMax && quantidade > parseInt(filtros.quantidadeMax)) return false;
-
-      return true;
-    });
-  };
-
   // Filtro de itens ativos/inativos e aplicação dos filtros
   const itensFiltrados = Array.isArray(itens) ? itens.filter(item => {
     if (!mostrarInativos && !item.ativo) return false;
     return true;
   }) : [];
 
-  // Aplicar filtros adicionais
-  const itensComFiltros = aplicarFiltros(itensFiltrados);
-
-  // Aplicar ordenação
-  const itensOrdenados = ordenarItens(itensComFiltros);
-  const totalPaginas = Math.ceil(itensOrdenados.length / 10); // itensPorPagina não usado
-  const itensPagina = Array.isArray(itensOrdenados) ? itensOrdenados.slice((paginaAtual - 1) * 10, paginaAtual * 10) : []; // itensPorPagina não usado
+  // Aplicar ordenação apenas
+  const itensOrdenados = ordenarItens(itensFiltrados);
+  // Usar diretamente os itens ordenados (já vêm paginados do servidor)
+  const itensPagina = itensOrdenados;
 
   // Funções do modal de busca por imagem
   const handleFileSelect = (file) => {
@@ -301,6 +270,23 @@ const ListarItens = () => {
     fetchItens();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [paginaAtual, mostrarInativos]);
+
+  // Debounce para o termo de busca
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearchTerm(searchTerm);
+    }, 500); // Aguarda 500ms após parar de digitar
+
+    return () => clearTimeout(timer);
+  }, [searchTerm]);
+
+  // Recarregar dados quando o termo de busca com debounce mudar
+  useEffect(() => {
+    if (debouncedSearchTerm.trim() !== '') {
+      setPaginaAtual(1); // Reset para primeira página
+      fetchItens();
+    }
+  }, [debouncedSearchTerm]); // Recarrega quando o termo de busca com debounce mudar
 
   // Resetar página quando ordenação mudar
   useEffect(() => {
