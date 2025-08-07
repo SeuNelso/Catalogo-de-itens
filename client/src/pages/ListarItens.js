@@ -95,37 +95,6 @@ const ListarItens = () => {
     fetchNaoCadastrados();
   }, []);
 
-  useEffect(() => {
-    function handleResize() {
-      setIsMobile(window.innerWidth <= 600);
-    }
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
-  }, []);
-
-  // Corrigir useEffect para não dar erro de dependência
-  useEffect(() => {
-    fetchItens();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [paginaAtual]);
-
-  useEffect(() => {
-    function calcularItensPorPagina() {
-      // Altura do cabeçalho, filtros, margens, etc.
-      // const alturaCabecalho = 250; // considera header, filtros, paginação, etc. (não usado)
-      // const alturaLinha = 48; // altura média de uma linha da tabela (não usado)
-      // const alturaDisponivel = window.innerHeight - alturaCabecalho; // não usado
-    }
-    calcularItensPorPagina();
-    window.addEventListener('resize', calcularItensPorPagina);
-    return () => window.removeEventListener('resize', calcularItensPorPagina);
-  }, []);
-
-  // Remover referências a filtros não utilizados
-  // useEffect(() => {}, [codigoFiltro, descricaoFiltro]);
-  // if (codigoFiltroRef.current && !codigoFiltroRef.current.contains(event.target)) { setShowCodigoFiltro(false); }
-  // if (descricaoFiltroRef.current && !descricaoFiltroRef.current.contains(event.target)) { setShowDescricaoFiltro(false); }
-
   const fetchItens = useCallback(async () => {
     setLoading(true);
     try {
@@ -149,6 +118,37 @@ const ListarItens = () => {
       setLoading(false);
     }
   }, [paginaAtual, debouncedSearchTerm, mostrarInativos]);
+
+  useEffect(() => {
+    function handleResize() {
+      setIsMobile(window.innerWidth <= 600);
+    }
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  // Corrigir useEffect para não dar erro de dependência
+  useEffect(() => {
+    fetchItens();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fetchItens]);
+
+  useEffect(() => {
+    function calcularItensPorPagina() {
+      // Altura do cabeçalho, filtros, margens, etc.
+      // const alturaCabecalho = 250; // considera header, filtros, paginação, etc. (não usado)
+      // const alturaLinha = 48; // altura média de uma linha da tabela (não usado)
+      // const alturaDisponivel = window.innerHeight - alturaCabecalho; // não usado
+    }
+    calcularItensPorPagina();
+    window.addEventListener('resize', calcularItensPorPagina);
+    return () => window.removeEventListener('resize', calcularItensPorPagina);
+  }, []);
+
+  // Remover referências a filtros não utilizados
+  // useEffect(() => {}, [codigoFiltro, descricaoFiltro]);
+  // if (codigoFiltroRef.current && !codigoFiltroRef.current.contains(event.target)) { setShowCodigoFiltro(false); }
+  // if (descricaoFiltroRef.current && !descricaoFiltroRef.current.contains(event.target)) { setShowDescricaoFiltro(false); }
 
   // Função para ordenar itens
   const ordenarItens = (itens) => {

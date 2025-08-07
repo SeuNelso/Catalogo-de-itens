@@ -16,6 +16,33 @@ export default function ExcluirArtigo() {
   const [debouncedSearchTerm, setDebouncedSearchTerm] = useState(''); // Termo de pesquisa com debounce
 
   useEffect(() => {
+    function handleResize() {
+      setIsMobile(window.innerWidth <= 600);
+    }
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  const fetchItens = useCallback(async () => {
+    try {
+      const searchParam = debouncedSearchTerm.trim() ? `&search=${encodeURIComponent(debouncedSearchTerm.trim())}` : '';
+      const response = await fetch(`/api/itens?incluirInativos=true&page=${paginaAtual}&limit=10${searchParam}`);
+      if (response.ok) {
+        const data = await response.json();
+        setItens(data.itens || []);
+        // Atualizar total de páginas baseado na resposta do servidor
+        if (data.totalPages) {
+          setTotalPaginas(data.totalPages);
+        }
+      }
+    } catch (error) {
+      setToast({ type: 'error', message: 'Erro ao carregar itens.' });
+    } finally {
+      setLoading(false);
+    }
+  }, [debouncedSearchTerm, paginaAtual]);
+
+  useEffect(() => {
     if (!user || user.role !== 'admin') {
       navigate('/');
       return;
@@ -46,33 +73,6 @@ export default function ExcluirArtigo() {
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
-
-  useEffect(() => {
-    function handleResize() {
-      setIsMobile(window.innerWidth <= 600);
-    }
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
-  }, []);
-
-  const fetchItens = useCallback(async () => {
-    try {
-      const searchParam = debouncedSearchTerm.trim() ? `&search=${encodeURIComponent(debouncedSearchTerm.trim())}` : '';
-      const response = await fetch(`/api/itens?incluirInativos=true&page=${paginaAtual}&limit=10${searchParam}`);
-      if (response.ok) {
-        const data = await response.json();
-        setItens(data.itens || []);
-        // Atualizar total de páginas baseado na resposta do servidor
-        if (data.totalPages) {
-          setTotalPaginas(data.totalPages);
-        }
-      }
-    } catch (error) {
-      setToast({ type: 'error', message: 'Erro ao carregar itens.' });
-    } finally {
-      setLoading(false);
-    }
-  }, [debouncedSearchTerm, paginaAtual]);
 
   // Usar diretamente os itens do servidor (já filtrados)
   const itensPagina = itens;
