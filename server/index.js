@@ -823,6 +823,20 @@ app.get('/api/itens', (req, res) => {
   const offset = (page - 1) * limit;
   const searchTerm = req.query.search || '';
   
+  // Parâmetros de filtro
+  const familia = req.query.familia || '';
+  const subfamilia = req.query.subfamilia || '';
+  const setor = req.query.setor || '';
+  const categoria = req.query.categoria || '';
+  const quantidadeMin = req.query.quantidadeMin || '';
+  const quantidadeMax = req.query.quantidadeMax || '';
+  const unidadeArmazenamento = req.query.unidadeArmazenamento || '';
+  const tipocontrolo = req.query.tipocontrolo || '';
+  
+  // Parâmetros de ordenação
+  const sortBy = req.query.sortBy || '';
+  const sortOrder = req.query.sortOrder || 'asc';
+  
   let whereConditions = [];
   let params = [];
   let paramIndex = 1;
@@ -839,6 +853,55 @@ app.get('/api/itens', (req, res) => {
     paramIndex++;
   }
   
+  // Filtros adicionais
+  if (familia.trim()) {
+    whereConditions.push(`LOWER(i.familia) LIKE LOWER($${paramIndex})`);
+    params.push(`%${familia.trim()}%`);
+    paramIndex++;
+  }
+  
+  if (subfamilia.trim()) {
+    whereConditions.push(`LOWER(i.subfamilia) LIKE LOWER($${paramIndex})`);
+    params.push(`%${subfamilia.trim()}%`);
+    paramIndex++;
+  }
+  
+  if (setor.trim()) {
+    whereConditions.push(`LOWER(i.setor) LIKE LOWER($${paramIndex})`);
+    params.push(`%${setor.trim()}%`);
+    paramIndex++;
+  }
+  
+  if (categoria.trim()) {
+    whereConditions.push(`LOWER(i.categoria) LIKE LOWER($${paramIndex})`);
+    params.push(`%${categoria.trim()}%`);
+    paramIndex++;
+  }
+  
+  if (quantidadeMin.trim()) {
+    whereConditions.push(`i.quantidade >= $${paramIndex}`);
+    params.push(parseInt(quantidadeMin.trim()));
+    paramIndex++;
+  }
+  
+  if (quantidadeMax.trim()) {
+    whereConditions.push(`i.quantidade <= $${paramIndex}`);
+    params.push(parseInt(quantidadeMax.trim()));
+    paramIndex++;
+  }
+  
+  if (unidadeArmazenamento.trim()) {
+    whereConditions.push(`LOWER(i.unidadeArmazenamento) LIKE LOWER($${paramIndex})`);
+    params.push(`%${unidadeArmazenamento.trim()}%`);
+    paramIndex++;
+  }
+  
+  if (tipocontrolo.trim()) {
+    whereConditions.push(`LOWER(i.tipocontrolo) LIKE LOWER($${paramIndex})`);
+    params.push(`%${tipocontrolo.trim()}%`);
+    paramIndex++;
+  }
+  
   const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(' AND ')}` : '';
   
   // Query para contar total de itens
@@ -848,6 +911,20 @@ app.get('/api/itens', (req, res) => {
     ${whereClause}
   `;
   
+  // Construir cláusula ORDER BY
+  let orderByClause = '';
+  if (sortBy && ['codigo', 'nome', 'setor', 'quantidade', 'familia', 'subfamilia', 'categoria'].includes(sortBy)) {
+    const direction = sortOrder === 'desc' ? 'DESC' : 'ASC';
+    orderByClause = `ORDER BY i.${sortBy} ${direction}`;
+  } else {
+    // Ordenação padrão
+    orderByClause = `ORDER BY 
+      (i.codigo ~ '^[0-9]') DESC, -- Prioriza códigos que começam com número
+      i.codigo ASC,
+      i.ordem_importacao ASC, 
+      i.data_cadastro DESC`;
+  }
+
   // Query principal com paginação
   const query = `
     SELECT i.*, 
@@ -857,11 +934,7 @@ app.get('/api/itens', (req, res) => {
     LEFT JOIN imagens_itens img ON i.id = img.item_id
     ${whereClause}
     GROUP BY i.id
-    ORDER BY 
-      (i.codigo ~ '^[0-9]') DESC, -- Prioriza códigos que começam com número
-      i.codigo ASC,
-      i.ordem_importacao ASC, 
-      i.data_cadastro DESC
+    ${orderByClause}
     LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
   `;
   

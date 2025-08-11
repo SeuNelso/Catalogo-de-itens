@@ -99,7 +99,27 @@ const ListarItens = () => {
     setLoading(true);
     try {
       const searchParam = debouncedSearchTerm.trim() ? `&search=${encodeURIComponent(debouncedSearchTerm.trim())}` : '';
-      const url = mostrarInativos ? `/api/itens?incluirInativos=true&page=${paginaAtual}&limit=10${searchParam}` : `/api/itens?page=${paginaAtual}&limit=10${searchParam}`;
+      
+      // Construir parâmetros de filtro
+      const filtrosParams = [];
+      if (filtros.familia.trim()) filtrosParams.push(`familia=${encodeURIComponent(filtros.familia.trim())}`);
+      if (filtros.subfamilia.trim()) filtrosParams.push(`subfamilia=${encodeURIComponent(filtros.subfamilia.trim())}`);
+      if (filtros.setor.trim()) filtrosParams.push(`setor=${encodeURIComponent(filtros.setor.trim())}`);
+      if (filtros.categoria.trim()) filtrosParams.push(`categoria=${encodeURIComponent(filtros.categoria.trim())}`);
+      if (filtros.quantidadeMin.trim()) filtrosParams.push(`quantidadeMin=${encodeURIComponent(filtros.quantidadeMin.trim())}`);
+      if (filtros.quantidadeMax.trim()) filtrosParams.push(`quantidadeMax=${encodeURIComponent(filtros.quantidadeMax.trim())}`);
+      if (filtros.unidadeArmazenamento.trim()) filtrosParams.push(`unidadeArmazenamento=${encodeURIComponent(filtros.unidadeArmazenamento.trim())}`);
+      if (filtros.tipocontrolo.trim()) filtrosParams.push(`tipocontrolo=${encodeURIComponent(filtros.tipocontrolo.trim())}`);
+      
+      const filtrosString = filtrosParams.length > 0 ? `&${filtrosParams.join('&')}` : '';
+      
+      // Parâmetros de ordenação
+      const ordenacaoParam = ordenacao.campo ? `&sortBy=${ordenacao.campo}&sortOrder=${ordenacao.direcao}` : '';
+      
+      const url = mostrarInativos ? 
+        `/api/itens?incluirInativos=true&page=${paginaAtual}&limit=10${searchParam}${filtrosString}${ordenacaoParam}` : 
+        `/api/itens?page=${paginaAtual}&limit=10${searchParam}${filtrosString}${ordenacaoParam}`;
+      
       const response = await fetch(url);
       if (response.ok) {
         const data = await response.json();
@@ -117,7 +137,7 @@ const ListarItens = () => {
     } finally {
       setLoading(false);
     }
-  }, [paginaAtual, debouncedSearchTerm, mostrarInativos]);
+  }, [paginaAtual, debouncedSearchTerm, mostrarInativos, filtros, ordenacao]);
 
   useEffect(() => {
     function handleResize() {
@@ -150,56 +170,10 @@ const ListarItens = () => {
   // if (codigoFiltroRef.current && !codigoFiltroRef.current.contains(event.target)) { setShowCodigoFiltro(false); }
   // if (descricaoFiltroRef.current && !descricaoFiltroRef.current.contains(event.target)) { setShowDescricaoFiltro(false); }
 
-  // Função para ordenar itens
-  const ordenarItens = (itens) => {
-    if (!ordenacao.campo) return itens;
-    
-    return [...itens].sort((a, b) => {
-      let valorA, valorB;
-      
-      switch (ordenacao.campo) {
-        case 'codigo':
-          valorA = a.codigo || '';
-          valorB = b.codigo || '';
-          break;
-        case 'nome':
-          valorA = a.nome || '';
-          valorB = b.nome || '';
-          break;
-        case 'setor':
-          valorA = a.setor || '';
-          valorB = b.setor || '';
-          break;
-        case 'quantidade':
-          valorA = a.quantidade || 0;
-          valorB = b.quantidade || 0;
-          break;
-        default:
-          return 0;
-      }
-      
-      // Comparação para strings
-      if (typeof valorA === 'string' && typeof valorB === 'string') {
-        valorA = valorA.toLowerCase();
-        valorB = valorB.toLowerCase();
-      }
-      
-      if (valorA < valorB) return ordenacao.direcao === 'asc' ? -1 : 1;
-      if (valorA > valorB) return ordenacao.direcao === 'asc' ? 1 : -1;
-      return 0;
-    });
-  };
 
-  // Filtro de itens ativos/inativos e aplicação dos filtros
-  const itensFiltrados = Array.isArray(itens) ? itens.filter(item => {
-    if (!mostrarInativos && !item.ativo) return false;
-    return true;
-  }) : [];
 
-  // Aplicar ordenação apenas
-  const itensOrdenados = ordenarItens(itensFiltrados);
-  // Usar diretamente os itens ordenados (já vêm paginados do servidor)
-  const itensPagina = itensOrdenados;
+  // Os itens já vêm ordenados do servidor
+  const itensPagina = itens;
 
   // Funções do modal de busca por imagem
   const handleFileSelect = (file) => {
@@ -288,6 +262,12 @@ const ListarItens = () => {
     }
   }, [debouncedSearchTerm, fetchItens]); // Adicionado fetchItens às dependências
 
+  // Recarregar dados quando os filtros mudarem
+  useEffect(() => {
+    setPaginaAtual(1); // Reset para primeira página ao filtrar
+    fetchItens();
+  }, [filtros, fetchItens]);
+
   // Resetar página quando ordenação mudar
   useEffect(() => {
     setPaginaAtual(1);
@@ -332,6 +312,9 @@ const ListarItens = () => {
     });
     setPaginaAtual(1);
   };
+
+  // Verificar se há filtros ativos
+  const filtrosAtivos = Object.values(filtros).some(valor => valor.trim() !== '');
 
   return (
     <div className="bg-[#f3f6fd] flex flex-col items-center justify-center py-2 px-1 sm:px-4 pt-2">
@@ -513,11 +496,18 @@ const ListarItens = () => {
           <div className="w-full mt-4">
             <button
               onClick={() => setMostrarFiltros(!mostrarFiltros)}
-              className="w-full flex items-center justify-center gap-2 bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium rounded-lg py-2 px-4 transition-colors"
+              className={`w-full flex items-center justify-center gap-2 font-medium rounded-lg py-2 px-4 transition-colors ${
+                filtrosAtivos 
+                  ? 'bg-blue-100 hover:bg-blue-200 text-blue-700 border border-blue-300' 
+                  : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
+              }`}
             >
               <span>{mostrarFiltros ? '▼' : '▶'}</span>
               {mostrarFiltros ? 'Ocultar Filtros' : 'Mostrar Filtros Avançados'}
+              {filtrosAtivos && <span className="ml-2 px-2 py-0.5 bg-blue-500 text-white text-xs rounded-full">Ativo</span>}
             </button>
+            
+
             
             {mostrarFiltros && (
               <div className="mt-4 bg-white rounded-lg border border-gray-200 shadow-sm">
