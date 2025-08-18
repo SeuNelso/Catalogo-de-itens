@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { Save, ArrowLeft, Package } from 'react-feather';
 import Toast from '../components/Toast';
 import ItensCompostos from '../components/ItensCompostos';
+import MultiSelectSetores from '../components/MultiSelectSetores';
 
 const EditarItem = () => {
   const { id } = useParams();
@@ -21,7 +22,7 @@ const EditarItem = () => {
     descricao: '',
     familia: '',
     subfamilia: '',
-    setor: '',
+    setores: [], // Mudou de setor para setores (array)
     comprimento: '',
     largura: '',
     altura: '',
@@ -50,12 +51,23 @@ const EditarItem = () => {
         if (response.ok) {
           const data = await response.json();
           setItem(data);
+          // Processar setores - converter string para array se necessário
+          let setores = [];
+          if (data.setores && typeof data.setores === 'string') {
+            setores = data.setores.split(', ').filter(s => s.trim() !== '');
+          } else if (Array.isArray(data.setores)) {
+            setores = data.setores;
+          } else if (data.setor && typeof data.setor === 'string') {
+            // Fallback para dados antigos
+            setores = data.setor.split(', ').filter(s => s.trim() !== '');
+          }
+
           setFormData({
             codigo: data.codigo || '',
             descricao: data.descricao || '',
             familia: data.familia || '',
             subfamilia: data.subfamilia || '',
-            setor: data.setor || '',
+            setores: setores,
             comprimento: data.comprimento || '',
             largura: data.largura || '',
             altura: data.altura || '',
@@ -94,6 +106,13 @@ const EditarItem = () => {
     setFormData(prev => ({ ...prev, [name]: value }));
   };
 
+  const handleSetoresChange = (setores) => {
+    setFormData(prev => ({
+      ...prev,
+      setores: setores
+    }));
+  };
+
   const handleFileSelect = (e) => {
     const files = Array.from(e.target.files);
     const validFiles = files.filter(file => file.type.startsWith('image/'));
@@ -127,6 +146,9 @@ const EditarItem = () => {
       Object.keys(formData).forEach(key => {
         if (key === 'unidadePeso') {
           submitData.append('unidadepeso', formData[key] ?? '');
+        } else if (key === 'setores') {
+          // Enviar setores como array JSON
+          submitData.append('setores', JSON.stringify(formData[key]));
         } else {
           submitData.append(key, formData[key] ?? '');
         }
@@ -216,10 +238,14 @@ const EditarItem = () => {
                 </select>
               </div>
             </div>
-            {/* Setor */}
+            {/* Setores */}
             <div>
-              <label className="block text-gray-700 font-semibold mb-1 sm:mb-2 text-sm sm:text-base">Setor</label>
-              <input name="setor" value={formData.setor} onChange={handleInputChange} className="px-3 py-2 rounded-lg border border-[#d1d5db] text-sm sm:text-base w-full" placeholder="Ex: Fibra, Móvel, cliente e etc." maxLength={20} />
+              <label className="block text-gray-700 font-semibold mb-1 sm:mb-2 text-sm sm:text-base">Setores</label>
+              <MultiSelectSetores 
+                value={formData.setores}
+                onChange={handleSetoresChange}
+                placeholder="Selecione os setores..."
+              />
             </div>
             {/* Dimensões */}
             <div>

@@ -3,6 +3,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { Save, ArrowLeft, Package } from 'react-feather';
 import Toast from '../components/Toast';
 import ItensCompostos from '../components/ItensCompostos';
+import MultiSelectSetores from '../components/MultiSelectSetores';
 
 const CadastrarItem = () => {
   const navigate = useNavigate();
@@ -18,7 +19,7 @@ const CadastrarItem = () => {
     descricao: '',
     familia: '',
     subfamilia: '',
-    setor: '',
+    setores: [], // Mudou de setor para setores (array)
     comprimento: '',
     largura: '',
     altura: '',
@@ -36,6 +37,13 @@ const CadastrarItem = () => {
     setFormData(prev => ({
       ...prev,
       [name]: value
+    }));
+  };
+
+  const handleSetoresChange = (setores) => {
+    setFormData(prev => ({
+      ...prev,
+      setores: setores
     }));
   };
 
@@ -81,6 +89,9 @@ const CadastrarItem = () => {
       Object.keys(formData).forEach(key => {
         if (key === 'unidadePeso') {
           submitData.append('unidadepeso', formData[key] ?? '');
+        } else if (key === 'setores') {
+          // Enviar setores como array JSON
+          submitData.append('setores', JSON.stringify(formData[key]));
         } else {
           submitData.append(key, formData[key] ?? '');
         }
@@ -149,7 +160,7 @@ const CadastrarItem = () => {
           descricao: '',
           familia: '',
           subfamilia: '',
-          setor: '',
+          setores: [],
           comprimento: '',
           largura: '',
           altura: '',
@@ -291,8 +302,12 @@ const CadastrarItem = () => {
               </div>
             </div>
             <div>
-              <label className="block text-gray-800 font-semibold mb-1 text-sm sm:text-base">Setor</label>
-              <input name="setor" value={formData.setor} onChange={handleInputChange} placeholder="Ex: Fibra, Móvel, cliente e etc." className="px-3 py-2 rounded-lg border border-[#d1d5db] text-sm sm:text-base w-full" maxLength={20} />
+                                  <label className="block text-gray-800 font-semibold mb-1 text-sm sm:text-base">Setores</label>
+                    <MultiSelectSetores 
+                      value={formData.setores}
+                      onChange={handleSetoresChange}
+                      placeholder="Selecione os setores..."
+                    />
             </div>
             <div>
               <label className="block text-gray-800 font-semibold mb-1 text-sm sm:text-base">Dimensões</label>

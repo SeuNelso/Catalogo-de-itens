@@ -104,6 +104,22 @@ const AWS = require('aws-sdk');
 const https = require('https');
 const http = require('http');
 
+// Setores válidos disponíveis no sistema
+const SETORES_VALIDOS = [
+  'CLIENTE',
+  'ENGENHARIA',
+  'FIBRA',
+  'FROTA',
+  'IT',
+  'LOGISTICA',
+  'MARKETING',
+  'MOVEL',
+  'NOWO',
+  'FERRAMENTA',
+  'EPI',
+  'EPC'
+];
+
 // Função helper para criar cliente S3 configurado
 function createS3Client() {
   // Valores padrão para desenvolvimento local
@@ -866,10 +882,22 @@ app.get('/api/itens', (req, res) => {
     paramIndex++;
   }
   
-  if (setor.trim()) {
-    whereConditions.push(`LOWER(i.setor) LIKE LOWER($${paramIndex})`);
-    params.push(`%${setor.trim()}%`);
-    paramIndex++;
+  // Processar múltiplos filtros de setor
+  const setoresFiltro = req.query.setor ? (Array.isArray(req.query.setor) ? req.query.setor : [req.query.setor]) : [];
+  if (setoresFiltro.length > 0) {
+    const setoresConditions = setoresFiltro.map((setor, index) => {
+      const paramPos = paramIndex + index;
+      return `EXISTS (
+        SELECT 1 FROM itens_setores is2 
+        WHERE is2.item_id = i.id 
+        AND LOWER(is2.setor) LIKE LOWER($${paramPos})
+      )`;
+    });
+    whereConditions.push(`(${setoresConditions.join(' OR ')})`);
+    setoresFiltro.forEach(setor => {
+      params.push(`%${setor.trim()}%`);
+    });
+    paramIndex += setoresFiltro.length;
   }
   
   if (categoria.trim()) {
@@ -908,14 +936,18 @@ app.get('/api/itens', (req, res) => {
   const countQuery = `
     SELECT COUNT(DISTINCT i.id) as total
     FROM itens i
+    LEFT JOIN itens_setores is2 ON i.id = is2.item_id
     ${whereClause}
   `;
   
   // Construir cláusula ORDER BY
   let orderByClause = '';
-  if (sortBy && ['codigo', 'nome', 'setor', 'quantidade', 'familia', 'subfamilia', 'categoria'].includes(sortBy)) {
+  if (sortBy && ['codigo', 'nome', 'quantidade', 'familia', 'subfamilia', 'categoria'].includes(sortBy)) {
     const direction = sortOrder === 'desc' ? 'DESC' : 'ASC';
     orderByClause = `ORDER BY i.${sortBy} ${direction}`;
+  } else if (sortBy === 'setor') {
+    const direction = sortOrder === 'desc' ? 'DESC' : 'ASC';
+    orderByClause = `ORDER BY STRING_AGG(DISTINCT is2.setor, ', ') ${direction}`;
   } else {
     // Ordenação padrão
     orderByClause = `ORDER BY 
@@ -929,9 +961,11 @@ app.get('/api/itens', (req, res) => {
   const query = `
     SELECT i.*, 
            STRING_AGG(DISTINCT img.caminho, ',') as imagens,
-           COUNT(DISTINCT img.id) as total_imagens
+           COUNT(DISTINCT img.id) as total_imagens,
+           STRING_AGG(DISTINCT is2.setor, ', ') as setores
     FROM itens i
     LEFT JOIN imagens_itens img ON i.id = img.item_id
+    LEFT JOIN itens_setores is2 ON i.id = is2.item_id
     ${whereClause}
     GROUP BY i.id
     ${orderByClause}
@@ -1020,8 +1054,14 @@ app.get('/api/imagem/:filename(*)', (req, res) => {
 // Buscar item por ID
 app.get('/api/itens/:id', (req, res) => {
   const itemId = req.params.id;
-  // Buscar item
-  pool.query('SELECT * FROM itens WHERE id = $1', [itemId], (err, result) => {
+  // Buscar item, incluindo setores agregados
+  pool.query(`
+    SELECT i.*, COALESCE(STRING_AGG(DISTINCT is2.setor, ', '), '') AS setores
+    FROM itens i
+    LEFT JOIN itens_setores is2 ON is2.item_id = i.id
+    WHERE i.id = $1
+    GROUP BY i.id
+  `, [itemId], (err, result) => {
     if (err) {
       return res.status(500).json({ error: err.message });
     }
@@ -1183,13 +1223,31 @@ app.post('/api/itens', authenticateToken, upload.fields([
 
     try {
       const result = await pool.query(`
-        INSERT INTO itens (nome, descricao, categoria, codigo, preco, quantidade, localizacao, observacoes, familia, subfamilia, setor, comprimento, largura, altura, unidade, peso, unidadepeso, unidadearmazenamento, tipocontrolo, ativo)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+        INSERT INTO itens (nome, descricao, categoria, codigo, preco, quantidade, localizacao, observacoes, familia, subfamilia, comprimento, largura, altura, unidade, peso, unidadepeso, unidadearmazenamento, tipocontrolo, ativo)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
         RETURNING id
       `, [itemData.nome, itemData.descricao, itemData.categoria, itemData.codigo, itemData.preco, itemData.quantidade, itemData.localizacao, itemData.observacoes,
-          itemData.familia, itemData.subfamilia, itemData.setor, itemData.comprimento, itemData.largura, itemData.altura, itemData.unidade, itemData.peso, itemData.unidadepeso, itemData.unidadearmazenamento, itemData.tipocontrolo, itemData.ativo]);
+          itemData.familia, itemData.subfamilia, itemData.comprimento, itemData.largura, itemData.altura, itemData.unidade, itemData.peso, itemData.unidadepeso, itemData.unidadearmazenamento, itemData.tipocontrolo, itemData.ativo]);
 
       const itemId = result.rows[0].id;
+
+      // Inserir setores múltiplos
+      if (req.body.setores) {
+        try {
+          const setores = JSON.parse(req.body.setores);
+          if (Array.isArray(setores) && setores.length > 0) {
+            for (const setor of setores) {
+              await pool.query(
+                'INSERT INTO itens_setores (item_id, setor) VALUES ($1, $2)',
+                [itemId, setor]
+              );
+            }
+            console.log(`✅ Setores inseridos para item ${itemId}:`, setores);
+          }
+        } catch (setoresError) {
+          console.error(`❌ Erro ao inserir setores: ${setoresError.message}`);
+        }
+      }
 
       // Remover item da tabela de itens não cadastrados se existir
       try {
@@ -1491,18 +1549,40 @@ app.put('/api/itens/:id', authenticateToken, upload.fields([
   pool.query(`
     UPDATE itens 
     SET nome = $1, descricao = $2, categoria = $3, codigo = $4, preco = $5, quantidade = $6, localizacao = $7, observacoes = $8,
-        familia = $9, subfamilia = $10, setor = $11, comprimento = $12, largura = $13, altura = $14,
-        unidade = $15, peso = $16, unidadepeso = $17, unidadearmazenamento = $18, tipocontrolo = $19
-    WHERE id = $20
+        familia = $9, subfamilia = $10, comprimento = $11, largura = $12, altura = $13,
+        unidade = $14, peso = $15, unidadepeso = $16, unidadearmazenamento = $17, tipocontrolo = $18
+    WHERE id = $19
   `, [
     nome || descricao, descricao, categoria || 'Sem categoria', codigo, precoNum, quantidadeNum, localizacao, observacoes,
-    familia, subfamilia, setor, comprimentoNum, larguraNum, alturaNum, unidade, peso, unidadepeso, unidadearmazenamento, tipocontrolo, itemId
+    familia, subfamilia, comprimentoNum, larguraNum, alturaNum, unidade, peso, unidadepeso, unidadearmazenamento, tipocontrolo, itemId
   ], async (err, result) => {
     if (err) {
       return res.status(500).json({ error: err.message });
     }
     if (result.rowCount === 0) {
       return res.status(404).json({ error: 'Item não encontrado' });
+    }
+
+    // Atualizar setores múltiplos
+    if (req.body.setores) {
+      try {
+        // Remover setores existentes
+        await pool.query('DELETE FROM itens_setores WHERE item_id = $1', [itemId]);
+        
+        // Inserir novos setores
+        const setores = JSON.parse(req.body.setores);
+        if (Array.isArray(setores) && setores.length > 0) {
+          for (const setor of setores) {
+            await pool.query(
+              'INSERT INTO itens_setores (item_id, setor) VALUES ($1, $2)',
+              [itemId, setor]
+            );
+          }
+          console.log(`✅ Setores atualizados para item ${itemId}:`, setores);
+        }
+      } catch (setoresError) {
+        console.error(`❌ Erro ao atualizar setores: ${setoresError.message}`);
+      }
     }
 
         // Remover imagens marcadas para exclusão
@@ -3062,6 +3142,257 @@ app.post('/api/detectar-imagens-todos', authenticateToken, async (req, res) => {
     console.error('Erro na detecção para todos os itens:', error);
     res.status(500).json({ 
       error: 'Erro na detecção automática',
+      details: error.message 
+    });
+  }
+});
+
+// Configuração específica do multer para arquivos Excel
+const excelSetoresUpload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      cb(null, 'uploads/');
+    },
+    filename: (req, file, cb) => {
+      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+      cb(null, 'setores-' + uniqueSuffix + path.extname(file.originalname));
+    }
+  }),
+  fileFilter: (req, file, cb) => {
+    // Aceitar arquivos Excel
+    if (file.mimetype === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' || 
+        file.mimetype === 'application/vnd.ms-excel' ||
+        file.originalname.endsWith('.xlsx') ||
+        file.originalname.endsWith('.xls')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Apenas arquivos Excel (.xlsx, .xls) são permitidos!'), false);
+    }
+  },
+  limits: {
+    fileSize: 10 * 1024 * 1024 // 10MB
+  }
+});
+
+// Rota para importar setores via upload de arquivo Excel
+app.post('/api/importar-setores', authenticateToken, excelSetoresUpload.single('file'), async (req, res) => {
+  try {
+    // Verificar se é admin ou controller
+    if (!req.user || (req.user.role !== 'admin' && req.user.role !== 'controller')) {
+      return res.status(403).json({ error: 'Acesso negado.' });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({ error: 'Nenhum arquivo foi enviado' });
+    }
+
+    const filePath = req.file.path;
+    const fileExtension = path.extname(req.file.originalname).toLowerCase();
+
+    if (fileExtension !== '.xlsx' && fileExtension !== '.xls') {
+      // Remover arquivo inválido
+      fs.unlinkSync(filePath);
+      return res.status(400).json({ error: 'Formato de arquivo não suportado. Use .xlsx ou .xls' });
+    }
+
+    console.log('📁 Processando arquivo:', req.file.originalname);
+
+    // Ler arquivo Excel
+    const workbook = XLSX.readFile(filePath);
+    const sheetName = workbook.SheetNames[0];
+    const worksheet = workbook.Sheets[sheetName];
+    const dados = XLSX.utils.sheet_to_json(worksheet);
+
+    console.log(`📊 Total de linhas lidas: ${dados.length}`);
+
+    // Processar dados
+    const resultados = {
+      total: dados.length,
+      processados: 0,
+      sucesso: 0,
+      erros: 0,
+      setoresInvalidos: 0,
+      itensNaoEncontrados: 0,
+      detalhes: []
+    };
+
+    console.log('🔄 Iniciando processamento dos dados...');
+
+    for (let i = 0; i < dados.length; i++) {
+      const linha = dados[i];
+      const codigo = linha.Artigo || linha.codigo || linha.CODIGO || linha.artigo;
+      const setoresString = linha.SETOR || linha.setor || linha.Setor || '';
+
+      // Mostrar progresso a cada 50 itens
+      if ((i + 1) % 50 === 0) {
+        const percentual = Math.round(((i + 1) / dados.length) * 100);
+        console.log(`📈 Progresso: ${i + 1}/${dados.length} (${percentual}%)`);
+      }
+
+      if (!codigo) {
+        resultados.erros++;
+        resultados.detalhes.push({
+          linha: i + 1,
+          codigo: 'N/A',
+          setores: setoresString,
+          erro: 'Código do item não encontrado'
+        });
+        continue;
+      }
+
+      resultados.processados++;
+
+      try {
+        // Buscar o item pelo código
+        const itemResult = await pool.query('SELECT id FROM itens WHERE codigo = $1', [codigo]);
+        
+        if (itemResult.rows.length === 0) {
+          resultados.itensNaoEncontrados++;
+          resultados.detalhes.push({
+            linha: i + 1,
+            codigo: codigo,
+            setores: setoresString,
+            erro: 'Item não encontrado no banco de dados'
+          });
+          continue;
+        }
+
+        const itemId = itemResult.rows[0].id;
+
+        // Processar setores (separados por vírgula)
+        const setoresArray = setoresString
+          .split(',')
+          .map(setor => setor.trim().toUpperCase())
+          .filter(setor => setor.length > 0 && setor !== '')
+          .filter((setor, index, array) => array.indexOf(setor) === index); // Remover duplicatas
+
+        // Validar setores
+        const setoresValidos = [];
+        const setoresInvalidos = [];
+
+        for (const setor of setoresArray) {
+          if (SETORES_VALIDOS.includes(setor)) {
+            setoresValidos.push(setor);
+          } else {
+            setoresInvalidos.push(setor);
+          }
+        }
+
+        if (setoresInvalidos.length > 0) {
+          resultados.setoresInvalidos++;
+          resultados.detalhes.push({
+            linha: i + 1,
+            codigo: codigo,
+            setores: setoresString,
+            setoresValidos: setoresValidos,
+            setoresInvalidos: setoresInvalidos,
+            erro: 'Alguns setores são inválidos'
+          });
+        }
+
+        if (setoresValidos.length > 0) {
+          // Remover setores existentes do item
+          await pool.query('DELETE FROM itens_setores WHERE item_id = $1', [itemId]);
+
+          // Inserir novos setores válidos
+          for (const setor of setoresValidos) {
+            await pool.query(
+              'INSERT INTO itens_setores (item_id, setor) VALUES ($1, $2)',
+              [itemId, setor]
+            );
+          }
+
+          resultados.sucesso++;
+          console.log(`✅ ${codigo}: ${setoresValidos.join(', ')}`);
+        }
+
+      } catch (error) {
+        resultados.erros++;
+        resultados.detalhes.push({
+          linha: i + 1,
+          codigo: codigo,
+          setores: setoresString,
+          erro: error.message
+        });
+      }
+    }
+
+    // Remover arquivo temporário
+    fs.unlinkSync(filePath);
+
+    console.log('📊 Estatísticas da importação:', {
+      total: resultados.total,
+      sucesso: resultados.sucesso,
+      erros: resultados.erros,
+      itensNaoEncontrados: resultados.itensNaoEncontrados,
+      setoresInvalidos: resultados.setoresInvalidos
+    });
+
+    res.json({
+      message: 'Importação concluída',
+      ...resultados
+    });
+
+  } catch (error) {
+    console.error('❌ Erro durante a importação:', error);
+    
+    // Remover arquivo em caso de erro
+    if (req.file && fs.existsSync(req.file.path)) {
+      fs.unlinkSync(req.file.path);
+    }
+    
+    res.status(500).json({ 
+      error: 'Erro durante a importação',
+      details: error.message 
+    });
+  }
+});
+
+// Rota para download do template de setores
+app.get('/api/download-template-setores', authenticateToken, (req, res) => {
+  try {
+    // Verificar se é admin ou controller
+    if (!req.user || (req.user.role !== 'admin' && req.user.role !== 'controller')) {
+      return res.status(403).json({ error: 'Acesso negado.' });
+    }
+
+    // Criar dados de exemplo
+    const dados = [
+      { Artigo: '3000003', SETOR: 'MOVEL' },
+      { Artigo: '3000004', SETOR: 'MOVEL' },
+      { Artigo: '3000020', SETOR: 'MOVEL, FIBRA' },
+      { Artigo: '3000022', SETOR: 'FIBRA, CLIENTE, ENGENHARIA' },
+      { Artigo: '3000023', SETOR: 'IT, LOGISTICA' }
+    ];
+
+    // Criar workbook
+    const workbook = XLSX.utils.book_new();
+    const worksheet = XLSX.utils.json_to_sheet(dados);
+
+    // Definir largura das colunas
+    worksheet['!cols'] = [
+      { width: 15 }, // Artigo
+      { width: 40 }  // SETOR
+    ];
+
+    // Adicionar worksheet ao workbook
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Setores');
+
+    // Gerar buffer
+    const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+
+    // Configurar headers
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', 'attachment; filename="template_setores.xlsx"');
+    res.setHeader('Content-Length', buffer.length);
+
+    // Enviar arquivo
+    res.send(buffer);
+
+  } catch (error) {
+    console.error('❌ Erro ao gerar template:', error);
+    res.status(500).json({ 
+      error: 'Erro ao gerar template',
       details: error.message 
     });
   }

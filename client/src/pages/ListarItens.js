@@ -4,6 +4,7 @@ import { useAuth } from '../contexts/AuthContext';
 import Toast from '../components/Toast';
 import { FaSearch } from 'react-icons/fa';
 import Webcam from 'react-webcam';
+import MultiSelectSetores from '../components/MultiSelectSetores';
 
 const ListarItens = () => {
   const [searchTerm, setSearchTerm] = useState('');
@@ -17,7 +18,7 @@ const ListarItens = () => {
   const [filtros, setFiltros] = useState({
     familia: '',
     subfamilia: '',
-    setor: '',
+    setores: [], // Mudou de setor para setores (array)
     quantidadeMin: '',
     quantidadeMax: '',
     categoria: '',
@@ -60,6 +61,7 @@ const ListarItens = () => {
   const [naoCadastrados, setNaoCadastrados] = useState([]);
   const [mostrarInativos, setMostrarInativos] = useState(false);
   const [totalPaginas, setTotalPaginas] = useState(1); // Adicionado para controlar o total de páginas
+  const [totalItens, setTotalItens] = useState(0); // Total de itens para mostrar informações
 
   // Buscar artigos não cadastrados do servidor ao montar
   useEffect(() => {
@@ -95,8 +97,12 @@ const ListarItens = () => {
     fetchNaoCadastrados();
   }, []);
 
-  const fetchItens = useCallback(async () => {
+  const fetchItens = async (pagina) => {
+    // Garantir que a página seja sempre um número válido
+    const paginaValida = pagina || 1;
     setLoading(true);
+    // Resetar estados quando buscar novos dados
+    setItens([]);
     try {
       const searchParam = debouncedSearchTerm.trim() ? `&search=${encodeURIComponent(debouncedSearchTerm.trim())}` : '';
       
@@ -104,7 +110,11 @@ const ListarItens = () => {
       const filtrosParams = [];
       if (filtros.familia.trim()) filtrosParams.push(`familia=${encodeURIComponent(filtros.familia.trim())}`);
       if (filtros.subfamilia.trim()) filtrosParams.push(`subfamilia=${encodeURIComponent(filtros.subfamilia.trim())}`);
-      if (filtros.setor.trim()) filtrosParams.push(`setor=${encodeURIComponent(filtros.setor.trim())}`);
+      if (filtros.setores.length > 0) {
+        filtros.setores.forEach(setor => {
+          filtrosParams.push(`setor=${encodeURIComponent(setor.trim())}`);
+        });
+      }
       if (filtros.categoria.trim()) filtrosParams.push(`categoria=${encodeURIComponent(filtros.categoria.trim())}`);
       if (filtros.quantidadeMin.trim()) filtrosParams.push(`quantidadeMin=${encodeURIComponent(filtros.quantidadeMin.trim())}`);
       if (filtros.quantidadeMax.trim()) filtrosParams.push(`quantidadeMax=${encodeURIComponent(filtros.quantidadeMax.trim())}`);
@@ -117,19 +127,31 @@ const ListarItens = () => {
       const ordenacaoParam = ordenacao.campo ? `&sortBy=${ordenacao.campo}&sortOrder=${ordenacao.direcao}` : '';
       
       const url = mostrarInativos ? 
-        `/api/itens?incluirInativos=true&page=${paginaAtual}&limit=10${searchParam}${filtrosString}${ordenacaoParam}` : 
-        `/api/itens?page=${paginaAtual}&limit=10${searchParam}${filtrosString}${ordenacaoParam}`;
+        `/api/itens?incluirInativos=true&page=${paginaValida}&limit=10${searchParam}${filtrosString}${ordenacaoParam}` : 
+        `/api/itens?page=${paginaValida}&limit=10${searchParam}${filtrosString}${ordenacaoParam}`;
       
       const response = await fetch(url);
+      
       if (response.ok) {
         const data = await response.json();
+        
         setItens(data.itens || []);
-        // Atualizar total de páginas baseado na resposta do servidor
+        // Atualizar total de páginas e itens baseado na resposta do servidor
         if (data.totalPages) {
           setTotalPaginas(data.totalPages);
+          // Se a página atual for maior que o total de páginas, voltar para a primeira
+          if (paginaValida > data.totalPages && data.totalPages > 0) {
+            setPaginaAtual(1);
+          }
+        }
+        if (data.total) {
+          setTotalItens(data.total);
         }
       } else {
         setItens([]);
+        setTotalPaginas(1);
+        setTotalItens(0);
+        setToast({ type: 'error', message: `Erro ${response.status}: ${response.statusText}` });
       }
     } catch (error) {
       setItens([]);
@@ -137,7 +159,7 @@ const ListarItens = () => {
     } finally {
       setLoading(false);
     }
-  }, [paginaAtual, debouncedSearchTerm, mostrarInativos, filtros, ordenacao]);
+  };
 
   useEffect(() => {
     function handleResize() {
@@ -147,11 +169,15 @@ const ListarItens = () => {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
-  // Corrigir useEffect para não dar erro de dependência
+
+
+  // useEffect para buscar itens quando qualquer dependência muda
   useEffect(() => {
-    fetchItens();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fetchItens]);
+    // Garantir que paginaAtual seja sempre um número válido
+    const paginaValida = paginaAtual || 1;
+    console.log('🔄 Buscando itens - Página:', paginaValida, 'Filtros ativos:', filtrosAtivos);
+    fetchItens(paginaValida);
+  }, [paginaAtual, debouncedSearchTerm, mostrarInativos, filtros, ordenacao]);
 
   useEffect(() => {
     function calcularItensPorPagina() {
@@ -239,12 +265,6 @@ const ListarItens = () => {
     }
   };
 
-  // Atualizar itens ao mudar o checkbox de mostrar inativos
-  useEffect(() => {
-    fetchItens();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fetchItens]); // Removido paginaAtual e mostrarInativos pois estão no useCallback
-
   // Debounce para o termo de busca
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -254,24 +274,17 @@ const ListarItens = () => {
     return () => clearTimeout(timer);
   }, [searchTerm]);
 
-  // Recarregar dados quando o termo de busca com debounce mudar
+  // Resetar página quando busca, filtros ou ordenação mudarem
   useEffect(() => {
-    if (debouncedSearchTerm.trim() !== '') {
-      setPaginaAtual(1); // Reset para primeira página
-      fetchItens();
+    const temFiltrosAtivos = Object.values(filtros).some(valor => 
+      Array.isArray(valor) ? valor.length > 0 : valor.trim() !== ''
+    );
+    
+    // Resetar página se há busca, filtros ou ordenação
+    if (debouncedSearchTerm !== '' || temFiltrosAtivos || ordenacao.campo) {
+      setPaginaAtual(1);
     }
-  }, [debouncedSearchTerm, fetchItens]); // Adicionado fetchItens às dependências
-
-  // Recarregar dados quando os filtros mudarem
-  useEffect(() => {
-    setPaginaAtual(1); // Reset para primeira página ao filtrar
-    fetchItens();
-  }, [filtros, fetchItens]);
-
-  // Resetar página quando ordenação mudar
-  useEffect(() => {
-    setPaginaAtual(1);
-  }, [ordenacao]);
+  }, [debouncedSearchTerm, filtros, ordenacao]);
 
   // Função para lidar com ordenação
   const handleOrdenacao = (campo) => {
@@ -303,7 +316,7 @@ const ListarItens = () => {
     setFiltros({
       familia: '',
       subfamilia: '',
-      setor: '',
+      setores: [],
       quantidadeMin: '',
       quantidadeMax: '',
       categoria: '',
@@ -313,8 +326,16 @@ const ListarItens = () => {
     setPaginaAtual(1);
   };
 
-  // Verificar se há filtros ativos
-  const filtrosAtivos = Object.values(filtros).some(valor => valor.trim() !== '');
+  // Verificar se há filtros ativos (suporta strings e arrays)
+  const filtrosAtivos = Object.values(filtros).some((valor) => {
+    if (Array.isArray(valor)) {
+      return valor.length > 0;
+    }
+    if (typeof valor === 'string') {
+      return valor.trim() !== '';
+    }
+    return Boolean(valor);
+  });
 
   return (
     <div className="bg-[#f3f6fd] flex flex-col items-center justify-center py-2 px-1 sm:px-4 pt-2">
@@ -542,16 +563,16 @@ const ListarItens = () => {
                       />
                     </div>
 
-                    {/* Setor */}
+                    {/* Setores */}
                     <div className="flex flex-col sm:flex-row items-start sm:items-center bg-gray-50 rounded-lg p-2">
-                      <label className="w-full sm:w-28 text-sm font-semibold text-gray-700 mb-1 sm:mb-0">Setor:</label>
-                      <input
-                        type="text"
-                        value={filtros.setor}
-                        onChange={(e) => handleFiltroChange('setor', e.target.value)}
-                        className="w-full sm:w-40 px-2 py-1.5 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-white"
-                        placeholder="Ex: TI"
-                      />
+                      <label className="w-full sm:w-28 text-sm font-semibold text-gray-700 mb-1 sm:mb-0">Setores:</label>
+                      <div className="w-full sm:w-40">
+                        <MultiSelectSetores
+                          value={filtros.setores}
+                          onChange={(setores) => handleFiltroChange('setores', setores)}
+                          placeholder="Filtrar por setores..."
+                        />
+                      </div>
                     </div>
 
                     {/* Categoria */}
@@ -721,15 +742,37 @@ const ListarItens = () => {
           {isMobile ? (
             <div style={{ width: '100%', padding: '8px 0' }}>
               <div className="text-center text-[#0915FF] font-bold text-lg sm:text-2xl mb-0">Itens em Estoque</div>
-              {itensPagina.length === 0 && (
-                <div className="text-center text-gray-400 my-6">Nenhum item encontrado.</div>
+              {!loading && itensPagina.length === 0 && (
+                <div className="text-center my-8">
+                  <div className="text-gray-400 text-lg mb-2">Nenhum item encontrado</div>
+                  <div className="text-gray-500 text-sm">
+                    {debouncedSearchTerm.trim() || Object.values(filtros).some(valor => 
+                      Array.isArray(valor) ? valor.length > 0 : valor.trim() !== ''
+                    ) 
+                      ? 'Tente ajustar os filtros ou termos de busca' 
+                      : 'Não há itens cadastrados no sistema'
+                    }
+                  </div>
+                </div>
               )}
               <div className="flex flex-col gap-4 sm:gap-6 items-center">
                 {itensPagina.map(item => (
                   <div key={item.id} className="bg-white rounded-xl shadow border border-[#d1d5db] w-full max-w-[400px] p-4 flex flex-col gap-2 sm:gap-3">
                     <div className="font-bold text-[#0915FF] text-base sm:text-lg">Código: <span className="text-[#222]">{item.codigo}</span></div>
                     <div className="text-[#444] text-sm sm:text-base font-medium">Descrição: <span className="text-[#222] font-normal">{item.nome || item.descricao}</span></div>
-                    <div className="font-semibold text-[#222] text-sm sm:text-base">Setor: <span className="ml-1 px-2 py-1 rounded bg-blue-100 text-blue-700">{item.setor || '-'}</span></div>
+                    <div className="font-semibold text-[#222] text-sm sm:text-base">
+                      Setores: 
+                      <div className="flex flex-nowrap gap-1 mt-1 overflow-hidden">
+                        {item.setores && item.setores.split(', ').map((setor, index) => (
+                          <span key={index} className="px-2 py-1 rounded bg-blue-100 text-blue-700 text-xs flex-shrink-0" title={setor.trim()}>
+                            {setor.trim().substring(0, 3).toUpperCase()}
+                          </span>
+                        ))}
+                        {(!item.setores || item.setores.trim() === '') && (
+                          <span className="text-gray-500 text-xs">-</span>
+                        )}
+                      </div>
+                    </div>
                     <div className="font-semibold text-[#222] text-sm sm:text-base">Quantidade: <span className={`ml-1 px-2 py-1 rounded ${item.quantidade > 0 ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>{item.quantidade != null && item.quantidade !== '' ? item.quantidade : 0}</span></div>
                     <div className="flex gap-2 sm:gap-4 mt-2">
                       <button onClick={() => navigate(`/item/${item.id}`)} className="bg-[#0915FF] text-white rounded-lg px-3 py-2 font-bold text-xs sm:text-base w-full transition hover:bg-[#2336ff]">Detalhes</button>
@@ -768,25 +811,38 @@ const ListarItens = () => {
                 {/* Informação da página atual */}
                 <div style={{
                   display: 'flex',
+                  flexDirection: 'column',
                   alignItems: 'center',
-                  gap: 8,
-                  fontSize: 14,
+                  gap: 4,
+                  fontSize: 12,
                   color: '#374151',
                   fontWeight: 500
                 }}>
-                  <span>Página</span>
-                  <span style={{
-                    background: '#0915FF',
-                    color: '#fff',
-                    padding: '4px 12px',
-                    borderRadius: 6,
-                    fontWeight: 700,
-                    minWidth: 32,
-                    textAlign: 'center'
+                  <div style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8
                   }}>
-                    {paginaAtual}
-                  </span>
-                  <span>de {totalPaginas}</span>
+                    <span>Página</span>
+                    <span style={{
+                      background: '#0915FF',
+                      color: '#fff',
+                      padding: '4px 12px',
+                      borderRadius: 6,
+                      fontWeight: 700,
+                      minWidth: 32,
+                      textAlign: 'center'
+                    }}>
+                      {paginaAtual}
+                    </span>
+                    <span>de {totalPaginas}</span>
+                  </div>
+                  <div style={{
+                    fontSize: 11,
+                    color: '#6B7280'
+                  }}>
+                    {totalItens > 0 && `${totalItens} itens no total`}
+                  </div>
                 </div>
 
                 {/* Botão Próximo */}
@@ -887,9 +943,34 @@ const ListarItens = () => {
                       </tr>
                     </thead>
                     <tbody>
-                      {itensPagina.length === 0 ? (
+                      {!loading && itensPagina.length === 0 ? (
                         <tr>
-                          <td colSpan={5} style={{ textAlign: 'center', color: '#888', padding: '32px 0' }}>Nenhum item encontrado.</td>
+                          <td colSpan={5} style={{ textAlign: 'center', padding: '40px 0' }}>
+                            <div style={{ color: '#6B7280', fontSize: '16px', fontWeight: '500', marginBottom: '8px' }}>
+                              Nenhum item encontrado
+                            </div>
+                            <div style={{ color: '#9CA3AF', fontSize: '14px' }}>
+                              {debouncedSearchTerm.trim() || Object.values(filtros).some(valor => 
+                                Array.isArray(valor) ? valor.length > 0 : valor.trim() !== ''
+                              ) 
+                                ? 'Tente ajustar os filtros ou termos de busca' 
+                                : 'Não há itens cadastrados no sistema'
+                              }
+                            </div>
+                          </td>
+                        </tr>
+                      ) : loading ? (
+                        <tr>
+                          <td colSpan={5} style={{ textAlign: 'center', padding: '40px 0' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '12px' }}>
+                              <svg style={{ width: 24, height: 24 }} viewBox="0 0 50 50">
+                                <circle cx="25" cy="25" r="20" fill="none" stroke="#0915FF" strokeWidth="5" strokeDasharray="31.4 31.4" strokeLinecap="round">
+                                  <animateTransform attributeName="transform" type="rotate" from="0 25 25" to="360 25 25" dur="1s" repeatCount="indefinite" />
+                                </circle>
+                              </svg>
+                              <span style={{ color: '#0915FF', fontWeight: '600', fontSize: '16px' }}>Carregando itens...</span>
+                            </div>
+                          </td>
                         </tr>
                       ) : (
                           itensPagina.map(item => (
@@ -901,9 +982,16 @@ const ListarItens = () => {
                               </td>
                               <td className="py-3 px-6 break-words whitespace-pre-line max-w-xs" title={item.nome}>{item.nome}</td>
                               <td className="py-3 px-6 w-32">
-                                <span className="inline-flex items-center gap-1 px-3 py-1 rounded-full font-bold text-[15px] shadow-sm bg-blue-100 text-blue-700">
-                                  {item.setor || '-'}
-                                </span>
+                                <div className="flex flex-nowrap gap-1 overflow-hidden">
+                                  {item.setores && item.setores.split(', ').map((setor, index) => (
+                                    <span key={index} className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-bold shadow-sm bg-blue-100 text-blue-700 flex-shrink-0" title={setor.trim()}>
+                                      {setor.trim().substring(0, 3).toUpperCase()}
+                                    </span>
+                                  ))}
+                                  {(!item.setores || item.setores.trim() === '') && (
+                                    <span className="text-gray-500 text-xs">-</span>
+                                  )}
+                                </div>
                               </td>
                               <td className="py-3 px-6 w-32">
                                 <span className={`inline-flex items-center gap-1 px-3 py-1 rounded-full font-bold text-[15px] shadow-sm ${item.quantidade === 0 ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>
@@ -951,12 +1039,19 @@ const ListarItens = () => {
                               <span className="text-sm text-right flex-1 ml-2">{item.nome}</span>
                             </div>
                             
-                            {/* Setor */}
-                            <div className="flex justify-between items-center">
-                              <span className="text-sm font-semibold text-gray-600">Setor:</span>
-                              <span className="inline-flex items-center gap-1 px-3 py-1 rounded-full font-bold text-xs shadow-sm bg-blue-100 text-blue-700">
-                                {item.setor || '-'}
-                              </span>
+                            {/* Setores */}
+                            <div className="flex justify-between items-start">
+                              <span className="text-sm font-semibold text-gray-600">Setores:</span>
+                              <div className="flex flex-nowrap gap-1 justify-end overflow-hidden">
+                                {item.setores && item.setores.split(', ').map((setor, index) => (
+                                  <span key={index} className="inline-flex items-center gap-1 px-2 py-1 rounded-full font-bold text-xs shadow-sm bg-blue-100 text-blue-700 flex-shrink-0" title={setor.trim()}>
+                                    {setor.trim().substring(0, 3).toUpperCase()}
+                                  </span>
+                                ))}
+                                {(!item.setores || item.setores.trim() === '') && (
+                                  <span className="text-gray-500 text-xs">-</span>
+                                )}
+                              </div>
                             </div>
                             
                             {/* Quantidade */}
@@ -1021,7 +1116,17 @@ const ListarItens = () => {
                       </div>
                     )}
                   </div>
-                  <div style={{ flex: 1, display: 'flex', justifyContent: 'center' }}>
+                  <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
+                    {/* Informações da paginação */}
+                    <div style={{
+                      fontSize: 14,
+                      color: '#6B7280',
+                      fontWeight: 500,
+                      textAlign: 'center'
+                    }}>
+                      {totalItens > 0 && `Mostrando ${((paginaAtual - 1) * 10) + 1}-${Math.min(paginaAtual * 10, totalItens)} de ${totalItens} itens`}
+                    </div>
+                    
                     {/* Paginação Desktop - Versão Completa */}
                     <div className="desktop-pagination" style={{ 
                       display: 'flex',

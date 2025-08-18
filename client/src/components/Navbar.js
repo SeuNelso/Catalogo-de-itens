@@ -219,6 +219,12 @@ const Navbar = () => {
                           Importar Dados
                         </Link>
                       )}
+                      {(isAdmin || isController) && (
+                        <Link to="/importar-setores" onClick={() => setDadosOpen(false)} className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded">
+                          <Settings size={14} className="lg:w-4 lg:h-4" />
+                          Importar Setores
+                        </Link>
+                      )}
                     </div>
                   </div>
                   
@@ -403,6 +409,12 @@ const Navbar = () => {
                         <Link to="/importar-dados-itens" onClick={handleNavigation} className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10">
                           <FileText size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" />
                           Importar Dados
+                        </Link>
+                      )}
+                      {(isAdmin || isController) && (
+                        <Link to="/importar-setores" onClick={handleNavigation} className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10">
+                          <Settings size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" />
+                          Importar Setores
                         </Link>
                       )}
                     </div>

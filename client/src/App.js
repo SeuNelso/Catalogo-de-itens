@@ -22,6 +22,7 @@ import ImportarImagensAutomaticas from './pages/ImportarImagensAutomaticas';
 import DetectarImagensAutomaticas from './pages/DetectarImagensAutomaticas';
 import ExportarDados from './pages/ExportarDados';
 import ItensNaoCadastrados from './pages/ItensNaoCadastrados';
+import ImportarSetores from './pages/ImportarSetores';
 import './App.css';
 
 function App() {
@@ -132,6 +133,14 @@ function App() {
                   element={
                     <ProtectedRoute allowedRoles={['admin', 'controller']}>
                       <ItensNaoCadastrados />
+                    </ProtectedRoute>
+                  } 
+                />
+                <Route 
+                  path="/importar-setores" 
+                  element={
+                    <ProtectedRoute allowedRoles={['admin', 'controller']}>
+                      <ImportarSetores />
                     </ProtectedRoute>
                   } 
                 />
