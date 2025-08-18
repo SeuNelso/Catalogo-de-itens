@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import Toast from '../components/Toast';
@@ -67,9 +67,7 @@ const ListarItens = () => {
   useEffect(() => {
     const fetchNaoCadastrados = async () => {
       try {
-        console.log('🔍 Buscando itens não cadastrados...');
         const token = localStorage.getItem('token');
-        console.log('🔑 Token encontrado:', !!token);
         
         const response = await fetch('/api/itens-nao-cadastrados', {
           headers: {
@@ -77,17 +75,11 @@ const ListarItens = () => {
           }
         });
         
-        console.log('📡 Response status:', response.status);
-        
         if (response.ok) {
           const data = await response.json();
-          console.log('✅ Itens não cadastrados recebidos:', data);
-          console.log('📊 Quantidade de itens não cadastrados:', data.length);
           setNaoCadastrados(data);
         } else {
           console.error('❌ Erro ao buscar itens não cadastrados:', response.statusText);
-          const errorText = await response.text();
-          console.error('❌ Detalhes do erro:', errorText);
         }
       } catch (error) {
         console.error('❌ Erro ao buscar itens não cadastrados:', error);
@@ -175,8 +167,8 @@ const ListarItens = () => {
   useEffect(() => {
     // Garantir que paginaAtual seja sempre um número válido
     const paginaValida = paginaAtual || 1;
-    console.log('🔄 Buscando itens - Página:', paginaValida, 'Filtros ativos:', filtrosAtivos);
     fetchItens(paginaValida);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [paginaAtual, debouncedSearchTerm, mostrarInativos, filtros, ordenacao]);
 
   useEffect(() => {
@@ -658,12 +650,6 @@ const ListarItens = () => {
             )}
           </div>
           {/* Itens não cadastrados - sempre visível para admins e controllers */}
-          {console.log('🔍 Verificando seção itens não cadastrados:', { 
-            naoCadastrados: naoCadastrados.length, 
-            isAdmin, 
-            userRole: user?.role,
-            shouldShow: naoCadastrados.length > 0 && (isAdmin || user?.role === 'controller')
-          })}
           {naoCadastrados.length > 0 && (isAdmin || user?.role === 'controller') && (
             <div style={{
               margin: '18px 0 0 0',
