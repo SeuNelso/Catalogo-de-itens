@@ -23,6 +23,7 @@ import DetectarImagensAutomaticas from './pages/DetectarImagensAutomaticas';
 import ExportarDados from './pages/ExportarDados';
 import ItensNaoCadastrados from './pages/ItensNaoCadastrados';
 import ImportarSetores from './pages/ImportarSetores';
+import ImportarUnidades from './pages/ImportarUnidades';
 import './App.css';
 
 function App() {
@@ -141,6 +142,14 @@ function App() {
                   element={
                     <ProtectedRoute allowedRoles={['admin', 'controller']}>
                       <ImportarSetores />
+                    </ProtectedRoute>
+                  } 
+                />
+                <Route 
+                  path="/importar-unidades" 
+                  element={
+                    <ProtectedRoute allowedRoles={['admin', 'controller']}>
+                      <ImportarUnidades />
                     </ProtectedRoute>
                   } 
                 />

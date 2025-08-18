@@ -942,7 +942,7 @@ app.get('/api/itens', (req, res) => {
   
   // Construir cláusula ORDER BY
   let orderByClause = '';
-  if (sortBy && ['codigo', 'nome', 'quantidade', 'familia', 'subfamilia', 'categoria'].includes(sortBy)) {
+  if (sortBy && ['codigo', 'nome', 'quantidade', 'familia', 'subfamilia', 'categoria', 'unidadearmazenamento'].includes(sortBy)) {
     const direction = sortOrder === 'desc' ? 'DESC' : 'ASC';
     orderByClause = `ORDER BY i.${sortBy} ${direction}`;
   } else if (sortBy === 'setor') {
@@ -2000,10 +2000,20 @@ app.get('/api/exportar-json', authenticateToken, async (req, res) => {
 app.get('/api/exportar-itens', authenticateToken, async (req, res) => {
   try {
     const { rows: itens } = await pool.query(`
-      SELECT codigo, descricao, unidadearmazenamento, familia, subfamilia, setor, ativo, quantidade 
-      FROM itens 
-      WHERE ativo = true
-      ORDER BY codigo
+      SELECT 
+        i.codigo, 
+        i.descricao, 
+        i.unidadearmazenamento, 
+        i.familia, 
+        i.subfamilia, 
+        i.ativo, 
+        i.quantidade,
+        STRING_AGG(DISTINCT is2.setor, ', ') as setores
+      FROM itens i
+      LEFT JOIN itens_setores is2 ON i.id = is2.item_id
+      WHERE i.ativo = true
+      GROUP BY i.id, i.codigo, i.descricao, i.unidadearmazenamento, i.familia, i.subfamilia, i.ativo, i.quantidade
+      ORDER BY i.codigo
     `);
     
     if (!itens.length) {
@@ -2021,7 +2031,7 @@ app.get('/api/exportar-itens', authenticateToken, async (req, res) => {
       { header: 'Unidade base', key: 'unidade_base', width: 16 }, // Unidade base
       { header: 'Família', key: 'familia', width: 18 }, // Família
       { header: 'Subfamília', key: 'subfamilia', width: 18 }, // Subfamília
-      { header: 'Setor', key: 'setor', width: 18 }, // Setor
+      { header: 'Setores', key: 'setores', width: 25 }, // Setores (múltiplos)
       { header: 'Ativo', key: 'ativo', width: 8 }, // Ativo
       { header: 'Quantidade', key: 'quantidade', width: 12 } // Quantidade
     ];
@@ -2034,7 +2044,7 @@ app.get('/api/exportar-itens', authenticateToken, async (req, res) => {
         unidade_base: item.unidadearmazenamento,
         familia: item.familia,
         subfamilia: item.subfamilia,
-        setor: item.setor,
+        setores: item.setores || '', // Usar setores (múltiplos) ou string vazia se não houver
         ativo: item.ativo,
         quantidade: item.quantidade
       });
@@ -3393,6 +3403,197 @@ app.get('/api/download-template-setores', authenticateToken, (req, res) => {
     console.error('❌ Erro ao gerar template:', error);
     res.status(500).json({ 
       error: 'Erro ao gerar template',
+      details: error.message 
+    });
+  }
+});
+
+// Rota para importar unidades de armazenamento
+app.post('/api/importar-unidades', authenticateToken, excelSetoresUpload.single('file'), async (req, res) => {
+  try {
+    // Verificar se é admin ou controller
+    if (!req.user || (req.user.role !== 'admin' && req.user.role !== 'controller')) {
+      return res.status(403).json({ error: 'Acesso negado.' });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({ error: 'Nenhum arquivo enviado.' });
+    }
+
+    const filePath = req.file.path;
+    console.log('📁 Arquivo recebido:', req.file.originalname);
+
+    // Unidades válidas
+    const UNIDADES_VALIDAS = [
+      'UN', 'KG', 'M', 'L', 'PÇ', 'ROL', 'CAIXA', 'PACOTE',
+      'METRO', 'LITRO', 'QUILO', 'PECA', 'UNIDADE', 'CM', 'MM',
+      'TON', 'G', 'ML', 'PCS', 'UNID', 'M2', 'M3', 'LITROS',
+      'QUILOS', 'METROS', 'PECAS', 'UNIDADES', 'LT', 'MT'
+    ];
+
+    // Ler arquivo Excel
+    const workbook = XLSX.readFile(filePath);
+    const sheetName = workbook.SheetNames[0];
+    const worksheet = workbook.Sheets[sheetName];
+    const dados = XLSX.utils.sheet_to_json(worksheet);
+
+    console.log(`📊 Processando ${dados.length} linhas do arquivo`);
+
+    const resultados = {
+      total: dados.length,
+      sucesso: 0,
+      erros: 0,
+      itensNaoEncontrados: 0,
+      unidadesInvalidas: 0,
+      detalhes: []
+    };
+
+    // Processar cada linha
+    for (let i = 0; i < dados.length; i++) {
+      const row = dados[i];
+      const codigo = row['Artigo']?.toString().trim();
+      const unidadeString = row['UNIDADE_ARMAZENAMENTO']?.toString().trim().toUpperCase();
+
+      console.log(`🔍 Processando linha ${i + 1}: ${codigo} -> ${unidadeString}`);
+
+      if (!codigo) {
+        console.log(`❌ Linha ${i + 1}: Código vazio`);
+        resultados.erros++;
+        resultados.detalhes.push({
+          linha: i + 1,
+          codigo: 'N/A',
+          erro: 'Código do artigo não encontrado'
+        });
+        continue;
+      }
+
+      // Validar unidade
+      if (unidadeString && !UNIDADES_VALIDAS.includes(unidadeString)) {
+        resultados.unidadesInvalidas++;
+        resultados.detalhes.push({
+          linha: i + 1,
+          codigo: codigo,
+          erro: 'Unidade de armazenamento inválida',
+          unidadeInvalida: unidadeString
+        });
+        continue;
+      }
+
+      try {
+        // Buscar item pelo código
+        const { rows: itens } = await pool.query(
+          'SELECT id FROM itens WHERE codigo = $1',
+          [codigo]
+        );
+
+        if (itens.length === 0) {
+          resultados.itensNaoEncontrados++;
+          resultados.detalhes.push({
+            linha: i + 1,
+            codigo: codigo,
+            erro: 'Item não encontrado no sistema'
+          });
+          continue;
+        }
+
+        const itemId = itens[0].id;
+
+        // Atualizar unidade de armazenamento
+        await pool.query(
+          'UPDATE itens SET unidadearmazenamento = $1 WHERE id = $2',
+          [unidadeString || null, itemId]
+        );
+
+        resultados.sucesso++;
+        console.log(`✅ Item ${codigo} atualizado com unidade: ${unidadeString || 'null'}`);
+        console.log(`📊 Progresso: ${i + 1}/${dados.length} (${Math.round(((i + 1) / dados.length) * 100)}%)`);
+
+      } catch (error) {
+        resultados.erros++;
+        resultados.detalhes.push({
+          linha: i + 1,
+          codigo: codigo,
+          erro: error.message
+        });
+      }
+    }
+
+    // Remover arquivo temporário
+    fs.unlinkSync(filePath);
+
+    console.log('📊 Estatísticas da importação de unidades:', {
+      total: resultados.total,
+      sucesso: resultados.sucesso,
+      erros: resultados.erros,
+      itensNaoEncontrados: resultados.itensNaoEncontrados,
+      unidadesInvalidas: resultados.unidadesInvalidas
+    });
+
+    res.json({
+      message: 'Importação de unidades concluída',
+      ...resultados
+    });
+
+  } catch (error) {
+    console.error('❌ Erro durante a importação de unidades:', error);
+    
+    // Remover arquivo em caso de erro
+    if (req.file && fs.existsSync(req.file.path)) {
+      fs.unlinkSync(req.file.path);
+    }
+    
+    res.status(500).json({ 
+      error: 'Erro durante a importação de unidades',
+      details: error.message 
+    });
+  }
+});
+
+// Rota para download do template de unidades
+app.get('/api/download-template-unidades', authenticateToken, (req, res) => {
+  try {
+    // Verificar se é admin ou controller
+    if (!req.user || (req.user.role !== 'admin' && req.user.role !== 'controller')) {
+      return res.status(403).json({ error: 'Acesso negado.' });
+    }
+
+    // Criar dados de exemplo
+    const dados = [
+      { Artigo: '3000003', UNIDADE_ARMAZENAMENTO: 'UN' },
+      { Artigo: '3000004', UNIDADE_ARMAZENAMENTO: 'KG' },
+      { Artigo: '3000020', UNIDADE_ARMAZENAMENTO: 'M' },
+      { Artigo: '3000022', UNIDADE_ARMAZENAMENTO: 'L' },
+      { Artigo: '3000023', UNIDADE_ARMAZENAMENTO: 'PÇ' }
+    ];
+
+    // Criar workbook
+    const workbook = XLSX.utils.book_new();
+    const worksheet = XLSX.utils.json_to_sheet(dados);
+
+    // Definir largura das colunas
+    worksheet['!cols'] = [
+      { width: 15 }, // Artigo
+      { width: 25 }  // UNIDADE_ARMAZENAMENTO
+    ];
+
+    // Adicionar worksheet ao workbook
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Unidades');
+
+    // Gerar buffer
+    const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+
+    // Configurar headers
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', 'attachment; filename="template_unidades.xlsx"');
+    res.setHeader('Content-Length', buffer.length);
+
+    // Enviar arquivo
+    res.send(buffer);
+
+  } catch (error) {
+    console.error('❌ Erro ao gerar template de unidades:', error);
+    res.status(500).json({ 
+      error: 'Erro ao gerar template de unidades',
       details: error.message 
     });
   }

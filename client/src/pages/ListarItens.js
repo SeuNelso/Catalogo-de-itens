@@ -911,6 +911,17 @@ const ListarItens = () => {
                             )}
                           </div>
                         </th>
+                        <th 
+                          className="py-4 px-6 w-24 cursor-pointer hover:bg-blue-600 transition-colors"
+                          onClick={() => handleOrdenacao('unidadearmazenamento')}
+                        >
+                          <div className="flex items-center justify-center gap-2">
+                            UNIDADE
+                            {ordenacao.campo === 'unidadearmazenamento' && (
+                              <span className="text-sm">{ordenacao.direcao === 'asc' ? '↑' : '↓'}</span>
+                            )}
+                          </div>
+                        </th>
                         <th className="py-4 px-6 w-40 last:rounded-tr-2xl">
                           <div className="flex items-center justify-center gap-2">
                             AÇÃO
@@ -931,7 +942,7 @@ const ListarItens = () => {
                     <tbody>
                       {!loading && itensPagina.length === 0 ? (
                         <tr>
-                          <td colSpan={5} style={{ textAlign: 'center', padding: '40px 0' }}>
+                          <td colSpan={6} style={{ textAlign: 'center', padding: '40px 0' }}>
                             <div style={{ color: '#6B7280', fontSize: '16px', fontWeight: '500', marginBottom: '8px' }}>
                               Nenhum item encontrado
                             </div>
@@ -947,7 +958,7 @@ const ListarItens = () => {
                         </tr>
                       ) : loading ? (
                         <tr>
-                          <td colSpan={5} style={{ textAlign: 'center', padding: '40px 0' }}>
+                          <td colSpan={6} style={{ textAlign: 'center', padding: '40px 0' }}>
                             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '12px' }}>
                               <svg style={{ width: 24, height: 24 }} viewBox="0 0 50 50">
                                 <circle cx="25" cy="25" r="20" fill="none" stroke="#0915FF" strokeWidth="5" strokeDasharray="31.4 31.4" strokeLinecap="round">
@@ -982,6 +993,11 @@ const ListarItens = () => {
                               <td className="py-3 px-6 w-32">
                                 <span className={`inline-flex items-center gap-1 px-3 py-1 rounded-full font-bold text-[15px] shadow-sm ${item.quantidade === 0 ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>
                                   <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" class="lucide lucide-check-circle w-4 h-4"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="m9 11 3 3L22 4"/></svg> {item.quantidade != null && item.quantidade !== '' ? item.quantidade : 0}
+                                </span>
+                              </td>
+                              <td className="py-3 px-6 w-24 text-center">
+                                <span className="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium bg-gray-100 text-gray-800">
+                                  {item.unidadearmazenamento || '-'}
                                 </span>
                               </td>
                               <td className="py-3 px-6 w-40">
@@ -1049,6 +1065,14 @@ const ListarItens = () => {
                                   <path d="m9 11 3 3L22 4"/>
                                 </svg>
                                 {item.quantidade != null && item.quantidade !== '' ? item.quantidade : 0}
+                              </span>
+                            </div>
+                            
+                            {/* Unidade Base */}
+                            <div className="flex justify-between items-center">
+                              <span className="text-sm font-semibold text-gray-600">Unidade:</span>
+                              <span className="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium bg-gray-100 text-gray-800">
+                                {item.unidadearmazenamento || '-'}
                               </span>
                             </div>
                             

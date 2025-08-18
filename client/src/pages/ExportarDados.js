@@ -56,7 +56,7 @@ const ExportarDados = () => {
         </div>
         <h1 className="text-[#0915FF] font-extrabold text-[18px] sm:text-[22px] text-center m-0 tracking-wide">Exportar Catálogo</h1>
         <p className="text-[#333] text-[13px] sm:text-[14px] text-center m-0 max-w-[95vw] sm:max-w-[420px] font-medium">
-          Baixe todos os itens do catálogo em Excel (.xlsx), exceto as fotos.<br/>
+          Baixe todos os itens do catálogo em Excel (.xlsx), incluindo todos os setores de cada item.<br/>
           Apenas usuários autenticados podem exportar.
         </p>
         <div className="w-full flex flex-col gap-2 sm:gap-3 bg-[#e6fafd] rounded-[10px] p-2 sm:p-3 mt-2">
