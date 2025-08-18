@@ -942,7 +942,7 @@ app.get('/api/itens', (req, res) => {
   
   // Construir cláusula ORDER BY
   let orderByClause = '';
-  if (sortBy && ['codigo', 'nome', 'quantidade', 'familia', 'subfamilia', 'categoria', 'unidadearmazenamento'].includes(sortBy)) {
+  if (sortBy && ['codigo', 'nome', 'quantidade', 'familia', 'subfamilia', 'categoria'].includes(sortBy)) {
     const direction = sortOrder === 'desc' ? 'DESC' : 'ASC';
     orderByClause = `ORDER BY i.${sortBy} ${direction}`;
   } else if (sortBy === 'setor') {
@@ -2011,7 +2011,6 @@ app.get('/api/exportar-itens', authenticateToken, async (req, res) => {
         STRING_AGG(DISTINCT is2.setor, ', ') as setores
       FROM itens i
       LEFT JOIN itens_setores is2 ON i.id = is2.item_id
-      WHERE i.ativo = true
       GROUP BY i.id, i.codigo, i.descricao, i.unidadearmazenamento, i.familia, i.subfamilia, i.ativo, i.quantidade
       ORDER BY i.codigo
     `);
