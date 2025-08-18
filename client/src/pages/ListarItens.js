@@ -529,36 +529,36 @@ const ListarItens = () => {
                 </div>
                 
                 {/* Container com scroll */}
-                <div className="max-h-80 overflow-y-auto">
+                <div className="max-h-80 overflow-y-auto relative">
                   <div className="p-3 space-y-2">
                     {/* Família */}
-                    <div className="flex flex-col sm:flex-row items-start sm:items-center bg-gray-50 rounded-lg p-2">
-                      <label className="w-full sm:w-28 text-sm font-semibold text-gray-700 mb-1 sm:mb-0">Família:</label>
+                    <div className="flex flex-col gap-1 sm:flex-row sm:items-center bg-gray-50 rounded-lg p-2">
+                      <label className="w-full sm:w-32 flex-shrink-0 text-sm font-semibold text-gray-700">Família:</label>
                       <input
                         type="text"
                         value={filtros.familia}
                         onChange={(e) => handleFiltroChange('familia', e.target.value)}
-                        className="w-full sm:w-40 px-2 py-1.5 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-white"
+                        className="w-full sm:flex-1 px-2 py-1.5 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-white"
                         placeholder="Ex: Consumível"
                       />
                     </div>
 
                     {/* Subfamília */}
-                    <div className="flex flex-col sm:flex-row items-start sm:items-center bg-gray-50 rounded-lg p-2">
-                      <label className="w-full sm:w-28 text-sm font-semibold text-gray-700 mb-1 sm:mb-0">Subfamília:</label>
+                    <div className="flex flex-col gap-1 sm:flex-row sm:items-center bg-gray-50 rounded-lg p-2">
+                      <label className="w-full sm:w-32 flex-shrink-0 text-sm font-semibold text-gray-700">Subfamília:</label>
                       <input
                         type="text"
                         value={filtros.subfamilia}
                         onChange={(e) => handleFiltroChange('subfamilia', e.target.value)}
-                        className="w-full sm:w-40 px-2 py-1.5 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-white"
+                        className="w-full sm:flex-1 px-2 py-1.5 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-white"
                         placeholder="Ex: Acessórios"
                       />
                     </div>
 
                     {/* Setores */}
-                    <div className="flex flex-col sm:flex-row items-start sm:items-center bg-gray-50 rounded-lg p-2">
-                      <label className="w-full sm:w-28 text-sm font-semibold text-gray-700 mb-1 sm:mb-0">Setores:</label>
-                      <div className="w-full sm:w-40">
+                    <div className="flex flex-col gap-1 sm:flex-row sm:items-center bg-gray-50 rounded-lg p-2">
+                      <label className="w-full sm:w-32 flex-shrink-0 text-sm font-semibold text-gray-700">Setores:</label>
+                      <div className="w-full sm:flex-1">
                         <MultiSelectSetores
                           value={filtros.setores}
                           onChange={(setores) => handleFiltroChange('setores', setores)}
@@ -567,65 +567,29 @@ const ListarItens = () => {
                       </div>
                     </div>
 
-                    {/* Categoria */}
-                    <div className="flex flex-col sm:flex-row items-start sm:items-center bg-gray-50 rounded-lg p-2">
-                      <label className="w-full sm:w-28 text-sm font-semibold text-gray-700 mb-1 sm:mb-0">Categoria:</label>
-                      <input
-                        type="text"
-                        value={filtros.categoria}
-                        onChange={(e) => handleFiltroChange('categoria', e.target.value)}
-                        className="w-full sm:w-40 px-2 py-1.5 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-white"
-                        placeholder="Ex: Equipamentos"
-                      />
-                    </div>
-
-                    {/* Quantidade Mínima */}
-                    <div className="flex flex-col sm:flex-row items-start sm:items-center bg-gray-50 rounded-lg p-2">
-                      <label className="w-full sm:w-28 text-sm font-semibold text-gray-700 mb-1 sm:mb-0">Qtd. Mínima:</label>
-                      <input
-                        type="number"
-                        value={filtros.quantidadeMin}
-                        onChange={(e) => handleFiltroChange('quantidadeMin', e.target.value)}
-                        className="w-full sm:w-40 px-2 py-1.5 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-white"
-                        placeholder="0"
-                        min="0"
-                      />
-                    </div>
-
-                    {/* Quantidade Máxima */}
-                    <div className="flex flex-col sm:flex-row items-start sm:items-center bg-gray-50 rounded-lg p-2">
-                      <label className="w-full sm:w-28 text-sm font-semibold text-gray-700 mb-1 sm:mb-0">Qtd. Máxima:</label>
-                      <input
-                        type="number"
-                        value={filtros.quantidadeMax}
-                        onChange={(e) => handleFiltroChange('quantidadeMax', e.target.value)}
-                        className="w-full sm:w-40 px-2 py-1.5 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-white"
-                        placeholder="999"
-                        min="0"
-                      />
-                    </div>
+                    
 
                     {/* Unidade de Armazenamento */}
-                    <div className="flex flex-col sm:flex-row items-start sm:items-center bg-gray-50 rounded-lg p-2">
-                      <label className="w-full sm:w-28 text-sm font-semibold text-gray-700 mb-1 sm:mb-0">Unidade:</label>
+                    <div className="flex flex-col gap-1 sm:flex-row sm:items-center bg-gray-50 rounded-lg p-2">
+                      <label className="w-full sm:w-32 flex-shrink-0 text-sm font-semibold text-gray-700">Unidade:</label>
                       <input
                         type="text"
                         value={filtros.unidadeArmazenamento}
                         onChange={(e) => handleFiltroChange('unidadeArmazenamento', e.target.value)}
-                        className="w-full sm:w-40 px-2 py-1.5 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-white"
-                        placeholder="Ex: MT"
+                        className="w-full sm:flex-1 px-2 py-1.5 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-white"
+                        placeholder="Ex: UN"
                       />
                     </div>
 
                     {/* Tipo de Controle */}
-                    <div className="flex flex-col sm:flex-row items-start sm:items-center bg-gray-50 rounded-lg p-2">
-                      <label className="w-full sm:w-28 text-sm font-semibold text-gray-700 mb-1 sm:mb-0">Tipo Controle:</label>
+                    <div className="flex flex-col gap-1 sm:flex-row sm:items-center bg-gray-50 rounded-lg p-2">
+                      <label className="w-full sm:w-32 flex-shrink-0 text-sm font-semibold text-gray-700">Tipo Controle:</label>
                       <input
                         type="text"
                         value={filtros.tipocontrolo}
                         onChange={(e) => handleFiltroChange('tipocontrolo', e.target.value)}
-                        className="w-full sm:w-40 px-2 py-1.5 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-white"
-                        placeholder="Ex: Manual"
+                        className="w-full sm:flex-1 px-2 py-1.5 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-white"
+                        placeholder="Ex: Lote"
                       />
                     </div>
                   </div>
