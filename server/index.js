@@ -1068,6 +1068,14 @@ app.get('/api/itens/:id', (req, res) => {
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Item não encontrado' });
     }
+    
+    // Processar setores - converter string para array
+    const item = result.rows[0];
+    let setores = [];
+    if (item.setores && item.setores.trim() !== '') {
+      setores = item.setores.split(', ').filter(s => s.trim() !== '');
+    }
+    item.setores = setores;
     // Buscar imagens (normais e de itens compostos)
     pool.query('SELECT * FROM imagens_itens WHERE item_id = $1 ORDER BY is_completo ASC', [itemId], (err, imagensResult) => {
       if (err) {
@@ -3076,6 +3084,7 @@ app.get('/api/itens-nao-cadastrados', authenticateToken, async (req, res) => {
       }
       
       return {
+        id: row.id,
         codigo: row.codigo,
         descricao: row.descricao,
         armazens: armazens,
@@ -3107,6 +3116,32 @@ app.delete('/api/itens-nao-cadastrados', authenticateToken, async (req, res) => 
   } catch (error) {
     console.error('Erro ao remover itens não cadastrados:', error);
     res.status(500).json({ error: 'Erro ao remover itens não cadastrados' });
+  }
+});
+
+// Rota para remover um item não cadastrado específico
+app.delete('/api/itens-nao-cadastrados/:id', authenticateToken, async (req, res) => {
+  try {
+    if (!req.user || (req.user.role !== 'admin' && req.user.role !== 'controller')) {
+      return res.status(403).json({ error: 'Acesso negado.' });
+    }
+
+    const { id } = req.params;
+    
+    // Verificar se o item existe
+    const checkResult = await pool.query('SELECT id FROM itens_nao_cadastrados WHERE id = $1', [id]);
+    
+    if (checkResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Item não encontrado' });
+    }
+
+    // Remover o item
+    await pool.query('DELETE FROM itens_nao_cadastrados WHERE id = $1', [id]);
+    
+    res.json({ message: 'Item removido com sucesso' });
+  } catch (error) {
+    console.error('Erro ao remover item não cadastrado:', error);
+    res.status(500).json({ error: 'Erro ao remover item não cadastrado' });
   }
 });
 

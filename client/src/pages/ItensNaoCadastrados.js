@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import Toast from '../components/Toast';
-import { AlertTriangle, Plus, ArrowLeft, Search, ChevronLeft, ChevronRight } from 'react-feather';
+import { AlertTriangle, Plus, ArrowLeft, Search, ChevronLeft, ChevronRight, Trash2 } from 'react-feather';
 
 const ItensNaoCadastrados = () => {
   const [naoCadastrados, setNaoCadastrados] = useState([]);
@@ -66,6 +66,43 @@ const ItensNaoCadastrados = () => {
 
   const handleCadastrar = (item) => {
     navigate(`/cadastrar?codigo=${encodeURIComponent(item.codigo)}&descricao=${encodeURIComponent(item.descricao)}`);
+  };
+
+  const handleExcluirItem = async (item) => {
+    if (!window.confirm(`Tem certeza que deseja excluir o item "${item.codigo}" da lista de itens não cadastrados?`)) {
+      return;
+    }
+
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch(`/api/itens-nao-cadastrados/${item.id}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      if (response.ok) {
+        // Remover o item da lista local
+        setNaoCadastrados(prev => prev.filter(i => i.id !== item.id));
+        setToast({
+          type: 'success',
+          message: 'Item removido com sucesso'
+        });
+      } else {
+        const errorData = await response.json();
+        setToast({
+          type: 'error',
+          message: errorData.error || 'Erro ao remover item'
+        });
+      }
+    } catch (error) {
+      console.error('Erro ao remover item:', error);
+      setToast({
+        type: 'error',
+        message: 'Erro ao conectar com o servidor'
+      });
+    }
   };
 
   const handleLimparTodos = async () => {
@@ -328,13 +365,22 @@ const ItensNaoCadastrados = () => {
                       )}
                     </div>
 
-                    <button
-                      onClick={() => handleCadastrar(item)}
-                      className="w-full bg-yellow-500 text-white py-2 px-3 rounded-lg hover:bg-yellow-600 transition-colors flex items-center justify-center text-sm"
-                    >
-                      <Plus className="w-4 h-4 mr-1" />
-                      Cadastrar
-                    </button>
+                    <div className="flex space-x-2">
+                      <button
+                        onClick={() => handleCadastrar(item)}
+                        className="flex-1 bg-yellow-500 text-white py-2 px-3 rounded-lg hover:bg-yellow-600 transition-colors flex items-center justify-center text-sm"
+                      >
+                        <Plus className="w-4 h-4 mr-1" />
+                        Cadastrar
+                      </button>
+                      <button
+                        onClick={() => handleExcluirItem(item)}
+                        className="bg-red-500 text-white py-2 px-3 rounded-lg hover:bg-red-600 transition-colors flex items-center justify-center text-sm"
+                        title="Excluir item"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
                   </div>
                 </div>
               ))}
