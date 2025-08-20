@@ -393,18 +393,50 @@ const ItensCompostos = ({ itemId, isEditing = false, onImagemCompletaChange, ima
       {/* Checkbox para ativar composição */}
       {isEditing && (
         <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
-          <label className="flex items-center gap-2 text-sm text-blue-800 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={isItemComposto}
-              onChange={(e) => handleCheckboxChange(e.target.checked)}
-              className="rounded border-blue-300 text-blue-600 focus:ring-blue-500"
-            />
-            <span className="font-medium">Este item é composto por outros itens</span>
-          </label>
+          {!itemId ? (
+            // Modo de criação - checkbox desabilitado
+            <div className="flex items-center gap-2 text-sm text-gray-500">
+              <input
+                type="checkbox"
+                checked={false}
+                disabled={true}
+                className="rounded border-gray-300 text-gray-400 focus:ring-gray-300 cursor-not-allowed"
+              />
+              <span className="font-medium text-gray-500">Este item é composto por outros itens</span>
+            </div>
+          ) : (
+            // Modo de edição - checkbox habilitado
+            <label className="flex items-center gap-2 text-sm text-blue-800 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={isItemComposto}
+                onChange={(e) => handleCheckboxChange(e.target.checked)}
+                className="rounded border-blue-300 text-blue-600 focus:ring-blue-500"
+              />
+              <span className="font-medium">Este item é composto por outros itens</span>
+            </label>
+          )}
           <p className="text-xs text-blue-700 mt-1 ml-6">
-            Marque esta opção se o item é formado por outros itens do catálogo
+            {!itemId 
+              ? "Item composto só pode ser adicionado após a criação deste artigo"
+              : "Marque esta opção se o item é formado por outros itens do catálogo"
+            }
           </p>
+        </div>
+      )}
+
+      {/* Mensagem específica para modo de criação */}
+      {!itemId && (
+        <div className="mb-4 p-4 bg-gray-50 border border-gray-200 rounded-lg">
+          <div className="flex items-center">
+            <Info className="text-gray-600 w-5 h-5 mr-2" />
+            <div>
+              <h4 className="font-semibold text-gray-900">Funcionalidade de Item Composto</h4>
+              <p className="text-sm text-gray-700">
+                Para adicionar itens compostos, primeiro salve este artigo. Após a criação, você poderá marcar a opção "Este item é composto por outros itens" e adicionar os componentes da composição.
+              </p>
+            </div>
+          </div>
         </div>
       )}
 
@@ -412,7 +444,7 @@ const ItensCompostos = ({ itemId, isEditing = false, onImagemCompletaChange, ima
       {isItemComposto && (
         <>
           {/* Mensagem informativa quando itemId é null */}
-          {!itemId && (
+          {!itemId && isItemComposto && (
             <div className="mb-4 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
               <div className="flex items-center">
                 <Info className="text-yellow-600 w-5 h-5 mr-2" />
@@ -425,6 +457,7 @@ const ItensCompostos = ({ itemId, isEditing = false, onImagemCompletaChange, ima
               </div>
             </div>
           )}
+
           {/* Seção de Imagem do Item Completo */}
           <div className="mb-6 p-4 bg-green-50 border border-green-200 rounded-lg">
             <div className="flex items-center mb-3">
@@ -772,7 +805,7 @@ const ItensCompostos = ({ itemId, isEditing = false, onImagemCompletaChange, ima
       )}
 
       {/* Mensagem quando não é item composto */}
-      {!isItemComposto && isEditing && (
+      {!isItemComposto && isEditing && itemId && (
         <div className="text-center py-8 text-gray-500">
           <Package className="w-12 h-12 mx-auto mb-3 text-gray-300" />
           <p>Marque o checkbox acima para configurar a composição do item</p>
