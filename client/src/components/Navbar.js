@@ -541,6 +541,12 @@ const Navbar = () => {
                         <Trash2 size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" />
                         Excluir Artigo
                       </Link>
+                      {(isAdmin || isController) && (
+                        <Link to="/itens-nao-cadastrados" onClick={handleNavigation} className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10">
+                          <AlertTriangle size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" />
+                          Itens Não Cadastrados
+                        </Link>
+                      )}
                     </div>
                   </div>
                   

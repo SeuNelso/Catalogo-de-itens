@@ -98,6 +98,45 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const XLSX = require('xlsx');
 const { uploadToS3 } = require('./s3Upload');
+
+// Função para converter URL do Google Sheets para formato de exportação
+function convertGoogleSheetsUrlToExport(url) {
+  const match = url.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+  if (match) {
+    const sheetId = match[1];
+    return `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=xlsx&gid=0`;
+  }
+  return null;
+}
+
+// Função para baixar arquivo de uma URL
+function downloadFile(url, filePath) {
+  return new Promise((resolve, reject) => {
+    const protocol = url.startsWith('https:') ? https : http;
+    const file = fs.createWriteStream(filePath);
+    
+    protocol.get(url, (response) => {
+      if (response.statusCode !== 200) {
+        reject(new Error(`HTTP ${response.statusCode}: ${response.statusMessage}`));
+        return;
+      }
+      
+      response.pipe(file);
+      
+      file.on('finish', () => {
+        file.close();
+        resolve();
+      });
+      
+      file.on('error', (err) => {
+        fs.unlink(filePath, () => {}); // Deletar arquivo em caso de erro
+        reject(err);
+      });
+    }).on('error', (err) => {
+      reject(err);
+    });
+  });
+}
 const vision = require('@google-cloud/vision');
 const { detectLabelsFromS3 } = require('./rekognition');
 const AWS = require('aws-sdk');
@@ -228,8 +267,13 @@ app.post('/api/importar-excel', authenticateToken, excelUpload.single('arquivo')
   if (!req.user || req.user.role !== 'admin') {
     return res.status(403).json({ error: 'Apenas administradores podem importar dados.' });
   }
-  if (!req.file) {
-    return res.status(400).json({ error: 'Arquivo não enviado.' });
+  
+  // Verificar se é importação via arquivo ou Google Sheets
+  const googleSheetsUrl = req.body.googleSheetsUrl;
+  const isGoogleSheets = googleSheetsUrl && googleSheetsUrl.trim();
+  
+  if (!req.file && !isGoogleSheets) {
+    return res.status(400).json({ error: 'Arquivo não enviado ou URL do Google Sheets não fornecida.' });
   }
   const importId = uuidv4();
   importStatus[importId] = {
@@ -247,7 +291,33 @@ app.post('/api/importar-excel', authenticateToken, excelUpload.single('arquivo')
     try {
       const XLSX = require('xlsx');
       const fs = require('fs');
-      const workbook = XLSX.readFile(req.file.path);
+      const https = require('https');
+      const http = require('http');
+      
+      let workbook;
+      let filePath;
+      
+      if (isGoogleSheets) {
+        // Processar Google Sheets
+        console.log('📊 Processando Google Sheets:', googleSheetsUrl);
+        
+        // Converter URL para formato de exportação
+        const exportUrl = convertGoogleSheetsUrlToExport(googleSheetsUrl);
+        if (!exportUrl) {
+          throw new Error('URL do Google Sheets inválida');
+        }
+        
+        // Download do arquivo do Google Sheets
+        filePath = `uploads/google_sheets_${Date.now()}.xlsx`;
+        await downloadFile(exportUrl, filePath);
+        
+        workbook = XLSX.readFile(filePath);
+      } else {
+        // Processar arquivo local
+        workbook = XLSX.readFile(req.file.path);
+        filePath = req.file.path;
+      }
+      
       const sheetName = workbook.SheetNames[0];
       const sheet = workbook.Sheets[sheetName];
       
@@ -350,7 +420,14 @@ app.post('/api/importar-excel', authenticateToken, excelUpload.single('arquivo')
           }
         }));
       }
-      fs.unlinkSync(req.file.path);
+      
+      // Limpar arquivo temporário
+      if (isGoogleSheets && filePath) {
+        fs.unlinkSync(filePath);
+      } else if (req.file && req.file.path) {
+        fs.unlinkSync(req.file.path);
+      }
+      
       importStatus[importId].status = 'concluido';
       importStatus[importId].concluido = true;
       importStatus[importId].terminadoEm = new Date();
@@ -358,6 +435,15 @@ app.post('/api/importar-excel', authenticateToken, excelUpload.single('arquivo')
       importStatus[importId].status = 'erro';
       importStatus[importId].erros.push({ erro: error.message });
       importStatus[importId].terminadoEm = new Date();
+      
+      // Limpar arquivo temporário em caso de erro
+      if (isGoogleSheets && filePath && fs.existsSync(filePath)) {
+        try {
+          fs.unlinkSync(filePath);
+        } catch (unlinkError) {
+          console.error('Erro ao remover arquivo temporário:', unlinkError);
+        }
+      }
     }
   });
 });
@@ -1272,8 +1358,22 @@ app.post('/api/itens', authenticateToken, upload.fields([
       console.log('req.files:', req.files);
       console.log('Arquivos para upload no cadastro:', req.files ? Object.keys(req.files).length : 0);
       
+      // Verificar se req.files existe antes de processar
+      if (!req.files) {
+        console.log('ℹ️  Nenhum arquivo enviado no cadastro');
+        console.log('🔄 === FIM DO UPLOAD DE IMAGENS (CADASTRO) ===');
+        
+        res.status(201).json({ 
+          message: 'Item cadastrado com sucesso',
+          itemId: itemId 
+        });
+        return;
+      }
+      
       // Processar imagens normais
-      const imagensNormais = req.files.imagens || [];
+      const imagensNormais = req.files && req.files.imagens ? req.files.imagens : [];
+      
+      // Verificar se há imagens para processar
       if (imagensNormais.length > 0) {
         imagensNormais.forEach((file, index) => {
           console.log(`   ${index + 1}. ${file.originalname} (${file.mimetype})`);
@@ -1331,8 +1431,8 @@ app.post('/api/itens', authenticateToken, upload.fields([
             console.log('🔄 === FIM DO UPLOAD DE IMAGENS (CADASTRO) ===');
             
             // Processar imagem do item completo se existir
-            if (req.files && req.files.find(f => f.fieldname === 'imagemCompleta')) {
-              const imagemCompleta = req.files.find(f => f.fieldname === 'imagemCompleta');
+            if (req.files && req.files.imagemCompleta && Array.isArray(req.files.imagemCompleta) && req.files.imagemCompleta.length > 0) {
+              const imagemCompleta = req.files.imagemCompleta[0];
               try {
                 console.log(`📤 Upload da imagem do item completo: ${imagemCompleta.originalname}`);
                 const s3Result = await uploadToS3(
@@ -1630,9 +1730,18 @@ app.put('/api/itens/:id', authenticateToken, upload.fields([
 
     console.log('req.body.imagensRemovidas:', req.body.imagensRemovidas);
     
+    // Verificar se req.files existe antes de processar
+    if (!req.files) {
+      console.log('ℹ️  Nenhum arquivo enviado na edição');
+      console.log('🔄 === FIM DO UPLOAD DE IMAGENS ===');
+      
+      res.json({ message: 'Item atualizado com sucesso' });
+      return;
+    }
+    
     // Processar imagens normais
-    const imagensNormais = req.files?.imagens || [];
-    const imagemCompleta = req.files?.imagemCompleta?.[0] || null;
+    const imagensNormais = req.files && req.files.imagens ? req.files.imagens : [];
+    const imagemCompleta = req.files && req.files.imagemCompleta && Array.isArray(req.files.imagemCompleta) && req.files.imagemCompleta.length > 0 ? req.files.imagemCompleta[0] : null;
     
     console.log('📁 Imagens normais para upload:', imagensNormais.length);
     imagensNormais.forEach((file, index) => {
