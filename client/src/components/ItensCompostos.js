@@ -108,6 +108,11 @@ const ItensCompostos = ({ itemId, isEditing = false, onImagemCompletaChange, ima
 
   // Buscar componentes do item
   const fetchComponentes = useCallback(async () => {
+    if (!itemId) {
+      console.log('⚠️ itemId é null, pulando busca de componentes');
+      return;
+    }
+    
     try {
       const token = localStorage.getItem('token');
       const response = await fetch(`/api/itens/${itemId}/componentes`, {
@@ -127,6 +132,11 @@ const ItensCompostos = ({ itemId, isEditing = false, onImagemCompletaChange, ima
 
   // Buscar itens disponíveis para componentes
   const fetchItensDisponiveis = useCallback(async () => {
+    if (!itemId) {
+      console.log('⚠️ itemId é null, pulando busca de itens disponíveis');
+      return;
+    }
+    
     try {
       const token = localStorage.getItem('token');
       const response = await fetch('/api/itens-para-componentes', {
@@ -173,7 +183,7 @@ const ItensCompostos = ({ itemId, isEditing = false, onImagemCompletaChange, ima
 
   // Função para selecionar um item
   const handleItemSelect = (item) => {
-    setSelectedItem(item.id.toString());
+    setSelectedItem(item.id); // Manter como número, não converter para string
     setSearchTerm(`${item.codigo} - ${item.descricao}`);
     setShowDropdown(false);
     setSelectedItemIndex(-1);
@@ -250,8 +260,27 @@ const ItensCompostos = ({ itemId, isEditing = false, onImagemCompletaChange, ima
   }, []);
 
   const adicionarComponente = async () => {
-    if (!selectedItem || quantidade <= 0 || !Number.isInteger(parseFloat(quantidade))) {
-      setToast({ type: 'error', message: 'Selecione um item e informe uma quantidade inteira válida' });
+    console.log('🔧 Adicionando componente:', { selectedItem, quantidade, itemId });
+    
+    // Verificar se o itemId é válido (não null)
+    if (!itemId) {
+      setToast({ type: 'error', message: 'Não é possível adicionar componentes durante a criação do item. Salve o item primeiro.' });
+      return;
+    }
+    
+    if (!selectedItem || isNaN(selectedItem) || selectedItem <= 0) {
+      setToast({ type: 'error', message: 'Selecione um item válido para adicionar à composição' });
+      return;
+    }
+    
+    if (!quantidade || quantidade <= 0) {
+      setToast({ type: 'error', message: 'Informe uma quantidade válida maior que zero' });
+      return;
+    }
+    
+    const quantidadeNum = parseFloat(quantidade);
+    if (!Number.isInteger(quantidadeNum)) {
+      setToast({ type: 'error', message: 'A quantidade deve ser um número inteiro' });
       return;
     }
 
@@ -288,6 +317,11 @@ const ItensCompostos = ({ itemId, isEditing = false, onImagemCompletaChange, ima
   };
 
   const removerComponente = async (componenteId) => {
+    if (!itemId) {
+      setToast({ type: 'error', message: 'Não é possível remover componentes durante a criação do item.' });
+      return;
+    }
+    
     if (!window.confirm('Tem certeza que deseja remover este item da composição?')) return;
 
     setLoading(true);
@@ -315,6 +349,11 @@ const ItensCompostos = ({ itemId, isEditing = false, onImagemCompletaChange, ima
   };
 
   const atualizarQuantidade = async (componenteId, novaQuantidade) => {
+    if (!itemId) {
+      setToast({ type: 'error', message: 'Não é possível atualizar componentes durante a criação do item.' });
+      return;
+    }
+    
     if (novaQuantidade <= 0 || !Number.isInteger(parseFloat(novaQuantidade))) {
       setToast({ type: 'error', message: 'Quantidade necessária deve ser um número inteiro maior que zero' });
       return;
@@ -372,6 +411,20 @@ const ItensCompostos = ({ itemId, isEditing = false, onImagemCompletaChange, ima
       {/* Seção de composição - só aparece se o checkbox estiver marcado */}
       {isItemComposto && (
         <>
+          {/* Mensagem informativa quando itemId é null */}
+          {!itemId && (
+            <div className="mb-4 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
+              <div className="flex items-center">
+                <Info className="text-yellow-600 w-5 h-5 mr-2" />
+                <div>
+                  <h4 className="font-semibold text-yellow-900">Item ainda não salvo</h4>
+                  <p className="text-sm text-yellow-700">
+                    Salve o item primeiro para poder adicionar componentes à composição.
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
           {/* Seção de Imagem do Item Completo */}
           <div className="mb-6 p-4 bg-green-50 border border-green-200 rounded-lg">
             <div className="flex items-center mb-3">
@@ -557,10 +610,10 @@ const ItensCompostos = ({ itemId, isEditing = false, onImagemCompletaChange, ima
               <div className="flex justify-end gap-2 mt-4">
                 <button
                   onClick={adicionarComponente}
-                  disabled={loading || !selectedItem}
+                  disabled={loading || !selectedItem || !itemId}
                   className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm disabled:opacity-50 hover:bg-blue-700 transition-colors"
                 >
-                  {loading ? 'Adicionando...' : 'Adicionar'}
+                  {loading ? 'Adicionando...' : !itemId ? 'Salve o item primeiro' : 'Adicionar'}
                 </button>
                 <button
                   onClick={() => {

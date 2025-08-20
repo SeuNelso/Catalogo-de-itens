@@ -8,6 +8,7 @@ const Navbar = () => {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [gerirOpen, setGerirOpen] = useState(false);
   const [dadosOpen, setDadosOpen] = useState(false);
+  const [isInteracting, setIsInteracting] = useState(false);
   const navigate = useNavigate();
 
   const handleLogout = () => {
@@ -22,6 +23,30 @@ const Navbar = () => {
   const handleNavigation = () => {
     console.log('Navigation clicked, closing mobile menu');
     setMobileOpen(false);
+  };
+
+  // Função específica para navegação mobile
+  const handleMobileNavigation = (path, event) => {
+    console.log('🚀 Mobile navigation triggered to:', path);
+    console.log('📱 Current mobile state:', { mobileOpen, dadosOpen, gerirOpen });
+    
+    // Feedback visual - adicionar classe de loading temporariamente
+    const button = event?.target?.closest('button');
+    if (button) {
+      button.style.backgroundColor = 'rgba(255, 255, 255, 0.3)';
+      button.style.transform = 'scale(0.98)';
+    }
+    
+    // Fechar menus primeiro
+    setMobileOpen(false);
+    setDadosOpen(false);
+    setGerirOpen(false);
+    
+    // Navegar após um pequeno delay
+    setTimeout(() => {
+      navigate(path);
+      console.log('✅ Navigation completed to:', path);
+    }, 150);
   };
 
   // Debug para verificar se o estado está mudando
@@ -44,12 +69,19 @@ const Navbar = () => {
       const gerirDropdown = document.querySelector('.gerir-dropdown');
       const dadosDropdown = document.querySelector('.dados-dropdown');
       
-      if (gerirOpen && gerirDropdown && !gerirDropdown.contains(event.target)) {
-        setGerirOpen(false);
+      // Verificar se o clique foi em um link ou botão dentro do dropdown
+      const isDropdownLink = event.target.closest('a') || event.target.closest('button');
+      
+      if (gerirOpen && gerirDropdown && !gerirDropdown.contains(event.target) && !isDropdownLink) {
+        setTimeout(() => {
+          setGerirOpen(false);
+        }, 100);
       }
       
-      if (dadosOpen && dadosDropdown && !dadosDropdown.contains(event.target)) {
-        setDadosOpen(false);
+      if (dadosOpen && dadosDropdown && !dadosDropdown.contains(event.target) && !isDropdownLink) {
+        setTimeout(() => {
+          setDadosOpen(false);
+        }, 100);
       }
     };
 
@@ -68,17 +100,24 @@ const Navbar = () => {
       const gerirDropdown = document.querySelector('.gerir-dropdown');
       const dadosDropdown = document.querySelector('.dados-dropdown');
       
+      // Não fechar se o usuário está interagindo
+      if (isInteracting) return;
+      
       // Verificar se o mouse realmente saiu do dropdown
       if (gerirOpen && gerirDropdown && !gerirDropdown.contains(event.relatedTarget)) {
         gerirTimeout = setTimeout(() => {
-          setGerirOpen(false);
-        }, 150); // 150ms delay
+          if (!isInteracting) {
+            setGerirOpen(false);
+          }
+        }, 300); // Aumentado para 300ms delay
       }
       
       if (dadosOpen && dadosDropdown && !dadosDropdown.contains(event.relatedTarget)) {
         dadosTimeout = setTimeout(() => {
-          setDadosOpen(false);
-        }, 150); // 150ms delay
+          if (!isInteracting) {
+            setDadosOpen(false);
+          }
+        }, 300); // Aumentado para 300ms delay
       }
     };
 
@@ -117,7 +156,7 @@ const Navbar = () => {
       if (gerirTimeout) clearTimeout(gerirTimeout);
       if (dadosTimeout) clearTimeout(dadosTimeout);
     };
-  }, [gerirOpen, dadosOpen]);
+  }, [gerirOpen, dadosOpen, isInteracting]);
 
   return (
     <header className="w-full bg-[#0915FF] text-white fixed top-0 left-0 z-50 shadow-lg h-14 flex items-center">
@@ -139,7 +178,11 @@ const Navbar = () => {
             </div>
           )}
           {isAdmin && (
-            <div className="relative inline-block gerir-dropdown">
+            <div 
+              className="relative inline-block gerir-dropdown"
+              onMouseEnter={() => setIsInteracting(true)}
+              onMouseLeave={() => setIsInteracting(false)}
+            >
               <button 
                 className="bg-transparent border-none text-white font-semibold text-sm lg:text-base py-3 px-2 lg:px-3 xl:px-4 cursor-pointer flex items-center gap-1 lg:gap-2 transition-colors duration-200 rounded-lg hover:bg-white/10"
                 onClick={() => setGerirOpen(!gerirOpen)}
@@ -154,16 +197,49 @@ const Navbar = () => {
                   <div className="mb-3">
                     <div className="text-xs text-white/70 font-medium px-3 py-1 uppercase tracking-wider">Gestão de Artigos</div>
                     <div className="flex flex-col gap-1">
-                      <Link to="/cadastrar" onClick={() => setGerirOpen(false)} className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded">
+                      <Link 
+                        to="/cadastrar" 
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setGerirOpen(false);
+                          setTimeout(() => {
+                            navigate('/cadastrar');
+                          }, 100);
+                        }} 
+                        className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded"
+                      >
                         <Plus size={14} className="lg:w-4 lg:h-4" />
                         Criar Artigo
                       </Link>
-                      <Link to="/excluir-artigo" onClick={() => setGerirOpen(false)} className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded">
+                      <Link 
+                        to="/excluir-artigo" 
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setGerirOpen(false);
+                          setTimeout(() => {
+                            navigate('/excluir-artigo');
+                          }, 100);
+                        }} 
+                        className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded"
+                      >
                         <Trash2 size={14} className="lg:w-4 lg:h-4" />
                         Excluir Artigo
                       </Link>
                       {(isAdmin || isController) && (
-                        <Link to="/itens-nao-cadastrados" onClick={() => setGerirOpen(false)} className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded">
+                        <Link 
+                          to="/itens-nao-cadastrados" 
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setGerirOpen(false);
+                            setTimeout(() => {
+                              navigate('/itens-nao-cadastrados');
+                            }, 100);
+                          }} 
+                          className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded"
+                        >
                           <AlertTriangle size={14} className="lg:w-4 lg:h-4" />
                           Itens Não Cadastrados
                         </Link>
@@ -175,7 +251,18 @@ const Navbar = () => {
                   <div className="border-t border-white/10 pt-3">
                     <div className="text-xs text-white/70 font-medium px-3 py-1 uppercase tracking-wider">Gestão de Usuários</div>
                     <div className="flex flex-col gap-1">
-                      <Link to="/admin-usuarios" onClick={() => setGerirOpen(false)} className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded">
+                      <Link 
+                        to="/admin-usuarios" 
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setGerirOpen(false);
+                          setTimeout(() => {
+                            navigate('/admin-usuarios');
+                          }, 100);
+                        }} 
+                        className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded"
+                      >
                         <Users size={14} className="lg:w-4 lg:h-4" />
                         Usuários
                       </Link>
@@ -186,7 +273,11 @@ const Navbar = () => {
             </div>
           )}
           {isAuthenticated && (
-            <div className="relative inline-block dados-dropdown">
+            <div 
+              className="relative inline-block dados-dropdown"
+              onMouseEnter={() => setIsInteracting(true)}
+              onMouseLeave={() => setIsInteracting(false)}
+            >
               <button 
                 className="bg-transparent border-none text-white font-semibold text-sm lg:text-base py-3 px-2 lg:px-3 xl:px-4 cursor-pointer flex items-center gap-1 lg:gap-2 transition-colors duration-200 rounded-lg hover:bg-white/10"
                 onClick={() => setDadosOpen(!dadosOpen)}
@@ -202,31 +293,86 @@ const Navbar = () => {
                     <div className="text-xs text-white/70 font-medium px-3 py-1 uppercase tracking-wider">Importação</div>
                     <div className="flex flex-col gap-1">
                       {isAdmin && (
-                        <Link to="/importar-itens" onClick={() => setDadosOpen(false)} className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded">
-                          <FileText size={14} className="lg:w-4 lg:h-4" />
-                          Importar Itens
-                        </Link>
+                                              <Link 
+                        to="/importar-itens" 
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setDadosOpen(false);
+                          setTimeout(() => {
+                            navigate('/importar-itens');
+                          }, 100);
+                        }} 
+                        className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded"
+                      >
+                        <FileText size={14} className="lg:w-4 lg:h-4" />
+                        Importar Itens
+                      </Link>
                       )}
                       {isController && (
-                        <Link to="/importar-stock-nacional" onClick={() => setDadosOpen(false)} className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded">
+                        <Link 
+                          to="/importar-stock-nacional" 
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setDadosOpen(false);
+                            setTimeout(() => {
+                              navigate('/importar-stock-nacional');
+                            }, 100);
+                          }} 
+                          className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded"
+                        >
                           <FileText size={14} className="lg:w-4 lg:h-4" />
                           Importar Stock
                         </Link>
                       )}
                       {(isAdmin || isController) && (
-                        <Link to="/importar-dados-itens" onClick={() => setDadosOpen(false)} className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded">
+                        <Link 
+                          to="/importar-dados-itens" 
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setDadosOpen(false);
+                            setTimeout(() => {
+                              navigate('/importar-dados-itens');
+                            }, 100);
+                          }} 
+                          className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded"
+                        >
                           <FileText size={14} className="lg:w-4 lg:h-4" />
                           Importar Dados
                         </Link>
                       )}
                       {(isAdmin || isController) && (
-                        <Link to="/importar-setores" onClick={() => setDadosOpen(false)} className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded">
+                        <Link 
+                          to="/importar-setores" 
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setDadosOpen(false);
+                            setTimeout(() => {
+                              navigate('/importar-setores');
+                            }, 100);
+                          }} 
+                          className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded"
+                        >
                           <Settings size={14} className="lg:w-4 lg:h-4" />
                           Importar Setores
                         </Link>
                       )}
                       {(isAdmin || isController) && (
-                        <Link to="/importar-unidades" onClick={() => setDadosOpen(false)} className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded">
+                        <Link 
+                          to="/importar-unidades" 
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setDadosOpen(false);
+                            setTimeout(() => {
+                              navigate('/importar-unidades');
+                            }, 100);
+                          }} 
+                          className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded"
+                        >
                           <Package size={14} className="lg:w-4 lg:h-4" />
                           Importar Unidades
                         </Link>
@@ -239,11 +385,33 @@ const Navbar = () => {
                     <div className="border-t border-white/10 pt-3 mb-3">
                       <div className="text-xs text-white/70 font-medium px-3 py-1 uppercase tracking-wider">Imagens</div>
                       <div className="flex flex-col gap-1">
-                        <Link to="/importar-imagens-automaticas" onClick={() => setDadosOpen(false)} className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded">
+                        <Link 
+                          to="/importar-imagens-automaticas" 
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setDadosOpen(false);
+                            setTimeout(() => {
+                              navigate('/importar-imagens-automaticas');
+                            }, 100);
+                          }} 
+                          className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded"
+                        >
                           <Image size={14} className="lg:w-4 lg:h-4" />
                           Importar Imagens
                         </Link>
-                        <Link to="/detectar-imagens-automaticas" onClick={() => setDadosOpen(false)} className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded">
+                        <Link 
+                          to="/detectar-imagens-automaticas" 
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setDadosOpen(false);
+                            setTimeout(() => {
+                              navigate('/detectar-imagens-automaticas');
+                            }, 100);
+                          }} 
+                          className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded"
+                        >
                           <RefreshCw size={14} className="lg:w-4 lg:h-4" />
                           Detecção Automática
                         </Link>
@@ -255,7 +423,18 @@ const Navbar = () => {
                   <div className="border-t border-white/10 pt-3">
                     <div className="text-xs text-white/70 font-medium px-3 py-1 uppercase tracking-wider">Exportação</div>
                     <div className="flex flex-col gap-1">
-                      <Link to="/exportar" onClick={() => setDadosOpen(false)} className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded">
+                      <Link 
+                        to="/exportar" 
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setDadosOpen(false);
+                          setTimeout(() => {
+                            navigate('/exportar');
+                          }, 100);
+                        }} 
+                        className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded"
+                      >
                         <Download size={14} className="lg:w-4 lg:h-4" />
                         Exportar Dados
                       </Link>
@@ -317,17 +496,18 @@ const Navbar = () => {
       {mobileOpen && (
         <nav 
           id="mobile-menu"
-          className="md:hidden fixed top-14 left-0 w-full bg-[#0915FF] flex flex-col items-center gap-2 sm:gap-3 py-4 sm:py-6 px-0 z-50 rounded-b-[22px] shadow-lg max-h-[calc(100vh-56px)] overflow-y-auto"
+          className="md:hidden fixed top-14 left-0 w-full bg-[#0915FF] flex flex-col items-center gap-2 sm:gap-3 py-4 sm:py-6 px-0 z-[9999] rounded-b-[22px] shadow-lg max-h-[calc(100vh-56px)] overflow-y-auto"
           aria-hidden={!mobileOpen}
+          style={{ pointerEvents: 'auto' }}
         >
-          <div className="w-[85vw] sm:w-[90vw] py-3 sm:py-4.5 px-0 h-auto rounded-xl text-center text-base sm:text-lg font-semibold bg-white/8 m-0 mb-1 sm:mb-0.5 transition-all duration-200">
-            <Link to="/" onClick={handleNavigation} className="text-white no-underline font-semibold w-full h-full flex items-center justify-center">
-              Início
-            </Link>
-          </div>
+                      <div className="w-[85vw] sm:w-[90vw] py-3 sm:py-4.5 px-0 h-auto rounded-xl text-center text-base sm:text-lg font-semibold bg-white/8 m-0 mb-1 sm:mb-0.5 transition-all duration-200">
+              <Link to="/" onClick={(e) => handleMobileNavigation('/', e)} className="text-white no-underline font-semibold w-full h-full flex items-center justify-center">
+                Início
+              </Link>
+            </div>
           {isAuthenticated && (
             <div className="w-[85vw] sm:w-[90vw] py-3 sm:py-4.5 px-0 h-auto rounded-xl text-center text-base sm:text-lg font-semibold bg-white/8 m-0 mb-1 sm:mb-0.5 transition-all duration-200">
-              <Link to="/listar" onClick={handleNavigation} className="text-white no-underline font-semibold w-full h-full flex items-center justify-center">
+              <Link to="/listar" onClick={(e) => handleMobileNavigation('/listar', e)} className="text-white no-underline font-semibold w-full h-full flex items-center justify-center">
                 Catálogo
               </Link>
             </div>
@@ -400,31 +580,31 @@ const Navbar = () => {
                     <div className="text-xs text-white/70 font-medium px-4 sm:px-5 py-2 uppercase tracking-wider">Importação</div>
                     <div className="flex flex-col">
                       {isAdmin && (
-                        <Link to="/importar-itens" onClick={handleNavigation} className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10">
+                        <Link to="/importar-itens" onClick={(e) => handleMobileNavigation('/importar-itens', e)} className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10">
                           <FileText size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" />
                           Importar Itens
                         </Link>
                       )}
                       {isController && (
-                        <Link to="/importar-stock-nacional" onClick={handleNavigation} className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10">
+                        <Link to="/importar-stock-nacional" onClick={(e) => handleMobileNavigation('/importar-stock-nacional', e)} className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10">
                           <FileText size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" />
                           Importar Stock
                         </Link>
                       )}
                       {(isAdmin || isController) && (
-                        <Link to="/importar-dados-itens" onClick={handleNavigation} className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10">
+                        <Link to="/importar-dados-itens" onClick={(e) => handleMobileNavigation('/importar-dados-itens', e)} className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10">
                           <FileText size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" />
                           Importar Dados
                         </Link>
                       )}
                       {(isAdmin || isController) && (
-                        <Link to="/importar-setores" onClick={handleNavigation} className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10">
+                        <Link to="/importar-setores" onClick={(e) => handleMobileNavigation('/importar-setores', e)} className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10">
                           <Settings size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" />
                           Importar Setores
                         </Link>
                       )}
                       {(isAdmin || isController) && (
-                        <Link to="/importar-unidades" onClick={handleNavigation} className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10">
+                        <Link to="/importar-unidades" onClick={(e) => handleMobileNavigation('/importar-unidades', e)} className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10">
                           <Package size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" />
                           Importar Unidades
                         </Link>
@@ -437,11 +617,11 @@ const Navbar = () => {
                     <div className="border-b border-white/10 pb-3 mb-3">
                       <div className="text-xs text-white/70 font-medium px-4 sm:px-5 py-2 uppercase tracking-wider">Imagens</div>
                       <div className="flex flex-col">
-                        <Link to="/importar-imagens-automaticas" onClick={handleNavigation} className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10">
+                        <Link to="/importar-imagens-automaticas" onClick={(e) => handleMobileNavigation('/importar-imagens-automaticas', e)} className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10">
                           <Image size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" />
                           Importar Imagens
                         </Link>
-                        <Link to="/detectar-imagens-automaticas" onClick={handleNavigation} className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10">
+                        <Link to="/detectar-imagens-automaticas" onClick={(e) => handleMobileNavigation('/detectar-imagens-automaticas', e)} className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10">
                           <RefreshCw size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" />
                           Detecção Automática
                         </Link>
@@ -453,10 +633,29 @@ const Navbar = () => {
                   <div>
                     <div className="text-xs text-white/70 font-medium px-4 sm:px-5 py-2 uppercase tracking-wider">Exportação</div>
                     <div className="flex flex-col">
-                      <Link to="/exportar" onClick={handleNavigation} className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10">
+                      <button 
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setDadosOpen(false);
+                          setMobileOpen(false);
+                          setTimeout(() => {
+                            navigate('/exportar');
+                          }, 150);
+                        }} 
+                        className="w-full text-left text-white py-3 sm:py-4 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10 active:bg-white/20"
+                        style={{ 
+                          cursor: 'pointer', 
+                          pointerEvents: 'auto', 
+                          background: 'transparent', 
+                          border: 'none',
+                          minHeight: '44px', // Área mínima de toque para mobile
+                          touchAction: 'manipulation' // Melhora resposta ao toque
+                        }}
+                      >
                         <Download size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" />
                         Exportar Dados
-                      </Link>
+                      </button>
                     </div>
                   </div>
                 </div>

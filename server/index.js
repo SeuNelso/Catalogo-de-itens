@@ -2838,38 +2838,64 @@ app.get('/api/itens/:id/componentes', authenticateToken, async (req, res) => {
 // Adicionar componente a um item
 app.post('/api/itens/:id/componentes', authenticateToken, async (req, res) => {
   try {
-    const itemId = req.params.id;
+    console.log('🔧 Adicionando componente:', req.body);
+    
+    const itemId = parseInt(req.params.id);
     const { item_componente_id, quantidade_componente = 1 } = req.body;
     
-         if (!item_componente_id) {
-       return res.status(400).json({ error: 'ID do item é obrigatório' });
-     }
+    console.log('📝 Dados recebidos:', { itemId, item_componente_id, quantidade_componente });
     
-         // Verificar se não está tentando adicionar o próprio item como componente
-     if (parseInt(itemId) === parseInt(item_componente_id)) {
-       return res.status(400).json({ error: 'Um item não pode fazer parte da sua própria composição' });
-     }
+    if (!item_componente_id || isNaN(parseInt(item_componente_id)) || parseInt(item_componente_id) <= 0) {
+      console.log('❌ ID do item componente inválido:', item_componente_id);
+      return res.status(400).json({ error: 'ID do item componente é obrigatório e deve ser um número válido' });
+    }
     
-    // Verificar se já existe essa relação (comentado para permitir múltiplas adições)
-    // const existing = await pool.query(
-    //   'SELECT id FROM itens_compostos WHERE item_principal_id = $1 AND item_componente_id = $2',
-    //   [itemId, item_componente_id]
-    // );
+    const itemComponenteId = parseInt(item_componente_id);
     
-    // if (existing.rows.length > 0) {
-    //   return res.status(400).json({ error: 'Este item já foi adicionado à composição' });
-    // }
+    // Verificar se não está tentando adicionar o próprio item como componente
+    if (itemId === itemComponenteId) {
+      console.log('❌ Tentativa de adicionar item como componente de si mesmo');
+      return res.status(400).json({ error: 'Um item não pode fazer parte da sua própria composição' });
+    }
     
-         // Inserir item na composição
-     await pool.query(
-       'INSERT INTO itens_compostos (item_principal_id, item_componente_id, quantidade_componente) VALUES ($1, $2, $3)',
-       [itemId, item_componente_id, quantidade_componente]
-     );
-     
-     res.json({ message: 'Item adicionado à composição com sucesso' });
+    // Verificar se os itens existem
+    const itemPrincipal = await pool.query('SELECT id FROM itens WHERE id = $1', [itemId]);
+    if (itemPrincipal.rows.length === 0) {
+      console.log('❌ Item principal não encontrado:', itemId);
+      return res.status(404).json({ error: 'Item principal não encontrado' });
+    }
+    
+    const itemComponente = await pool.query('SELECT id FROM itens WHERE id = $1', [itemComponenteId]);
+    if (itemComponente.rows.length === 0) {
+      console.log('❌ Item componente não encontrado:', itemComponenteId);
+      return res.status(404).json({ error: 'Item componente não encontrado' });
+    }
+    
+    // Verificar se já existe essa relação
+    const existing = await pool.query(
+      'SELECT id FROM itens_compostos WHERE item_principal_id = $1 AND item_componente_id = $2',
+      [itemId, itemComponenteId]
+    );
+    
+    if (existing.rows.length > 0) {
+      console.log('❌ Item já existe na composição');
+      return res.status(400).json({ error: 'Este item já foi adicionado à composição' });
+    }
+    
+    console.log('✅ Inserindo item na composição...');
+    
+    // Inserir item na composição
+    const result = await pool.query(
+      'INSERT INTO itens_compostos (item_principal_id, item_componente_id, quantidade_componente) VALUES ($1, $2, $3) RETURNING id',
+      [itemId, itemComponenteId, quantidade_componente]
+    );
+    
+    console.log('✅ Item adicionado com sucesso, ID:', result.rows[0].id);
+    res.json({ message: 'Item adicionado à composição com sucesso', id: result.rows[0].id });
   } catch (error) {
-    console.error('Erro ao adicionar componente:', error);
-    res.status(500).json({ error: 'Erro ao adicionar componente' });
+    console.error('❌ Erro ao adicionar componente:', error);
+    console.error('❌ Stack trace:', error.stack);
+    res.status(500).json({ error: 'Erro ao adicionar componente', details: error.message });
   }
 });
 

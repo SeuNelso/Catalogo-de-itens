@@ -73,9 +73,9 @@ const Login = () => {
         <div className="text-center mb-4 sm:mb-6">
           <div className="flex items-center justify-center mb-3 sm:mb-4">
             <Shield className="w-10 h-10 sm:w-12 sm:h-12 text-white mr-3 sm:mr-4 filter drop-shadow-lg" />
-            <h1 className="text-2xl sm:text-4xl font-bold text-white text-shadow-lg">Área Administrativa</h1>
+            <h1 className="text-2xl sm:text-4xl font-bold text-white text-shadow-lg">ACESSO RESTRITO</h1>
           </div>
-          <p className="text-base sm:text-lg text-gray-200 opacity-90">Faça login para acessar o painel de administração</p>
+          <p className="text-base sm:text-lg text-gray-200 opacity-90">Faça login para acessar o catalogo</p>
         </div>
         {/* Login Form */}
         <form onSubmit={handleSubmit} className="w-full flex flex-col gap-3 sm:gap-4">
@@ -83,7 +83,7 @@ const Login = () => {
             <div className="w-16 h-16 sm:w-20 sm:h-20 bg-gradient-to-r from-blue-600 to-purple-600 rounded-full flex items-center justify-center mx-auto mb-3 sm:mb-4 shadow-lg">
               <LogIn className="w-8 h-8 sm:w-12 sm:h-12 text-white" />
             </div>
-            <h2 className="text-xl sm:text-2xl font-bold text-blue-600 mb-1">Bem-vindo de volta</h2>
+            <h2 className="text-xl sm:text-2xl font-bold text-blue-600 mb-1">Bem-vindo</h2>
             <p className="text-gray-600 text-xs sm:text-sm">Entre com suas credenciais para continuar</p>
           </div>
           {/* Username */}
