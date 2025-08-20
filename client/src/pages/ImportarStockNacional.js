@@ -89,15 +89,7 @@ const ImportarStockNacional = () => {
     return sheetsRegex.test(url);
   };
 
-  const convertGoogleSheetsUrlToExport = (url) => {
-    // Converter URL de visualização para URL de exportação
-    const match = url.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
-    if (match) {
-      const sheetId = match[1];
-      return `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=xlsx&gid=0`;
-    }
-    return null;
-  };
+
 
   const handleSubmit = async (e) => {
     e.preventDefault();
