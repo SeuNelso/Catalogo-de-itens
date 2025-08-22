@@ -85,7 +85,7 @@ const CadastrarItem = () => {
       const submitData = new FormData();
       
       // Log para depuração
-      console.log('Valor selecionado para unidadePeso:', formData.unidadePeso);
+      
       Object.keys(formData).forEach(key => {
         if (key === 'unidadePeso') {
           submitData.append('unidadepeso', formData[key] ?? '');
@@ -147,7 +147,7 @@ const CadastrarItem = () => {
               });
               
               if (responseUpdate.ok) {
-                console.log('Item removido da lista de não cadastrados');
+        
               }
             }
           }

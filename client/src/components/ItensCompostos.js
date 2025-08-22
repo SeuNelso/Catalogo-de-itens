@@ -109,7 +109,6 @@ const ItensCompostos = ({ itemId, isEditing = false, onImagemCompletaChange, ima
   // Buscar componentes do item
   const fetchComponentes = useCallback(async () => {
     if (!itemId) {
-      console.log('⚠️ itemId é null, pulando busca de componentes');
       return;
     }
     
@@ -133,7 +132,6 @@ const ItensCompostos = ({ itemId, isEditing = false, onImagemCompletaChange, ima
   // Buscar itens disponíveis para componentes
   const fetchItensDisponiveis = useCallback(async () => {
     if (!itemId) {
-      console.log('⚠️ itemId é null, pulando busca de itens disponíveis');
       return;
     }
     
@@ -260,7 +258,7 @@ const ItensCompostos = ({ itemId, isEditing = false, onImagemCompletaChange, ima
   }, []);
 
   const adicionarComponente = async () => {
-    console.log('🔧 Adicionando componente:', { selectedItem, quantidade, itemId });
+    
     
     // Verificar se o itemId é válido (não null)
     if (!itemId) {

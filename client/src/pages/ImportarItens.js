@@ -124,17 +124,7 @@ const ImportarItens = () => {
           </button>
         </form>
 
-        {/* Botão de teste temporário */}
-        <button
-          type="button"
-          onClick={() => {
-            console.log('Testando barra de progresso...');
-            startImport('test-id', '/api/importar-itens-status/test-id');
-          }}
-          className="w-full rounded-[7px] px-3 sm:px-4 py-2 font-semibold text-[14px] sm:text-[15px] bg-yellow-600 hover:bg-yellow-700 text-white flex items-center justify-center gap-1.5 focus:outline-none focus:ring-2 transition-colors duration-200 shadow-md"
-        >
-          🧪 Testar Barra de Progresso
-        </button>
+
         
         {/* Status da importação */}
         {(status || contextStatus) && (

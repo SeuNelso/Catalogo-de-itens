@@ -142,7 +142,7 @@ const EditarItem = () => {
       const token = localStorage.getItem('token');
       const submitData = new FormData();
       // Log para depuração
-      console.log('Valor selecionado para unidadePeso (edição):', formData.unidadePeso);
+      
       Object.keys(formData).forEach(key => {
         if (key === 'unidadePeso') {
           submitData.append('unidadepeso', formData[key] ?? '');

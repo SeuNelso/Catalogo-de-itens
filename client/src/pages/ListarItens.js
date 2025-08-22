@@ -14,6 +14,9 @@ const ListarItens = () => {
   const [paginaAtual, setPaginaAtual] = useState(1);
   const [loading, setLoading] = useState(false);
   
+  // Ref para manter a posição da página durante a paginação
+  const containerRef = useRef(null);
+  
   // Estados para filtros
   const [filtros, setFiltros] = useState({
     familia: '',
@@ -95,6 +98,10 @@ const ListarItens = () => {
     setLoading(true);
     // Resetar estados quando buscar novos dados
     setItens([]);
+    
+    // Salvar a posição atual da página antes de buscar novos dados
+    const scrollPosition = window.scrollY;
+    
     try {
       const searchParam = debouncedSearchTerm.trim() ? `&search=${encodeURIComponent(debouncedSearchTerm.trim())}` : '';
       
@@ -139,6 +146,12 @@ const ListarItens = () => {
         if (data.total) {
           setTotalItens(data.total);
         }
+        
+        // Restaurar a posição da página após carregar os dados
+        setTimeout(() => {
+          window.scrollTo(0, scrollPosition);
+        }, 100);
+        
       } else {
         setItens([]);
         setTotalPaginas(1);
@@ -274,8 +287,9 @@ const ListarItens = () => {
     
     // Resetar página se há busca, filtros ou ordenação
     if (debouncedSearchTerm !== '' || temFiltrosAtivos || ordenacao.campo) {
-      setPaginaAtual(1);
+      handleMudancaPagina(1);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [debouncedSearchTerm, filtros, ordenacao]);
 
   // Função para lidar com ordenação
@@ -295,13 +309,31 @@ const ListarItens = () => {
     }
   };
 
+  // Função para lidar com mudança de página sem movimento
+  const handleMudancaPagina = useRef((novaPagina) => {
+    // Salvar a posição atual antes de mudar a página
+    const scrollPosition = window.scrollY;
+    
+    setPaginaAtual(novaPagina);
+    
+    // Restaurar a posição após a mudança com múltiplas tentativas
+    const restaurarPosicao = () => {
+      window.scrollTo(0, scrollPosition);
+    };
+    
+    // Tentar restaurar imediatamente e depois com delay
+    restaurarPosicao();
+    setTimeout(restaurarPosicao, 50);
+    setTimeout(restaurarPosicao, 100);
+  }).current;
+
   // Funções para filtros
   const handleFiltroChange = (campo, valor) => {
     setFiltros(prev => ({
       ...prev,
       [campo]: valor
     }));
-    setPaginaAtual(1); // Reset para primeira página ao filtrar
+    handleMudancaPagina(1); // Reset para primeira página ao filtrar
   };
 
   const limparFiltros = () => {
@@ -315,7 +347,7 @@ const ListarItens = () => {
       unidadeArmazenamento: '',
       tipocontrolo: ''
     });
-    setPaginaAtual(1);
+    handleMudancaPagina(1);
   };
 
   // Verificar se há filtros ativos (suporta strings e arrays)
@@ -330,7 +362,7 @@ const ListarItens = () => {
   });
 
   return (
-    <div className="bg-[#f3f6fd] flex flex-col items-center justify-center py-2 px-1 sm:px-4 pt-2">
+    <div ref={containerRef} className="bg-[#f3f6fd] flex flex-col items-center justify-center py-2 px-1 sm:px-4 pt-2">
       {/* Modal de busca por imagem */}
       {showImageModal && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -733,11 +765,11 @@ const ListarItens = () => {
                   </div>
                 ))}
               </div>
-              {/* Paginação Mobile - Versão Compacta */}
-              <div className="mobile-pagination mt-4 flex justify-center items-center gap-2 flex-wrap px-2">
+              {/* Paginação Mobile - Versão Estática */}
+              <div className="mobile-pagination mt-4 flex justify-center items-center gap-2 flex-wrap px-2" style={{ minHeight: 80 }}>
                 {/* Botão Anterior */}
                 <button
-                  onClick={() => setPaginaAtual(p => Math.max(1, p - 1))}
+                  onClick={() => handleMudancaPagina(Math.max(1, paginaAtual - 1))}
                   disabled={paginaAtual === 1}
                   style={{ 
                     minWidth: 44, 
@@ -766,7 +798,8 @@ const ListarItens = () => {
                   gap: 4,
                   fontSize: 12,
                   color: '#374151',
-                  fontWeight: 500
+                  fontWeight: 500,
+                  minWidth: 120
                 }}>
                   <div style={{
                     display: 'flex',
@@ -797,7 +830,7 @@ const ListarItens = () => {
 
                 {/* Botão Próximo */}
                 <button
-                  onClick={() => setPaginaAtual(p => Math.min(totalPaginas, p + 1))}
+                  onClick={() => handleMudancaPagina(Math.min(totalPaginas, paginaAtual + 1))}
                   disabled={paginaAtual === totalPaginas}
                   style={{ 
                     minWidth: 44, 
@@ -1056,7 +1089,7 @@ const ListarItens = () => {
                   Mostrar Inativos
                 </label>
               </div>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-start', width: '100%', marginTop: 18, marginBottom: 0, minHeight: 40 }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-start', width: '100%', marginTop: 18, marginBottom: 0, minHeight: 80 }}>
                   {/* Espaço fixo para o loader, para não mover a paginação */}
                   <div style={{ width: 110, display: 'flex', alignItems: 'center', justifyContent: 'flex-start' }}>
                     {loading && (
@@ -1070,57 +1103,87 @@ const ListarItens = () => {
                       </div>
                     )}
                   </div>
-                  <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
+                  <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2, minHeight: 60 }}>
                     {/* Informações da paginação */}
                     <div style={{
                       fontSize: 14,
                       color: '#6B7280',
                       fontWeight: 500,
-                      textAlign: 'center'
+                      textAlign: 'center',
+                      minHeight: 20
                     }}>
                       {totalItens > 0 && `Mostrando ${((paginaAtual - 1) * 10) + 1}-${Math.min(paginaAtual * 10, totalItens)} de ${totalItens} itens`}
                     </div>
                     
-                    {/* Paginação Desktop - Versão Completa */}
+                    {/* Paginação Desktop - Versão Estática */}
                     <div className="desktop-pagination" style={{ 
                       display: 'flex',
                       justifyContent: 'center',
                       alignItems: 'center',
                       gap: 4,
-                      flexWrap: 'wrap'
+                      flexWrap: 'nowrap',
+                      width: '100%',
+                      maxWidth: 600
                     }}>
+                      {/* Botão Anterior */}
                       <button
-                        onClick={() => setPaginaAtual(p => Math.max(1, p - 1))}
+                        onClick={() => handleMudancaPagina(Math.max(1, paginaAtual - 1))}
                         disabled={paginaAtual === 1}
                         style={{ 
-                          minWidth: 36, 
+                          minWidth: 80, 
                           height: 36, 
                           border: '1.5px solid #0915FF', 
                           background: '#fff', 
                           color: '#0915FF', 
                           fontWeight: 600, 
-                          fontSize: 16, 
+                          fontSize: 14, 
                           borderRadius: 7, 
                           cursor: paginaAtual === 1 ? 'not-allowed' : 'pointer', 
-                          margin: 2 
+                          margin: 2,
+                          opacity: paginaAtual === 1 ? 0.5 : 1
                         }}
                       >
                         Anterior
                       </button>
+
+                      {/* Primeira página */}
+                      <button
+                        onClick={() => handleMudancaPagina(1)}
+                        style={{
+                          minWidth: 36,
+                          height: 36,
+                          border: '1.5px solid #0915FF',
+                          background: paginaAtual === 1 ? '#0915FF' : '#fff',
+                          color: paginaAtual === 1 ? '#fff' : '#0915FF',
+                          fontWeight: 700,
+                          fontSize: 14,
+                          borderRadius: 7,
+                          cursor: 'pointer',
+                          margin: 2
+                        }}
+                      >
+                        1
+                      </button>
+
+                      {/* Separador se necessário */}
+                      {paginaAtual > 4 && (
+                        <span style={{ minWidth: 24, textAlign: 'center', color: '#0915FF', fontSize: 14 }}>
+                          ...
+                        </span>
+                      )}
+
+                      {/* Páginas ao redor da atual */}
                       {(() => {
                         const botoes = [];
-                        const mostrar = 2; // Quantos botões mostrar no início/fim
-                        const vizinhos = 2; // Quantos vizinhos ao redor da página atual
-                        for (let p = 1; p <= totalPaginas; p++) {
-                          if (
-                            p <= mostrar ||
-                            p > totalPaginas - mostrar ||
-                            (p >= paginaAtual - vizinhos && p <= paginaAtual + vizinhos)
-                          ) {
+                        const inicio = Math.max(2, paginaAtual - 1);
+                        const fim = Math.min(totalPaginas - 1, paginaAtual + 1);
+                        
+                        for (let p = inicio; p <= fim; p++) {
+                          if (p !== 1 && p !== totalPaginas) {
                             botoes.push(
                               <button
                                 key={p}
-                                onClick={() => setPaginaAtual(p)}
+                                onClick={() => handleMudancaPagina(p)}
                                 style={{
                                   minWidth: 36,
                                   height: 36,
@@ -1128,43 +1191,64 @@ const ListarItens = () => {
                                   background: paginaAtual === p ? '#0915FF' : '#fff',
                                   color: paginaAtual === p ? '#fff' : '#0915FF',
                                   fontWeight: 700,
-                                  fontSize: 16,
+                                  fontSize: 14,
                                   borderRadius: 7,
                                   cursor: 'pointer',
                                   margin: 2
                                 }}
-                                disabled={paginaAtual === p}
                               >
                                 {p}
                               </button>
-                            );
-                          } else if (
-                            (p === mostrar + 1 && paginaAtual - vizinhos > mostrar + 1) ||
-                            (p === totalPaginas - mostrar && paginaAtual + vizinhos < totalPaginas - mostrar)
-                          ) {
-                            botoes.push(
-                              <span key={p} style={{ minWidth: 24, textAlign: 'center', color: '#0915FF' }}>
-                                ...
-                              </span>
                             );
                           }
                         }
                         return botoes;
                       })()}
+
+                      {/* Separador se necessário */}
+                      {paginaAtual < totalPaginas - 3 && (
+                        <span style={{ minWidth: 24, textAlign: 'center', color: '#0915FF', fontSize: 14 }}>
+                          ...
+                        </span>
+                      )}
+
+                      {/* Última página (se não for a primeira) */}
+                      {totalPaginas > 1 && (
+                        <button
+                          onClick={() => handleMudancaPagina(totalPaginas)}
+                          style={{
+                            minWidth: 36,
+                            height: 36,
+                            border: '1.5px solid #0915FF',
+                            background: paginaAtual === totalPaginas ? '#0915FF' : '#fff',
+                            color: paginaAtual === totalPaginas ? '#fff' : '#0915FF',
+                            fontWeight: 700,
+                            fontSize: 14,
+                            borderRadius: 7,
+                            cursor: 'pointer',
+                            margin: 2
+                          }}
+                        >
+                          {totalPaginas}
+                        </button>
+                      )}
+
+                      {/* Botão Próximo */}
                       <button
-                        onClick={() => setPaginaAtual(p => Math.min(totalPaginas, p + 1))}
+                        onClick={() => handleMudancaPagina(Math.min(totalPaginas, paginaAtual + 1))}
                         disabled={paginaAtual === totalPaginas}
                         style={{ 
-                          minWidth: 36, 
+                          minWidth: 80, 
                           height: 36, 
                           border: '1.5px solid #0915FF', 
                           background: '#fff', 
                           color: '#0915FF', 
                           fontWeight: 600, 
-                          fontSize: 16, 
+                          fontSize: 14, 
                           borderRadius: 7, 
                           cursor: paginaAtual === totalPaginas ? 'not-allowed' : 'pointer', 
-                          margin: 2 
+                          margin: 2,
+                          opacity: paginaAtual === totalPaginas ? 0.5 : 1
                         }}
                       >
                         Próximo

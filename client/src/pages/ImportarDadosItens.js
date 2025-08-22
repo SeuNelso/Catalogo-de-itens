@@ -127,7 +127,7 @@ const ImportarDadosItens = () => {
           'Peso': '500',
           'Unidade Peso': 'g',
           'Unidade Armazenamento': 'Caixa',
-          'Observações': 'Item de teste'
+          'Observações': ''
         },
         {
           'Código': '3000002',

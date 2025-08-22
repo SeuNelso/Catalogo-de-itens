@@ -1,92 +1,13 @@
 require('dotenv').config();
 
-// Log das variáveis de ambiente para debug
-console.log('🔧 [ENV] Verificando variáveis de ambiente:');
-console.log('🔧 [ENV] R2_BUCKET:', process.env.R2_BUCKET);
-console.log('🔧 [ENV] R2_ENDPOINT:', process.env.R2_ENDPOINT);
-console.log('🔧 [ENV] R2_ACCESS_KEY:', process.env.R2_ACCESS_KEY ? '***PRESENTE***' : '***AUSENTE***');
-console.log('🔧 [ENV] R2_SECRET_KEY:', process.env.R2_SECRET_KEY ? '***PRESENTE***' : '***AUSENTE***');
 
-/*
--- SCRIPT DE CRIAÇÃO DAS TABELAS NO POSTGRESQL (use no Railway Console ou cliente SQL)
-
-CREATE TABLE itens (
-  id SERIAL PRIMARY KEY,
-  nome TEXT NOT NULL,
-  descricao TEXT,
-  categoria TEXT NOT NULL,
-  marca TEXT,
-  modelo TEXT,
-  codigo TEXT UNIQUE,
-  preco REAL,
-  quantidade INTEGER DEFAULT 0,
-  localizacao TEXT,
-  observacoes TEXT,
-  familia TEXT,
-  subfamilia TEXT,
-  setor TEXT,
-  comprimento REAL,
-  largura REAL,
-  altura REAL,
-  unidade TEXT,
-  peso TEXT,
-  unidadePeso TEXT,
-  unidadeArmazenamento TEXT,
-  tipocontrolo TEXT,
-  data_cadastro TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE armazens_item (
-  id SERIAL PRIMARY KEY,
-  item_id INTEGER REFERENCES itens(id) ON DELETE CASCADE,
-  armazem TEXT,
-  quantidade INTEGER
-);
-
-CREATE TABLE imagens_itens (
-  id SERIAL PRIMARY KEY,
-  item_id INTEGER REFERENCES itens(id) ON DELETE CASCADE,
-  nome_arquivo TEXT NOT NULL,
-  caminho TEXT NOT NULL,
-  tipo TEXT,
-  data_upload TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE especificacoes (
-  id SERIAL PRIMARY KEY,
-  item_id INTEGER REFERENCES itens(id) ON DELETE CASCADE,
-  nome_especificacao TEXT NOT NULL,
-  valor TEXT NOT NULL,
-  obrigatorio BOOLEAN DEFAULT FALSE
-);
-
-CREATE TABLE usuarios (
-  id SERIAL PRIMARY KEY,
-  username TEXT UNIQUE NOT NULL,
-  password TEXT NOT NULL,
-  nome TEXT NOT NULL,
-  email TEXT UNIQUE,
-  role TEXT DEFAULT 'admin',
-  data_criacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE itens_nao_cadastrados (
-  id SERIAL PRIMARY KEY,
-  codigo TEXT NOT NULL,
-  descricao TEXT NOT NULL,
-  armazens JSONB,
-  data_importacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-*/
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const sharp = require('sharp');
-// Remover ou comentar a linha abaixo após migração completa:
-// const sqlite3 = require('sqlite3').verbose();
-// const db = new sqlite3.Database('catalogo.db');
+
 
 // Conexão com PostgreSQL (Railway)
 const { Pool } = require('pg');
@@ -166,7 +87,7 @@ function createS3Client() {
   const accessKeyId = process.env.R2_ACCESS_KEY || '32f0b3b31955b3878e1c2c107ef33fd5';
   const secretAccessKey = process.env.R2_SECRET_KEY || '580539e25b1580ce1c37425fb3eeb45be831ec029b352f6375614399e7ab714f';
   
-  console.log('🔧 [S3] Criando cliente S3 com endpoint:', endpoint);
+  
   
   return new AWS.S3({
     endpoint: endpoint,
@@ -211,7 +132,7 @@ const authenticateToken = (req, res, next) => {
 
 // Middleware global para logar todas as requisições recebidas
 app.use((req, res, next) => {
-  console.log('Requisição recebida:', req.method, req.url);
+  
   next();
 });
 
@@ -263,7 +184,7 @@ const { v4: uuidv4 } = require('uuid');
 
 const excelUpload = multer({ dest: 'uploads/' });
 app.post('/api/importar-excel', authenticateToken, excelUpload.single('arquivo'), async (req, res) => {
-  console.log('Recebendo importação de excel');
+  
   if (!req.user || req.user.role !== 'admin') {
     return res.status(403).json({ error: 'Apenas administradores podem importar dados.' });
   }

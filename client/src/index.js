@@ -16,7 +16,7 @@ const fixCatalogIcon = () => {
       icon.style.setProperty('fill', '#fff', 'important');
       icon.style.setProperty('stroke', '#fff', 'important');
       
-      console.log('Ícone do catálogo corrigido para branco:', icon);
+      
     });
   });
   
@@ -29,7 +29,7 @@ const fixCatalogIcon = () => {
       icon.style.setProperty('fill', '#fff', 'important');
       icon.style.setProperty('stroke', '#fff', 'important');
       
-      console.log('Ícone da página inicial corrigido para branco:', icon);
+      
     }
   });
 };
@@ -64,7 +64,7 @@ const fixCreateAccountButton = () => {
       icon.style.setProperty('color', '#fff', 'important');
     }
     
-    console.log('Botão Criar Conta corrigido para azul:', button);
+    
   });
 };
 
@@ -99,7 +99,7 @@ const fixLoginButton = () => {
         element.style.setProperty('text-shadow', '0 1px 2px rgba(0, 0, 0, 0.1)', 'important');
       });
       
-      console.log('Botão Login corrigido para branco:', button);
+      
     }
   });
 };
@@ -128,7 +128,7 @@ const fixLogoutButton = () => {
       element.style.setProperty('text-shadow', 'none', 'important');
     });
     
-    console.log('Botão SAIR corrigido:', button);
+    
   });
 };
 
@@ -211,14 +211,14 @@ const fixInvisibleText = () => {
       element.style.setProperty('background', '#fff', 'important');
       element.style.setProperty('font-weight', '700', 'important');
       element.style.setProperty('text-shadow', 'none', 'important');
-      //console.log('Botão SAIR corrigido para azul:', element);
+      
     }
     // Corrigir ícones cinzas para branco
     else if (isGrayIcon && (hasBlue || parentHasBlue)) {
       element.style.setProperty('color', '#fff', 'important');
       element.style.setProperty('fill', '#fff', 'important');
       element.style.setProperty('stroke', '#fff', 'important');
-      console.log('Ícone cinza corrigido para branco:', element);
+      
     }
     // Corrigir botão "Criar Conta" para azul com texto branco
     else if (isCreateAccountButton) {
@@ -226,13 +226,13 @@ const fixInvisibleText = () => {
       element.style.setProperty('border', '1.5px solid #0915FF', 'important');
       element.style.setProperty('color', '#fff', 'important');
       element.style.setProperty('text-shadow', '0 1px 2px rgba(0, 0, 0, 0.1)', 'important');
-      console.log('Botão Criar Conta corrigido para azul:', element);
+      
     }
     // Corrigir botão de login para branco
     else if (isLoginButton && (hasBlue || parentHasBlue)) {
       element.style.setProperty('color', '#fff', 'important');
       element.style.setProperty('text-shadow', '0 1px 2px rgba(0, 0, 0, 0.1)', 'important');
-      console.log('Botão Login corrigido para branco:', element);
+      
     }
     // Corrigir botão da câmera para branco
     else if (isCameraButton || (hasBlue && isCameraButton)) {

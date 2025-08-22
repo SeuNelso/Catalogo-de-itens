@@ -21,15 +21,11 @@ const Navbar = () => {
 
   // Fechar menu mobile ao navegar
   const handleNavigation = () => {
-    console.log('Navigation clicked, closing mobile menu');
     setMobileOpen(false);
   };
 
   // Função específica para navegação mobile
   const handleMobileNavigation = (path, event) => {
-    console.log('🚀 Mobile navigation triggered to:', path);
-    console.log('📱 Current mobile state:', { mobileOpen, dadosOpen, gerirOpen });
-    
     // Feedback visual - adicionar classe de loading temporariamente
     const button = event?.target?.closest('button');
     if (button) {
@@ -45,23 +41,10 @@ const Navbar = () => {
     // Navegar após um pequeno delay
     setTimeout(() => {
       navigate(path);
-      console.log('✅ Navigation completed to:', path);
     }, 150);
   };
 
-  // Debug para verificar se o estado está mudando
-  useEffect(() => {
-    console.log('Mobile menu state changed:', mobileOpen);
-  }, [mobileOpen]);
 
-  // Debug para verificar se os dropdowns estão mudando
-  useEffect(() => {
-    console.log('Gerir dropdown state:', gerirOpen);
-  }, [gerirOpen]);
-
-  useEffect(() => {
-    console.log('Dados dropdown state:', dadosOpen);
-  }, [dadosOpen]);
 
   // Fechar dropdowns quando clica fora deles
   useEffect(() => {
@@ -470,7 +453,6 @@ const Navbar = () => {
           <button 
             className="bg-transparent border-none flex items-center justify-center h-10 w-10 sm:h-11 sm:w-11 ml-2 sm:ml-4 cursor-pointer rounded-lg transition-all duration-200 hover:bg-white/10 active:bg-white/20 focus:outline-none focus:ring-2 focus:ring-white/50 relative z-50" 
             onClick={() => {
-              console.log('Hamburger clicked! Current state:', mobileOpen);
               setMobileOpen(!mobileOpen);
             }} 
             aria-label={mobileOpen ? "Fechar menu" : "Abrir menu"}
@@ -517,7 +499,6 @@ const Navbar = () => {
               <button 
                 className="w-full justify-between py-3 sm:py-4 px-4 sm:px-5 bg-transparent border-none text-white font-semibold text-sm sm:text-base cursor-pointer flex items-center gap-2 transition-colors duration-200 rounded-lg"
                 onClick={() => {
-                  console.log('Gerir button clicked! Current state:', gerirOpen);
                   setGerirOpen(!gerirOpen);
                 }}
               >
@@ -569,7 +550,6 @@ const Navbar = () => {
               <button 
                 className="w-full justify-between py-3 sm:py-4 px-4 sm:px-5 bg-transparent border-none text-white font-semibold text-sm sm:text-base cursor-pointer flex items-center gap-2 transition-colors duration-200 rounded-lg"
                 onClick={() => {
-                  console.log('Dados button clicked! Current state:', dadosOpen);
                   setDadosOpen(!dadosOpen);
                 }}
               >

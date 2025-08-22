@@ -40,7 +40,7 @@ const ImportarStockNacional = () => {
           setMessage(data.status === 'concluido' ? 'Importação concluída!' : 'Erro na importação.');
           // Filtrar artigos não cadastrados
           const naoCad = (data.erros || []).filter(e => e.motivo === 'Artigo não cadastrado');
-          console.log('Erros da importação:', data.erros); // <-- Adicionado para depuração
+  
           setNaoCadastrados(naoCad);
           
           // Salvar no servidor para sincronização entre dispositivos
@@ -57,7 +57,7 @@ const ImportarStockNacional = () => {
               });
               
               if (response.ok) {
-                console.log('Itens não cadastrados sincronizados com sucesso');
+        
               } else {
                 console.error('Erro ao sincronizar itens não cadastrados:', response.statusText);
               }
@@ -279,4 +279,4 @@ const ImportarStockNacional = () => {
   );
 };
 
-export default ImportarStockNacional; 
+export default ImportarStockNacional;

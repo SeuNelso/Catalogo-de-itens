@@ -51,8 +51,7 @@ const DetalhesItem = () => {
       const response = await fetch(`/api/itens/${id}`);
       if (response.ok) {
         const data = await response.json();
-        console.log('Dados do item recebidos:', data);
-        console.log('Imagens do item:', data.imagens);
+
         setItem(data);
       } else {
         setError('Item não encontrado');
@@ -67,10 +66,10 @@ const DetalhesItem = () => {
 
   // Buscar itens que este item compõe
   const fetchItensQueCompoe = useCallback(async () => {
-    console.log('🔍 Iniciando busca de itens que compõe para item ID:', id);
+
     try {
       const token = localStorage.getItem('token');
-      console.log('🔑 Token encontrado:', !!token);
+      
       
       const response = await fetch(`/api/itens/${id}/compoe`, {
         headers: {
@@ -79,12 +78,11 @@ const DetalhesItem = () => {
         }
       });
       
-      console.log('📡 Response status:', response.status);
+      
       
       if (response.ok) {
         const data = await response.json();
-        console.log('✅ Dados recebidos de itens que compõe:', data);
-        console.log('📊 Quantidade de itens encontrados:', data.length);
+        
         setItensQueCompoe(data);
       } else {
         console.error('❌ Erro na resposta:', response.status, response.statusText);
@@ -94,7 +92,7 @@ const DetalhesItem = () => {
     } catch (error) {
       console.error('❌ Erro ao buscar itens que compõe:', error);
     } finally {
-      console.log('🏁 Busca de itens que compõe finalizada');
+      
     }
   }, [id]);
 
@@ -239,7 +237,7 @@ const DetalhesItem = () => {
                               e.target.parentNode.appendChild(placeholder);
                             }}
                             onLoad={() => {
-                              console.log('Imagem carregada com sucesso:', imagem.caminho);
+                      
                             }}
                             crossOrigin="anonymous"
                             referrerPolicy="no-referrer"

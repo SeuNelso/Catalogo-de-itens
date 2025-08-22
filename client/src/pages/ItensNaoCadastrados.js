@@ -85,6 +85,19 @@ const ItensNaoCadastrados = () => {
       if (response.ok) {
         // Remover o item da lista local
         setNaoCadastrados(prev => prev.filter(i => i.id !== item.id));
+        
+        // Verificar se a página atual ficou vazia após a exclusão
+        const itensFiltradosAposExclusao = naoCadastrados.filter(i => i.id !== item.id).filter(item =>
+          item.codigo.toLowerCase().includes(searchTerm.toLowerCase()) ||
+          item.descricao.toLowerCase().includes(searchTerm.toLowerCase())
+        );
+        const totalPaginasAposExclusao = Math.ceil(itensFiltradosAposExclusao.length / itensPorPagina);
+        
+        // Se a página atual ficou vazia e há páginas anteriores, voltar para a página anterior
+        if (paginaAtual > totalPaginasAposExclusao && totalPaginasAposExclusao > 0) {
+          setPaginaAtual(totalPaginasAposExclusao);
+        }
+        
         setToast({
           type: 'success',
           message: 'Item removido com sucesso'
@@ -213,21 +226,8 @@ const ItensNaoCadastrados = () => {
               </button>
               <h1 className="text-2xl font-bold text-gray-900">Itens Não Cadastrados</h1>
             </div>
-            <div className="flex items-center space-x-4">
-              <button
-                onClick={fetchNaoCadastrados}
-                className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors"
-              >
-                Atualizar
-              </button>
-              {naoCadastrados.length > 0 && (
-                <button
-                  onClick={handleLimparTodos}
-                  className="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 transition-colors"
-                >
-                  Limpar Todos
-                </button>
-              )}
+            <div className="flex items-center">
+              {/* Botões movidos para dentro da seção de estatísticas */}
             </div>
           </div>
         </div>
@@ -269,9 +269,29 @@ const ItensNaoCadastrados = () => {
                     Mostrando {itensPagina.length} de {itensFiltrados.length} itens
                   </p>
                 </div>
-                <div className="flex items-center space-x-2">
-                  <AlertTriangle className="w-5 h-5 text-yellow-500" />
-                  <span className="text-sm text-yellow-700 font-medium">Pendentes</span>
+                <div className="flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4">
+                  <div className="flex items-center space-x-2">
+                    <AlertTriangle className="w-5 h-5 text-yellow-500" />
+                    <span className="text-sm text-yellow-700 font-medium">Pendentes</span>
+                  </div>
+                  
+                  {/* Botões de ação */}
+                  <div className="flex items-center space-x-2">
+                    <button
+                      onClick={fetchNaoCadastrados}
+                      className="bg-blue-600 text-white px-3 py-1.5 rounded-lg hover:bg-blue-700 transition-colors text-sm"
+                    >
+                      Atualizar
+                    </button>
+                    {naoCadastrados.length > 0 && (
+                      <button
+                        onClick={handleLimparTodos}
+                        className="bg-red-600 text-white px-3 py-1.5 rounded-lg hover:bg-red-700 transition-colors text-sm"
+                      >
+                        Limpar Todos
+                      </button>
+                    )}
+                  </div>
                 </div>
               </div>
 
