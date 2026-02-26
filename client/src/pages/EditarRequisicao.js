@@ -26,13 +26,13 @@ const EditarRequisicao = () => {
   const [quantidadeAtual, setQuantidadeAtual] = useState('');
   const navigate = useNavigate();
   const { user } = useAuth();
-  const isAdmin = user && user.role === 'admin';
   const canEdit = user && (user.role === 'admin' || user.role === 'controller');
 
   useEffect(() => {
     fetchRequisicao();
     fetchItens();
     fetchArmazens();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
   useEffect(() => {

@@ -29,6 +29,7 @@ const PrepararRequisicao = () => {
 
   useEffect(() => {
     fetchRequisicao();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
   const fetchRequisicao = async (silent = false) => {

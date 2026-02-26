@@ -20,15 +20,16 @@ const ListarRequisicoes = () => {
   const navigate = useNavigate();
   const { user } = useAuth();
   const confirm = useConfirm();
-  const isAdmin = user && user.role === 'admin';
   const canEdit = user && (user.role === 'admin' || user.role === 'controller');
 
   useEffect(() => {
     fetchArmazens();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
     fetchRequisicoes();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filtros]);
 
   const fetchArmazens = async () => {

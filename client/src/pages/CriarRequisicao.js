@@ -32,11 +32,12 @@ const CriarRequisicao = () => {
   const refBuscaItem = useRef(null);
   const refListaItens = useRef(null);
   const navigate = useNavigate();
-  const { user } = useAuth();
+  useAuth(); // auth context
 
   useEffect(() => {
     fetchItens();
     fetchArmazens();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
