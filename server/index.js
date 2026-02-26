@@ -1,4 +1,5 @@
-require('dotenv').config();
+// Carregar variáveis de ambiente
+require('dotenv').config({ path: require('path').join(__dirname, '.env') });
 
 
 const express = require('express');
@@ -9,11 +10,11 @@ const fs = require('fs');
 const sharp = require('sharp');
 
 
-// Conexão com PostgreSQL (Railway)
+// Conexão com PostgreSQL
 const { Pool } = require('pg');
 const pool = new Pool({
-  connectionString: 'postgres://postgres:DwAOpLGFNCgDcBkeobQVKuXqHWpiQqZt@switchyard.proxy.rlwy.net:10773/railway',
-  ssl: { rejectUnauthorized: false }
+  connectionString: process.env.DATABASE_URL || `postgres://${process.env.DB_USER}:${process.env.DB_PASSWORD}@${process.env.DB_HOST}:${process.env.DB_PORT}/${process.env.DB_NAME}`,
+  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
 });
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
@@ -82,12 +83,16 @@ const SETORES_VALIDOS = [
 
 // Função helper para criar cliente S3 configurado
 function createS3Client() {
-  // Valores padrão para desenvolvimento local
-  const endpoint = process.env.R2_ENDPOINT || 'https://d18863b1a98e7a9ca8875305179ad718.r2.cloudflarestorage.com';
-  const accessKeyId = process.env.R2_ACCESS_KEY || '32f0b3b31955b3878e1c2c107ef33fd5';
-  const secretAccessKey = process.env.R2_SECRET_KEY || '580539e25b1580ce1c37425fb3eeb45be831ec029b352f6375614399e7ab714f';
+  // Usar variáveis de ambiente (sem valores padrão hardcoded)
+  const endpoint = process.env.R2_ENDPOINT;
+  const accessKeyId = process.env.R2_ACCESS_KEY;
+  const secretAccessKey = process.env.R2_SECRET_KEY;
   
-  
+  // Verificar se as credenciais estão configuradas
+  if (!endpoint || !accessKeyId || !secretAccessKey) {
+    console.warn('⚠️ [S3] Credenciais R2 não configuradas. Funcionalidades de upload serão limitadas.');
+    return null;
+  }
   
   return new AWS.S3({
     endpoint: endpoint,
@@ -1018,17 +1023,15 @@ app.get('/api/imagem/:filename(*)', (req, res) => {
   console.log('🔧 [PROXY] Solicitando imagem:', filename);
   
   // Verificar se as credenciais estão configuradas
-  if (!process.env.R2_ACCESS_KEY || !process.env.R2_SECRET_KEY || 
-      process.env.R2_ACCESS_KEY === '32f0b3b31955b3878e1c2c107ef33fd5') {
-    console.log('⚠️ [PROXY] Credenciais R2 não configuradas, retornando imagem padrão');
-    return res.status(404).json({ 
-      error: 'Imagem não disponível - credenciais R2 não configuradas',
-      message: 'Configure as variáveis de ambiente R2_ACCESS_KEY e R2_SECRET_KEY para acessar as imagens'
-    });
-  }
-  
   // Configurar o cliente S3 para R2
   const s3Client = createS3Client();
+  
+  if (!s3Client) {
+    return res.status(503).json({ 
+      error: 'Serviço de armazenamento não configurado',
+      message: 'Configure as variáveis de ambiente R2_ENDPOINT, R2_ACCESS_KEY e R2_SECRET_KEY'
+    });
+  }
   
   const params = {
     Bucket: process.env.R2_BUCKET || 'catalogo-imagens',
@@ -2348,6 +2351,14 @@ app.post('/api/importar-imagens-automaticas', authenticateToken, async (req, res
     
     // Configurar cliente S3 para R2
     const s3Client = createS3Client();
+    
+    if (!s3Client) {
+      console.log('⚠️ [IMPORTAÇÃO] Cliente S3 não configurado, pulando busca de imagens');
+      return res.status(503).json({ 
+        error: 'Serviço de armazenamento não configurado',
+        message: 'Configure as variáveis de ambiente R2_ENDPOINT, R2_ACCESS_KEY e R2_SECRET_KEY'
+      });
+    }
 
     // Listar objetos no bucket que correspondem ao padrão do código
     const listParams = {
@@ -2460,6 +2471,14 @@ app.get('/api/imagens-bucket/:codigo', authenticateToken, async (req, res) => {
     
     // Configurar cliente S3 para R2
     const s3Client = createS3Client();
+    
+    if (!s3Client) {
+      console.log('⚠️ [LISTAGEM] Cliente S3 não configurado');
+      return res.status(503).json({ 
+        error: 'Serviço de armazenamento não configurado',
+        message: 'Configure as variáveis de ambiente R2_ENDPOINT, R2_ACCESS_KEY e R2_SECRET_KEY'
+      });
+    }
 
     // Listar objetos no bucket que correspondem ao padrão do código
     const listParams = {
@@ -2530,6 +2549,11 @@ async function detectarEImportarImagensAutomaticas(itemId, codigo) {
     
     // Configurar cliente S3 para R2
     const s3Client = createS3Client();
+    
+    if (!s3Client) {
+      console.log('⚠️ [DETECÇÃO] Cliente S3 não configurado, pulando detecção de imagens');
+      return { importadas: 0, jaExistentes: 0, erro: 'Serviço de armazenamento não configurado' };
+    }
 
     // Listar objetos no bucket que correspondem ao padrão do código
     const listParams = {
@@ -2622,6 +2646,11 @@ async function detectarEImportarImagensCompostas(itemId, codigo) {
     
     // Configurar cliente S3 para R2
     const s3Client = createS3Client();
+    
+    if (!s3Client) {
+      console.log('⚠️ [DETECÇÃO] Cliente S3 não configurado, pulando detecção de imagens compostas');
+      return { importadas: 0, jaExistentes: 0, erro: 'Serviço de armazenamento não configurado' };
+    }
 
     // Listar objetos no bucket que correspondem ao padrão IC_codigo
     const listParams = {
@@ -3688,6 +3717,1437 @@ app.get('/api/download-template-unidades', authenticateToken, (req, res) => {
     });
   }
 });
+
+// ============================================
+// ROTAS DE ARMAZÉNS
+// ============================================
+
+// Listar todos os armazéns (com localizações quando a tabela existir)
+app.get('/api/armazens', authenticateToken, async (req, res) => {
+  try {
+    const { ativo } = req.query;
+    let query = 'SELECT * FROM armazens WHERE 1=1';
+    const params = [];
+
+    if (ativo !== undefined) {
+      query += ' AND ativo = $1';
+      params.push(ativo === 'true');
+    }
+
+    query += ' ORDER BY codigo ASC';
+    let result;
+    try {
+      result = await pool.query(query, params);
+    } catch (orderError) {
+      if (orderError.code === '42703') {
+        query = query.replace(' ORDER BY codigo ASC', ' ORDER BY descricao ASC');
+        result = await pool.query(query, params);
+      } else {
+        throw orderError;
+      }
+    }
+
+    const armazens = result.rows;
+    try {
+      for (const a of armazens) {
+        a.tipo = a.tipo || 'viatura';
+        try {
+          const locResult = await pool.query(
+            'SELECT id, localizacao, tipo_localizacao FROM armazens_localizacoes WHERE armazem_id = $1 ORDER BY id',
+            [a.id]
+          );
+          a.localizacoes = (locResult.rows || []).map(r => ({ id: r.id, localizacao: r.localizacao, tipo_localizacao: r.tipo_localizacao || 'normal' }));
+        } catch (locE) {
+          if (locE.code === '42703') {
+            const locResult = await pool.query('SELECT id, localizacao FROM armazens_localizacoes WHERE armazem_id = $1 ORDER BY id', [a.id]);
+            a.localizacoes = (locResult.rows || []).map(r => ({ ...r, tipo_localizacao: (r.localizacao || '').toUpperCase().includes('.FERR') ? 'FERR' : 'normal' }));
+          } else throw locE;
+        }
+        if (a.localizacoes.length === 0 && a.localizacao) {
+          a.localizacoes = [{ id: null, localizacao: a.localizacao, tipo_localizacao: (a.localizacao || '').toString().toUpperCase().includes('.FERR') ? 'FERR' : 'normal' }];
+        }
+      }
+    } catch (e) {
+      if (e.code !== '42P01') throw e;
+      for (const a of armazens) {
+        a.tipo = a.tipo || 'viatura';
+        a.localizacoes = a.localizacao ? [{ id: null, localizacao: a.localizacao, tipo_localizacao: 'normal' }] : [];
+      }
+    }
+    res.json(armazens);
+  } catch (error) {
+    // Tabela armazens ainda não criada - retornar lista vazia
+    if (error.code === '42P01') {
+      console.warn('⚠️ Tabela "armazens" não existe. Execute: server/create-armazens-requisicoes-v2.sql');
+      return res.json([]);
+    }
+    console.error('Erro ao listar armazéns:', error);
+    res.status(500).json({ error: 'Erro ao listar armazéns', details: error.message });
+  }
+});
+
+// Buscar armazém por ID (com localizações)
+app.get('/api/armazens/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await pool.query('SELECT * FROM armazens WHERE id = $1', [id]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Armazém não encontrado' });
+    }
+
+    const armazem = result.rows[0];
+    armazem.tipo = armazem.tipo || 'viatura';
+    try {
+      try {
+        const locResult = await pool.query(
+          'SELECT id, localizacao, tipo_localizacao FROM armazens_localizacoes WHERE armazem_id = $1 ORDER BY id',
+          [id]
+        );
+        armazem.localizacoes = (locResult.rows || []).map(r => ({ id: r.id, localizacao: r.localizacao, tipo_localizacao: r.tipo_localizacao || 'normal' }));
+      } catch (locE) {
+        if (locE.code === '42703') {
+          const locResult = await pool.query('SELECT id, localizacao FROM armazens_localizacoes WHERE armazem_id = $1 ORDER BY id', [id]);
+          armazem.localizacoes = (locResult.rows || []).map(r => ({ ...r, tipo_localizacao: (r.localizacao || '').toUpperCase().includes('.FERR') ? 'FERR' : 'normal' }));
+        } else throw locE;
+      }
+      if (armazem.localizacoes.length === 0 && armazem.localizacao) {
+        armazem.localizacoes = [{ id: null, localizacao: armazem.localizacao, tipo_localizacao: 'normal' }];
+      }
+    } catch (e) {
+      if (e.code !== '42P01') throw e;
+      armazem.localizacoes = armazem.localizacao ? [{ id: null, localizacao: armazem.localizacao, tipo_localizacao: 'normal' }] : [];
+    }
+    res.json(armazem);
+  } catch (error) {
+    console.error('Erro ao buscar armazém:', error);
+    res.status(500).json({ error: 'Erro ao buscar armazém', details: error.message });
+  }
+});
+
+// Criar novo armazém (apenas admin)
+app.post('/api/armazens', authenticateToken, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Apenas administradores podem criar armazéns' });
+    }
+
+    const { codigo, descricao, localizacao, localizacoes, tipo } = req.body;
+
+    if (!codigo || !codigo.toString().trim()) {
+      return res.status(400).json({ error: 'Código é obrigatório (ex: V848 ou E)' });
+    }
+    if (!descricao || !descricao.toString().trim()) {
+      return res.status(400).json({ error: 'Descrição é obrigatória (ex: BBCH06)' });
+    }
+
+    const tipoArmazem = (tipo === 'central' || tipo === 'viatura') ? tipo : 'viatura';
+    const codigoNorm = codigo.toString().trim().toUpperCase();
+    const descricaoTrim = (descricao || '').trim();
+
+    let locsWithTipo = [];
+    if (Array.isArray(localizacoes) && localizacoes.length > 0) {
+      locsWithTipo = localizacoes.map(l => {
+        if (typeof l === 'object' && l !== null && l.localizacao != null) {
+          return { localizacao: String(l.localizacao).trim(), tipo_localizacao: (l.tipo_localizacao === 'recebimento' || l.tipo_localizacao === 'expedicao' || l.tipo_localizacao === 'FERR') ? l.tipo_localizacao : 'normal' };
+        }
+        const s = String(l).trim();
+        if (!s) return null;
+        return { localizacao: s, tipo_localizacao: s.toUpperCase().includes('.FERR') ? 'FERR' : 'normal' };
+      }).filter(Boolean);
+    }
+    if (localizacao && localizacao.toString().trim()) {
+      const s = localizacao.toString().trim();
+      if (!locsWithTipo.some(l => l.localizacao === s)) locsWithTipo.unshift({ localizacao: s, tipo_localizacao: s.toUpperCase().includes('.FERR') ? 'FERR' : 'normal' });
+    }
+    if (tipoArmazem === 'viatura') {
+      if (locsWithTipo.length !== 2) {
+        locsWithTipo = [
+          { localizacao: codigoNorm, tipo_localizacao: 'normal' },
+          { localizacao: codigoNorm + '.FERR', tipo_localizacao: 'FERR' }
+        ];
+      } else {
+        const hasFERR = locsWithTipo.some(l => l.tipo_localizacao === 'FERR' || (l.localizacao || '').toUpperCase().includes('.FERR'));
+        if (!hasFERR) locsWithTipo[1] = { ...locsWithTipo[1], localizacao: codigoNorm + '.FERR', tipo_localizacao: 'FERR' };
+      }
+    }
+    if (tipoArmazem === 'central') {
+      const hasRecebimento = locsWithTipo.some(l => l.tipo_localizacao === 'recebimento');
+      const hasExpedicao = locsWithTipo.some(l => l.tipo_localizacao === 'expedicao');
+      if (!hasRecebimento || !hasExpedicao) {
+        return res.status(400).json({ error: 'Armazém central deve ter pelo menos uma localização de Recebimento e uma ou mais de Expedição.' });
+      }
+    }
+
+    let result;
+    try {
+      result = await pool.query(`
+        INSERT INTO armazens (codigo, descricao, localizacao, tipo)
+        VALUES ($1, $2, $3, $4)
+        RETURNING *
+      `, [codigoNorm, descricaoTrim, (locsWithTipo[0] && locsWithTipo[0].localizacao) || null, tipoArmazem]);
+    } catch (insertError) {
+      if (insertError.code === '42703') {
+        try {
+          result = await pool.query(`
+            INSERT INTO armazens (codigo, descricao, localizacao)
+            VALUES ($1, $2, $3)
+            RETURNING *
+          `, [codigoNorm, descricaoTrim, (locsWithTipo[0] && locsWithTipo[0].localizacao) || null]);
+          console.log(`✅ Armazém criado (esquema antigo): ${result.rows[0].descricao}`);
+          return res.status(201).json(result.rows[0]);
+        } catch (fallbackErr) {
+          console.error('Erro ao criar armazém (fallback):', fallbackErr);
+          return res.status(500).json({
+            error: 'Erro ao criar armazém. Execute a migração: server/migrate-armazens-add-codigo.sql',
+            details: fallbackErr.message
+          });
+        }
+      }
+      throw insertError;
+    }
+
+    const armazemId = result.rows[0].id;
+    if (locsWithTipo.length > 0) {
+      try {
+        for (const loc of locsWithTipo) {
+          try {
+            await pool.query(
+              'INSERT INTO armazens_localizacoes (armazem_id, localizacao, tipo_localizacao) VALUES ($1, $2, $3)',
+              [armazemId, loc.localizacao, loc.tipo_localizacao || 'normal']
+            );
+          } catch (insE) {
+            if (insE.code === '42703') {
+              await pool.query('INSERT INTO armazens_localizacoes (armazem_id, localizacao) VALUES ($1, $2)', [armazemId, loc.localizacao]);
+            } else throw insE;
+          }
+        }
+      } catch (e) {
+        if (e.code === '42P01') {
+          return res.status(503).json({
+            error: 'Tabela armazens_localizacoes não existe. Execute a migração:',
+            details: 'server/migrate-armazens-multiplas-localizacoes.sql ou server/criar-tabelas-armazens-requisicoes.sql'
+          });
+        }
+        throw e;
+      }
+    }
+    const armazemFinal = result.rows[0];
+    armazemFinal.tipo = armazemFinal.tipo || tipoArmazem;
+    armazemFinal.localizacoes = locsWithTipo.map((l, i) => ({ id: i + 1, localizacao: l.localizacao, tipo_localizacao: l.tipo_localizacao || 'normal' }));
+    console.log(`✅ Armazém criado: ${armazemFinal.codigo} - ${armazemFinal.descricao}`);
+    res.status(201).json(armazemFinal);
+  } catch (error) {
+    if (error.code === '23505') {
+      return res.status(400).json({ error: 'Já existe um armazém com este código de viatura' });
+    }
+    if (error.code === '42P01') {
+      return res.status(503).json({
+        error: 'Tabela "armazens" não existe. Execute o script SQL:',
+        details: 'psql -U USUARIO -d NOME_DA_BASE -f server/create-armazens-requisicoes-v2.sql'
+      });
+    }
+    console.error('Erro ao criar armazém:', error);
+    res.status(500).json({
+      error: 'Erro ao criar armazém',
+      details: error.message || String(error)
+    });
+  }
+});
+
+// Atualizar armazém (apenas admin)
+app.put('/api/armazens/:id', authenticateToken, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Apenas administradores podem atualizar armazéns' });
+    }
+
+    const { id } = req.params;
+    const { codigo, descricao, localizacao, localizacoes, ativo, tipo } = req.body;
+
+    const updates = [];
+    const params = [];
+    let paramCount = 1;
+
+    if (codigo !== undefined && codigo.toString().trim()) {
+      updates.push(`codigo = $${paramCount++}`);
+      params.push(codigo.toString().trim().toUpperCase());
+    }
+
+    if (descricao !== undefined) {
+      updates.push(`descricao = $${paramCount++}`);
+      params.push(descricao);
+    }
+
+    let locsWithTipo = [];
+    if (localizacoes !== undefined && Array.isArray(localizacoes)) {
+      locsWithTipo = localizacoes.map(l => {
+        if (typeof l === 'object' && l !== null && l.localizacao != null) {
+          return { localizacao: String(l.localizacao).trim(), tipo_localizacao: (l.tipo_localizacao === 'recebimento' || l.tipo_localizacao === 'expedicao' || l.tipo_localizacao === 'FERR') ? l.tipo_localizacao : 'normal' };
+        }
+        const s = String(l).trim();
+        if (!s) return null;
+        return { localizacao: s, tipo_localizacao: s.toUpperCase().includes('.FERR') ? 'FERR' : 'normal' };
+      }).filter(Boolean);
+    }
+    let locVal = locsWithTipo[0]?.localizacao ?? (localizacao !== undefined ? localizacao : undefined);
+    if (locVal !== undefined) {
+      updates.push(`localizacao = $${paramCount++}`);
+      params.push(locVal);
+    }
+
+    if (ativo !== undefined) {
+      updates.push(`ativo = $${paramCount++}`);
+      params.push(ativo);
+    }
+
+    if (tipo !== undefined && (tipo === 'central' || tipo === 'viatura')) {
+      try {
+        updates.push(`tipo = $${paramCount++}`);
+        params.push(tipo);
+      } catch (_) {}
+    }
+
+    const temLocalizacoesParaAtualizar = localizacoes !== undefined && Array.isArray(localizacoes);
+    if (updates.length === 0 && !temLocalizacoesParaAtualizar) {
+      return res.status(400).json({ error: 'Nenhum campo para atualizar' });
+    }
+
+    let tipoAtual = tipo;
+    if (temLocalizacoesParaAtualizar && tipoAtual === undefined) {
+      const arm = await pool.query('SELECT codigo, tipo FROM armazens WHERE id = $1', [id]);
+      tipoAtual = arm.rows[0]?.tipo || 'viatura';
+    }
+    if (temLocalizacoesParaAtualizar && tipoAtual === 'viatura' && locsWithTipo.length !== 2) {
+      const arm = await pool.query('SELECT codigo FROM armazens WHERE id = $1', [id]);
+      const codigoAtual = arm.rows[0]?.codigo || 'V';
+      locsWithTipo = [
+        { localizacao: codigoAtual, tipo_localizacao: 'normal' },
+        { localizacao: codigoAtual + '.FERR', tipo_localizacao: 'FERR' }
+      ];
+    }
+    if (temLocalizacoesParaAtualizar && tipoAtual === 'central') {
+      const hasRecebimento = locsWithTipo.some(l => l.tipo_localizacao === 'recebimento');
+      const hasExpedicao = locsWithTipo.some(l => l.tipo_localizacao === 'expedicao');
+      if (!hasRecebimento || !hasExpedicao) {
+        return res.status(400).json({ error: 'Armazém central deve ter pelo menos uma localização de Recebimento e uma ou mais de Expedição.' });
+      }
+    }
+
+    if (updates.length > 0) {
+      params.push(id);
+      const tipoIdx = updates.findIndex(u => u.startsWith('tipo ='));
+      try {
+        await pool.query(`
+          UPDATE armazens 
+          SET ${updates.join(', ')}, updated_at = CURRENT_TIMESTAMP
+          WHERE id = $${paramCount}
+        `, params);
+      } catch (updE) {
+        if (updE.code === '42703' && tipoIdx !== -1) {
+          const cleanUpdates = updates.filter((_, i) => i !== tipoIdx);
+          const cleanParams = params.slice(0, -1).filter((_, i) => i !== tipoIdx);
+          cleanParams.push(id);
+          if (cleanUpdates.length > 0) await pool.query(`UPDATE armazens SET ${cleanUpdates.join(', ')}, updated_at = CURRENT_TIMESTAMP WHERE id = $${cleanParams.length}`, cleanParams);
+        } else throw updE;
+      }
+    }
+
+    if (temLocalizacoesParaAtualizar && locsWithTipo.length > 0) {
+      try {
+        await pool.query('DELETE FROM armazens_localizacoes WHERE armazem_id = $1', [id]);
+        for (const loc of locsWithTipo) {
+          try {
+            await pool.query(
+              'INSERT INTO armazens_localizacoes (armazem_id, localizacao, tipo_localizacao) VALUES ($1, $2, $3)',
+              [id, loc.localizacao, loc.tipo_localizacao || 'normal']
+            );
+          } catch (insE) {
+            if (insE.code === '42703') {
+              await pool.query('INSERT INTO armazens_localizacoes (armazem_id, localizacao) VALUES ($1, $2)', [id, loc.localizacao]);
+            } else throw insE;
+          }
+        }
+      } catch (e) {
+        if (e.code === '42P01') {
+          return res.status(503).json({
+            error: 'Tabela armazens_localizacoes não existe. Execute a migração:',
+            details: 'server/migrate-armazens-multiplas-localizacoes.sql ou server/criar-tabelas-armazens-requisicoes.sql'
+          });
+        }
+        throw e;
+      }
+    }
+
+    const result = await pool.query('SELECT * FROM armazens WHERE id = $1', [id]);
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Armazém não encontrado' });
+    }
+
+    const armazem = result.rows[0];
+    try {
+      const locResult = await pool.query(
+        'SELECT id, localizacao FROM armazens_localizacoes WHERE armazem_id = $1 ORDER BY id',
+        [id]
+      );
+      armazem.localizacoes = locResult.rows;
+    } catch (e) {
+      if (e.code !== '42P01') throw e;
+      armazem.localizacoes = armazem.localizacao ? [{ id: null, localizacao: armazem.localizacao }] : [];
+    }
+
+    console.log(`✅ Armazém atualizado: ID ${id}`);
+    res.json(armazem);
+  } catch (error) {
+    console.error('Erro ao atualizar armazém:', error);
+    res.status(500).json({ error: 'Erro ao atualizar armazém', details: error.message });
+  }
+});
+
+// Deletar armazém (apenas admin)
+app.delete('/api/armazens/:id', authenticateToken, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Apenas administradores podem deletar armazéns' });
+    }
+
+    const { id } = req.params;
+    await pool.query('DELETE FROM armazens WHERE id = $1', [id]);
+
+    console.log(`✅ Armazém deletado: ID ${id}`);
+    res.json({ message: 'Armazém deletado com sucesso' });
+  } catch (error) {
+    console.error('Erro ao deletar armazém:', error);
+    res.status(500).json({ error: 'Erro ao deletar armazém', details: error.message });
+  }
+});
+
+// ============================================
+// ROTAS DE REQUISIÇÕES (V2 - Múltiplos Itens)
+// ============================================
+
+// Listar todas as requisições (com informações dos itens)
+app.get('/api/requisicoes', authenticateToken, async (req, res) => {
+  try {
+    const { status, armazem_id, item_id } = req.query;
+    
+    // Buscar requisições (armazem destino + armazem origem)
+    let query = `
+      SELECT 
+        r.*,
+        (COALESCE(a.codigo, '') || CASE WHEN a.codigo IS NOT NULL AND a.codigo <> '' THEN ' - ' ELSE '' END || a.descricao) as armazem_descricao,
+        (COALESCE(ao.codigo, '') || CASE WHEN ao.codigo IS NOT NULL AND ao.codigo <> '' THEN ' - ' ELSE '' END || ao.descricao) as armazem_origem_descricao,
+        u.nome as usuario_nome,
+        u.email as usuario_email
+      FROM requisicoes r
+      INNER JOIN armazens a ON r.armazem_id = a.id
+      LEFT JOIN armazens ao ON r.armazem_origem_id = ao.id
+      LEFT JOIN usuarios u ON r.usuario_id = u.id
+      WHERE 1=1
+    `;
+    const params = [];
+    let paramCount = 1;
+
+    if (status) {
+      query += ` AND r.status = $${paramCount++}`;
+      params.push(status);
+    }
+
+    if (armazem_id) {
+      query += ` AND r.armazem_id = $${paramCount++}`;
+      params.push(armazem_id);
+    }
+
+    query += ` ORDER BY r.created_at DESC`;
+
+    let requisicoesResult;
+    try {
+      requisicoesResult = await pool.query(query, params);
+    } catch (qErr) {
+      if (qErr.code === '42703') {
+        let fallbackQuery = `
+          SELECT r.*,
+            (COALESCE(a.codigo, '') || CASE WHEN a.codigo IS NOT NULL AND a.codigo <> '' THEN ' - ' ELSE '' END || a.descricao) as armazem_descricao,
+            u.nome as usuario_nome, u.email as usuario_email
+          FROM requisicoes r
+          INNER JOIN armazens a ON r.armazem_id = a.id
+          LEFT JOIN usuarios u ON r.usuario_id = u.id
+          WHERE 1=1
+        `;
+        let pc = 1;
+        if (status) { fallbackQuery += ` AND r.status = $${pc++}`; }
+        if (armazem_id) { fallbackQuery += ` AND r.armazem_id = $${pc++}`; }
+        fallbackQuery += ` ORDER BY r.created_at DESC`;
+        requisicoesResult = await pool.query(fallbackQuery, params);
+      } else {
+        throw qErr;
+      }
+    }
+    const requisicoes = requisicoesResult.rows;
+
+    // Para cada requisição, buscar seus itens
+    for (let req of requisicoes) {
+      let itensQuery = `
+        SELECT 
+          ri.*,
+          i.codigo as item_codigo,
+          i.descricao as item_descricao
+        FROM requisicoes_itens ri
+        INNER JOIN itens i ON ri.item_id = i.id
+        WHERE ri.requisicao_id = $1
+      `;
+      
+      if (item_id) {
+        itensQuery += ` AND ri.item_id = $2`;
+        const itensResult = await pool.query(itensQuery, [req.id, item_id]);
+        req.itens = itensResult.rows;
+      } else {
+        const itensResult = await pool.query(itensQuery, [req.id]);
+        req.itens = itensResult.rows;
+      }
+    }
+
+    // Filtrar requisições que não têm o item_id especificado (se filtro aplicado)
+    const filteredRequisicoes = item_id 
+      ? requisicoes.filter(r => r.itens && r.itens.length > 0)
+      : requisicoes;
+
+    res.json(filteredRequisicoes);
+  } catch (error) {
+    // Tabelas de requisições ainda não criadas - retornar lista vazia
+    if (error.code === '42P01') {
+      console.warn('⚠️ Tabelas "requisicoes" ou "armazens" não existem. Execute: server/create-armazens-requisicoes-v2.sql');
+      return res.json([]);
+    }
+    console.error('Erro ao listar requisições:', error);
+    res.status(500).json({ error: 'Erro ao listar requisições', details: error.message });
+  }
+});
+
+// Exportar requisição no formato exigido pelo sistema da empresa (uma folha, colunas fixas)
+app.get('/api/requisicoes/:id/export-excel', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    let reqResult;
+    try {
+      reqResult = await pool.query(`
+        SELECT r.*,
+          a.codigo as armazem_destino_codigo,
+          ao.codigo as armazem_origem_codigo,
+          (COALESCE(a.codigo, '') || CASE WHEN a.codigo IS NOT NULL AND a.codigo <> '' THEN ' - ' ELSE '' END || a.descricao) as armazem_descricao,
+          (COALESCE(ao.codigo, '') || CASE WHEN ao.codigo IS NOT NULL AND ao.codigo <> '' THEN ' - ' ELSE '' END || ao.descricao) as armazem_origem_descricao,
+          u.nome as usuario_nome
+        FROM requisicoes r
+        INNER JOIN armazens a ON r.armazem_id = a.id
+        LEFT JOIN armazens ao ON r.armazem_origem_id = ao.id
+        LEFT JOIN usuarios u ON r.usuario_id = u.id
+        WHERE r.id = $1
+      `, [id]);
+    } catch (qErr) {
+      if (qErr.code === '42703') {
+        reqResult = await pool.query(`
+          SELECT r.*,
+            a.codigo as armazem_destino_codigo,
+            (COALESCE(a.codigo, '') || CASE WHEN a.codigo IS NOT NULL AND a.codigo <> '' THEN ' - ' ELSE '' END || a.descricao) as armazem_descricao,
+            u.nome as usuario_nome
+          FROM requisicoes r
+          INNER JOIN armazens a ON r.armazem_id = a.id
+          LEFT JOIN usuarios u ON r.usuario_id = u.id
+          WHERE r.id = $1
+        `, [id]);
+        if (reqResult.rows[0]) {
+          reqResult.rows[0].armazem_origem_descricao = null;
+          reqResult.rows[0].armazem_origem_codigo = null;
+        }
+      } else throw qErr;
+    }
+
+    if (reqResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Requisição não encontrada' });
+    }
+
+    const requisicao = reqResult.rows[0];
+    const itensResult = await pool.query(`
+      SELECT ri.*, i.codigo as item_codigo, i.descricao as item_descricao,
+        i.familia as item_familia, i.subfamilia as item_subfamilia
+      FROM requisicoes_itens ri
+      INNER JOIN itens i ON ri.item_id = i.id
+      WHERE ri.requisicao_id = $1
+      ORDER BY ri.id
+    `, [id]);
+    requisicao.itens = itensResult.rows;
+
+    const dataFormat = new Date(requisicao.created_at);
+    const dateStr = `${String(dataFormat.getDate()).padStart(2, '0')}/${String(dataFormat.getMonth() + 1).padStart(2, '0')}/${dataFormat.getFullYear()}`;
+    const codigoOrigem = requisicao.armazem_origem_codigo || '';
+    const codigoDestino = requisicao.armazem_destino_codigo || '';
+
+    const rows = (requisicao.itens || []).map(ri => ({
+      Date: dateStr,
+      OriginWarehouse: codigoOrigem,
+      OriginLocation: ri.localizacao_origem || '',
+      Article: String(ri.item_codigo || ''),
+      Quatity: parseInt(ri.quantidade_preparada ?? ri.quantidade, 10) || 0,
+      SerialNumber1: '',
+      SerialNumber2: '',
+      MacAddress: '',
+      CentroCusto: '',
+      DestinationWarehouse: codigoDestino,
+      DestinationLocation: ri.localizacao_destino || codigoDestino,
+      ProjectCode: '',
+      Batch: ''
+    }));
+
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.json_to_sheet(rows.length ? rows : [{
+      Date: '', OriginWarehouse: '', OriginLocation: '', Article: '', Quatity: '',
+      SerialNumber1: '', SerialNumber2: '', MacAddress: '', CentroCusto: '',
+      DestinationWarehouse: '', DestinationLocation: '', ProjectCode: '', Batch: ''
+    }], { header: ['Date', 'OriginWarehouse', 'OriginLocation', 'Article', 'Quatity', 'SerialNumber1', 'SerialNumber2', 'MacAddress', 'CentroCusto', 'DestinationWarehouse', 'DestinationLocation', 'ProjectCode', 'Batch'] });
+
+    XLSX.utils.book_append_sheet(wb, ws, 'Requisição');
+
+    const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+    const filename = `requisicao_${id}_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(buffer);
+  } catch (error) {
+    console.error('Erro ao exportar requisição para Excel:', error);
+    res.status(500).json({ error: 'Erro ao exportar requisição', details: error.message });
+  }
+});
+
+// Constante: localização de expedição no armazém E (para TRFL destino e TRA origem)
+const LOCALIZACAO_EXPEDICAO_E = 'EXPEDICAO.E';
+
+// Helper: gera buffer Excel com as colunas padrão (Date, OriginWarehouse, ... Batch)
+function buildExcelTransferencia(rows, res, filename) {
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.json_to_sheet(rows.length ? rows : [{
+    Date: '', OriginWarehouse: '', OriginLocation: '', Article: '', Quatity: '',
+    SerialNumber1: '', SerialNumber2: '', MacAddress: '', CentroCusto: '',
+    DestinationWarehouse: '', DestinationLocation: '', ProjectCode: '', Batch: ''
+  }], { header: ['Date', 'OriginWarehouse', 'OriginLocation', 'Article', 'Quatity', 'SerialNumber1', 'SerialNumber2', 'MacAddress', 'CentroCusto', 'DestinationWarehouse', 'DestinationLocation', 'ProjectCode', 'Batch'] });
+  XLSX.utils.book_append_sheet(wb, ws, 'Dados');
+  const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  res.send(buffer);
+}
+
+// Buscar requisição + itens (reutilizado por TRFL e TRA)
+async function getRequisicaoComItens(id) {
+  let reqResult = await pool.query(`
+    SELECT r.*,
+      a.codigo as armazem_destino_codigo,
+      ao.codigo as armazem_origem_codigo
+    FROM requisicoes r
+    INNER JOIN armazens a ON r.armazem_id = a.id
+    LEFT JOIN armazens ao ON r.armazem_origem_id = ao.id
+    WHERE r.id = $1
+  `, [id]);
+  if (reqResult.rows.length === 0) return null;
+  const requisicao = reqResult.rows[0];
+  const itensResult = await pool.query(`
+    SELECT ri.*, i.codigo as item_codigo
+    FROM requisicoes_itens ri
+    INNER JOIN itens i ON ri.item_id = i.id
+    WHERE ri.requisicao_id = $1
+    ORDER BY ri.id
+  `, [id]);
+  requisicao.itens = itensResult.rows;
+  return requisicao;
+}
+
+// TRFL — Transferência de localização: origem (E + localização do item) → destino (E + EXPEDICAO.E)
+app.get('/api/requisicoes/:id/export-trfl', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const requisicao = await getRequisicaoComItens(id);
+    if (!requisicao) return res.status(404).json({ error: 'Requisição não encontrada' });
+    if (!requisicao.separacao_confirmada) {
+      return res.status(400).json({ error: 'TRFL só está disponível após confirmar a separação da requisição.' });
+    }
+    if (!['separado', 'EM EXPEDICAO', 'Entregue'].includes(requisicao.status)) {
+      return res.status(400).json({ error: 'TRFL só está disponível após confirmar a separação (status Separado). Conclua a preparação primeiro.' });
+    }
+
+    const codigoE = requisicao.armazem_origem_codigo || 'E';
+    const dataFormat = new Date(requisicao.created_at);
+    const dateStr = `${String(dataFormat.getDate()).padStart(2, '0')}/${String(dataFormat.getMonth() + 1).padStart(2, '0')}/${dataFormat.getFullYear()}`;
+
+    const rows = (requisicao.itens || []).map(ri => ({
+      Date: dateStr,
+      OriginWarehouse: codigoE,
+      OriginLocation: ri.localizacao_origem || '',
+      Article: String(ri.item_codigo || ''),
+      Quatity: parseInt(ri.quantidade_preparada ?? ri.quantidade, 10) || 0,
+      SerialNumber1: '', SerialNumber2: '', MacAddress: '', CentroCusto: '',
+      DestinationWarehouse: codigoE,
+      DestinationLocation: LOCALIZACAO_EXPEDICAO_E,
+      ProjectCode: '', Batch: ''
+    }));
+
+    buildExcelTransferencia(rows, res, `TRFL_requisicao_${id}_${new Date().toISOString().slice(0, 10)}.xlsx`);
+    if (requisicao.status === 'separado') {
+      await pool.query('UPDATE requisicoes SET status = $1 WHERE id = $2', ['EM EXPEDICAO', id]);
+    }
+  } catch (error) {
+    console.error('Erro ao exportar TRFL:', error);
+    res.status(500).json({ error: 'Erro ao exportar TRFL', details: error.message });
+  }
+});
+
+// TRA — Transferência: origem (E + EXPEDICAO.E) → destino (Vxxx). Ferramentas → .FERR, outros → localização sem .FERR
+app.get('/api/requisicoes/:id/export-tra', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const requisicao = await getRequisicaoComItens(id);
+    if (!requisicao) return res.status(404).json({ error: 'Requisição não encontrada' });
+    if (!requisicao.separacao_confirmada) {
+      return res.status(400).json({ error: 'TRA só está disponível após confirmar a separação da requisição.' });
+    }
+    if (!['EM EXPEDICAO', 'Entregue'].includes(requisicao.status)) {
+      return res.status(400).json({ error: 'TRA só está disponível após concluir a TRFL (requisição deve estar Em expedição). Baixe o ficheiro TRFL primeiro.' });
+    }
+
+    const codigoE = requisicao.armazem_origem_codigo || 'E';
+    const codigoDestino = requisicao.armazem_destino_codigo || '';
+    const armazemDestinoId = requisicao.armazem_id;
+
+    // Localizações do armazém destino: uma com .FERR (ferramentas) e outra sem (demais itens)
+    let localizacaoFERR = codigoDestino + '.FERR';
+    let localizacaoNormal = codigoDestino;
+    try {
+      const locResult = await pool.query(
+        'SELECT localizacao FROM armazens_localizacoes WHERE armazem_id = $1 ORDER BY id',
+        [armazemDestinoId]
+      );
+      if (locResult.rows.length > 0) {
+        const locs = locResult.rows.map(r => r.localizacao);
+        const comFerr = locs.find(l => (l || '').toUpperCase().includes('.FERR'));
+        const semFerr = locs.find(l => !(l || '').toUpperCase().includes('.FERR'));
+        if (comFerr) localizacaoFERR = comFerr;
+        if (semFerr) localizacaoNormal = semFerr;
+      }
+    } catch (_) {
+      // Tabela pode não existir; usar codigo e codigo.FERR
+    }
+
+    // Itens com flag is_ferramenta (setor FERRAMENTA em itens_setores)
+    let itensComFerramenta = [];
+    try {
+      const itensResult = await pool.query(`
+        SELECT ri.*, i.codigo as item_codigo,
+          EXISTS (
+            SELECT 1 FROM itens_setores is2
+            WHERE is2.item_id = i.id AND UPPER(TRIM(is2.setor)) = 'FERRAMENTA'
+          ) as is_ferramenta
+        FROM requisicoes_itens ri
+        INNER JOIN itens i ON ri.item_id = i.id
+        WHERE ri.requisicao_id = $1
+        ORDER BY ri.id
+      `, [id]);
+      itensComFerramenta = itensResult.rows;
+    } catch (_) {
+      itensComFerramenta = (requisicao.itens || []).map(ri => ({ ...ri, is_ferramenta: false }));
+    }
+
+    const dataFormat = new Date(requisicao.created_at);
+    const dateStr = `${String(dataFormat.getDate()).padStart(2, '0')}/${String(dataFormat.getMonth() + 1).padStart(2, '0')}/${dataFormat.getFullYear()}`;
+
+    const rows = itensComFerramenta.map(ri => ({
+      Date: dateStr,
+      OriginWarehouse: codigoE,
+      OriginLocation: LOCALIZACAO_EXPEDICAO_E,
+      Article: String(ri.item_codigo || ''),
+      Quatity: parseInt(ri.quantidade_preparada ?? ri.quantidade, 10) || 0,
+      SerialNumber1: '', SerialNumber2: '', MacAddress: '', CentroCusto: '',
+      DestinationWarehouse: codigoDestino,
+      DestinationLocation: ri.is_ferramenta ? localizacaoFERR : localizacaoNormal,
+      ProjectCode: '', Batch: ''
+    }));
+
+    buildExcelTransferencia(rows, res, `TRA_requisicao_${id}_${new Date().toISOString().slice(0, 10)}.xlsx`);
+    if (requisicao.status === 'EM EXPEDICAO') {
+      await pool.query('UPDATE requisicoes SET status = $1 WHERE id = $2', ['Entregue', id]);
+    }
+  } catch (error) {
+    console.error('Erro ao exportar TRA:', error);
+    res.status(500).json({ error: 'Erro ao exportar TRA', details: error.message });
+  }
+});
+
+// Buscar requisição por ID (com todos os itens)
+app.get('/api/requisicoes/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    let reqResult;
+    try {
+      reqResult = await pool.query(`
+        SELECT r.*,
+          (COALESCE(a.codigo, '') || CASE WHEN a.codigo IS NOT NULL AND a.codigo <> '' THEN ' - ' ELSE '' END || a.descricao) as armazem_descricao,
+          (COALESCE(ao.codigo, '') || CASE WHEN ao.codigo IS NOT NULL AND ao.codigo <> '' THEN ' - ' ELSE '' END || ao.descricao) as armazem_origem_descricao,
+          a.localizacao as armazem_localizacao,
+          u.nome as usuario_nome, u.email as usuario_email
+        FROM requisicoes r
+        INNER JOIN armazens a ON r.armazem_id = a.id
+        LEFT JOIN armazens ao ON r.armazem_origem_id = ao.id
+        LEFT JOIN usuarios u ON r.usuario_id = u.id
+        WHERE r.id = $1
+      `, [id]);
+    } catch (qErr) {
+      if (qErr.code === '42703') {
+        reqResult = await pool.query(`
+          SELECT r.*,
+            (COALESCE(a.codigo, '') || CASE WHEN a.codigo IS NOT NULL AND a.codigo <> '' THEN ' - ' ELSE '' END || a.descricao) as armazem_descricao,
+            u.nome as usuario_nome, u.email as usuario_email
+          FROM requisicoes r
+          INNER JOIN armazens a ON r.armazem_id = a.id
+          LEFT JOIN usuarios u ON r.usuario_id = u.id
+          WHERE r.id = $1
+        `, [id]);
+      } else {
+        throw qErr;
+      }
+    }
+
+    if (reqResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Requisição não encontrada' });
+    }
+
+    const requisicao = reqResult.rows[0];
+
+    const itensResult = await pool.query(`
+      SELECT ri.*, i.codigo as item_codigo, i.descricao as item_descricao,
+        i.familia as item_familia, i.subfamilia as item_subfamilia
+      FROM requisicoes_itens ri
+      INNER JOIN itens i ON ri.item_id = i.id
+      WHERE ri.requisicao_id = $1
+      ORDER BY ri.id
+    `, [id]);
+
+    requisicao.itens = (itensResult.rows || []).map(it => ({
+      ...it,
+      preparacao_confirmada: it.preparacao_confirmada === true
+    }));
+    res.json(requisicao);
+  } catch (error) {
+    console.error('Erro ao buscar requisição:', error);
+    res.status(500).json({ error: 'Erro ao buscar requisição', details: error.message });
+  }
+});
+
+// Criar nova requisição (com múltiplos itens)
+app.post('/api/requisicoes', authenticateToken, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const { armazem_origem_id, armazem_id, itens, observacoes } = req.body;
+
+    // Validações
+    if (!armazem_id || !itens || !Array.isArray(itens) || itens.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ 
+        error: 'Campos obrigatórios: armazem_id (destino), itens (array com pelo menos um item)' 
+      });
+    }
+
+    // Verificar armazém destino
+    const armazemCheck = await client.query('SELECT id FROM armazens WHERE id = $1 AND ativo = true', [armazem_id]);
+    if (armazemCheck.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Armazém destino não encontrado ou inativo' });
+    }
+
+    // Verificar armazém origem (se informado)
+    if (armazem_origem_id) {
+      const origCheck = await client.query('SELECT id FROM armazens WHERE id = $1 AND ativo = true', [armazem_origem_id]);
+      if (origCheck.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: 'Armazém origem não encontrado ou inativo' });
+      }
+    }
+
+    // Validar itens
+    for (const item of itens) {
+      if (!item.item_id || !item.quantidade || item.quantidade <= 0) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ 
+          error: 'Cada item deve ter item_id e quantidade > 0' 
+        });
+      }
+
+      // Verificar se o item existe
+      const itemCheck = await client.query('SELECT id FROM itens WHERE id = $1', [item.item_id]);
+      if (itemCheck.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: `Item ID ${item.item_id} não encontrado` });
+      }
+    }
+
+    // Criar requisição (etapa 1: origem, itens, destino - sem localização)
+    let reqResult;
+    try {
+      reqResult = await client.query(`
+        INSERT INTO requisicoes (armazem_origem_id, armazem_id, observacoes, usuario_id, status)
+        VALUES ($1, $2, $3, $4, 'pendente')
+        RETURNING *
+      `, [armazem_origem_id || null, armazem_id, observacoes || null, req.user.userId]);
+    } catch (insertErr) {
+      if (insertErr.code === '42703') {
+        reqResult = await client.query(`
+          INSERT INTO requisicoes (armazem_id, observacoes, usuario_id, status)
+          VALUES ($1, $2, $3, 'pendente')
+          RETURNING *
+        `, [armazem_id, observacoes || null, req.user.userId]);
+      } else {
+        throw insertErr;
+      }
+    }
+
+    const requisicaoId = reqResult.rows[0].id;
+
+    // Inserir itens
+    for (const item of itens) {
+      await client.query(`
+        INSERT INTO requisicoes_itens (requisicao_id, item_id, quantidade)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (requisicao_id, item_id) 
+        DO UPDATE SET quantidade = EXCLUDED.quantidade
+      `, [requisicaoId, item.item_id, item.quantidade]);
+    }
+
+    await client.query('COMMIT');
+
+    // Buscar requisição completa
+    let requisicaoCompleta;
+    try {
+      requisicaoCompleta = await pool.query(`
+        SELECT r.*,
+          (COALESCE(a.codigo, '') || CASE WHEN a.codigo IS NOT NULL AND a.codigo <> '' THEN ' - ' ELSE '' END || a.descricao) as armazem_descricao,
+          (COALESCE(ao.codigo, '') || CASE WHEN ao.codigo IS NOT NULL AND ao.codigo <> '' THEN ' - ' ELSE '' END || ao.descricao) as armazem_origem_descricao,
+          u.nome as usuario_nome, u.email as usuario_email
+        FROM requisicoes r
+        INNER JOIN armazens a ON r.armazem_id = a.id
+        LEFT JOIN armazens ao ON r.armazem_origem_id = ao.id
+        LEFT JOIN usuarios u ON r.usuario_id = u.id
+        WHERE r.id = $1
+      `, [requisicaoId]);
+    } catch (qErr) {
+      if (qErr.code === '42703') {
+        requisicaoCompleta = await pool.query(`
+          SELECT r.*,
+            (COALESCE(a.codigo, '') || CASE WHEN a.codigo IS NOT NULL AND a.codigo <> '' THEN ' - ' ELSE '' END || a.descricao) as armazem_descricao,
+            u.nome as usuario_nome, u.email as usuario_email
+          FROM requisicoes r
+          INNER JOIN armazens a ON r.armazem_id = a.id
+          LEFT JOIN usuarios u ON r.usuario_id = u.id
+          WHERE r.id = $1
+        `, [requisicaoId]);
+      } else {
+        throw qErr;
+      }
+    }
+
+    const requisicao = requisicaoCompleta.rows[0];
+
+    // Buscar itens
+    const itensResult = await pool.query(`
+      SELECT 
+        ri.*,
+        i.codigo as item_codigo,
+        i.descricao as item_descricao
+      FROM requisicoes_itens ri
+      INNER JOIN itens i ON ri.item_id = i.id
+      WHERE ri.requisicao_id = $1
+    `, [requisicaoId]);
+
+    requisicao.itens = itensResult.rows;
+
+    console.log(`✅ Requisição criada: ID ${requisicaoId} com ${itens.length} item(ns)`);
+    res.status(201).json(requisicao);
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Erro ao criar requisição:', error);
+    res.status(500).json({ error: 'Erro ao criar requisição', details: error.message });
+  } finally {
+    client.release();
+  }
+});
+
+// Atualizar requisição
+app.put('/api/requisicoes/:id', authenticateToken, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const { id } = req.params;
+    const { armazem_origem_id, armazem_id, itens, status, localizacao, observacoes } = req.body;
+
+    // Verificar se a requisição existe
+    const checkReq = await client.query('SELECT * FROM requisicoes WHERE id = $1', [id]);
+    if (checkReq.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Requisição não encontrada' });
+    }
+
+    // Validações
+    if (status && !['pendente', 'separado', 'EM EXPEDICAO', 'Entregue', 'cancelada'].includes(status)) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Status inválido. Use: pendente, separado, EM EXPEDICAO, Entregue ou cancelada' });
+    }
+
+    // Construir query de atualização dinamicamente
+    const updates = [];
+    const params = [];
+    let paramCount = 1;
+
+    if (armazem_origem_id !== undefined) {
+      if (armazem_origem_id) {
+        const origCheck = await client.query('SELECT id FROM armazens WHERE id = $1 AND ativo = true', [armazem_origem_id]);
+        if (origCheck.rows.length === 0) {
+          await client.query('ROLLBACK');
+          return res.status(404).json({ error: 'Armazém origem não encontrado ou inativo' });
+        }
+      }
+      updates.push(`armazem_origem_id = $${paramCount++}`);
+      params.push(armazem_origem_id || null);
+    }
+
+    if (armazem_id !== undefined) {
+      const armazemCheck = await client.query('SELECT id FROM armazens WHERE id = $1 AND ativo = true', [armazem_id]);
+      if (armazemCheck.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: 'Armazém destino não encontrado ou inativo' });
+      }
+      updates.push(`armazem_id = $${paramCount++}`);
+      params.push(armazem_id);
+    }
+
+    if (status !== undefined) {
+      updates.push(`status = $${paramCount++}`);
+      params.push(status);
+    }
+
+    if (localizacao !== undefined) {
+      updates.push(`localizacao = $${paramCount++}`);
+      params.push(localizacao);
+    }
+
+    if (observacoes !== undefined) {
+      updates.push(`observacoes = $${paramCount++}`);
+      params.push(observacoes);
+    }
+
+    // Atualizar requisição se houver campos para atualizar
+    if (updates.length > 0) {
+      params.push(id);
+      await client.query(`
+        UPDATE requisicoes 
+        SET ${updates.join(', ')}, updated_at = CURRENT_TIMESTAMP
+        WHERE id = $${paramCount}
+      `, params);
+    }
+
+    // Atualizar itens se fornecidos
+    if (itens && Array.isArray(itens)) {
+      // Validar itens
+      for (const item of itens) {
+        if (!item.item_id || !item.quantidade || item.quantidade <= 0) {
+          await client.query('ROLLBACK');
+          return res.status(400).json({ error: 'Cada item deve ter item_id e quantidade > 0' });
+        }
+      }
+
+      // Remover itens existentes
+      await client.query('DELETE FROM requisicoes_itens WHERE requisicao_id = $1', [id]);
+
+      // Inserir novos itens
+      for (const item of itens) {
+        await client.query(`
+          INSERT INTO requisicoes_itens (requisicao_id, item_id, quantidade)
+          VALUES ($1, $2, $3)
+        `, [id, item.item_id, item.quantidade]);
+      }
+    }
+
+    await client.query('COMMIT');
+
+    // Buscar requisição completa atualizada
+    let requisicaoCompleta;
+    try {
+      requisicaoCompleta = await pool.query(`
+        SELECT r.*,
+          (COALESCE(a.codigo, '') || CASE WHEN a.codigo IS NOT NULL AND a.codigo <> '' THEN ' - ' ELSE '' END || a.descricao) as armazem_descricao,
+          (COALESCE(ao.codigo, '') || CASE WHEN ao.codigo IS NOT NULL AND ao.codigo <> '' THEN ' - ' ELSE '' END || ao.descricao) as armazem_origem_descricao,
+          u.nome as usuario_nome, u.email as usuario_email
+        FROM requisicoes r
+        INNER JOIN armazens a ON r.armazem_id = a.id
+        LEFT JOIN armazens ao ON r.armazem_origem_id = ao.id
+        LEFT JOIN usuarios u ON r.usuario_id = u.id
+        WHERE r.id = $1
+      `, [id]);
+    } catch (qErr) {
+      if (qErr.code === '42703') {
+        requisicaoCompleta = await pool.query(`
+          SELECT r.*,
+            (COALESCE(a.codigo, '') || CASE WHEN a.codigo IS NOT NULL AND a.codigo <> '' THEN ' - ' ELSE '' END || a.descricao) as armazem_descricao,
+            u.nome as usuario_nome, u.email as usuario_email
+          FROM requisicoes r
+          INNER JOIN armazens a ON r.armazem_id = a.id
+          LEFT JOIN usuarios u ON r.usuario_id = u.id
+          WHERE r.id = $1
+        `, [id]);
+      } else {
+        throw qErr;
+      }
+    }
+
+    const requisicao = requisicaoCompleta.rows[0];
+
+    // Buscar itens
+    const itensResult = await pool.query(`
+      SELECT 
+        ri.*,
+        i.codigo as item_codigo,
+        i.descricao as item_descricao
+      FROM requisicoes_itens ri
+      INNER JOIN itens i ON ri.item_id = i.id
+      WHERE ri.requisicao_id = $1
+    `, [id]);
+
+    requisicao.itens = itensResult.rows;
+
+    console.log(`✅ Requisição atualizada: ID ${id}`);
+    res.json(requisicao);
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Erro ao atualizar requisição:', error);
+    res.status(500).json({ error: 'Erro ao atualizar requisição', details: error.message });
+  } finally {
+    client.release();
+  }
+});
+
+// Preparar item individual da requisição (quantidade, localização origem, localização destino)
+app.patch('/api/requisicoes/:id/atender-item', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { requisicao_item_id, quantidade_preparada, localizacao_origem, localizacao_destino } = req.body;
+
+    if (!requisicao_item_id || quantidade_preparada === undefined || quantidade_preparada < 0) {
+      return res.status(400).json({ error: 'requisicao_item_id e quantidade_preparada são obrigatórios (use 0 se não tiver o item).' });
+    }
+    const locOrigem = typeof localizacao_origem === 'string' ? localizacao_origem.trim() : '';
+    if (!locOrigem) {
+      return res.status(400).json({ error: 'Localização de saída (onde está saindo) é obrigatória.' });
+    }
+
+    const check = await pool.query('SELECT id, status FROM requisicoes WHERE id = $1', [id]);
+    if (check.rows.length === 0) {
+      return res.status(404).json({ error: 'Requisição não encontrada' });
+    }
+    if (['EM EXPEDICAO', 'Entregue'].includes(check.rows[0].status)) {
+      return res.status(400).json({ error: 'Requisição já em expedição ou entregue; não é possível alterar a preparação.' });
+    }
+    if (check.rows[0].status === 'cancelada') {
+      return res.status(400).json({ error: 'Requisição cancelada' });
+    }
+    // pendente e separado: permitido (preparar ou editar item)
+
+    const itemCheck = await pool.query(
+      'SELECT * FROM requisicoes_itens WHERE id = $1 AND requisicao_id = $2',
+      [requisicao_item_id, id]
+    );
+    if (itemCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Item não encontrado nesta requisição' });
+    }
+    const item = itemCheck.rows[0];
+    if (quantidade_preparada > item.quantidade) {
+      return res.status(400).json({ error: `Quantidade preparada não pode exceder ${item.quantidade}` });
+    }
+
+    // Localização destino é sempre EXPEDICAO (automático)
+    const localizacaoDestinoFinal = 'EXPEDICAO';
+
+    const updateQuery = `
+      UPDATE requisicoes_itens 
+      SET quantidade_preparada = $1, localizacao_destino = $2, localizacao_origem = $3, preparacao_confirmada = true
+      WHERE id = $4`;
+    const params = [quantidade_preparada, localizacaoDestinoFinal, locOrigem, requisicao_item_id];
+
+    try {
+      await pool.query(updateQuery, params);
+    } catch (e) {
+      if (e.code === '42703') {
+        return res.status(503).json({
+          error: 'Erro ao preparar item: coluna preparacao_confirmada não existe no banco.',
+          details: 'Execute a migração: npm run db:migrate:preparacao-confirmada (ou server/migrate-requisicoes-itens-preparacao-confirmada.sql)'
+        });
+      }
+      throw e;
+    }
+
+    // Não alterar aqui o status para 'separado' — o utilizador usa o botão "Completar separação" na interface
+    const fullReq = await pool.query(`
+      SELECT r.*,
+        (COALESCE(a.codigo, '') || CASE WHEN a.codigo IS NOT NULL AND a.codigo <> '' THEN ' - ' ELSE '' END || a.descricao) as armazem_descricao,
+        (COALESCE(ao.codigo, '') || CASE WHEN ao.codigo IS NOT NULL AND ao.codigo <> '' THEN ' - ' ELSE '' END || ao.descricao) as armazem_origem_descricao,
+        u.nome as usuario_nome
+      FROM requisicoes r
+      INNER JOIN armazens a ON r.armazem_id = a.id
+      LEFT JOIN armazens ao ON r.armazem_origem_id = ao.id
+      LEFT JOIN usuarios u ON r.usuario_id = u.id
+      WHERE r.id = $1
+    `, [id]);
+    const requisicao = fullReq.rows[0];
+    const itensResult = await pool.query(`
+      SELECT ri.*, i.codigo as item_codigo, i.descricao as item_descricao
+      FROM requisicoes_itens ri
+      INNER JOIN itens i ON ri.item_id = i.id
+      WHERE ri.requisicao_id = $1
+      ORDER BY ri.id
+    `, [id]);
+    requisicao.itens = (itensResult.rows || []).map(it => ({
+      ...it,
+      preparacao_confirmada: it.preparacao_confirmada === true
+    }));
+
+    res.json(requisicao);
+  } catch (error) {
+    console.error('Erro ao preparar item:', error);
+    res.status(500).json({ error: 'Erro ao preparar item', details: error.message });
+  }
+});
+
+// Atender requisição (marcar como separado e opcionalmente preencher localização) — legado/alternativo
+app.patch('/api/requisicoes/:id/atender', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { localizacao } = req.body;
+
+    const check = await pool.query('SELECT id, status FROM requisicoes WHERE id = $1', [id]);
+    if (check.rows.length === 0) {
+      return res.status(404).json({ error: 'Requisição não encontrada' });
+    }
+    if (['separado', 'EM EXPEDICAO', 'Entregue'].includes(check.rows[0].status)) {
+      return res.status(400).json({ error: 'Requisição já foi preparada' });
+    }
+    if (check.rows[0].status === 'cancelada') {
+      return res.status(400).json({ error: 'Requisição cancelada' });
+    }
+
+    await pool.query(`
+      UPDATE requisicoes 
+      SET status = 'separado', localizacao = COALESCE($2, localizacao), updated_at = CURRENT_TIMESTAMP
+      WHERE id = $1
+    `, [id, localizacao || null]);
+
+    let result;
+    try {
+      result = await pool.query(`
+        SELECT r.*,
+          (COALESCE(a.codigo, '') || CASE WHEN a.codigo IS NOT NULL AND a.codigo <> '' THEN ' - ' ELSE '' END || a.descricao) as armazem_descricao,
+          (COALESCE(ao.codigo, '') || CASE WHEN ao.codigo IS NOT NULL AND ao.codigo <> '' THEN ' - ' ELSE '' END || ao.descricao) as armazem_origem_descricao,
+          u.nome as usuario_nome
+        FROM requisicoes r
+        INNER JOIN armazens a ON r.armazem_id = a.id
+        LEFT JOIN armazens ao ON r.armazem_origem_id = ao.id
+        LEFT JOIN usuarios u ON r.usuario_id = u.id
+        WHERE r.id = $1
+      `, [id]);
+    } catch (qErr) {
+      if (qErr.code === '42703') {
+        result = await pool.query(`
+          SELECT r.*,
+            (COALESCE(a.codigo, '') || CASE WHEN a.codigo IS NOT NULL AND a.codigo <> '' THEN ' - ' ELSE '' END || a.descricao) as armazem_descricao,
+            u.nome as usuario_nome
+          FROM requisicoes r
+          INNER JOIN armazens a ON r.armazem_id = a.id
+          LEFT JOIN usuarios u ON r.usuario_id = u.id
+          WHERE r.id = $1
+        `, [id]);
+      } else {
+        throw qErr;
+      }
+    }
+
+    const requisicao = result.rows[0];
+    const itensResult = await pool.query(`
+      SELECT ri.*, i.codigo as item_codigo, i.descricao as item_descricao
+      FROM requisicoes_itens ri
+      INNER JOIN itens i ON ri.item_id = i.id
+      WHERE ri.requisicao_id = $1
+    `, [id]);
+    requisicao.itens = itensResult.rows;
+
+    console.log(`✅ Requisição marcada como separado: ID ${id}`);
+    res.json(requisicao);
+  } catch (error) {
+    console.error('Erro ao atender requisição:', error);
+    res.status(500).json({ error: 'Erro ao atender requisição', details: error.message });
+  }
+});
+
+// Completar separação da requisição (todos os itens preparados → status separado)
+app.patch('/api/requisicoes/:id/completar-separacao', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const check = await pool.query('SELECT id, status FROM requisicoes WHERE id = $1', [id]);
+    if (check.rows.length === 0) {
+      return res.status(404).json({ error: 'Requisição não encontrada' });
+    }
+    if (check.rows[0].status !== 'pendente') {
+      return res.status(400).json({ error: 'Só pode completar a separação quando a requisição está pendente e todos os itens foram preparados.' });
+    }
+    let itens;
+    try {
+      itens = await pool.query(
+        'SELECT quantidade, quantidade_preparada, preparacao_confirmada FROM requisicoes_itens WHERE requisicao_id = $1',
+        [id]
+      );
+    } catch (qErr) {
+      if (qErr.code === '42703') {
+        return res.status(503).json({
+          error: 'É obrigatório confirmar a preparação de cada item (incl. 0 quando não houver stock).',
+          details: 'Execute a migração: server/migrate-requisicoes-itens-preparacao-confirmada.sql'
+        });
+      }
+      throw qErr;
+    }
+    const allConfirmed = itens.rows.length > 0 && itens.rows.every(r => r.preparacao_confirmada === true);
+    if (!allConfirmed) {
+      return res.status(400).json({ error: 'Confirme a preparação de todos os itens antes de completar a separação (inclua 0 na quantidade quando não tiver o item).' });
+    }
+    await pool.query(
+      'UPDATE requisicoes SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+      ['separado', id]
+    );
+    const updated = await pool.query('SELECT * FROM requisicoes WHERE id = $1', [id]);
+    res.json(updated.rows[0]);
+  } catch (error) {
+    if (error.code === '23514') {
+      return res.status(400).json({ error: 'Status inválido. Execute a migração: server/migrate-requisicoes-status-fases.sql' });
+    }
+    console.error('Erro ao completar separação:', error);
+    res.status(500).json({ error: 'Erro ao completar separação', details: error.message });
+  }
+});
+
+// Confirmar separação (após os itens terem sido recolhidos) — só para requisições com status separado
+app.patch('/api/requisicoes/:id/confirmar-separacao', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const check = await pool.query('SELECT id, status FROM requisicoes WHERE id = $1', [id]);
+    if (check.rows.length === 0) {
+      return res.status(404).json({ error: 'Requisição não encontrada' });
+    }
+    if (check.rows[0].status !== 'separado') {
+      return res.status(400).json({ error: 'Só é possível confirmar separação quando a requisição está separada (todos os itens preparados).' });
+    }
+    await pool.query(
+      `UPDATE requisicoes SET separacao_confirmada = true, separacao_confirmada_em = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
+      [id]
+    );
+    const updated = await pool.query('SELECT * FROM requisicoes WHERE id = $1', [id]);
+    res.json(updated.rows[0]);
+  } catch (error) {
+    if (error.code === '42703') {
+      return res.status(503).json({
+        error: 'Colunas de confirmação de separação não existem no banco.',
+        details: 'Execute a migração: server/migrate-requisicoes-separacao-confirmada.sql'
+      });
+    }
+    console.error('Erro ao confirmar separação:', error);
+    res.status(500).json({ error: 'Erro ao confirmar separação', details: error.message });
+  }
+});
+
+// Marcar como EM EXPEDICAO (após baixar o ficheiro TRFL)
+app.patch('/api/requisicoes/:id/marcar-em-expedicao', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const check = await pool.query('SELECT id, status, separacao_confirmada FROM requisicoes WHERE id = $1', [id]);
+    if (check.rows.length === 0) {
+      return res.status(404).json({ error: 'Requisição não encontrada' });
+    }
+    if (check.rows[0].status !== 'separado') {
+      return res.status(400).json({ error: 'Só pode marcar em expedição quando a requisição está separada.' });
+    }
+    if (!check.rows[0].separacao_confirmada) {
+      return res.status(400).json({ error: 'Confirme a separação antes de marcar em expedição.' });
+    }
+    await pool.query(
+      'UPDATE requisicoes SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+      ['EM EXPEDICAO', id]
+    );
+    const updated = await pool.query('SELECT * FROM requisicoes WHERE id = $1', [id]);
+    res.json(updated.rows[0]);
+  } catch (error) {
+    if (error.code === '23514') {
+      return res.status(400).json({ error: 'Status inválido. Execute a migração: server/migrate-requisicoes-status-fases.sql' });
+    }
+    console.error('Erro ao marcar em expedição:', error);
+    res.status(500).json({ error: 'Erro ao marcar em expedição', details: error.message });
+  }
+});
+
+// Marcar como Entregue (após baixar o ficheiro TRA)
+app.patch('/api/requisicoes/:id/marcar-entregue', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const check = await pool.query('SELECT id, status FROM requisicoes WHERE id = $1', [id]);
+    if (check.rows.length === 0) {
+      return res.status(404).json({ error: 'Requisição não encontrada' });
+    }
+    if (check.rows[0].status !== 'EM EXPEDICAO') {
+      return res.status(400).json({ error: 'Só pode marcar como entregue quando a requisição está em expedição.' });
+    }
+    await pool.query(
+      'UPDATE requisicoes SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+      ['Entregue', id]
+    );
+    const updated = await pool.query('SELECT * FROM requisicoes WHERE id = $1', [id]);
+    res.json(updated.rows[0]);
+  } catch (error) {
+    if (error.code === '23514') {
+      return res.status(400).json({ error: 'Status inválido. Execute a migração: server/migrate-requisicoes-status-fases.sql' });
+    }
+    console.error('Erro ao marcar como entregue:', error);
+    res.status(500).json({ error: 'Erro ao marcar como entregue', details: error.message });
+  }
+});
+
+// Deletar requisição
+app.delete('/api/requisicoes/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Verificar se a requisição existe
+    const checkReq = await pool.query('SELECT * FROM requisicoes WHERE id = $1', [id]);
+    if (checkReq.rows.length === 0) {
+      return res.status(404).json({ error: 'Requisição não encontrada' });
+    }
+
+    // Deletar requisição (itens serão deletados automaticamente por CASCADE)
+    await pool.query('DELETE FROM requisicoes WHERE id = $1', [id]);
+
+    console.log(`✅ Requisição deletada: ID ${id}`);
+    res.json({ message: 'Requisição deletada com sucesso' });
+  } catch (error) {
+    console.error('Erro ao deletar requisição:', error);
+    res.status(500).json({ error: 'Erro ao deletar requisição', details: error.message });
+  }
+});
+
+// ============================================
+// FIM DAS ROTAS DE REQUISIÇÕES
+// ============================================
 
 app.listen(PORT, () => {
   console.log(`Servidor rodando na porta ${PORT}`);

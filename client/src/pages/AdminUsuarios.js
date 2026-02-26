@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
+import { useConfirm } from '../contexts/ConfirmContext';
 import { useNavigate, Link } from 'react-router-dom';
 
 const roles = [
@@ -10,6 +11,7 @@ const roles = [
 
 const AdminUsuarios = () => {
   const { user, isAuthenticated } = useAuth();
+  const confirm = useConfirm();
   const navigate = useNavigate();
   const [usuarios, setUsuarios] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -69,9 +71,12 @@ const AdminUsuarios = () => {
   };
 
   const handleDeleteUser = async (id, nome) => {
-    const confirmacao = window.confirm(`Tem certeza que deseja excluir o usuário "${nome}"? Esta ação não pode ser desfeita.`);
-    
-    if (!confirmacao) return;
+    const ok = await confirm({
+      title: 'Excluir usuário',
+      message: `Tem certeza que deseja excluir o usuário "${nome}"? Esta ação não pode ser desfeita.`,
+      variant: 'danger'
+    });
+    if (!ok) return;
 
     setDeletingId(id);
     setError('');

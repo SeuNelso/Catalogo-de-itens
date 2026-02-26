@@ -1,10 +1,12 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { useAuth } from '../contexts/AuthContext';
+import { useConfirm } from '../contexts/ConfirmContext';
 import { useNavigate } from 'react-router-dom';
 import Toast from '../components/Toast';
 
 export default function ExcluirArtigo() {
   const { user } = useAuth();
+  const confirm = useConfirm();
   const navigate = useNavigate();
   const [itens, setItens] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -78,7 +80,12 @@ export default function ExcluirArtigo() {
   const itensPagina = itens;
 
   const handleDelete = async (id) => {
-    if (!window.confirm('Tem certeza que deseja excluir este artigo? Esta ação não pode ser desfeita.')) return;
+    const ok = await confirm({
+      title: 'Excluir artigo',
+      message: 'Tem certeza que deseja excluir este artigo? Esta ação não pode ser desfeita.',
+      variant: 'danger'
+    });
+    if (!ok) return;
     try {
       const token = localStorage.getItem('token');
       const response = await fetch(`/api/itens/${id}`, {

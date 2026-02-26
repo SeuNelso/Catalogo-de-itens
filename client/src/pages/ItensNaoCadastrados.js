@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
+import { useConfirm } from '../contexts/ConfirmContext';
 import Toast from '../components/Toast';
 import { AlertTriangle, Plus, ArrowLeft, Search, ChevronLeft, ChevronRight, Trash2 } from 'react-feather';
 
@@ -10,6 +11,7 @@ const ItensNaoCadastrados = () => {
   const [toast, setToast] = useState(null);
   const navigate = useNavigate();
   const { user } = useAuth();
+  const confirm = useConfirm();
 
   // Estados para paginação e filtros
   const [paginaAtual, setPaginaAtual] = useState(1);
@@ -69,9 +71,12 @@ const ItensNaoCadastrados = () => {
   };
 
   const handleExcluirItem = async (item) => {
-    if (!window.confirm(`Tem certeza que deseja excluir o item "${item.codigo}" da lista de itens não cadastrados?`)) {
-      return;
-    }
+    const ok = await confirm({
+      title: 'Excluir item',
+      message: `Tem certeza que deseja excluir o item "${item.codigo}" da lista de itens não cadastrados?`,
+      variant: 'danger'
+    });
+    if (!ok) return;
 
     try {
       const token = localStorage.getItem('token');
@@ -119,9 +124,12 @@ const ItensNaoCadastrados = () => {
   };
 
   const handleLimparTodos = async () => {
-    if (!window.confirm('Tem certeza que deseja remover todos os itens não cadastrados? Esta ação não pode ser desfeita.')) {
-      return;
-    }
+    const ok = await confirm({
+      title: 'Remover todos',
+      message: 'Tem certeza que deseja remover todos os itens não cadastrados? Esta ação não pode ser desfeita.',
+      variant: 'danger'
+    });
+    if (!ok) return;
 
     try {
       const token = localStorage.getItem('token');

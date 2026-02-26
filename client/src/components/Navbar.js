@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { ChevronDown, Settings, Database, Users, FileText, Download, Plus, Trash2, Image, RefreshCw, Menu, X, AlertTriangle, Package } from 'react-feather';
+import { ChevronDown, Settings, Database, Users, FileText, Download, Plus, Trash2, Image, RefreshCw, Menu, X, AlertTriangle, Package, ShoppingCart, Archive } from 'react-feather';
 
 const Navbar = () => {
   const { isAuthenticated, logout, user } = useAuth();
@@ -154,11 +154,20 @@ const Navbar = () => {
             </Link>
           </div>
           {isAuthenticated && (
-            <div className="relative font-medium text-sm lg:text-base uppercase tracking-wider text-white cursor-pointer flex items-center px-2 lg:px-3 xl:px-4 h-12 min-w-12 lg:min-w-14 xl:min-w-16 rounded-lg transition-all duration-200 hover:bg-white/10 hover:text-yellow-400">
-              <Link to="/listar" className="text-inherit no-underline px-0.5 font-semibold w-full h-full flex items-center justify-center">
-                Catálogo
-              </Link>
-            </div>
+            <>
+              <div className="relative font-medium text-sm lg:text-base uppercase tracking-wider text-white cursor-pointer flex items-center px-2 lg:px-3 xl:px-4 h-12 min-w-12 lg:min-w-14 xl:min-w-16 rounded-lg transition-all duration-200 hover:bg-white/10 hover:text-yellow-400">
+                <Link to="/listar" className="text-inherit no-underline px-0.5 font-semibold w-full h-full flex items-center justify-center">
+                  Catálogo
+                </Link>
+              </div>
+              {(isAdmin || isController) && (
+                <div className="relative font-medium text-sm lg:text-base uppercase tracking-wider text-white cursor-pointer flex items-center px-2 lg:px-3 xl:px-4 h-12 min-w-12 lg:min-w-14 xl:min-w-16 rounded-lg transition-all duration-200 hover:bg-white/10 hover:text-yellow-400">
+                  <Link to="/requisicoes" className="text-inherit no-underline px-0.5 font-semibold w-full h-full flex items-center justify-center">
+                    Requisições
+                  </Link>
+                </div>
+              )}
+            </>
           )}
           {isAdmin && (
             <div 
@@ -230,6 +239,27 @@ const Navbar = () => {
                     </div>
                   </div>
                   
+                  {/* Seção: Gestão de Armazéns */}
+                  <div className="border-t border-white/10 pt-3">
+                    <div className="text-xs text-white/70 font-medium px-3 py-1 uppercase tracking-wider">Armazéns</div>
+                    <div className="flex flex-col gap-1">
+                      <Link 
+                        to="/armazens" 
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setGerirOpen(false);
+                          setTimeout(() => {
+                            navigate('/armazens');
+                          }, 100);
+                        }} 
+                        className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded"
+                      >
+                        <Archive size={14} className="lg:w-4 lg:h-4" />
+                        Armazéns
+                      </Link>
+                    </div>
+                  </div>
                   {/* Seção: Gestão de Usuários */}
                   <div className="border-t border-white/10 pt-3">
                     <div className="text-xs text-white/70 font-medium px-3 py-1 uppercase tracking-wider">Gestão de Usuários</div>
@@ -488,11 +518,21 @@ const Navbar = () => {
               </Link>
             </div>
           {isAuthenticated && (
-            <div className="w-[85vw] sm:w-[90vw] py-3 sm:py-4.5 px-0 h-auto rounded-xl text-center text-base sm:text-lg font-semibold bg-white/8 m-0 mb-1 sm:mb-0.5 transition-all duration-200">
-              <Link to="/listar" onClick={(e) => handleMobileNavigation('/listar', e)} className="text-white no-underline font-semibold w-full h-full flex items-center justify-center">
-                Catálogo
-              </Link>
-            </div>
+            <>
+              <div className="w-[85vw] sm:w-[90vw] py-3 sm:py-4.5 px-0 h-auto rounded-xl text-center text-base sm:text-lg font-semibold bg-white/8 m-0 mb-1 sm:mb-0.5 transition-all duration-200">
+                <Link to="/listar" onClick={(e) => handleMobileNavigation('/listar', e)} className="text-white no-underline font-semibold w-full h-full flex items-center justify-center">
+                  Catálogo
+                </Link>
+              </div>
+              {(isAdmin || isController) && (
+                <div className="w-[85vw] sm:w-[90vw] py-3 sm:py-4.5 px-0 h-auto rounded-xl text-center text-base sm:text-lg font-semibold bg-white/8 m-0 mb-1 sm:mb-0.5 transition-all duration-200">
+                  <Link to="/requisicoes" onClick={(e) => handleMobileNavigation('/requisicoes', e)} className="text-white no-underline font-semibold w-full h-full flex items-center justify-center">
+                    <ShoppingCart size={16} className="inline mr-2 sm:mr-3" />
+                    Requisições
+                  </Link>
+                </div>
+              )}
+            </>
           )}
           {isAdmin && (
             <div className="relative w-full gerir-dropdown">
@@ -528,6 +568,17 @@ const Navbar = () => {
                           Itens Não Cadastrados
                         </Link>
                       )}
+                    </div>
+                  </div>
+                  
+                  {/* Seção: Armazéns */}
+                  <div className="border-t border-white/10 pt-3">
+                    <div className="text-xs text-white/70 font-medium px-4 sm:px-5 py-2 uppercase tracking-wider">Armazéns</div>
+                    <div className="flex flex-col">
+                      <Link to="/armazens" onClick={handleNavigation} className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10">
+                        <Archive size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" />
+                        Armazéns
+                      </Link>
                     </div>
                   </div>
                   

@@ -1,6 +1,7 @@
 import React from 'react';
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import { AuthProvider } from './contexts/AuthContext';
+import { ConfirmProvider } from './contexts/ConfirmContext';
 import { ImportProgressProvider } from './contexts/ImportProgressContext';
 import ImportProgressBar from './components/ImportProgressBar';
 import Navbar from './components/Navbar';
@@ -24,12 +25,18 @@ import ExportarDados from './pages/ExportarDados';
 import ItensNaoCadastrados from './pages/ItensNaoCadastrados';
 import ImportarSetores from './pages/ImportarSetores';
 import ImportarUnidades from './pages/ImportarUnidades';
+import ListarRequisicoes from './pages/ListarRequisicoes';
+import CriarRequisicao from './pages/CriarRequisicao';
+import EditarRequisicao from './pages/EditarRequisicao';
+import PrepararRequisicao from './pages/PrepararRequisicao';
+import Armazens from './pages/Armazens';
 import './App.css';
 
 function App() {
   return (
     <ImportProgressProvider>
       <AuthProvider>
+        <ConfirmProvider>
         <Router>
           <div className="App min-h-screen bg-[#F7F8FA] flex flex-col">
             <Navbar />
@@ -153,12 +160,54 @@ function App() {
                     </ProtectedRoute>
                   } 
                 />
+                {/* Rotas de Requisições */}
+                <Route 
+                  path="/requisicoes" 
+                  element={
+                    <ProtectedRoute>
+                      <ListarRequisicoes />
+                    </ProtectedRoute>
+                  } 
+                />
+                <Route 
+                  path="/requisicoes/criar" 
+                  element={
+                    <ProtectedRoute allowedRoles={['admin', 'controller']}>
+                      <CriarRequisicao />
+                    </ProtectedRoute>
+                  } 
+                />
+                <Route 
+                  path="/requisicoes/editar/:id" 
+                  element={
+                    <ProtectedRoute allowedRoles={['admin', 'controller']}>
+                      <EditarRequisicao />
+                    </ProtectedRoute>
+                  } 
+                />
+                <Route 
+                  path="/requisicoes/preparar/:id" 
+                  element={
+                    <ProtectedRoute allowedRoles={['admin', 'controller']}>
+                      <PrepararRequisicao />
+                    </ProtectedRoute>
+                  } 
+                />
+                <Route 
+                  path="/armazens" 
+                  element={
+                    <ProtectedRoute allowedRoles={['admin']}>
+                      <Armazens />
+                    </ProtectedRoute>
+                  } 
+                />
               </Routes>
             </div>
             {/* Renderizar a barra de progresso global */}
             <ImportProgressBar />
           </div>
         </Router>
+        </ConfirmProvider>
       </AuthProvider>
     </ImportProgressProvider>
   );

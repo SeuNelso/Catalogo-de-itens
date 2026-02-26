@@ -14,6 +14,7 @@ dist/
 .env.development.local
 .env.test.local
 .env.production.local
+server/.env
 
 # Database
 *.db
@@ -23,6 +24,7 @@ dist/
 # Uploads
 uploads/
 public/uploads/
+server/uploads/
 
 # Logs
 logs
@@ -105,4 +107,8 @@ Thumbs.db
 
 # Google Drive credentials
 credentials.json
-token.json 
+token.json
+
+# Arquivos de configuração sensíveis
+*.pem
+*.key

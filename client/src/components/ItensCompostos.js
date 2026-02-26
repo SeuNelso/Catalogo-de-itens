@@ -1,10 +1,12 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Plus, Edit2, Trash2, Package, Camera, ExternalLink, Search, ChevronDown, Info } from 'react-feather';
 import { useNavigate } from 'react-router-dom';
+import { useConfirm } from '../contexts/ConfirmContext';
 import Toast from './Toast';
 
 const ItensCompostos = ({ itemId, isEditing = false, onImagemCompletaChange, imagensCompostas = [] }) => {
   const navigate = useNavigate();
+  const confirm = useConfirm();
   const [componentes, setComponentes] = useState([]);
   const [itensDisponiveis, setItensDisponiveis] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -30,13 +32,16 @@ const ItensCompostos = ({ itemId, isEditing = false, onImagemCompletaChange, ima
     
     // Se desmarcou o checkbox e há componentes, perguntar se quer remover
     if (!checked && componentes.length > 0) {
-      if (window.confirm('Deseja remover todos os itens da composição?')) {
-        // Remover todos os componentes
+      const ok = await confirm({
+        title: 'Remover composição',
+        message: 'Deseja remover todos os itens da composição?',
+        variant: 'warning'
+      });
+      if (ok) {
         for (const componente of componentes) {
-          await removerComponente(componente.id);
+          await removerComponente(componente.id, true);
         }
       } else {
-        // Se não quiser remover, manter o checkbox marcado
         setIsItemComposto(true);
       }
     }
@@ -69,7 +74,12 @@ const ItensCompostos = ({ itemId, isEditing = false, onImagemCompletaChange, ima
 
   // Função para remover imagem existente
   const handleRemoveImagemExistente = async (imagemId) => {
-    if (!window.confirm('Tem certeza que deseja excluir esta imagem?')) return;
+    const ok = await confirm({
+      title: 'Excluir imagem',
+      message: 'Tem certeza que deseja excluir esta imagem?',
+      variant: 'danger'
+    });
+    if (!ok) return;
     
     setLoading(true);
     try {
@@ -314,13 +324,20 @@ const ItensCompostos = ({ itemId, isEditing = false, onImagemCompletaChange, ima
     }
   };
 
-  const removerComponente = async (componenteId) => {
+  const removerComponente = async (componenteId, skipConfirm = false) => {
     if (!itemId) {
       setToast({ type: 'error', message: 'Não é possível remover componentes durante a criação do item.' });
       return;
     }
     
-    if (!window.confirm('Tem certeza que deseja remover este item da composição?')) return;
+    if (!skipConfirm) {
+      const ok = await confirm({
+        title: 'Remover item',
+        message: 'Tem certeza que deseja remover este item da composição?',
+        variant: 'danger'
+      });
+      if (!ok) return;
+    }
 
     setLoading(true);
     try {

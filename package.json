@@ -4,6 +4,11 @@
   "description": "Catálogo de itens com reconhecimento por imagem",
   "main": "server/index.js",
   "scripts": {
+    "db:migrate": "node server/run-migration.js",
+    "db:migrate:separacao": "node server/run-migration.js separacao-confirmada",
+    "db:migrate:status-fases": "node server/run-migration.js status-fases",
+    "db:migrate:preparacao-confirmada": "node server/run-migration.js preparacao-confirmada",
+    "db:migrate:armazens-tipo": "node server/run-migration.js armazens-tipo",
     "dev": "concurrently \"npm run server\" \"npm run client\"",
     "server": "nodemon server/index.js",
     "client": "cd client && npm start",
