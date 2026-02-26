@@ -806,7 +806,8 @@ app.post('/api/login', (req, res) => {
 
   pool.query('SELECT * FROM usuarios WHERE LOWER(username) = LOWER($1)', [username], (err, result) => {
     if (err) {
-      return res.status(500).json({ error: err.message });
+      console.error('[LOGIN] Erro no banco:', err.message);
+      return res.status(500).json({ error: 'Erro ao conectar. Verifique se o banco está configurado e se a tabela usuarios existe (com colunas username e password).', details: process.env.NODE_ENV === 'development' ? err.message : undefined });
     }
 
     if (result.rows.length === 0) {
@@ -814,27 +815,44 @@ app.post('/api/login', (req, res) => {
     }
 
     const user = result.rows[0];
-    const validPassword = bcrypt.compareSync(password, user.password);
+    const hash = user.password || user.senha;
+    if (!hash) {
+      console.error('[LOGIN] Usuário sem senha no banco (coluna password/senha). Execute a migração migrate-usuarios-username-password.sql');
+      return res.status(500).json({ error: 'Configuração do usuário inválida. Execute as migrações do banco.' });
+    }
+
+    let validPassword = false;
+    try {
+      validPassword = bcrypt.compareSync(password, hash);
+    } catch (bcryptErr) {
+      console.error('[LOGIN] Erro ao verificar senha:', bcryptErr.message);
+      return res.status(500).json({ error: 'Erro ao validar senha.' });
+    }
     if (!validPassword) {
       return res.status(401).json({ error: 'Senha incorreta' });
     }
 
-    const token = jwt.sign(
-      { id: user.id, username: user.username, role: user.role },
-      JWT_SECRET,
-      { expiresIn: '24h' }
-    );
+    try {
+      const token = jwt.sign(
+        { id: user.id, username: user.username || user.email, role: user.role },
+        JWT_SECRET,
+        { expiresIn: '24h' }
+      );
 
-    res.json({
-      message: 'Login realizado com sucesso',
-      token,
-      user: {
-        id: user.id,
-        username: user.username,
-        nome: user.nome,
-        role: user.role
-      }
-    });
+      res.json({
+        message: 'Login realizado com sucesso',
+        token,
+        user: {
+          id: user.id,
+          username: user.username || user.email,
+          nome: user.nome,
+          role: user.role
+        }
+      });
+    } catch (jwtErr) {
+      console.error('[LOGIN] Erro ao gerar token:', jwtErr.message);
+      return res.status(500).json({ error: 'Erro ao gerar sessão.' });
+    }
   });
 });
 
@@ -3908,6 +3926,7 @@ app.post('/api/armazens', authenticateToken, async (req, res) => {
     }
 
     const armazemId = result.rows[0].id;
+    let localizacoesSemTipo = false;
     if (locsWithTipo.length > 0) {
       try {
         for (const loc of locsWithTipo) {
@@ -3919,8 +3938,12 @@ app.post('/api/armazens', authenticateToken, async (req, res) => {
           } catch (insE) {
             if (insE.code === '42703') {
               await pool.query('INSERT INTO armazens_localizacoes (armazem_id, localizacao) VALUES ($1, $2)', [armazemId, loc.localizacao]);
+              localizacoesSemTipo = true;
             } else throw insE;
           }
+        }
+        if (localizacoesSemTipo) {
+          console.warn('⚠️ Coluna tipo_localizacao não existe. Execute: server/migrate-armazens-tipo-central-viatura.sql');
         }
       } catch (e) {
         if (e.code === '42P01') {
@@ -3935,6 +3958,9 @@ app.post('/api/armazens', authenticateToken, async (req, res) => {
     const armazemFinal = result.rows[0];
     armazemFinal.tipo = armazemFinal.tipo || tipoArmazem;
     armazemFinal.localizacoes = locsWithTipo.map((l, i) => ({ id: i + 1, localizacao: l.localizacao, tipo_localizacao: l.tipo_localizacao || 'normal' }));
+    if (localizacoesSemTipo) {
+      armazemFinal.warning = 'Localizações foram salvas, mas o tipo (Recebimento/Expedição) não. Execute a migração: server/migrate-armazens-tipo-central-viatura.sql';
+    }
     console.log(`✅ Armazém criado: ${armazemFinal.codigo} - ${armazemFinal.descricao}`);
     res.status(201).json(armazemFinal);
   } catch (error) {
@@ -4085,15 +4111,26 @@ app.put('/api/armazens/:id', authenticateToken, async (req, res) => {
     }
 
     const armazem = result.rows[0];
+    armazem.tipo = armazem.tipo || 'viatura';
     try {
-      const locResult = await pool.query(
-        'SELECT id, localizacao FROM armazens_localizacoes WHERE armazem_id = $1 ORDER BY id',
-        [id]
-      );
-      armazem.localizacoes = locResult.rows;
+      try {
+        const locResult = await pool.query(
+          'SELECT id, localizacao, tipo_localizacao FROM armazens_localizacoes WHERE armazem_id = $1 ORDER BY id',
+          [id]
+        );
+        armazem.localizacoes = (locResult.rows || []).map(r => ({ id: r.id, localizacao: r.localizacao, tipo_localizacao: r.tipo_localizacao || 'normal' }));
+      } catch (locE) {
+        if (locE.code === '42703') {
+          const locResult = await pool.query('SELECT id, localizacao FROM armazens_localizacoes WHERE armazem_id = $1 ORDER BY id', [id]);
+          armazem.localizacoes = (locResult.rows || []).map(r => ({ ...r, tipo_localizacao: (r.localizacao || '').toUpperCase().includes('.FERR') ? 'FERR' : 'normal' }));
+        } else throw locE;
+      }
+      if (armazem.localizacoes.length === 0 && armazem.localizacao) {
+        armazem.localizacoes = [{ id: null, localizacao: armazem.localizacao, tipo_localizacao: 'normal' }];
+      }
     } catch (e) {
       if (e.code !== '42P01') throw e;
-      armazem.localizacoes = armazem.localizacao ? [{ id: null, localizacao: armazem.localizacao }] : [];
+      armazem.localizacoes = armazem.localizacao ? [{ id: null, localizacao: armazem.localizacao, tipo_localizacao: 'normal' }] : [];
     }
 
     console.log(`✅ Armazém atualizado: ID ${id}`);

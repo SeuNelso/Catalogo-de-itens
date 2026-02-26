@@ -70,11 +70,12 @@ export const AuthProvider = ({ children }) => {
         setIsAuthenticated(true);
         return { success: true };
       } else {
-        const error = await response.json();
-        return { success: false, message: error.message || 'Erro no login' };
+        const data = await response.json().catch(() => ({}));
+        const msg = data.error || data.message || (response.status === 500 ? 'Erro no servidor. Verifique as variáveis de ambiente e migrações do banco no Railway.' : 'Erro no login');
+        return { success: false, message: msg };
       }
     } catch (error) {
-      return { success: false, message: 'Erro de conexão' };
+      return { success: false, message: 'Erro de conexão. Verifique se o backend está no ar e a URL da API.' };
     }
   };
 

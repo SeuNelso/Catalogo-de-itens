@@ -55,6 +55,13 @@ const Armazens = () => {
       setToast({ type: 'error', message: 'A descrição é obrigatória (ex: BBCH06)' });
       return;
     }
+    const locsCentrais = (formData.localizacoes || [])
+      .filter(l => (l.localizacao || '').trim())
+      .map(l => {
+        const loc = (l.localizacao || '').trim();
+        const tipoLoc = (l.tipo_localizacao === 'recebimento' || l.tipo_localizacao === 'expedicao' || l.tipo_localizacao === 'FERR') ? l.tipo_localizacao : 'normal';
+        return { localizacao: loc, tipo_localizacao: tipoLoc };
+      });
     const payload = {
       codigo: formData.codigo.trim(),
       descricao: formData.descricao.trim(),
@@ -64,9 +71,7 @@ const Armazens = () => {
             { localizacao: formData.codigo.trim().toUpperCase(), tipo_localizacao: 'normal' },
             { localizacao: formData.codigo.trim().toUpperCase() + '.FERR', tipo_localizacao: 'FERR' }
           ]
-        : formData.localizacoes
-            .filter(l => (l.localizacao || '').trim())
-            .map(l => ({ localizacao: (l.localizacao || '').trim(), tipo_localizacao: l.tipo_localizacao || 'normal' }))
+        : locsCentrais
     };
     if (formData.tipo === 'central') {
       const hasRecebimento = payload.localizacoes.some(l => l.tipo_localizacao === 'recebimento');
@@ -91,8 +96,11 @@ const Armazens = () => {
         await axios.put(`/api/armazens/${editandoId}`, payload, config);
         setToast({ type: 'success', message: 'Armazém atualizado com sucesso!' });
       } else {
-        await axios.post('/api/armazens', payload, config);
-        setToast({ type: 'success', message: 'Armazém criado com sucesso!' });
+        const res = await axios.post('/api/armazens', payload, config);
+        setToast({
+          type: res.data?.warning ? 'error' : 'success',
+          message: res.data?.warning || 'Armazém criado com sucesso!'
+        });
       }
 
       setFormData({ codigo: '', descricao: '', tipo: 'viatura', localizacoes: [] });
@@ -110,20 +118,52 @@ const Armazens = () => {
   };
 
   const handleEdit = async (armazem) => {
+    const requestedId = armazem?.id;
+    if (requestedId == null) {
+      setToast({ type: 'error', message: 'Armazém sem ID. Recarregue a lista.' });
+      return;
+    }
+    setEditandoId(null);
+    setFormData({ codigo: '', descricao: '', tipo: 'viatura', localizacoes: [] });
     setLoadingEdit(true);
     setMostrarForm(true);
     try {
       const token = localStorage.getItem('token');
-      const response = await axios.get(`/api/armazens/${armazem.id}`, {
+      const response = await axios.get(`/api/armazens/${requestedId}`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       const data = response.data;
-      const tipo = data.tipo === 'central' ? 'central' : 'viatura';
-      const locs = (data.localizacoes || []).map(l => ({
-        localizacao: typeof l === 'object' ? (l.localizacao || '') : String(l),
-        tipo_localizacao: (l.tipo_localizacao === 'recebimento' || l.tipo_localizacao === 'expedicao' || l.tipo_localizacao === 'FERR') ? l.tipo_localizacao : 'normal'
-      }));
-      if (data.localizacao && !locs.length) locs.push({ localizacao: data.localizacao, tipo_localizacao: 'normal' });
+      if (data.id != null && String(data.id) !== String(requestedId)) {
+        setMostrarForm(false);
+        return;
+      }
+      const locs = (data.localizacoes || []).map(l => {
+        let locStr = '';
+        let tipoLoc = 'normal';
+        if (typeof l === 'object' && l !== null) {
+          locStr = (l.localizacao != null) ? String(l.localizacao).trim() : '';
+          tipoLoc = (l.tipo_localizacao === 'recebimento' || l.tipo_localizacao === 'expedicao' || l.tipo_localizacao === 'FERR') ? l.tipo_localizacao : 'normal';
+        } else if (typeof l === 'string') {
+          const trimmed = l.trim();
+          if (trimmed.startsWith('{')) {
+            try {
+              const parsed = JSON.parse(trimmed);
+              locStr = (parsed.localizacao != null) ? String(parsed.localizacao).trim() : trimmed;
+              tipoLoc = (parsed.tipo_localizacao === 'recebimento' || parsed.tipo_localizacao === 'expedicao' || parsed.tipo_localizacao === 'FERR') ? parsed.tipo_localizacao : 'normal';
+            } catch (_) {
+              locStr = trimmed;
+            }
+          } else {
+            locStr = trimmed;
+            tipoLoc = trimmed.toUpperCase().includes('.FERR') ? 'FERR' : 'normal';
+          }
+        }
+        return { localizacao: locStr, tipo_localizacao: tipoLoc };
+      }).filter(l => l.localizacao !== '');
+      if (data.localizacao && !locs.length) locs.push({ localizacao: String(data.localizacao).trim(), tipo_localizacao: 'normal' });
+      const tipoFromApi = (data.tipo === 'central' || data.tipo === 'viatura') ? data.tipo : null;
+      const hasRecebimentoOuExpedicao = locs.some(l => l.tipo_localizacao === 'recebimento' || l.tipo_localizacao === 'expedicao');
+      const tipo = tipoFromApi ?? (locs.length > 2 || hasRecebimentoOuExpedicao ? 'central' : 'viatura');
       setFormData({
         codigo: data.codigo || '',
         descricao: data.descricao || '',

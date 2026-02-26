@@ -403,13 +403,6 @@ const PrepararRequisicao = () => {
                         {armazemOrigem && (
                           <p className="text-xs text-gray-500 mb-2">
                             Armazém origem: <strong>{armazemOrigem.codigo ? `${armazemOrigem.codigo} - ` : ''}{armazemOrigem.descricao}</strong>
-                            {locsOrigem.length > 0 && (
-                              <span className="block mt-1">
-                                Localizações disponíveis: {locsOrigem.map((l, i) => (
-                                  <span key={i} className="inline-block px-2 py-0.5 bg-gray-100 rounded text-gray-700 mr-1 mb-1">{l}</span>
-                                ))}
-                              </span>
-                            )}
                             {locsOrigem.length === 0 && <span className="block mt-1 text-amber-600">Nenhuma localização cadastrada</span>}
                           </p>
                         )}
