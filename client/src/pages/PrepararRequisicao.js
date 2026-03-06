@@ -3,8 +3,9 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useConfirm } from '../contexts/ConfirmContext';
 import Toast from '../components/Toast';
-import { FaArrowLeft, FaCheck, FaBox, FaMapMarkerAlt, FaArrowRight, FaEdit } from 'react-icons/fa';
+import { FaArrowLeft, FaCheck, FaBox, FaMapMarkerAlt, FaArrowRight, FaEdit, FaQrcode } from 'react-icons/fa';
 import axios from 'axios';
+import QrScannerModal from '../components/QrScannerModal';
 
 const PrepararRequisicao = () => {
   const { id } = useParams();
@@ -22,6 +23,7 @@ const PrepararRequisicao = () => {
     localizacao_destino: '',
     localizacao_destino_custom: ''
   });
+  const [showQrScanner, setShowQrScanner] = useState(false);
   const navigate = useNavigate();
   const { user } = useAuth();
   const confirm = useConfirm();
@@ -408,18 +410,28 @@ const PrepararRequisicao = () => {
                         )}
                         {locsOrigem.length > 0 ? (
                           <>
-                            <select
-                              value={formItem.localizacao_origem}
-                              onChange={(e) => setFormItem(prev => ({ ...prev, localizacao_origem: e.target.value }))}
-                              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0915FF]"
-                              required
-                            >
-                              <option value="">Selecione a localização...</option>
-                              {locsOrigem.map((loc, i) => (
-                                <option key={i} value={loc}>{loc}</option>
-                              ))}
-                              <option value="_custom_">Outra (digite)</option>
-                            </select>
+                            <div className="flex gap-2">
+                              <select
+                                value={formItem.localizacao_origem}
+                                onChange={(e) => setFormItem(prev => ({ ...prev, localizacao_origem: e.target.value }))}
+                                className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0915FF]"
+                                required
+                              >
+                                <option value="">Selecione a localização...</option>
+                                {locsOrigem.map((loc, i) => (
+                                  <option key={i} value={loc}>{loc}</option>
+                                ))}
+                                <option value="_custom_">Outra (digite)</option>
+                              </select>
+                              <button
+                                type="button"
+                                onClick={() => setShowQrScanner(true)}
+                                className="px-3 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-100 flex items-center gap-1"
+                                title="Ler localização com QR Code"
+                              >
+                                <FaQrcode /> Ler QR
+                              </button>
+                            </div>
                             {formItem.localizacao_origem === '_custom_' && (
                               <input
                                 type="text"
@@ -432,15 +444,44 @@ const PrepararRequisicao = () => {
                             )}
                           </>
                         ) : (
-                          <input
-                            type="text"
-                            value={formItem.localizacao_origem}
-                            onChange={(e) => setFormItem(prev => ({ ...prev, localizacao_origem: e.target.value }))}
-                            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0915FF]"
-                            placeholder="Ex: Prateleira A3"
-                            required
-                          />
+                          <div className="flex gap-2">
+                            <input
+                              type="text"
+                              value={formItem.localizacao_origem}
+                              onChange={(e) => setFormItem(prev => ({ ...prev, localizacao_origem: e.target.value }))}
+                              className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0915FF]"
+                              placeholder="Ex: Prateleira A3"
+                              required
+                            />
+                            <button
+                              type="button"
+                              onClick={() => setShowQrScanner(true)}
+                              className="px-3 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-100 flex items-center gap-1"
+                              title="Ler localização com QR Code"
+                            >
+                              <FaQrcode /> Ler QR
+                            </button>
+                          </div>
                         )}
+                        <QrScannerModal
+                          open={showQrScanner}
+                          onClose={() => setShowQrScanner(false)}
+                          onScan={(texto) => {
+                            const loc = (texto || '').trim();
+                            if (!loc) return;
+                            if (locsOrigem.length > 0) {
+                              if (locsOrigem.includes(loc)) {
+                                setFormItem(prev => ({ ...prev, localizacao_origem: loc, localizacao_origem_custom: '' }));
+                              } else {
+                                setFormItem(prev => ({ ...prev, localizacao_origem: '_custom_', localizacao_origem_custom: loc }));
+                              }
+                            } else {
+                              setFormItem(prev => ({ ...prev, localizacao_origem: loc }));
+                            }
+                            setToast({ type: 'success', message: `Localização definida: ${loc}` });
+                          }}
+                          title="Ler localização por QR Code"
+                        />
                       </div>
                       <div className="rounded-lg bg-gray-50 border border-gray-200 p-3">
                         <p className="text-sm font-medium text-gray-700">Destino (automático)</p>

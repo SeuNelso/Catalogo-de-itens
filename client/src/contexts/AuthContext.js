@@ -70,8 +70,20 @@ export const AuthProvider = ({ children }) => {
         setIsAuthenticated(true);
         return { success: true };
       } else {
-        const data = await response.json().catch(() => ({}));
-        const msg = data.error || data.message || (response.status === 500 ? 'Erro no servidor. Verifique as variáveis de ambiente e migrações do banco no Railway.' : 'Erro no login');
+        const text = await response.text();
+        let data = {};
+        try {
+          data = JSON.parse(text);
+        } catch (_) {
+          // Resposta não é JSON (ex.: servidor caiu, página de erro em HTML)
+          const fallback = response.status === 500
+            ? 'Erro no servidor. Verifique variáveis de ambiente (DATABASE_URL, JWT_SECRET), migrações do banco e os logs do servidor.'
+            : 'Erro no login';
+          return { success: false, message: fallback };
+        }
+        const msg = data.error || data.message || (response.status === 500
+          ? 'Erro no servidor. Verifique variáveis de ambiente e migrações do banco.'
+          : 'Erro no login');
         return { success: false, message: msg };
       }
     } catch (error) {

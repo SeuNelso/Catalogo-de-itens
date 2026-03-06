@@ -4356,8 +4356,8 @@ app.get('/api/requisicoes/:id/export-excel', authenticateToken, async (req, res)
   }
 });
 
-// Constante: localização de expedição no armazém E (para TRFL destino e TRA origem)
-const LOCALIZACAO_EXPEDICAO_E = 'EXPEDICAO.E';
+// Fallback localização expedição (quando armazém central não tem expedição configurada)
+const LOCALIZACAO_EXPEDICAO_FALLBACK = 'EXPEDICAO.E';
 
 // Helper: gera buffer Excel com as colunas padrão (Date, OriginWarehouse, ... Batch)
 function buildExcelTransferencia(rows, res, filename) {
@@ -4398,7 +4398,7 @@ async function getRequisicaoComItens(id) {
   return requisicao;
 }
 
-// TRFL — Transferência de localização: origem (E + localização do item) → destino (E + EXPEDICAO.E)
+// TRFL — Só quando armazém de origem é geral (central). Destino = localização de expedição do armazém de origem.
 app.get('/api/requisicoes/:id/export-trfl', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
@@ -4411,19 +4411,41 @@ app.get('/api/requisicoes/:id/export-trfl', authenticateToken, async (req, res) 
       return res.status(400).json({ error: 'TRFL só está disponível após confirmar a separação (status Separado). Conclua a preparação primeiro.' });
     }
 
-    const codigoE = requisicao.armazem_origem_codigo || 'E';
+    if (!requisicao.armazem_origem_id) {
+      return res.status(400).json({ error: 'TRFL só está disponível quando a requisição tem armazém de origem.' });
+    }
+    const armazemOrigem = await pool.query('SELECT id, codigo, tipo FROM armazens WHERE id = $1', [requisicao.armazem_origem_id]);
+    if (armazemOrigem.rows.length === 0) {
+      return res.status(400).json({ error: 'Armazém de origem não encontrado.' });
+    }
+    const ao = armazemOrigem.rows[0];
+    const tipoOrigem = (ao.tipo || '').toLowerCase();
+    if (tipoOrigem !== 'central') {
+      return res.status(400).json({ error: 'TRFL só é gerado quando o armazém de origem é um armazém geral (central). Esta requisição tem origem em armazém viatura.' });
+    }
+
+    let localizacaoExpedicao = LOCALIZACAO_EXPEDICAO_FALLBACK;
+    const locExp = await pool.query(
+      `SELECT localizacao FROM armazens_localizacoes WHERE armazem_id = $1 AND LOWER(COALESCE(tipo_localizacao, '')) = 'expedicao' ORDER BY id LIMIT 1`,
+      [requisicao.armazem_origem_id]
+    );
+    if (locExp.rows.length > 0 && locExp.rows[0].localizacao) {
+      localizacaoExpedicao = locExp.rows[0].localizacao;
+    }
+
+    const codigoOrigem = ao.codigo || 'E';
     const dataFormat = new Date(requisicao.created_at);
     const dateStr = `${String(dataFormat.getDate()).padStart(2, '0')}/${String(dataFormat.getMonth() + 1).padStart(2, '0')}/${dataFormat.getFullYear()}`;
 
     const rows = (requisicao.itens || []).map(ri => ({
       Date: dateStr,
-      OriginWarehouse: codigoE,
+      OriginWarehouse: codigoOrigem,
       OriginLocation: ri.localizacao_origem || '',
       Article: String(ri.item_codigo || ''),
       Quatity: parseInt(ri.quantidade_preparada ?? ri.quantidade, 10) || 0,
       SerialNumber1: '', SerialNumber2: '', MacAddress: '', CentroCusto: '',
-      DestinationWarehouse: codigoE,
-      DestinationLocation: LOCALIZACAO_EXPEDICAO_E,
+      DestinationWarehouse: codigoOrigem,
+      DestinationLocation: localizacaoExpedicao,
       ProjectCode: '', Batch: ''
     }));
 
@@ -4437,7 +4459,7 @@ app.get('/api/requisicoes/:id/export-trfl', authenticateToken, async (req, res) 
   }
 });
 
-// TRA — Transferência: origem (E + EXPEDICAO.E) → destino (Vxxx). Ferramentas → .FERR, outros → localização sem .FERR
+// TRA — Transferência: origem = mesmo destino da TRFL (armazém origem + expedição) → destino (Vxxx). Alinhado à TRFL.
 app.get('/api/requisicoes/:id/export-tra', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
@@ -4450,9 +4472,21 @@ app.get('/api/requisicoes/:id/export-tra', authenticateToken, async (req, res) =
       return res.status(400).json({ error: 'TRA só está disponível após concluir a TRFL (requisição deve estar Em expedição). Baixe o ficheiro TRFL primeiro.' });
     }
 
-    const codigoE = requisicao.armazem_origem_codigo || 'E';
+    const codigoOrigem = requisicao.armazem_origem_codigo || 'E';
     const codigoDestino = requisicao.armazem_destino_codigo || '';
     const armazemDestinoId = requisicao.armazem_id;
+
+    // Localização de origem da TRA = mesmo destino da TRFL (expedição do armazém de origem)
+    let localizacaoOrigemTRA = LOCALIZACAO_EXPEDICAO_FALLBACK;
+    if (requisicao.armazem_origem_id) {
+      const locExp = await pool.query(
+        `SELECT localizacao FROM armazens_localizacoes WHERE armazem_id = $1 AND LOWER(COALESCE(tipo_localizacao, '')) = 'expedicao' ORDER BY id LIMIT 1`,
+        [requisicao.armazem_origem_id]
+      );
+      if (locExp.rows.length > 0 && locExp.rows[0].localizacao) {
+        localizacaoOrigemTRA = locExp.rows[0].localizacao;
+      }
+    }
 
     // Localizações do armazém destino: uma com .FERR (ferramentas) e outra sem (demais itens)
     let localizacaoFERR = codigoDestino + '.FERR';
@@ -4497,8 +4531,8 @@ app.get('/api/requisicoes/:id/export-tra', authenticateToken, async (req, res) =
 
     const rows = itensComFerramenta.map(ri => ({
       Date: dateStr,
-      OriginWarehouse: codigoE,
-      OriginLocation: LOCALIZACAO_EXPEDICAO_E,
+      OriginWarehouse: codigoOrigem,
+      OriginLocation: localizacaoOrigemTRA,
       Article: String(ri.item_codigo || ''),
       Quatity: parseInt(ri.quantidade_preparada ?? ri.quantidade, 10) || 0,
       SerialNumber1: '', SerialNumber2: '', MacAddress: '', CentroCusto: '',

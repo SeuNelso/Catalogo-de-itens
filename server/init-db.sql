@@ -107,7 +107,7 @@ CREATE TRIGGER update_itens_nao_cadastrados_updated_at BEFORE UPDATE ON itens_na
 -- ALTERE A SENHA APÓS O PRIMEIRO LOGIN!
 -- Hash bcrypt de 'admin123'
 INSERT INTO usuarios (nome, username, email, password, role) 
-VALUES ('Administrador', 'admin', 'admin@catalogo.com', '$2a$10$rOzJqJqJqJqJqJqJqJqJqOqJqJqJqJqJqJqJqJqJqJqJqJqJqJqJq', 'admin')
+VALUES ('Administrador', 'admin', 'admin@catalogo.com', '$2a$10$3pa2VskHNQtoQw6QtqD6zu60bX7vZlqtvJxlDoijiGKIDUZxpnKjm', 'admin')
 ON CONFLICT (username) DO NOTHING;
 
 -- Comentários das tabelas
