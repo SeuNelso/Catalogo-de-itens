@@ -21,13 +21,16 @@ const PrepararRequisicao = () => {
     localizacao_origem: '',
     localizacao_origem_custom: '',
     localizacao_destino: '',
-    localizacao_destino_custom: ''
+    localizacao_destino_custom: '',
+    lote: '',
+    serialnumber: '',
+    bobinas: [] // apenas para itens controlados por lote
   });
   const [showQrScanner, setShowQrScanner] = useState(false);
   const navigate = useNavigate();
   const { user } = useAuth();
   const confirm = useConfirm();
-  const canPrepare = user && (user.role === 'admin' || user.role === 'controller');
+  const canPrepare = user && ['admin', 'controller', 'operador', 'backoffice_armazem'].includes(user.role);
 
   useEffect(() => {
     fetchRequisicao();
@@ -76,7 +79,10 @@ const PrepararRequisicao = () => {
       localizacao_origem: isOrigemCustom ? '_custom_' : locOrigem,
       localizacao_origem_custom: isOrigemCustom ? locOrigem : '',
       localizacao_destino: '',
-      localizacao_destino_custom: ''
+      localizacao_destino_custom: '',
+      lote: item.lote || '',
+      serialnumber: item.serialnumber || '',
+      bobinas: item.bobinas || []
     });
   };
 
@@ -131,7 +137,7 @@ const PrepararRequisicao = () => {
 
   const fecharPrepararItem = () => {
     setItemPreparando(null);
-    setFormItem({ quantidade_preparada: '', localizacao_origem: '', localizacao_origem_custom: '', localizacao_destino: '', localizacao_destino_custom: '' });
+    setFormItem({ quantidade_preparada: '', localizacao_origem: '', localizacao_origem_custom: '', localizacao_destino: '', localizacao_destino_custom: '', lote: '', serialnumber: '', bobinas: [] });
   };
 
   const handleCompletarSeparacao = async () => {
@@ -188,6 +194,30 @@ const PrepararRequisicao = () => {
       return;
     }
 
+    const tipoControlo = (itemPreparando.tipocontrolo || '').toUpperCase();
+    let bobinasPayload = undefined;
+    if (tipoControlo === 'LOTE') {
+      if (!Array.isArray(formItem.bobinas) || formItem.bobinas.length === 0) {
+        setToast({ type: 'error', message: 'Adicione pelo menos uma bobina (lote + metros).' });
+        return;
+      }
+      const bobinasValidas = [];
+      for (const b of formItem.bobinas) {
+        const lote = (b.lote || '').trim();
+        const metros = Number(b.metros);
+        if (!lote || !metros || metros <= 0) {
+          setToast({ type: 'error', message: 'Cada bobina deve ter lote e metragem > 0.' });
+          return;
+        }
+        bobinasValidas.push({
+          lote,
+          serialnumber: (b.serialnumber || '').trim() || null,
+          metros
+        });
+      }
+      bobinasPayload = bobinasValidas;
+    }
+
     try {
       setSubmitting(itemPreparando.id);
       const token = localStorage.getItem('token');
@@ -195,8 +225,11 @@ const PrepararRequisicao = () => {
         `/api/requisicoes/${id}/atender-item`,
         {
           requisicao_item_id: itemPreparando.id,
-          quantidade_preparada: qtd,
-          localizacao_origem: locOrigem
+          quantidade_preparada: tipoControlo === 'LOTE' && bobinasPayload ? bobinasPayload.length : qtd,
+          localizacao_origem: locOrigem,
+          lote: formItem.lote || null,
+          serialnumber: formItem.serialnumber || null,
+          bobinas: bobinasPayload
           // localizacao_destino = EXPEDICAO é definida automaticamente no servidor
         },
         {
@@ -398,6 +431,110 @@ const PrepararRequisicao = () => {
                         />
                         <p className="text-xs text-gray-500 mt-1">Máximo: {item.quantidade}. Use 0 se não tiver o item.</p>
                       </div>
+                      {(item.tipocontrolo || '').toUpperCase() === 'LOTE' && (
+                        <div className="space-y-3">
+                          <div className="flex items-center justify-between">
+                            <span className="text-sm font-medium text-gray-700">Bobinas preparadas</span>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setFormItem(prev => ({
+                                  ...prev,
+                                  bobinas: [...(prev.bobinas || []), { lote: '', serialnumber: '', metros: '' }]
+                                }))
+                              }
+                              className="px-3 py-1 text-xs rounded bg-[#0915FF] text-white hover:bg-[#070FCC]"
+                            >
+                              Adicionar bobina
+                            </button>
+                          </div>
+                          {(formItem.bobinas || []).length === 0 && (
+                            <p className="text-xs text-gray-500">
+                              Adicione uma linha por bobina (lote + metros) preparada.
+                            </p>
+                          )}
+                          <div className="space-y-2">
+                            {(formItem.bobinas || []).map((b, idxBob) => (
+                              <div
+                                key={idxBob}
+                                className="grid grid-cols-1 sm:grid-cols-4 gap-2 items-end border border-gray-200 rounded-lg p-2"
+                              >
+                                <div className="sm:col-span-2">
+                                  <label className="block text-xs font-medium text-gray-700 mb-1">
+                                    Lote da bobina {idxBob + 1}
+                                  </label>
+                                  <input
+                                    type="text"
+                                    value={b.lote}
+                                    onChange={(e) => {
+                                      const val = e.target.value;
+                                      setFormItem(prev => ({
+                                        ...prev,
+                                        bobinas: prev.bobinas.map((bb, i) =>
+                                          i === idxBob ? { ...bb, lote: val } : bb
+                                        )
+                                      }));
+                                    }}
+                                    className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm"
+                                    placeholder="Lote"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="block text-xs font-medium text-gray-700 mb-1">
+                                    Metros
+                                  </label>
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    step="0.01"
+                                    value={b.metros}
+                                    onChange={(e) => {
+                                      const val = e.target.value;
+                                      setFormItem(prev => ({
+                                        ...prev,
+                                        bobinas: prev.bobinas.map((bb, i) =>
+                                          i === idxBob ? { ...bb, metros: val } : bb
+                                        )
+                                      }));
+                                    }}
+                                    className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm"
+                                    placeholder="Ex: 120.5"
+                                  />
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setFormItem(prev => ({
+                                        ...prev,
+                                        bobinas: prev.bobinas.filter((_, i) => i !== idxBob)
+                                      }))
+                                    }
+                                    className="px-2 py-1 text-xs border border-red-300 text-red-600 rounded hover:bg-red-50"
+                                  >
+                                    Remover
+                                  </button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      {(item.tipocontrolo || '').toUpperCase() === 'S/N' && (
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-1">
+                            Serial number <span className="text-red-600">*</span>
+                          </label>
+                          <input
+                            type="text"
+                            value={formItem.serialnumber}
+                            onChange={(e) => setFormItem(prev => ({ ...prev, serialnumber: e.target.value }))}
+                            className="w-full sm:w-64 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0915FF]"
+                            placeholder="Informe o serial preparado"
+                            required
+                          />
+                        </div>
+                      )}
                       <div>
                         <label className="block text-sm font-medium text-gray-700 mb-1">
                           Localização de saída (onde está saindo) <span className="text-red-600">*</span>
@@ -472,15 +609,19 @@ const PrepararRequisicao = () => {
                             if (locsOrigem.length > 0) {
                               if (locsOrigem.includes(loc)) {
                                 setFormItem(prev => ({ ...prev, localizacao_origem: loc, localizacao_origem_custom: '' }));
+                                setToast({ type: 'success', message: `Localização definida: ${loc}` });
                               } else {
-                                setFormItem(prev => ({ ...prev, localizacao_origem: '_custom_', localizacao_origem_custom: loc }));
+                                setToast({
+                                  type: 'error',
+                                  message: `Localização não reconhecida. O QR Code deve ser uma das localizações do armazém: ${locsOrigem.join(', ')}`
+                                });
                               }
                             } else {
                               setFormItem(prev => ({ ...prev, localizacao_origem: loc }));
+                              setToast({ type: 'success', message: `Localização definida: ${loc}` });
                             }
-                            setToast({ type: 'success', message: `Localização definida: ${loc}` });
                           }}
-                          title="Ler localização por QR Code"
+                          title="Ler localização por QR Code (apenas localizações do armazém)"
                         />
                       </div>
                       <div className="rounded-lg bg-gray-50 border border-gray-200 p-3">

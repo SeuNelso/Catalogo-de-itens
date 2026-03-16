@@ -6,7 +6,11 @@ import { useNavigate, Link } from 'react-router-dom';
 const roles = [
   { value: 'admin', label: 'Administrador' },
   { value: 'controller', label: 'Controller' },
-  { value: 'basico', label: 'Básico' }
+  { value: 'backoffice_operations', label: 'BACKOFFICE OPERATIONS' },
+  { value: 'backoffice_armazem', label: 'BACKOFFICE ARMAZEM' },
+  { value: 'operador', label: 'OPERADOR' },
+  { value: 'basico', label: 'Básico' },
+  { value: 'usuario', label: 'Usuário' }
 ];
 
 const AdminUsuarios = () => {
@@ -61,7 +65,11 @@ const AdminUsuarios = () => {
         },
         body: JSON.stringify({ role })
       });
-      if (!res.ok) throw new Error('Erro ao atualizar role');
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        const msg = data.error || data.details || data.message || 'Erro ao atualizar role';
+        throw new Error(msg);
+      }
       await fetchUsuarios();
     } catch (err) {
       setError(err.message || 'Erro ao atualizar role');

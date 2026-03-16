@@ -414,6 +414,9 @@ app.get('/api/importar-itens-status/:importId', authenticateToken, (req, res) =>
 
 // --- Importação de novos itens via Excel ---
 const excelUploadItens = multer({ dest: 'uploads/' });
+
+// Upload para importar requisições via Excel
+const excelUploadRequisicoes = multer({ dest: 'uploads/' });
 app.post('/api/importar-itens', authenticateToken, excelUploadItens.single('arquivo'), async (req, res) => {
   if (!req.user || req.user.role !== 'admin') {
     return res.status(403).json({ error: 'Apenas administradores podem importar itens.' });
@@ -2236,7 +2239,8 @@ app.patch('/api/usuarios/:id', authenticateToken, async (req, res) => {
   }
   const { id } = req.params;
   const { role } = req.body;
-  if (!role || !['admin', 'controller', 'basico'].includes(role)) {
+  const rolesValidos = ['admin', 'controller', 'basico', 'usuario', 'backoffice_operations', 'backoffice_armazem', 'operador'];
+  if (!role || !rolesValidos.includes(role)) {
     return res.status(400).json({ error: 'Role inválido.' });
   }
   try {
@@ -3846,8 +3850,8 @@ app.get('/api/armazens/:id', authenticateToken, async (req, res) => {
 // Criar novo armazém (apenas admin)
 app.post('/api/armazens', authenticateToken, async (req, res) => {
   try {
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ error: 'Apenas administradores podem criar armazéns' });
+    if (req.user.role !== 'admin' && req.user.role !== 'backoffice_armazem') {
+      return res.status(403).json({ error: 'Apenas administradores ou backoffice armazém podem criar armazéns' });
     }
 
     const { codigo, descricao, localizacao, localizacoes, tipo } = req.body;
@@ -3984,8 +3988,8 @@ app.post('/api/armazens', authenticateToken, async (req, res) => {
 // Atualizar armazém (apenas admin)
 app.put('/api/armazens/:id', authenticateToken, async (req, res) => {
   try {
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ error: 'Apenas administradores podem atualizar armazéns' });
+    if (req.user.role !== 'admin' && req.user.role !== 'backoffice_armazem') {
+      return res.status(403).json({ error: 'Apenas administradores ou backoffice armazém podem atualizar armazéns' });
     }
 
     const { id } = req.params;
@@ -4144,8 +4148,8 @@ app.put('/api/armazens/:id', authenticateToken, async (req, res) => {
 // Deletar armazém (apenas admin)
 app.delete('/api/armazens/:id', authenticateToken, async (req, res) => {
   try {
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ error: 'Apenas administradores podem deletar armazéns' });
+    if (req.user.role !== 'admin' && req.user.role !== 'backoffice_armazem') {
+      return res.status(403).json({ error: 'Apenas administradores ou backoffice armazém podem deletar armazéns' });
     }
 
     const { id } = req.params;
@@ -4388,7 +4392,7 @@ async function getRequisicaoComItens(id) {
   if (reqResult.rows.length === 0) return null;
   const requisicao = reqResult.rows[0];
   const itensResult = await pool.query(`
-    SELECT ri.*, i.codigo as item_codigo
+    SELECT ri.*, i.codigo as item_codigo, i.tipocontrolo
     FROM requisicoes_itens ri
     INNER JOIN itens i ON ri.item_id = i.id
     WHERE ri.requisicao_id = $1
@@ -4437,17 +4441,58 @@ app.get('/api/requisicoes/:id/export-trfl', authenticateToken, async (req, res) 
     const dataFormat = new Date(requisicao.created_at);
     const dateStr = `${String(dataFormat.getDate()).padStart(2, '0')}/${String(dataFormat.getMonth() + 1).padStart(2, '0')}/${dataFormat.getFullYear()}`;
 
-    const rows = (requisicao.itens || []).map(ri => ({
-      Date: dateStr,
-      OriginWarehouse: codigoOrigem,
-      OriginLocation: ri.localizacao_origem || '',
-      Article: String(ri.item_codigo || ''),
-      Quatity: parseInt(ri.quantidade_preparada ?? ri.quantidade, 10) || 0,
-      SerialNumber1: '', SerialNumber2: '', MacAddress: '', CentroCusto: '',
-      DestinationWarehouse: codigoOrigem,
-      DestinationLocation: localizacaoExpedicao,
-      ProjectCode: '', Batch: ''
-    }));
+    // Buscar bobinas (para itens de controle por lote)
+    let bobinas = [];
+    try {
+      const bobinasResult = await pool.query(`
+        SELECT b.*, ri.item_id, i.codigo as item_codigo
+        FROM requisicoes_itens_bobinas b
+        INNER JOIN requisicoes_itens ri ON b.requisicao_item_id = ri.id
+        INNER JOIN itens i ON ri.item_id = i.id
+        WHERE ri.requisicao_id = $1
+      `, [id]);
+      bobinas = bobinasResult.rows;
+    } catch (_) {
+      bobinas = [];
+    }
+
+    const rows = [];
+
+    // Linhas por bobina (cada bobina = uma linha)
+    for (const b of bobinas) {
+      rows.push({
+        Date: dateStr,
+        OriginWarehouse: codigoOrigem,
+        OriginLocation: requisicao.itens.find(it => it.item_id === b.item_id)?.localizacao_origem || '',
+        Article: String(b.item_codigo || ''),
+        Quatity: Number(b.metros) || 0,
+        SerialNumber1: b.serialnumber || '', SerialNumber2: '', MacAddress: '', CentroCusto: '',
+        DestinationWarehouse: codigoOrigem,
+        DestinationLocation: localizacaoExpedicao,
+        ProjectCode: '',
+        Batch: b.lote || ''
+      });
+    }
+
+    // Itens sem bobinas (controle por quantidade / S/N, etc.)
+    for (const ri of requisicao.itens || []) {
+      const tipoControlo = (ri.tipocontrolo || '').toUpperCase();
+      const temBobinas = bobinas.some(b => b.item_id === ri.item_id);
+      if (tipoControlo === 'LOTE' && temBobinas) continue;
+
+      rows.push({
+        Date: dateStr,
+        OriginWarehouse: codigoOrigem,
+        OriginLocation: ri.localizacao_origem || '',
+        Article: String(ri.item_codigo || ''),
+        Quatity: parseInt(ri.quantidade_preparada ?? ri.quantidade, 10) || 0,
+        SerialNumber1: ri.serialnumber || '', SerialNumber2: '', MacAddress: '', CentroCusto: '',
+        DestinationWarehouse: codigoOrigem,
+        DestinationLocation: localizacaoExpedicao,
+        ProjectCode: '',
+        Batch: ri.lote || ''
+      });
+    }
 
     buildExcelTransferencia(rows, res, `TRFL_requisicao_${id}_${new Date().toISOString().slice(0, 10)}.xlsx`);
     if (requisicao.status === 'separado') {
@@ -4511,7 +4556,7 @@ app.get('/api/requisicoes/:id/export-tra', authenticateToken, async (req, res) =
     let itensComFerramenta = [];
     try {
       const itensResult = await pool.query(`
-        SELECT ri.*, i.codigo as item_codigo,
+        SELECT ri.*, i.codigo as item_codigo, i.tipocontrolo,
           EXISTS (
             SELECT 1 FROM itens_setores is2
             WHERE is2.item_id = i.id AND UPPER(TRIM(is2.setor)) = 'FERRAMENTA'
@@ -4526,20 +4571,62 @@ app.get('/api/requisicoes/:id/export-tra', authenticateToken, async (req, res) =
       itensComFerramenta = (requisicao.itens || []).map(ri => ({ ...ri, is_ferramenta: false }));
     }
 
+    // Bobinas para TRA (uma linha por bobina)
+    let bobinas = [];
+    try {
+      const bobinasResult = await pool.query(`
+        SELECT b.*, ri.item_id, i.codigo as item_codigo
+        FROM requisicoes_itens_bobinas b
+        INNER JOIN requisicoes_itens ri ON b.requisicao_item_id = ri.id
+        INNER JOIN itens i ON ri.item_id = i.id
+        WHERE ri.requisicao_id = $1
+      `, [id]);
+      bobinas = bobinasResult.rows;
+    } catch (_) {
+      bobinas = [];
+    }
+
     const dataFormat = new Date(requisicao.created_at);
     const dateStr = `${String(dataFormat.getDate()).padStart(2, '0')}/${String(dataFormat.getMonth() + 1).padStart(2, '0')}/${dataFormat.getFullYear()}`;
 
-    const rows = itensComFerramenta.map(ri => ({
-      Date: dateStr,
-      OriginWarehouse: codigoOrigem,
-      OriginLocation: localizacaoOrigemTRA,
-      Article: String(ri.item_codigo || ''),
-      Quatity: parseInt(ri.quantidade_preparada ?? ri.quantidade, 10) || 0,
-      SerialNumber1: '', SerialNumber2: '', MacAddress: '', CentroCusto: '',
-      DestinationWarehouse: codigoDestino,
-      DestinationLocation: ri.is_ferramenta ? localizacaoFERR : localizacaoNormal,
-      ProjectCode: '', Batch: ''
-    }));
+    const rows = [];
+
+    // Linhas por bobina (para itens de controle por lote)
+    for (const b of bobinas) {
+      const ri = itensComFerramenta.find(it => it.item_id === b.item_id) || {};
+      rows.push({
+        Date: dateStr,
+        OriginWarehouse: codigoOrigem,
+        OriginLocation: localizacaoOrigemTRA,
+        Article: String(b.item_codigo || ''),
+        Quatity: Number(b.metros) || 0,
+        SerialNumber1: b.serialnumber || '', SerialNumber2: '', MacAddress: '', CentroCusto: '',
+        DestinationWarehouse: codigoDestino,
+        DestinationLocation: ri.is_ferramenta ? localizacaoFERR : localizacaoNormal,
+        ProjectCode: '',
+        Batch: b.lote || ''
+      });
+    }
+
+    // Itens sem bobinas
+    for (const ri of itensComFerramenta) {
+      const tipoControlo = (ri.tipocontrolo || '').toUpperCase();
+      const temBobinas = bobinas.some(b => b.item_id === ri.item_id);
+      if (tipoControlo === 'LOTE' && temBobinas) continue;
+
+      rows.push({
+        Date: dateStr,
+        OriginWarehouse: codigoOrigem,
+        OriginLocation: localizacaoOrigemTRA,
+        Article: String(ri.item_codigo || ''),
+        Quatity: parseInt(ri.quantidade_preparada ?? ri.quantidade, 10) || 0,
+        SerialNumber1: ri.serialnumber || '', SerialNumber2: '', MacAddress: '', CentroCusto: '',
+        DestinationWarehouse: codigoDestino,
+        DestinationLocation: ri.is_ferramenta ? localizacaoFERR : localizacaoNormal,
+        ProjectCode: '',
+        Batch: ri.lote || ''
+      });
+    }
 
     buildExcelTransferencia(rows, res, `TRA_requisicao_${id}_${new Date().toISOString().slice(0, 10)}.xlsx`);
     if (requisicao.status === 'EM EXPEDICAO') {
@@ -4594,15 +4681,39 @@ app.get('/api/requisicoes/:id', authenticateToken, async (req, res) => {
 
     const itensResult = await pool.query(`
       SELECT ri.*, i.codigo as item_codigo, i.descricao as item_descricao,
-        i.familia as item_familia, i.subfamilia as item_subfamilia
+        i.familia as item_familia, i.subfamilia as item_subfamilia,
+        i.tipocontrolo
       FROM requisicoes_itens ri
       INNER JOIN itens i ON ri.item_id = i.id
       WHERE ri.requisicao_id = $1
       ORDER BY ri.id
     `, [id]);
 
+    // Carregar bobinas (se existirem) para itens controlados por lote
+    let bobinasPorItem = {};
+    try {
+      const bobinasResult = await pool.query(`
+        SELECT b.*, ri.item_id
+        FROM requisicoes_itens_bobinas b
+        INNER JOIN requisicoes_itens ri ON b.requisicao_item_id = ri.id
+        WHERE ri.requisicao_id = $1
+      `, [id]);
+      for (const b of bobinasResult.rows || []) {
+        if (!bobinasPorItem[b.item_id]) bobinasPorItem[b.item_id] = [];
+        bobinasPorItem[b.item_id].push({
+          id: b.id,
+          lote: b.lote,
+          serialnumber: b.serialnumber,
+          metros: b.metros
+        });
+      }
+    } catch (_) {
+      bobinasPorItem = {};
+    }
+
     requisicao.itens = (itensResult.rows || []).map(it => ({
       ...it,
+      bobinas: bobinasPorItem[it.item_id] || [],
       preparacao_confirmada: it.preparacao_confirmada === true
     }));
     res.json(requisicao);
@@ -4644,7 +4755,7 @@ app.post('/api/requisicoes', authenticateToken, async (req, res) => {
       }
     }
 
-    // Validar itens
+    // Validar itens: apenas existência e quantidade aqui; Lote e Serial serão definidos na separação
     for (const item of itens) {
       if (!item.item_id || !item.quantidade || item.quantidade <= 0) {
         await client.query('ROLLBACK');
@@ -4683,7 +4794,7 @@ app.post('/api/requisicoes', authenticateToken, async (req, res) => {
 
     const requisicaoId = reqResult.rows[0].id;
 
-    // Inserir itens
+    // Inserir itens (sem lote/serial; esses serão preenchidos na preparação)
     for (const item of itens) {
       await client.query(`
         INSERT INTO requisicoes_itens (requisicao_id, item_id, quantidade)
@@ -4732,7 +4843,8 @@ app.post('/api/requisicoes', authenticateToken, async (req, res) => {
       SELECT 
         ri.*,
         i.codigo as item_codigo,
-        i.descricao as item_descricao
+        i.descricao as item_descricao,
+        i.tipocontrolo
       FROM requisicoes_itens ri
       INNER JOIN itens i ON ri.item_id = i.id
       WHERE ri.requisicao_id = $1
@@ -4748,6 +4860,148 @@ app.post('/api/requisicoes', authenticateToken, async (req, res) => {
     res.status(500).json({ error: 'Erro ao criar requisição', details: error.message });
   } finally {
     client.release();
+  }
+});
+
+// Importar requisição a partir de ficheiro Excel (modelo TRFL/TRA interno)
+app.post('/api/requisicoes/importar-excel', authenticateToken, excelUploadRequisicoes.single('arquivo'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'Arquivo Excel (.xlsx) é obrigatório.' });
+    }
+
+    const { armazem_origem_id } = req.body;
+
+    // Armazém origem é obrigatório e deve ser armazém central
+    if (!armazem_origem_id) {
+      return res.status(400).json({ error: 'Armazém origem é obrigatório.' });
+    }
+    const ao = await pool.query(
+      "SELECT id FROM armazens WHERE id = $1 AND ativo = true AND LOWER(tipo) = 'central'",
+      [parseInt(armazem_origem_id, 10)]
+    );
+    if (ao.rows.length === 0) {
+      return res.status(400).json({ error: 'Armazém origem não encontrado, inativo ou não é um armazém central.' });
+    }
+    const armazemOrigemId = ao.rows[0].id;
+
+    const workbook = XLSX.readFile(req.file.path);
+    const sheetName = workbook.SheetNames[0];
+    const sheet = workbook.Sheets[sheetName];
+    if (!sheet) {
+      return res.status(400).json({ error: 'Ficheiro Excel sem folha válida.' });
+    }
+
+    // 1) Encontrar código de armazém destino (ex: V874) em qualquer célula
+    const range = XLSX.utils.decode_range(sheet['!ref']);
+    let codigoArmazemDestino = null;
+    for (let R = range.s.r; R <= range.e.r; R++) {
+      for (let C = range.s.c; C <= range.e.c; C++) {
+        const cellAddr = XLSX.utils.encode_cell({ r: R, c: C });
+        const cell = sheet[cellAddr];
+        if (!cell || cell.v == null) continue;
+        const v = String(cell.v).trim();
+        if (/^V\d+$/i.test(v)) {
+          codigoArmazemDestino = v.toUpperCase();
+        }
+      }
+    }
+
+    if (!codigoArmazemDestino) {
+      return res.status(400).json({ error: 'Não foi possível identificar o armazém destino no Excel (código Vxxx).' });
+    }
+
+    const armazemRes = await pool.query('SELECT id FROM armazens WHERE UPPER(codigo) = $1', [codigoArmazemDestino.toUpperCase()]);
+    if (armazemRes.rows.length === 0) {
+      return res.status(400).json({ error: `Armazém destino ${codigoArmazemDestino} não encontrado no sistema.` });
+    }
+    const armazemDestinoId = armazemRes.rows[0].id;
+
+    // 2) Encontrar linha de cabeçalho: Artigo | Descrição | Quantidade
+    let headerRowNumber = null;
+    let colArtigo = null;
+    let colQuantidade = null;
+
+    for (let R = range.s.r; R <= range.e.r; R++) {
+      const rowValues = [];
+      for (let C = range.s.c; C <= range.e.c; C++) {
+        const cellAddr = XLSX.utils.encode_cell({ r: R, c: C });
+        const cell = sheet[cellAddr];
+        rowValues.push(cell && cell.v != null ? String(cell.v).trim() : '');
+      }
+      if (rowValues.includes('Artigo') && rowValues.includes('Descrição') && rowValues.includes('Quantidade')) {
+        headerRowNumber = R;
+        rowValues.forEach((v, idx) => {
+          if (v === 'Artigo') colArtigo = idx;
+          if (v === 'Quantidade') colQuantidade = idx;
+        });
+        break;
+      }
+    }
+
+    if (headerRowNumber == null || colArtigo == null || colQuantidade == null) {
+      return res.status(400).json({ error: 'Cabeçalho Artigo/Descrição/Quantidade não encontrado no Excel.' });
+    }
+
+    // 3) Ler linhas de itens
+    const itens = [];
+    for (let R = headerRowNumber + 1; R <= range.e.r; R++) {
+      const cellArtigo = sheet[XLSX.utils.encode_cell({ r: R, c: colArtigo })];
+      const cellQtd = sheet[XLSX.utils.encode_cell({ r: R, c: colQuantidade })];
+      const codigo = cellArtigo && cellArtigo.v != null ? String(cellArtigo.v).trim() : '';
+      const qtdStr = cellQtd && cellQtd.v != null ? String(cellQtd.v).trim() : '';
+      if (!codigo || !qtdStr) continue;
+
+      const quantidade = parseInt(qtdStr, 10);
+      if (!quantidade || quantidade <= 0) continue;
+
+      const itemRes = await pool.query('SELECT id FROM itens WHERE codigo = $1', [codigo]);
+      if (itemRes.rows.length === 0) {
+        // Ignorar artigos não cadastrados nesta importação
+        continue;
+      }
+      itens.push({ item_id: itemRes.rows[0].id, quantidade });
+    }
+
+    if (itens.length === 0) {
+      return res.status(400).json({ error: 'Nenhum item válido encontrado na planilha.' });
+    }
+
+    // 4) Criar requisição usando a mesma lógica da rota normal
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const reqResult = await client.query(`
+        INSERT INTO requisicoes (armazem_origem_id, armazem_id, observacoes, usuario_id, status)
+        VALUES ($1, $2, $3, $4, 'pendente')
+        RETURNING *
+      `, [armazemOrigemId || null, armazemDestinoId, 'Importada de Excel', req.user.userId]);
+
+      const requisicaoId = reqResult.rows[0].id;
+
+      for (const item of itens) {
+        await client.query(`
+          INSERT INTO requisicoes_itens (requisicao_id, item_id, quantidade)
+          VALUES ($1, $2, $3)
+          ON CONFLICT (requisicao_id, item_id)
+          DO UPDATE SET quantidade = EXCLUDED.quantidade
+        `, [requisicaoId, item.item_id, item.quantidade]);
+      }
+
+      await client.query('COMMIT');
+
+      res.status(201).json({ requisicao_id: requisicaoId });
+    } catch (e) {
+      await client.query('ROLLBACK');
+      console.error('Erro ao criar requisição via Excel:', e);
+      res.status(500).json({ error: 'Erro ao criar requisição via Excel', details: e.message });
+    } finally {
+      client.release();
+    }
+  } catch (error) {
+    console.error('Erro ao importar requisição Excel:', error);
+    res.status(500).json({ error: 'Erro ao importar requisição Excel', details: error.message });
   }
 });
 
@@ -4909,7 +5163,7 @@ app.put('/api/requisicoes/:id', authenticateToken, async (req, res) => {
 app.patch('/api/requisicoes/:id/atender-item', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
-    const { requisicao_item_id, quantidade_preparada, localizacao_origem, localizacao_destino } = req.body;
+    const { requisicao_item_id, quantidade_preparada, localizacao_origem, localizacao_destino, lote, serialnumber, bobinas } = req.body;
 
     if (!requisicao_item_id || quantidade_preparada === undefined || quantidade_preparada < 0) {
       return res.status(400).json({ error: 'requisicao_item_id e quantidade_preparada são obrigatórios (use 0 se não tiver o item).' });
@@ -4932,7 +5186,10 @@ app.patch('/api/requisicoes/:id/atender-item', authenticateToken, async (req, re
     // pendente e separado: permitido (preparar ou editar item)
 
     const itemCheck = await pool.query(
-      'SELECT * FROM requisicoes_itens WHERE id = $1 AND requisicao_id = $2',
+      `SELECT ri.*, i.tipocontrolo 
+       FROM requisicoes_itens ri
+       INNER JOIN itens i ON ri.item_id = i.id
+       WHERE ri.id = $1 AND ri.requisicao_id = $2`,
       [requisicao_item_id, id]
     );
     if (itemCheck.rows.length === 0) {
@@ -4943,17 +5200,56 @@ app.patch('/api/requisicoes/:id/atender-item', authenticateToken, async (req, re
       return res.status(400).json({ error: `Quantidade preparada não pode exceder ${item.quantidade}` });
     }
 
+    // Validar Lote/Serial/Bobinas conforme tipo de controlo do item
+    const tipoControlo = (item.tipocontrolo || '').toUpperCase();
+    if (tipoControlo === 'LOTE' && Array.isArray(bobinas)) {
+      if (bobinas.length === 0) {
+        return res.status(400).json({ error: `Item ${item.item_id} é controlado por LOTE. Informe pelo menos uma bobina.` });
+      }
+      for (const b of bobinas) {
+        const loteB = (b.lote || '').trim();
+        const metros = Number(b.metros);
+        if (!loteB || !metros || metros <= 0) {
+          return res.status(400).json({ error: `Toda bobina do item ${item.item_id} deve ter lote e metragem > 0.` });
+        }
+      }
+    } else {
+      if (tipoControlo === 'LOTE' && (!lote || String(lote).trim() === '')) {
+        return res.status(400).json({ error: `Item ${item.item_id} é controlado por LOTE. Informe o lote na preparação.` });
+      }
+      if (tipoControlo === 'S/N' && (!serialnumber || String(serialnumber).trim() === '')) {
+        return res.status(400).json({ error: `Item ${item.item_id} é controlado por número de série. Informe o Serial number na preparação.` });
+      }
+    }
+
     // Localização destino é sempre EXPEDICAO (automático)
     const localizacaoDestinoFinal = 'EXPEDICAO';
 
     const updateQuery = `
       UPDATE requisicoes_itens 
-      SET quantidade_preparada = $1, localizacao_destino = $2, localizacao_origem = $3, preparacao_confirmada = true
-      WHERE id = $4`;
-    const params = [quantidade_preparada, localizacaoDestinoFinal, locOrigem, requisicao_item_id];
+      SET quantidade_preparada = $1, 
+          localizacao_destino = $2, 
+          localizacao_origem = $3, 
+          lote = COALESCE($4, lote),
+          serialnumber = COALESCE($5, serialnumber),
+          preparacao_confirmada = true
+      WHERE id = $6`;
+    const params = [quantidade_preparada, localizacaoDestinoFinal, locOrigem, lote || null, serialnumber || null, requisicao_item_id];
 
     try {
       await pool.query(updateQuery, params);
+
+      // Se houver bobinas para itens de lote, registrar detalhamento por bobina
+      if (tipoControlo === 'LOTE' && Array.isArray(bobinas)) {
+        await pool.query('DELETE FROM requisicoes_itens_bobinas WHERE requisicao_item_id = $1', [requisicao_item_id]);
+        for (const b of bobinas) {
+          await pool.query(
+            `INSERT INTO requisicoes_itens_bobinas (requisicao_item_id, lote, serialnumber, metros)
+             VALUES ($1, $2, $3, $4)`,
+            [requisicao_item_id, (b.lote || '').trim(), (b.serialnumber || null), Number(b.metros)]
+          );
+        }
+      }
     } catch (e) {
       if (e.code === '42703') {
         return res.status(503).json({

@@ -27,7 +27,13 @@ const migrationFile = path.join(
         ? 'migrate-requisicoes-itens-preparacao-confirmada.sql'
         : arg === 'armazens-tipo'
           ? 'migrate-armazens-tipo-central-viatura.sql'
-          : 'migrate-requisicoes-itens-preparacao.sql'
+          : arg === 'lote'
+            ? 'migrate-requisicoes-itens-lote.sql'
+            : arg === 'serial'
+              ? 'migrate-requisicoes-itens-serial.sql'
+              : arg === 'bobinas'
+                ? 'migrate-requisicoes-itens-bobinas.sql'
+                : 'migrate-requisicoes-itens-preparacao.sql'
 );
 
 async function run() {

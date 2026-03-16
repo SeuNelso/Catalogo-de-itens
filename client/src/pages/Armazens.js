@@ -22,7 +22,7 @@ const Armazens = () => {
   const [expandedId, setExpandedId] = useState(null);
   const { user } = useAuth();
   const confirm = useConfirm();
-  const isAdmin = user && user.role === 'admin';
+  const canManageArmazens = user && (user.role === 'admin' || user.role === 'backoffice_armazem');
 
   useEffect(() => {
     fetchArmazens();
@@ -231,7 +231,7 @@ const Armazens = () => {
             <h1 className="text-2xl sm:text-3xl font-bold text-gray-800 mb-2">Armazéns</h1>
             <p className="text-gray-600">Cadastre e gerencie os armazéns de destino das requisições</p>
           </div>
-          {isAdmin && (
+          {canManageArmazens && (
             <button
               type="button"
               onClick={() => {
@@ -246,7 +246,7 @@ const Armazens = () => {
           )}
         </div>
 
-        {isAdmin && mostrarForm && (
+        {canManageArmazens && mostrarForm && (
           <div className="bg-white rounded-lg shadow-sm p-6 mb-6">
             {loadingEdit ? (
               <div className="flex items-center gap-2 text-gray-600 py-4">
@@ -441,7 +441,7 @@ const Armazens = () => {
             <div className="p-8 text-center text-gray-500">
               <FaWarehouse className="mx-auto text-4xl text-gray-300 mb-4" />
               <p className="text-lg">Nenhum armazém cadastrado</p>
-              {isAdmin && (
+              {canManageArmazens && (
                 <button
                   type="button"
                   onClick={() => setMostrarForm(true)}
@@ -484,7 +484,7 @@ const Armazens = () => {
                           </span>
                         )}
                       </button>
-                      {isAdmin && (
+                      {canManageArmazens && (
                         <div className="flex gap-2" onClick={(e) => e.stopPropagation()}>
                           <button
                             type="button"

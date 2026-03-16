@@ -18,6 +18,9 @@ const Navbar = () => {
 
   const isAdmin = user && user.role === 'admin';
   const isController = user && (user.role === 'admin' || user.role === 'controller');
+  const canSeeRequisicoes = user && ['admin', 'controller', 'operador', 'backoffice_operations', 'backoffice_armazem'].includes(user.role);
+  const isBackofficeArmazem = user && user.role === 'backoffice_armazem';
+  const showGerirMenu = isAdmin || isBackofficeArmazem;
 
   // Fechar menu mobile ao navegar
   const handleNavigation = () => {
@@ -160,7 +163,7 @@ const Navbar = () => {
                   Catálogo
                 </Link>
               </div>
-              {(isAdmin || isController) && (
+              {canSeeRequisicoes && (
                 <div className="relative font-medium text-sm lg:text-base uppercase tracking-wider text-white cursor-pointer flex items-center px-2 lg:px-3 xl:px-4 h-12 min-w-12 lg:min-w-14 xl:min-w-16 rounded-lg transition-all duration-200 hover:bg-white/10 hover:text-yellow-400">
                   <Link to="/requisicoes" className="text-inherit no-underline px-0.5 font-semibold w-full h-full flex items-center justify-center">
                     Requisições
@@ -169,7 +172,7 @@ const Navbar = () => {
               )}
             </>
           )}
-          {isAdmin && (
+          {showGerirMenu && (
             <div 
               className="relative inline-block gerir-dropdown"
               onMouseEnter={() => setIsInteracting(true)}
@@ -185,102 +188,53 @@ const Navbar = () => {
               </button>
               {gerirOpen && (
                 <div className="absolute top-full left-0 bg-[#0915FF] border border-gray-200 rounded-lg shadow-lg min-w-48 lg:min-w-56 xl:min-w-64 z-50 p-2 -mt-1 pt-2">
-                  {/* Seção: Gestão de Artigos */}
-                  <div className="mb-3">
-                    <div className="text-xs text-white/70 font-medium px-3 py-1 uppercase tracking-wider">Gestão de Artigos</div>
-                    <div className="flex flex-col gap-1">
-                      <Link 
-                        to="/cadastrar" 
-                        onClick={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          setGerirOpen(false);
-                          setTimeout(() => {
-                            navigate('/cadastrar');
-                          }, 100);
-                        }} 
-                        className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded"
-                      >
-                        <Plus size={14} className="lg:w-4 lg:h-4" />
-                        Criar Artigo
-                      </Link>
-                      <Link 
-                        to="/excluir-artigo" 
-                        onClick={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          setGerirOpen(false);
-                          setTimeout(() => {
-                            navigate('/excluir-artigo');
-                          }, 100);
-                        }} 
-                        className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded"
-                      >
-                        <Trash2 size={14} className="lg:w-4 lg:h-4" />
-                        Excluir Artigo
-                      </Link>
-                      {(isAdmin || isController) && (
-                        <Link 
-                          to="/itens-nao-cadastrados" 
-                          onClick={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            setGerirOpen(false);
-                            setTimeout(() => {
-                              navigate('/itens-nao-cadastrados');
-                            }, 100);
-                          }} 
-                          className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded"
-                        >
-                          <AlertTriangle size={14} className="lg:w-4 lg:h-4" />
-                          Itens Não Cadastrados
+                  {isAdmin && (
+                    <>
+                      <div className="mb-3">
+                        <div className="text-xs text-white/70 font-medium px-3 py-1 uppercase tracking-wider">Gestão de Artigos</div>
+                        <div className="flex flex-col gap-1">
+                          <Link to="/cadastrar" onClick={(e) => { e.preventDefault(); e.stopPropagation(); setGerirOpen(false); setTimeout(() => navigate('/cadastrar'), 100); }} className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded">
+                            <Plus size={14} className="lg:w-4 lg:h-4" /> Criar Artigo
+                          </Link>
+                          <Link to="/excluir-artigo" onClick={(e) => { e.preventDefault(); e.stopPropagation(); setGerirOpen(false); setTimeout(() => navigate('/excluir-artigo'), 100); }} className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded">
+                            <Trash2 size={14} className="lg:w-4 lg:h-4" /> Excluir Artigo
+                          </Link>
+                          <Link to="/itens-nao-cadastrados" onClick={(e) => { e.preventDefault(); e.stopPropagation(); setGerirOpen(false); setTimeout(() => navigate('/itens-nao-cadastrados'), 100); }} className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded">
+                            <AlertTriangle size={14} className="lg:w-4 lg:h-4" /> Itens Não Cadastrados
+                          </Link>
+                        </div>
+                      </div>
+                      <div className="border-t border-white/10 pt-3">
+                        <div className="text-xs text-white/70 font-medium px-3 py-1 uppercase tracking-wider">Armazéns</div>
+                        <div className="flex flex-col gap-1">
+                          <Link to="/armazens" onClick={(e) => { e.preventDefault(); e.stopPropagation(); setGerirOpen(false); setTimeout(() => navigate('/armazens'), 100); }} className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded">
+                            <Archive size={14} className="lg:w-4 lg:h-4" /> Armazéns
+                          </Link>
+                        </div>
+                      </div>
+                      <div className="border-t border-white/10 pt-3">
+                        <div className="text-xs text-white/70 font-medium px-3 py-1 uppercase tracking-wider">Gestão de Usuários</div>
+                        <div className="flex flex-col gap-1">
+                          <Link to="/admin-usuarios" onClick={(e) => { e.preventDefault(); e.stopPropagation(); setGerirOpen(false); setTimeout(() => navigate('/admin-usuarios'), 100); }} className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded">
+                            <Users size={14} className="lg:w-4 lg:h-4" /> Usuários
+                          </Link>
+                        </div>
+                      </div>
+                    </>
+                  )}
+                  {isBackofficeArmazem && (
+                    <div className="mb-3">
+                      <div className="text-xs text-white/70 font-medium px-3 py-1 uppercase tracking-wider">Armazém</div>
+                      <div className="flex flex-col gap-1">
+                        <Link to="/itens-nao-cadastrados" onClick={(e) => { e.preventDefault(); e.stopPropagation(); setGerirOpen(false); setTimeout(() => navigate('/itens-nao-cadastrados'), 100); }} className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded">
+                          <AlertTriangle size={14} className="lg:w-4 lg:h-4" /> Itens Não Cadastrados
                         </Link>
-                      )}
+                        <Link to="/armazens" onClick={(e) => { e.preventDefault(); e.stopPropagation(); setGerirOpen(false); setTimeout(() => navigate('/armazens'), 100); }} className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded">
+                          <Archive size={14} className="lg:w-4 lg:h-4" /> Armazéns
+                        </Link>
+                      </div>
                     </div>
-                  </div>
-                  
-                  {/* Seção: Gestão de Armazéns */}
-                  <div className="border-t border-white/10 pt-3">
-                    <div className="text-xs text-white/70 font-medium px-3 py-1 uppercase tracking-wider">Armazéns</div>
-                    <div className="flex flex-col gap-1">
-                      <Link 
-                        to="/armazens" 
-                        onClick={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          setGerirOpen(false);
-                          setTimeout(() => {
-                            navigate('/armazens');
-                          }, 100);
-                        }} 
-                        className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded"
-                      >
-                        <Archive size={14} className="lg:w-4 lg:h-4" />
-                        Armazéns
-                      </Link>
-                    </div>
-                  </div>
-                  {/* Seção: Gestão de Usuários */}
-                  <div className="border-t border-white/10 pt-3">
-                    <div className="text-xs text-white/70 font-medium px-3 py-1 uppercase tracking-wider">Gestão de Usuários</div>
-                    <div className="flex flex-col gap-1">
-                      <Link 
-                        to="/admin-usuarios" 
-                        onClick={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          setGerirOpen(false);
-                          setTimeout(() => {
-                            navigate('/admin-usuarios');
-                          }, 100);
-                        }} 
-                        className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded"
-                      >
-                        <Users size={14} className="lg:w-4 lg:h-4" />
-                        Usuários
-                      </Link>
-                    </div>
-                  </div>
+                  )}
                 </div>
               )}
             </div>
@@ -524,7 +478,7 @@ const Navbar = () => {
                   Catálogo
                 </Link>
               </div>
-              {(isAdmin || isController) && (
+              {canSeeRequisicoes && (
                 <div className="w-[85vw] sm:w-[90vw] py-3 sm:py-4.5 px-0 h-auto rounded-xl text-center text-base sm:text-lg font-semibold bg-white/8 m-0 mb-1 sm:mb-0.5 transition-all duration-200">
                   <Link to="/requisicoes" onClick={(e) => handleMobileNavigation('/requisicoes', e)} className="text-white no-underline font-semibold w-full h-full flex items-center justify-center">
                     <ShoppingCart size={16} className="inline mr-2 sm:mr-3" />
@@ -534,13 +488,11 @@ const Navbar = () => {
               )}
             </>
           )}
-          {isAdmin && (
+          {showGerirMenu && (
             <div className="relative w-full gerir-dropdown">
               <button 
                 className="w-full justify-between py-3 sm:py-4 px-4 sm:px-5 bg-transparent border-none text-white font-semibold text-sm sm:text-base cursor-pointer flex items-center gap-2 transition-colors duration-200 rounded-lg"
-                onClick={() => {
-                  setGerirOpen(!gerirOpen);
-                }}
+                onClick={() => setGerirOpen(!gerirOpen)}
               >
                 <div className="flex items-center gap-2">
                   <Settings size={14} className="sm:w-4 sm:h-4" />
@@ -550,48 +502,53 @@ const Navbar = () => {
               </button>
               {gerirOpen && (
                 <div className="static shadow-none border-none bg-white/5 m-0 p-0 rounded-none">
-                  {/* Seção: Gestão de Artigos */}
-                  <div className="border-b border-white/10 pb-3 mb-3">
-                    <div className="text-xs text-white/70 font-medium px-4 sm:px-5 py-2 uppercase tracking-wider">Gestão de Artigos</div>
-                    <div className="flex flex-col">
-                      <Link to="/cadastrar" onClick={handleNavigation} className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10">
-                        <Plus size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" />
-                        Criar Artigo
-                      </Link>
-                      <Link to="/excluir-artigo" onClick={handleNavigation} className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10">
-                        <Trash2 size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" />
-                        Excluir Artigo
-                      </Link>
-                      {(isAdmin || isController) && (
+                  {isAdmin && (
+                    <>
+                      <div className="border-b border-white/10 pb-3 mb-3">
+                        <div className="text-xs text-white/70 font-medium px-4 sm:px-5 py-2 uppercase tracking-wider">Gestão de Artigos</div>
+                        <div className="flex flex-col">
+                          <Link to="/cadastrar" onClick={handleNavigation} className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10">
+                            <Plus size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" /> Criar Artigo
+                          </Link>
+                          <Link to="/excluir-artigo" onClick={handleNavigation} className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10">
+                            <Trash2 size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" /> Excluir Artigo
+                          </Link>
+                          <Link to="/itens-nao-cadastrados" onClick={handleNavigation} className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10">
+                            <AlertTriangle size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" /> Itens Não Cadastrados
+                          </Link>
+                        </div>
+                      </div>
+                      <div className="border-t border-white/10 pt-3">
+                        <div className="text-xs text-white/70 font-medium px-4 sm:px-5 py-2 uppercase tracking-wider">Armazéns</div>
+                        <div className="flex flex-col">
+                          <Link to="/armazens" onClick={handleNavigation} className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10">
+                            <Archive size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" /> Armazéns
+                          </Link>
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-white/70 font-medium px-4 sm:px-5 py-2 uppercase tracking-wider">Gestão de Usuários</div>
+                        <div className="flex flex-col">
+                          <Link to="/admin-usuarios" onClick={handleNavigation} className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10">
+                            <Users size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" /> Usuários
+                          </Link>
+                        </div>
+                      </div>
+                    </>
+                  )}
+                  {isBackofficeArmazem && (
+                    <div>
+                      <div className="text-xs text-white/70 font-medium px-4 sm:px-5 py-2 uppercase tracking-wider">Armazém</div>
+                      <div className="flex flex-col">
                         <Link to="/itens-nao-cadastrados" onClick={handleNavigation} className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10">
-                          <AlertTriangle size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" />
-                          Itens Não Cadastrados
+                          <AlertTriangle size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" /> Itens Não Cadastrados
                         </Link>
-                      )}
+                        <Link to="/armazens" onClick={handleNavigation} className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10">
+                          <Archive size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" /> Armazéns
+                        </Link>
+                      </div>
                     </div>
-                  </div>
-                  
-                  {/* Seção: Armazéns */}
-                  <div className="border-t border-white/10 pt-3">
-                    <div className="text-xs text-white/70 font-medium px-4 sm:px-5 py-2 uppercase tracking-wider">Armazéns</div>
-                    <div className="flex flex-col">
-                      <Link to="/armazens" onClick={handleNavigation} className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10">
-                        <Archive size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" />
-                        Armazéns
-                      </Link>
-                    </div>
-                  </div>
-                  
-                  {/* Seção: Gestão de Usuários */}
-                  <div>
-                    <div className="text-xs text-white/70 font-medium px-4 sm:px-5 py-2 uppercase tracking-wider">Gestão de Usuários</div>
-                    <div className="flex flex-col">
-                      <Link to="/admin-usuarios" onClick={handleNavigation} className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10">
-                        <Users size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" />
-                        Usuários
-                      </Link>
-                    </div>
-                  </div>
+                  )}
                 </div>
               )}
             </div>

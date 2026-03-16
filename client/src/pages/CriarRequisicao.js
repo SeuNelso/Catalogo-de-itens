@@ -113,7 +113,10 @@ const CriarRequisicao = () => {
       // Atualizar quantidade do item existente
       setItensRequisicao(itensRequisicao.map(ri => 
         ri.item_id === itemSelecionado.id 
-          ? { ...ri, quantidade: parseInt(quantidadeAtual) }
+          ? { 
+              ...ri, 
+              quantidade: parseInt(quantidadeAtual)
+            }
           : ri
       ));
     } else {

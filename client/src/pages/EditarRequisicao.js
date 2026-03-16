@@ -26,7 +26,7 @@ const EditarRequisicao = () => {
   const [quantidadeAtual, setQuantidadeAtual] = useState('');
   const navigate = useNavigate();
   const { user } = useAuth();
-  const canEdit = user && (user.role === 'admin' || user.role === 'controller');
+  const canEdit = user && ['admin', 'controller', 'backoffice_operations', 'backoffice_armazem'].includes(user.role);
 
   useEffect(() => {
     fetchRequisicao();

@@ -3,7 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useConfirm } from '../contexts/ConfirmContext';
 import Toast from '../components/Toast';
-import { FaSearch, FaPlus, FaEdit, FaTrash, FaFilter, FaBoxOpen, FaChevronDown, FaChevronUp, FaCheck } from 'react-icons/fa';
+import { FaSearch, FaPlus, FaEdit, FaTrash, FaFilter, FaBoxOpen, FaChevronDown, FaChevronUp, FaCheck, FaFileImport } from 'react-icons/fa';
 
 const ListarRequisicoes = () => {
   const [requisicoes, setRequisicoes] = useState([]);
@@ -20,7 +20,9 @@ const ListarRequisicoes = () => {
   const navigate = useNavigate();
   const { user } = useAuth();
   const confirm = useConfirm();
-  const canEdit = user && (user.role === 'admin' || user.role === 'controller');
+  const canCreateOrEdit = user && ['admin', 'controller', 'backoffice_operations', 'backoffice_armazem'].includes(user.role);
+  const canDelete = user && ['admin', 'controller', 'backoffice_armazem'].includes(user.role);
+  const canPrepare = user && ['admin', 'controller', 'operador', 'backoffice_armazem'].includes(user.role);
 
   useEffect(() => {
     fetchArmazens();
@@ -230,13 +232,22 @@ const ListarRequisicoes = () => {
             <h1 className="text-2xl sm:text-3xl font-bold text-gray-800 mb-2">Requisições</h1>
             <p className="text-gray-600">Lista de requisições. Clique em uma para preparar e atender os itens.</p>
           </div>
-          {canEdit && (
-            <Link
-              to="/requisicoes/criar"
-              className="inline-flex items-center gap-2 px-4 py-2 bg-[#0915FF] text-white rounded-lg hover:bg-[#070FCC] transition-colors"
-            >
-              <FaPlus /> Nova Requisição
-            </Link>
+          {canCreateOrEdit && (
+            <div className="flex flex-wrap gap-2 justify-end">
+              <button
+                type="button"
+                onClick={() => navigate('/requisicoes/importar')}
+                className="inline-flex items-center gap-2 px-4 py-2 border border-blue-300 text-blue-700 rounded-lg hover:bg-blue-50 transition-colors text-sm"
+              >
+                <FaFileImport /> Importar requisição
+              </button>
+              <Link
+                to="/requisicoes/criar"
+                className="inline-flex items-center gap-2 px-4 py-2 bg-[#0915FF] text-white rounded-lg hover:bg-[#070FCC] transition-colors"
+              >
+                <FaPlus /> Nova Requisição
+              </Link>
+            </div>
           )}
         </div>
 
@@ -306,7 +317,7 @@ const ListarRequisicoes = () => {
         {filteredRequisicoes.length === 0 ? (
           <div className="bg-white rounded-lg shadow-sm p-8 text-center">
             <p className="text-gray-500 text-lg">Nenhuma requisição encontrada</p>
-            {canEdit && (
+            {canCreateOrEdit && (
               <Link
                 to="/requisicoes/criar"
                 className="mt-4 inline-block text-[#0915FF] hover:underline"
@@ -343,7 +354,7 @@ const ListarRequisicoes = () => {
                               {req.itens.length} {req.itens.length === 1 ? 'item' : 'itens'} — clique para {expandedId === req.id ? 'recolher' : 'ver'}
                             </span>
                           )}
-                          {req.status === 'pendente' && canEdit && (
+                          {req.status === 'pendente' && canPrepare && (
                             <span className="text-xs text-[#0915FF] flex items-center gap-1">
                               <FaBoxOpen /> Use o botão Preparar abaixo
                             </span>
@@ -368,7 +379,7 @@ const ListarRequisicoes = () => {
                       </div>
                     </div>
                   <div className="flex gap-2 mt-4 sm:mt-0 flex-wrap" onClick={(e) => e.stopPropagation()}>
-                    {(req.status === 'separado' && req.separacao_confirmada) || req.status === 'EM EXPEDICAO' || req.status === 'Entregue' ? (
+                    {canPrepare && ((req.status === 'separado' && req.separacao_confirmada) || req.status === 'EM EXPEDICAO' || req.status === 'Entregue') ? (
                       <button
                         onClick={() => handleExportTRFL(req.id)}
                         className="px-3 py-2 text-blue-700 hover:bg-blue-50 rounded-lg border border-blue-300 transition-colors"
@@ -377,7 +388,7 @@ const ListarRequisicoes = () => {
                         {req.status === 'separado' ? 'Baixar TRFL' : 'TRFL (baixar novamente)'}
                       </button>
                     ) : null}
-                    {(req.status === 'EM EXPEDICAO' || req.status === 'Entregue') && (
+                    {canPrepare && (req.status === 'EM EXPEDICAO' || req.status === 'Entregue') && (
                       <button
                         onClick={() => handleExportTRA(req.id)}
                         className="px-3 py-2 text-indigo-700 hover:bg-indigo-50 rounded-lg border border-indigo-300 transition-colors"
@@ -386,8 +397,8 @@ const ListarRequisicoes = () => {
                         {req.status === 'EM EXPEDICAO' ? 'Baixar TRA' : 'TRA (baixar novamente)'}
                       </button>
                     )}
-                    {req.status === 'separado' && !req.separacao_confirmada && canEdit && (
-                      <button
+                    {req.status === 'separado' && !req.separacao_confirmada && canPrepare && (
+                        <button
                         onClick={() => handleConfirmarSeparacao(req.id)}
                         className="px-3 py-2 bg-emerald-600 text-white hover:bg-emerald-700 rounded-lg transition-colors flex items-center gap-2"
                         title="Confirmar que os itens foram recolhidos (obrigatório antes de TRFL)"
@@ -395,15 +406,15 @@ const ListarRequisicoes = () => {
                         <FaCheck /> Confirmar separação
                       </button>
                     )}
-                    {req.status === 'pendente' && canEdit && (
-                      <button
+                    {req.status === 'pendente' && canPrepare && (
+                        <button
                         onClick={() => navigate(`/requisicoes/preparar/${req.id}`)}
                         className="px-3 py-2 bg-green-600 text-white hover:bg-green-700 rounded-lg transition-colors flex items-center gap-2"
                       >
                         <FaBoxOpen /> Preparar
                       </button>
                     )}
-                    {req.status === 'pendente' && canEdit && (
+                    {req.status === 'pendente' && canCreateOrEdit && (
                       <button
                         onClick={() => navigate(`/requisicoes/editar/${req.id}`)}
                         className="px-3 py-2 text-[#0915FF] hover:bg-[#0915FF] hover:text-white rounded-lg transition-colors"
@@ -412,7 +423,7 @@ const ListarRequisicoes = () => {
                         <FaEdit />
                       </button>
                     )}
-                    {canEdit && (
+                    {canDelete && (
                       <button
                         onClick={() => handleDelete(req.id)}
                         className="px-3 py-2 text-red-600 hover:bg-red-600 hover:text-white rounded-lg transition-colors"
