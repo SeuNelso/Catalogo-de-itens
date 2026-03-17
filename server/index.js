@@ -4324,21 +4324,30 @@ app.get('/api/requisicoes/:id/export-excel', authenticateToken, async (req, res)
     const codigoOrigem = requisicao.armazem_origem_codigo || '';
     const codigoDestino = requisicao.armazem_destino_codigo || '';
 
-    const rows = (requisicao.itens || []).map(ri => ({
-      Date: dateStr,
-      OriginWarehouse: codigoOrigem,
-      OriginLocation: ri.localizacao_origem || '',
-      Article: String(ri.item_codigo || ''),
-      Quatity: parseInt(ri.quantidade_preparada ?? ri.quantidade, 10) || 0,
-      SerialNumber1: '',
-      SerialNumber2: '',
-      MacAddress: '',
-      CentroCusto: '',
-      DestinationWarehouse: codigoDestino,
-      DestinationLocation: ri.localizacao_destino || codigoDestino,
-      ProjectCode: '',
-      Batch: ''
-    }));
+    const rows = (requisicao.itens || [])
+      .map(ri => {
+        const qtyBase = ri.quantidade_preparada !== null && ri.quantidade_preparada !== undefined
+          ? ri.quantidade_preparada
+          : ri.quantidade;
+        const qty = parseInt(qtyBase, 10) || 0;
+        if (qty <= 0) return null;
+        return {
+          Date: dateStr,
+          OriginWarehouse: codigoOrigem,
+          OriginLocation: ri.localizacao_origem || '',
+          Article: String(ri.item_codigo || ''),
+          Quatity: qty,
+          SerialNumber1: '',
+          SerialNumber2: '',
+          MacAddress: '',
+          CentroCusto: '',
+          DestinationWarehouse: codigoDestino,
+          DestinationLocation: ri.localizacao_destino || codigoDestino,
+          ProjectCode: '',
+          Batch: ''
+        };
+      })
+      .filter(Boolean);
 
     const wb = XLSX.utils.book_new();
     const ws = XLSX.utils.json_to_sheet(rows.length ? rows : [{
@@ -4480,12 +4489,14 @@ app.get('/api/requisicoes/:id/export-trfl', authenticateToken, async (req, res) 
       const temBobinas = bobinas.some(b => b.item_id === ri.item_id);
       if (tipoControlo === 'LOTE' && temBobinas) continue;
 
+      const qty = parseInt(ri.quantidade_preparada ?? ri.quantidade, 10) || 0;
+      if (qty <= 0) continue;
       rows.push({
         Date: dateStr,
         OriginWarehouse: codigoOrigem,
         OriginLocation: ri.localizacao_origem || '',
         Article: String(ri.item_codigo || ''),
-        Quatity: parseInt(ri.quantidade_preparada ?? ri.quantidade, 10) || 0,
+        Quatity: qty,
         SerialNumber1: ri.serialnumber || '', SerialNumber2: '', MacAddress: '', CentroCusto: '',
         DestinationWarehouse: codigoOrigem,
         DestinationLocation: localizacaoExpedicao,
@@ -4501,6 +4512,115 @@ app.get('/api/requisicoes/:id/export-trfl', authenticateToken, async (req, res) 
   } catch (error) {
     console.error('Erro ao exportar TRFL:', error);
     res.status(500).json({ error: 'Erro ao exportar TRFL', details: error.message });
+  }
+});
+
+// TRFL combinado — várias requisições em um único ficheiro
+app.post('/api/requisicoes/export-trfl-multi', authenticateToken, async (req, res) => {
+  try {
+    const { ids } = req.body || {};
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ error: 'Envie um array de IDs de requisições.' });
+    }
+
+    let allRows = [];
+
+    for (const rawId of ids) {
+      const id = parseInt(rawId, 10);
+      if (!id) continue;
+      const requisicao = await getRequisicaoComItens(id);
+      if (!requisicao) continue;
+      if (!requisicao.separacao_confirmada) continue;
+      if (!['separado', 'EM EXPEDICAO', 'Entregue'].includes(requisicao.status)) continue;
+      if (!requisicao.armazem_origem_id) continue;
+
+      const armazemOrigem = await pool.query('SELECT id, codigo, tipo FROM armazens WHERE id = $1', [requisicao.armazem_origem_id]);
+      if (armazemOrigem.rows.length === 0) continue;
+      const ao = armazemOrigem.rows[0];
+      const tipoOrigem = (ao.tipo || '').toLowerCase();
+      if (tipoOrigem !== 'central') continue;
+
+      let localizacaoExpedicao = LOCALIZACAO_EXPEDICAO_FALLBACK;
+      const locExp = await pool.query(
+        `SELECT localizacao FROM armazens_localizacoes WHERE armazem_id = $1 AND LOWER(COALESCE(tipo_localizacao, '')) = 'expedicao' ORDER BY id LIMIT 1`,
+        [requisicao.armazem_origem_id]
+      );
+      if (locExp.rows.length > 0 && locExp.rows[0].localizacao) {
+        localizacaoExpedicao = locExp.rows[0].localizacao;
+      }
+
+      const codigoOrigem = ao.codigo || 'E';
+      const dataFormat = new Date(requisicao.created_at);
+      const dateStr = `${String(dataFormat.getDate()).padStart(2, '0')}/${String(dataFormat.getMonth() + 1).padStart(2, '0')}/${dataFormat.getFullYear()}`;
+
+      let bobinas = [];
+      try {
+        const bobinasResult = await pool.query(`
+          SELECT b.*, ri.item_id, i.codigo as item_codigo
+          FROM requisicoes_itens_bobinas b
+          INNER JOIN requisicoes_itens ri ON b.requisicao_item_id = ri.id
+          INNER JOIN itens i ON ri.item_id = i.id
+          WHERE ri.requisicao_id = $1
+        `, [id]);
+        bobinas = bobinasResult.rows;
+      } catch (_) {
+        bobinas = [];
+      }
+
+      const rows = [];
+
+      for (const b of bobinas) {
+        rows.push({
+          Date: dateStr,
+          OriginWarehouse: codigoOrigem,
+          OriginLocation: requisicao.itens.find(it => it.item_id === b.item_id)?.localizacao_origem || '',
+          Article: String(b.item_codigo || ''),
+          Quatity: Number(b.metros) || 0,
+          SerialNumber1: b.serialnumber || '', SerialNumber2: '', MacAddress: '', CentroCusto: '',
+          DestinationWarehouse: codigoOrigem,
+          DestinationLocation: localizacaoExpedicao,
+          ProjectCode: '',
+          Batch: b.lote || ''
+        });
+      }
+
+      for (const ri of requisicao.itens || []) {
+        const tipoControlo = (ri.tipocontrolo || '').toUpperCase();
+        const temBobinas = bobinas.some(b => b.item_id === ri.item_id);
+        if (tipoControlo === 'LOTE' && temBobinas) continue;
+        const qty = parseInt(ri.quantidade_preparada ?? ri.quantidade, 10) || 0;
+        if (qty <= 0) continue;
+
+        rows.push({
+          Date: dateStr,
+          OriginWarehouse: codigoOrigem,
+          OriginLocation: ri.localizacao_origem || '',
+          Article: String(ri.item_codigo || ''),
+          Quatity: qty,
+          SerialNumber1: ri.serialnumber || '', SerialNumber2: '', MacAddress: '', CentroCusto: '',
+          DestinationWarehouse: codigoOrigem,
+          DestinationLocation: localizacaoExpedicao,
+          ProjectCode: '',
+          Batch: ri.lote || ''
+        });
+      }
+
+      if (rows.length > 0) {
+        allRows = allRows.concat(rows);
+        if (requisicao.status === 'separado') {
+          await pool.query('UPDATE requisicoes SET status = $1 WHERE id = $2', ['EM EXPEDICAO', id]);
+        }
+      }
+    }
+
+    if (allRows.length === 0) {
+      return res.status(400).json({ error: 'Nenhuma requisição válida para exportar TRFL combinado.' });
+    }
+
+    buildExcelTransferencia(allRows, res, `TRFL_multi_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  } catch (error) {
+    console.error('Erro ao exportar TRFL multi:', error);
+    res.status(500).json({ error: 'Erro ao exportar TRFL combinado', details: error.message });
   }
 });
 
@@ -4614,12 +4734,18 @@ app.get('/api/requisicoes/:id/export-tra', authenticateToken, async (req, res) =
       const temBobinas = bobinas.some(b => b.item_id === ri.item_id);
       if (tipoControlo === 'LOTE' && temBobinas) continue;
 
+      const qtyBase = ri.quantidade_preparada !== null && ri.quantidade_preparada !== undefined
+        ? ri.quantidade_preparada
+        : ri.quantidade;
+      const qty = parseInt(qtyBase, 10) || 0;
+      if (qty <= 0) continue;
+
       rows.push({
         Date: dateStr,
         OriginWarehouse: codigoOrigem,
         OriginLocation: localizacaoOrigemTRA,
         Article: String(ri.item_codigo || ''),
-        Quatity: parseInt(ri.quantidade_preparada ?? ri.quantidade, 10) || 0,
+        Quatity: qty,
         SerialNumber1: ri.serialnumber || '', SerialNumber2: '', MacAddress: '', CentroCusto: '',
         DestinationWarehouse: codigoDestino,
         DestinationLocation: ri.is_ferramenta ? localizacaoFERR : localizacaoNormal,
@@ -4635,6 +4761,154 @@ app.get('/api/requisicoes/:id/export-tra', authenticateToken, async (req, res) =
   } catch (error) {
     console.error('Erro ao exportar TRA:', error);
     res.status(500).json({ error: 'Erro ao exportar TRA', details: error.message });
+  }
+});
+
+// TRA combinado — várias requisições em um único ficheiro
+app.post('/api/requisicoes/export-tra-multi', authenticateToken, async (req, res) => {
+  try {
+    const { ids } = req.body || {};
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ error: 'Envie um array de IDs de requisições.' });
+    }
+
+    let allRows = [];
+
+    for (const rawId of ids) {
+      const id = parseInt(rawId, 10);
+      if (!id) continue;
+      const requisicao = await getRequisicaoComItens(id);
+      if (!requisicao) continue;
+      if (!requisicao.separacao_confirmada) continue;
+      if (!['EM EXPEDICAO', 'Entregue'].includes(requisicao.status)) continue;
+
+      const codigoOrigem = requisicao.armazem_origem_codigo || 'E';
+      const codigoDestino = requisicao.armazem_destino_codigo || '';
+      const armazemDestinoId = requisicao.armazem_id;
+
+      let localizacaoOrigemTRA = LOCALIZACAO_EXPEDICAO_FALLBACK;
+      if (requisicao.armazem_origem_id) {
+        const locExp = await pool.query(
+          `SELECT localizacao FROM armazens_localizacoes WHERE armazem_id = $1 AND LOWER(COALESCE(tipo_localizacao, '')) = 'expedicao' ORDER BY id LIMIT 1`,
+          [requisicao.armazem_origem_id]
+        );
+        if (locExp.rows.length > 0 && locExp.rows[0].localizacao) {
+          localizacaoOrigemTRA = locExp.rows[0].localizacao;
+        }
+      }
+
+      let localizacaoFERR = codigoDestino + '.FERR';
+      let localizacaoNormal = codigoDestino;
+      try {
+        const locResult = await pool.query(
+          'SELECT localizacao FROM armazens_localizacoes WHERE armazem_id = $1 ORDER BY id',
+          [armazemDestinoId]
+        );
+        if (locResult.rows.length > 0) {
+          const locs = locResult.rows.map(r => r.localizacao);
+          const comFerr = locs.find(l => (l || '').toUpperCase().includes('.FERR'));
+          const semFerr = locs.find(l => !(l || '').toUpperCase().includes('.FERR'));
+          if (comFerr) localizacaoFERR = comFerr;
+          if (semFerr) localizacaoNormal = semFerr;
+        }
+      } catch (_) {
+        // fallback já definido
+      }
+
+      let itensComFerramenta = [];
+      try {
+        const itensResult = await pool.query(`
+          SELECT ri.*, i.codigo as item_codigo, i.tipocontrolo,
+            EXISTS (
+              SELECT 1 FROM itens_setores is2
+              WHERE is2.item_id = i.id AND UPPER(TRIM(is2.setor)) = 'FERRAMENTA'
+            ) as is_ferramenta
+          FROM requisicoes_itens ri
+          INNER JOIN itens i ON ri.item_id = i.id
+          WHERE ri.requisicao_id = $1
+          ORDER BY ri.id
+        `, [id]);
+        itensComFerramenta = itensResult.rows;
+      } catch (_) {
+        itensComFerramenta = (requisicao.itens || []).map(ri => ({ ...ri, is_ferramenta: false }));
+      }
+
+      let bobinas = [];
+      try {
+        const bobinasResult = await pool.query(`
+          SELECT b.*, ri.item_id, i.codigo as item_codigo
+          FROM requisicoes_itens_bobinas b
+          INNER JOIN requisicoes_itens ri ON b.requisicao_item_id = ri.id
+          INNER JOIN itens i ON ri.item_id = i.id
+          WHERE ri.requisicao_id = $1
+        `, [id]);
+        bobinas = bobinasResult.rows;
+      } catch (_) {
+        bobinas = [];
+      }
+
+      const dataFormat = new Date(requisicao.created_at);
+      const dateStr = `${String(dataFormat.getDate()).padStart(2, '0')}/${String(dataFormat.getMonth() + 1).padStart(2, '0')}/${dataFormat.getFullYear()}`;
+
+      const rows = [];
+
+      for (const b of bobinas) {
+        const ri = itensComFerramenta.find(it => it.item_id === b.item_id) || {};
+        rows.push({
+          Date: dateStr,
+          OriginWarehouse: codigoOrigem,
+          OriginLocation: localizacaoOrigemTRA,
+          Article: String(b.item_codigo || ''),
+          Quatity: Number(b.metros) || 0,
+          SerialNumber1: b.serialnumber || '', SerialNumber2: '', MacAddress: '', CentroCusto: '',
+          DestinationWarehouse: codigoDestino,
+          DestinationLocation: ri.is_ferramenta ? localizacaoFERR : localizacaoNormal,
+          ProjectCode: '',
+          Batch: b.lote || ''
+        });
+      }
+
+      for (const ri of itensComFerramenta) {
+        const tipoControlo = (ri.tipocontrolo || '').toUpperCase();
+        const temBobinas = bobinas.some(b => b.item_id === ri.item_id);
+        if (tipoControlo === 'LOTE' && temBobinas) continue;
+
+        const qtyBase = ri.quantidade_preparada !== null && ri.quantidade_preparada !== undefined
+          ? ri.quantidade_preparada
+          : ri.quantidade;
+        const qty = parseInt(qtyBase, 10) || 0;
+        if (qty <= 0) continue;
+
+        rows.push({
+          Date: dateStr,
+          OriginWarehouse: codigoOrigem,
+          OriginLocation: localizacaoOrigemTRA,
+          Article: String(ri.item_codigo || ''),
+          Quatity: qty,
+          SerialNumber1: ri.serialnumber || '', SerialNumber2: '', MacAddress: '', CentroCusto: '',
+          DestinationWarehouse: codigoDestino,
+          DestinationLocation: ri.is_ferramenta ? localizacaoFERR : localizacaoNormal,
+          ProjectCode: '',
+          Batch: ri.lote || ''
+        });
+      }
+
+      if (rows.length > 0) {
+        allRows = allRows.concat(rows);
+        if (requisicao.status === 'EM EXPEDICAO') {
+          await pool.query('UPDATE requisicoes SET status = $1 WHERE id = $2', ['Entregue', id]);
+        }
+      }
+    }
+
+    if (allRows.length === 0) {
+      return res.status(400).json({ error: 'Nenhuma requisição válida para exportar TRA combinado.' });
+    }
+
+    buildExcelTransferencia(allRows, res, `TRA_multi_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  } catch (error) {
+    console.error('Erro ao exportar TRA multi:', error);
+    res.status(500).json({ error: 'Erro ao exportar TRA combinado', details: error.message });
   }
 });
 
@@ -5168,9 +5442,10 @@ app.patch('/api/requisicoes/:id/atender-item', authenticateToken, async (req, re
     if (!requisicao_item_id || quantidade_preparada === undefined || quantidade_preparada < 0) {
       return res.status(400).json({ error: 'requisicao_item_id e quantidade_preparada são obrigatórios (use 0 se não tiver o item).' });
     }
+    const isZero = Number(quantidade_preparada) === 0;
     const locOrigem = typeof localizacao_origem === 'string' ? localizacao_origem.trim() : '';
-    if (!locOrigem) {
-      return res.status(400).json({ error: 'Localização de saída (onde está saindo) é obrigatória.' });
+    if (!isZero && !locOrigem) {
+      return res.status(400).json({ error: 'Localização de saída (onde está saindo) é obrigatória quando há quantidade preparada.' });
     }
 
     const check = await pool.query('SELECT id, status FROM requisicoes WHERE id = $1', [id]);
@@ -5200,9 +5475,9 @@ app.patch('/api/requisicoes/:id/atender-item', authenticateToken, async (req, re
       return res.status(400).json({ error: `Quantidade preparada não pode exceder ${item.quantidade}` });
     }
 
-    // Validar Lote/Serial/Bobinas conforme tipo de controlo do item
+    // Validar Lote/Serial/Bobinas conforme tipo de controlo do item, apenas quando há saída
     const tipoControlo = (item.tipocontrolo || '').toUpperCase();
-    if (tipoControlo === 'LOTE' && Array.isArray(bobinas)) {
+    if (!isZero && tipoControlo === 'LOTE' && Array.isArray(bobinas)) {
       if (bobinas.length === 0) {
         return res.status(400).json({ error: `Item ${item.item_id} é controlado por LOTE. Informe pelo menos uma bobina.` });
       }
@@ -5213,7 +5488,7 @@ app.patch('/api/requisicoes/:id/atender-item', authenticateToken, async (req, re
           return res.status(400).json({ error: `Toda bobina do item ${item.item_id} deve ter lote e metragem > 0.` });
         }
       }
-    } else {
+    } else if (!isZero) {
       if (tipoControlo === 'LOTE' && (!lote || String(lote).trim() === '')) {
         return res.status(400).json({ error: `Item ${item.item_id} é controlado por LOTE. Informe o lote na preparação.` });
       }
@@ -5222,8 +5497,8 @@ app.patch('/api/requisicoes/:id/atender-item', authenticateToken, async (req, re
       }
     }
 
-    // Localização destino é sempre EXPEDICAO (automático)
-    const localizacaoDestinoFinal = 'EXPEDICAO';
+    // Localização destino é sempre EXPEDICAO (automático) quando há saída
+    const localizacaoDestinoFinal = isZero ? null : 'EXPEDICAO';
 
     const updateQuery = `
       UPDATE requisicoes_itens 
@@ -5234,20 +5509,30 @@ app.patch('/api/requisicoes/:id/atender-item', authenticateToken, async (req, re
           serialnumber = COALESCE($5, serialnumber),
           preparacao_confirmada = true
       WHERE id = $6`;
-    const params = [quantidade_preparada, localizacaoDestinoFinal, locOrigem, lote || null, serialnumber || null, requisicao_item_id];
+    const params = [
+      quantidade_preparada,
+      localizacaoDestinoFinal,
+      isZero ? null : locOrigem,
+      isZero ? null : (lote || null),
+      isZero ? null : (serialnumber || null),
+      requisicao_item_id
+    ];
 
     try {
       await pool.query(updateQuery, params);
 
-      // Se houver bobinas para itens de lote, registrar detalhamento por bobina
-      if (tipoControlo === 'LOTE' && Array.isArray(bobinas)) {
+      // Se houver bobinas para itens de lote e quantidade > 0, registrar detalhamento por bobina.
+      // Se quantidade = 0, apagar qualquer detalhamento existente.
+      if (tipoControlo === 'LOTE') {
         await pool.query('DELETE FROM requisicoes_itens_bobinas WHERE requisicao_item_id = $1', [requisicao_item_id]);
-        for (const b of bobinas) {
-          await pool.query(
-            `INSERT INTO requisicoes_itens_bobinas (requisicao_item_id, lote, serialnumber, metros)
-             VALUES ($1, $2, $3, $4)`,
-            [requisicao_item_id, (b.lote || '').trim(), (b.serialnumber || null), Number(b.metros)]
-          );
+        if (!isZero && Array.isArray(bobinas)) {
+          for (const b of bobinas) {
+            await pool.query(
+              `INSERT INTO requisicoes_itens_bobinas (requisicao_item_id, lote, serialnumber, metros)
+               VALUES ($1, $2, $3, $4)`,
+              [requisicao_item_id, (b.lote || '').trim(), (b.serialnumber || null), Number(b.metros)]
+            );
+          }
         }
       }
     } catch (e) {

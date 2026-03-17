@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useConfirm } from '../contexts/ConfirmContext';
@@ -17,6 +17,10 @@ const ListarRequisicoes = () => {
   const [armazens, setArmazens] = useState([]);
   const [mostrarFiltros, setMostrarFiltros] = useState(false);
   const [expandedId, setExpandedId] = useState(null);
+  const [selectedIds, setSelectedIds] = useState([]);
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [contextMenu, setContextMenu] = useState({ visible: false, x: 0, y: 0, req: null });
+  const contextMenuRef = useRef(null);
   const navigate = useNavigate();
   const { user } = useAuth();
   const confirm = useConfirm();
@@ -33,6 +37,18 @@ const ListarRequisicoes = () => {
     fetchRequisicoes();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filtros]);
+
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (contextMenuRef.current && !contextMenuRef.current.contains(event.target)) {
+        setContextMenu(prev => ({ ...prev, visible: false }));
+      }
+    };
+    if (contextMenu.visible) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [contextMenu.visible]);
 
   const fetchArmazens = async () => {
     try {
@@ -178,6 +194,100 @@ const ListarRequisicoes = () => {
     }
   };
 
+  const getActionTargetIds = (req) => {
+    if (selectedIds.length > 0 && selectedIds.includes(req.id)) {
+      return selectedIds;
+    }
+    return [req.id];
+  };
+
+  const handleExportMultiTRFL = async () => {
+    if (selectedIds.length < 2) {
+      setToast({ type: 'error', message: 'Selecione pelo menos 2 requisições para TRFL combinado.' });
+      return;
+    }
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch('/api/requisicoes/export-trfl-multi', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ ids: selectedIds })
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || 'Erro ao exportar TRFL combinado');
+      }
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `TRFL_multi_${new Date().toISOString().slice(0, 10)}.xlsx`;
+      a.click();
+      window.URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error('Erro ao exportar TRFL combinado:', error);
+      setToast({ type: 'error', message: error.message || 'Erro ao exportar TRFL combinado' });
+    }
+  };
+
+  const handleExportMultiTRA = async () => {
+    if (selectedIds.length < 2) {
+      setToast({ type: 'error', message: 'Selecione pelo menos 2 requisições para TRA combinado.' });
+      return;
+    }
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch('/api/requisicoes/export-tra-multi', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ ids: selectedIds })
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || 'Erro ao exportar TRA combinado');
+      }
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `TRA_multi_${new Date().toISOString().slice(0, 10)}.xlsx`;
+      a.click();
+      window.URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error('Erro ao exportar TRA combinado:', error);
+      setToast({ type: 'error', message: error.message || 'Erro ao exportar TRA combinado' });
+    }
+  };
+
+  const handleToggleSelect = (id, checked) => {
+    setSelectedIds(prev => {
+      let next;
+      if (checked) {
+        next = [...new Set([...prev, id])];
+      } else {
+        next = prev.filter(x => x !== id);
+      }
+      setSelectionMode(next.length > 0);
+      return next;
+    });
+  };
+
+  const handleContextMenu = (e, req) => {
+    e.preventDefault();
+    setContextMenu({
+      visible: true,
+      x: e.clientX,
+      y: e.clientY,
+      req
+    });
+  };
+
   const getStatusBadge = (status) => {
     const badges = {
       pendente: 'bg-yellow-100 text-yellow-800',
@@ -234,6 +344,35 @@ const ListarRequisicoes = () => {
           </div>
           {canCreateOrEdit && (
             <div className="flex flex-wrap gap-2 justify-end">
+              {selectionMode && selectedIds.length > 0 && (
+                <>
+                  {selectedIds.length >= 2 && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={handleExportMultiTRFL}
+                        className="inline-flex items-center gap-2 px-3 py-2 border border-blue-300 text-blue-700 rounded-lg hover:bg-blue-50 text-sm"
+                      >
+                        TRFL combinado
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleExportMultiTRA}
+                        className="inline-flex items-center gap-2 px-3 py-2 border border-indigo-300 text-indigo-700 rounded-lg hover:bg-indigo-50 text-sm"
+                      >
+                        TRA combinado
+                      </button>
+                    </>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => { setSelectionMode(false); setSelectedIds([]); }}
+                    className="inline-flex items-center gap-2 px-3 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 text-sm"
+                  >
+                    Limpar seleção
+                  </button>
+                </>
+              )}
               <button
                 type="button"
                 onClick={() => navigate('/requisicoes/importar')}
@@ -331,11 +470,34 @@ const ListarRequisicoes = () => {
             {filteredRequisicoes.map((req) => (
               <div
                 key={req.id}
-                className="bg-white rounded-lg shadow-sm overflow-hidden"
+                className={`relative overflow-hidden rounded-lg border transition-all ${
+                  selectedIds.includes(req.id)
+                    ? 'border-blue-500 bg-blue-50 shadow-md'
+                    : 'border-gray-200 bg-white shadow-sm'
+                }`}
+                onContextMenu={(e) => handleContextMenu(e, req)}
               >
-                {/* Header da Requisição — clicável para expandir/recolher itens */}
+                {(selectionMode || selectedIds.length > 0) && (
+                  <input
+                    type="checkbox"
+                    className="absolute right-3 top-3 h-4 w-4"
+                    checked={selectedIds.includes(req.id)}
+                    onChange={(e) => {
+                      e.stopPropagation();
+                      handleToggleSelect(req.id, e.target.checked);
+                    }}
+                  />
+                )}
+                {/* Header da Requisição — clicável para expandir/recolher itens ou selecionar em modo seleção */}
                 <div
-                  onClick={() => setExpandedId(prev => prev === req.id ? null : req.id)}
+                  onClick={() => {
+                    if (selectionMode || selectedIds.length > 0) {
+                      const isSelected = selectedIds.includes(req.id);
+                      handleToggleSelect(req.id, !isSelected);
+                    } else {
+                      setExpandedId(prev => prev === req.id ? null : req.id);
+                    }
+                  }}
                   className="p-6 cursor-pointer hover:bg-gray-50/50 transition-colors"
                 >
                   <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between">
@@ -349,6 +511,11 @@ const ListarRequisicoes = () => {
                           <span className={`px-2 py-1 text-xs font-semibold rounded-full ${getStatusBadge(req.status)}`}>
                             {getStatusLabel(req.status)}
                           </span>
+                          {selectedIds.includes(req.id) && (
+                            <span className="px-2 py-0.5 text-[10px] font-semibold rounded-full bg-blue-100 text-blue-800 uppercase tracking-wide">
+                              Selecionada
+                            </span>
+                          )}
                           {req.itens && req.itens.length > 0 && (
                             <span className="text-xs text-gray-500">
                               {req.itens.length} {req.itens.length === 1 ? 'item' : 'itens'} — clique para {expandedId === req.id ? 'recolher' : 'ver'}
@@ -473,6 +640,99 @@ const ListarRequisicoes = () => {
                 )}
               </div>
             ))}
+          </div>
+        )}
+
+        {/* Context menu para requisições (clique direito) */}
+        {contextMenu.visible && contextMenu.req && (
+          <div
+            ref={contextMenuRef}
+            className="fixed z-50 bg-white border border-gray-200 rounded-md shadow-lg text-sm py-1"
+            style={{ top: contextMenu.y, left: contextMenu.x }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              className="block w-full text-left px-4 py-2 hover:bg-gray-100"
+              onClick={() => {
+                navigate(`/requisicoes/preparar/${contextMenu.req.id}`);
+                setContextMenu(prev => ({ ...prev, visible: false }));
+              }}
+            >
+              Abrir
+            </button>
+            {canCreateOrEdit && (
+              <button
+                className="block w-full text-left px-4 py-2 hover:bg-gray-100"
+                onClick={() => {
+                  setSelectionMode(true);
+                  setSelectedIds(prev =>
+                    prev.includes(contextMenu.req.id) ? prev : [...prev, contextMenu.req.id]
+                  );
+                  setContextMenu(prev => ({ ...prev, visible: false }));
+                }}
+              >
+                Selecionar / multi-seleção
+              </button>
+            )}
+            {canCreateOrEdit && contextMenu.req.status === 'pendente' && (
+              <button
+                className="block w-full text-left px-4 py-2 hover:bg-gray-100"
+                onClick={() => {
+                  navigate(`/requisicoes/editar/${contextMenu.req.id}`);
+                  setContextMenu(prev => ({ ...prev, visible: false }));
+                }}
+              >
+                Editar
+              </button>
+            )}
+            {canPrepare && ((contextMenu.req.status === 'separado' && contextMenu.req.separacao_confirmada) ||
+              contextMenu.req.status === 'EM EXPEDICAO' || contextMenu.req.status === 'Entregue') && (
+              <button
+                className="block w-full text-left px-4 py-2 hover:bg-gray-100"
+                onClick={() => {
+                  if (selectedIds.length >= 2 && selectedIds.includes(contextMenu.req.id)) {
+                    handleExportMultiTRFL();
+                  } else {
+                    handleExportTRFL(contextMenu.req.id);
+                  }
+                  setContextMenu(prev => ({ ...prev, visible: false }));
+                }}
+              >
+                Baixar TRFL
+              </button>
+            )}
+            {canPrepare && (contextMenu.req.status === 'EM EXPEDICAO' || contextMenu.req.status === 'Entregue') && (
+              <button
+                className="block w-full text-left px-4 py-2 hover:bg-gray-100"
+                onClick={() => {
+                  if (selectedIds.length >= 2 && selectedIds.includes(contextMenu.req.id)) {
+                    handleExportMultiTRA();
+                  } else {
+                    handleExportTRA(contextMenu.req.id);
+                  }
+                  setContextMenu(prev => ({ ...prev, visible: false }));
+                }}
+              >
+                Baixar TRA
+              </button>
+            )}
+            {canDelete && (
+              <button
+                className="block w-full text-left px-4 py-2 hover:bg-red-50 text-red-600"
+                onClick={() => {
+                  const ids = getActionTargetIds(contextMenu.req);
+                  // confirmar uma vez para todas
+                  (async () => {
+                    for (const id of ids) {
+                      await handleDelete(id);
+                    }
+                  })();
+                  setContextMenu(prev => ({ ...prev, visible: false }));
+                }}
+              >
+                Excluir requisição
+              </button>
+            )}
           </div>
         )}
 
