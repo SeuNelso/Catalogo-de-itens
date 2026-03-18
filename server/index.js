@@ -4420,7 +4420,7 @@ app.get('/api/requisicoes/:id/export-trfl', authenticateToken, async (req, res) 
     if (!requisicao.separacao_confirmada) {
       return res.status(400).json({ error: 'TRFL só está disponível após confirmar a separação da requisição.' });
     }
-    if (!['separado', 'EM EXPEDICAO', 'Entregue'].includes(requisicao.status)) {
+    if (!['separado', 'EM EXPEDICAO', 'Entregue', 'FINALIZADO'].includes(requisicao.status)) {
       return res.status(400).json({ error: 'TRFL só está disponível após confirmar a separação (status Separado). Conclua a preparação primeiro.' });
     }
 
@@ -4505,10 +4505,8 @@ app.get('/api/requisicoes/:id/export-trfl', authenticateToken, async (req, res) 
       });
     }
 
+    // Exportação TRFL não altera status; o frontend confirma e chama /marcar-em-expedicao
     buildExcelTransferencia(rows, res, `TRFL_requisicao_${id}_${new Date().toISOString().slice(0, 10)}.xlsx`);
-    if (requisicao.status === 'separado') {
-      await pool.query('UPDATE requisicoes SET status = $1 WHERE id = $2', ['EM EXPEDICAO', id]);
-    }
   } catch (error) {
     console.error('Erro ao exportar TRFL:', error);
     res.status(500).json({ error: 'Erro ao exportar TRFL', details: error.message });
@@ -4607,9 +4605,6 @@ app.post('/api/requisicoes/export-trfl-multi', authenticateToken, async (req, re
 
       if (rows.length > 0) {
         allRows = allRows.concat(rows);
-        if (requisicao.status === 'separado') {
-          await pool.query('UPDATE requisicoes SET status = $1 WHERE id = $2', ['EM EXPEDICAO', id]);
-        }
       }
     }
 
@@ -4633,7 +4628,7 @@ app.get('/api/requisicoes/:id/export-tra', authenticateToken, async (req, res) =
     if (!requisicao.separacao_confirmada) {
       return res.status(400).json({ error: 'TRA só está disponível após confirmar a separação da requisição.' });
     }
-    if (!['EM EXPEDICAO', 'Entregue'].includes(requisicao.status)) {
+    if (!['EM EXPEDICAO', 'Entregue', 'FINALIZADO'].includes(requisicao.status)) {
       return res.status(400).json({ error: 'TRA só está disponível após concluir a TRFL (requisição deve estar Em expedição). Baixe o ficheiro TRFL primeiro.' });
     }
 
@@ -4754,10 +4749,18 @@ app.get('/api/requisicoes/:id/export-tra', authenticateToken, async (req, res) =
       });
     }
 
+    // Registra a primeira geração de TRA (para liberar FINALIZAR no frontend)
+    try {
+      await pool.query(
+        `UPDATE requisicoes
+         SET tra_gerada_em = COALESCE(tra_gerada_em, CURRENT_TIMESTAMP)
+         WHERE id = $1`,
+        [id]
+      );
+    } catch (_) {}
+
+    // Exportação TRA não altera status
     buildExcelTransferencia(rows, res, `TRA_requisicao_${id}_${new Date().toISOString().slice(0, 10)}.xlsx`);
-    if (requisicao.status === 'EM EXPEDICAO') {
-      await pool.query('UPDATE requisicoes SET status = $1 WHERE id = $2', ['Entregue', id]);
-    }
   } catch (error) {
     console.error('Erro ao exportar TRA:', error);
     res.status(500).json({ error: 'Erro ao exportar TRA', details: error.message });
@@ -4780,7 +4783,7 @@ app.post('/api/requisicoes/export-tra-multi', authenticateToken, async (req, res
       const requisicao = await getRequisicaoComItens(id);
       if (!requisicao) continue;
       if (!requisicao.separacao_confirmada) continue;
-      if (!['EM EXPEDICAO', 'Entregue'].includes(requisicao.status)) continue;
+      if (!['Entregue', 'FINALIZADO'].includes(requisicao.status)) continue;
 
       const codigoOrigem = requisicao.armazem_origem_codigo || 'E';
       const codigoDestino = requisicao.armazem_destino_codigo || '';
@@ -4895,15 +4898,25 @@ app.post('/api/requisicoes/export-tra-multi', authenticateToken, async (req, res
 
       if (rows.length > 0) {
         allRows = allRows.concat(rows);
-        if (requisicao.status === 'EM EXPEDICAO') {
-          await pool.query('UPDATE requisicoes SET status = $1 WHERE id = $2', ['Entregue', id]);
-        }
       }
     }
 
     if (allRows.length === 0) {
       return res.status(400).json({ error: 'Nenhuma requisição válida para exportar TRA combinado.' });
     }
+
+    // Registra a primeira geração de TRA para todas as requisições enviadas (best-effort)
+    try {
+      const cleanIds = ids.map(x => parseInt(x, 10)).filter(Boolean);
+      if (cleanIds.length > 0) {
+        await pool.query(
+          `UPDATE requisicoes
+           SET tra_gerada_em = COALESCE(tra_gerada_em, CURRENT_TIMESTAMP)
+           WHERE id = ANY($1::int[])`,
+          [cleanIds]
+        );
+      }
+    } catch (_) {}
 
     buildExcelTransferencia(allRows, res, `TRA_multi_${new Date().toISOString().slice(0, 10)}.xlsx`);
   } catch (error) {
@@ -5296,7 +5309,7 @@ app.put('/api/requisicoes/:id', authenticateToken, async (req, res) => {
     }
 
     // Validações
-    if (status && !['pendente', 'separado', 'EM EXPEDICAO', 'Entregue', 'cancelada'].includes(status)) {
+    if (status && !['pendente', 'separado', 'EM EXPEDICAO', 'Entregue', 'FINALIZADO', 'cancelada'].includes(status)) {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: 'Status inválido. Use: pendente, separado, EM EXPEDICAO, Entregue ou cancelada' });
     }
@@ -5775,6 +5788,25 @@ app.patch('/api/requisicoes/:id/marcar-entregue', authenticateToken, async (req,
   }
 });
 
+// Marcar como FINALIZADO (após baixar a TRA e concluir o processo)
+app.patch('/api/requisicoes/:id/finalizar', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const check = await pool.query('SELECT id, status FROM requisicoes WHERE id = $1', [id]);
+    if (check.rows.length === 0) return res.status(404).json({ error: 'Requisição não encontrada' });
+    if (check.rows[0].status === 'cancelada') return res.status(400).json({ error: 'Requisição cancelada' });
+    if (check.rows[0].status !== 'Entregue') {
+      return res.status(400).json({ error: 'Só é possível finalizar requisições com status Entregue.' });
+    }
+
+    await pool.query('UPDATE requisicoes SET status = $1 WHERE id = $2', ['FINALIZADO', id]);
+    res.json({ ok: true, id: parseInt(id, 10), status: 'FINALIZADO' });
+  } catch (error) {
+    console.error('Erro ao finalizar requisição:', error);
+    res.status(500).json({ error: 'Erro ao finalizar requisição', details: error.message });
+  }
+});
+
 // Deletar requisição
 app.delete('/api/requisicoes/:id', authenticateToken, async (req, res) => {
   try {
@@ -5808,4 +5840,4 @@ app.listen(PORT, () => {
 
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, '../client/build', 'index.html'));
-}); 
+});  

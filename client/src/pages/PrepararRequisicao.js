@@ -6,6 +6,8 @@ import Toast from '../components/Toast';
 import { FaArrowLeft, FaCheck, FaBox, FaMapMarkerAlt, FaArrowRight, FaEdit, FaQrcode } from 'react-icons/fa';
 import axios from 'axios';
 import QrScannerModal from '../components/QrScannerModal';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
 
 const PrepararRequisicao = () => {
   const { id } = useParams();
@@ -58,10 +60,12 @@ const PrepararRequisicao = () => {
         });
         setArmazemDestino(ad.data);
       }
+      return response.data;
     } catch (error) {
       console.error('Erro ao buscar requisição:', error);
       setToast({ type: 'error', message: 'Erro ao carregar requisição' });
       navigate('/requisicoes');
+      return null;
     } finally {
       setLoading(false);
     }
@@ -109,11 +113,32 @@ const PrepararRequisicao = () => {
 
   const handleExportTRFL = async () => {
     try {
+      const ok = await confirm({
+        title: 'Gerar TRFL',
+        message: 'Deseja continuar? Ao continuar, a requisição será marcada como Em expedição.',
+        confirmLabel: 'Continuar'
+      });
+      if (!ok) return;
+
       await downloadExport(
         `/api/requisicoes/${id}/export-trfl`,
         `TRFL_requisicao_${id}_${new Date().toISOString().slice(0, 10)}.xlsx`,
-        'TRFL exportada. Requisição passou a Em expedição.'
+        'TRFL gerada com sucesso.'
       );
+      if (requisicao?.status === 'separado') {
+        const token = localStorage.getItem('token');
+        const resp = await fetch(`/api/requisicoes/${id}/marcar-em-expedicao`, {
+          method: 'PATCH',
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (!resp.ok) {
+          const updated = await fetchRequisicao(true);
+          if ((updated?.status || '') !== 'EM EXPEDICAO') {
+            const data = await resp.json().catch(() => ({}));
+            throw new Error(data.error || 'Erro ao marcar em expedição');
+          }
+        }
+      }
       await fetchRequisicao(true);
     } catch (error) {
       console.error('Erro ao exportar TRFL:', error);
@@ -123,15 +148,134 @@ const PrepararRequisicao = () => {
 
   const handleExportTRA = async () => {
     try {
+      const ok = await confirm({
+        title: 'Gerar TRA',
+        message: 'Deseja continuar? Após gerar a TRA, esta requisição ficará apta para FINALIZAR.',
+        confirmLabel: 'Continuar'
+      });
+      if (!ok) return;
+
       await downloadExport(
         `/api/requisicoes/${id}/export-tra`,
         `TRA_requisicao_${id}_${new Date().toISOString().slice(0, 10)}.xlsx`,
-        'TRA exportada. Requisição passou a Entregue.'
+        'TRA gerada com sucesso.'
       );
       await fetchRequisicao(true);
     } catch (error) {
       console.error('Erro ao exportar TRA:', error);
       setToast({ type: 'error', message: error.message || 'Erro ao exportar TRA' });
+    }
+  };
+
+  const handleEntregar = async () => {
+    try {
+      if (requisicao?.status !== 'EM EXPEDICAO') {
+        setToast({ type: 'error', message: 'Só é possível entregar quando a requisição está em expedição.' });
+        return;
+      }
+      const ok = await confirm({
+        title: 'Entregar',
+        message: 'Tem certeza que deseja continuar? Isso vai alterar o status para Entregue.',
+        confirmLabel: 'Sim, entregar',
+        variant: 'warning'
+      });
+      if (!ok) return;
+
+      // PDF com lista de artigos (download antes de mudar status)
+      try {
+        const today = new Date();
+        const dateStr = today.toISOString().slice(0, 10);
+        const doc = new jsPDF({ unit: 'pt', format: 'a4' });
+        const pageWidth = doc.internal.pageSize.getWidth();
+        const pageHeight = doc.internal.pageSize.getHeight();
+        doc.setFontSize(16);
+        doc.text('Comprovativo de Entrega', pageWidth / 2, 48, { align: 'center' });
+        doc.setFontSize(10);
+        doc.text(`Data: ${today.toLocaleString('pt-BR')}`, 40, 66);
+        doc.setFontSize(12);
+        doc.text(`Requisição #${id}`, 40, 90);
+        doc.setFontSize(10);
+        doc.text(`Origem: ${requisicao?.armazem_origem_descricao || ''}`, 40, 106);
+        doc.text(`Destino: ${requisicao?.armazem_descricao || ''}`, 40, 122);
+
+        const itens = Array.isArray(requisicao?.itens) ? requisicao.itens : [];
+        const body = [];
+        for (const it of itens) {
+          const codigo = String(it.item_codigo ?? it.codigo ?? '');
+          const desc = String(it.item_descricao ?? it.descricao ?? '');
+          const qtyBase = it.quantidade_preparada ?? it.quantidade ?? 0;
+          const qty = Number(qtyBase) || 0;
+
+          const bobinas = Array.isArray(it.bobinas) ? it.bobinas : [];
+          if (bobinas.length > 0) {
+            for (const b of bobinas) {
+              body.push([
+                codigo,
+                desc,
+                String(b.metros ?? ''),
+                String(b.lote ?? ''),
+                String(b.serialnumber ?? '')
+              ]);
+            }
+          } else {
+            body.push([
+              codigo,
+              desc,
+              String(qty),
+              String(it.lote ?? ''),
+              String(it.serialnumber ?? '')
+            ]);
+          }
+        }
+
+        autoTable(doc, {
+          startY: 140,
+          head: [['Código', 'Descrição', 'Qtd', 'Lote', 'S/N']],
+          body: body.length > 0 ? body : [['', 'Sem itens', '', '', '']],
+          styles: { fontSize: 9, cellPadding: 4 },
+          headStyles: { textColor: 20, fillColor: [255, 255, 255] },
+          theme: 'grid',
+          margin: { left: 40, right: 40 }
+        });
+
+        // Assinaturas no rodapé (fim da folha)
+        const leftX1 = 60;
+        const leftX2 = pageWidth / 2 - 20;
+        const rightX1 = pageWidth / 2 + 20;
+        const rightX2 = pageWidth - 60;
+
+        const sigTop = pageHeight - 60 - 70;
+        const lastY = doc.lastAutoTable?.finalY || 220;
+        if (lastY + 30 > sigTop) {
+          doc.addPage();
+        }
+        const y = doc.internal.pageSize.getHeight() - 60 - 70;
+
+        doc.setFontSize(10);
+        doc.text('Assinatura do Armazém', (leftX1 + leftX2) / 2, y, { align: 'center' });
+        doc.line(leftX1, y + 34, leftX2, y + 34);
+        doc.text('Nome / assinatura', (leftX1 + leftX2) / 2, y + 52, { align: 'center' });
+
+        doc.text('Assinatura do Recebedor', (rightX1 + rightX2) / 2, y, { align: 'center' });
+        doc.line(rightX1, y + 34, rightX2, y + 34);
+        doc.text('Nome / assinatura', (rightX1 + rightX2) / 2, y + 52, { align: 'center' });
+
+        doc.save(`ENTREGA_requisicao_${id}_${dateStr}.pdf`);
+      } catch (_) {}
+
+      const token = localStorage.getItem('token');
+      const resp = await fetch(`/api/requisicoes/${id}/marcar-entregue`, {
+        method: 'PATCH',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (!resp.ok) {
+        const data = await resp.json().catch(() => ({}));
+        throw new Error(data.error || 'Erro ao entregar');
+      }
+      setToast({ type: 'success', message: 'Requisição marcada como Entregue.' });
+      await fetchRequisicao(true);
+    } catch (error) {
+      setToast({ type: 'error', message: error.message || 'Erro ao entregar' });
     }
   };
 
@@ -282,22 +426,31 @@ const PrepararRequisicao = () => {
             <FaArrowLeft /> Voltar
           </button>
           <div className="flex gap-2 flex-wrap">
-            {((requisicao.status === 'separado' && requisicao.separacao_confirmada) || requisicao.status === 'EM EXPEDICAO' || requisicao.status === 'Entregue') && (
+            {(requisicao.status === 'separado' && requisicao.separacao_confirmada) && (
               <button
                 onClick={handleExportTRFL}
                 className="px-3 py-2 text-blue-700 hover:bg-blue-50 rounded-lg border border-blue-300 transition-colors"
-                title={requisicao.status === 'separado' ? 'Baixar TRFL — o status passará a Em expedição' : 'Baixar TRFL novamente (se perdeu o ficheiro)'}
+                title="Gerar TRFL — após confirmar, o status passará a Em expedição"
               >
-                {requisicao.status === 'separado' ? 'Baixar TRFL' : 'TRFL (baixar novamente)'}
+                GERAR TRFL
               </button>
             )}
-            {(requisicao.status === 'EM EXPEDICAO' || requisicao.status === 'Entregue') && (
+            {requisicao.status === 'EM EXPEDICAO' && (
+              <button
+                onClick={handleEntregar}
+                className="px-3 py-2 bg-amber-600 text-white hover:bg-amber-700 rounded-lg transition-colors"
+                title="Alterar status para Entregue"
+              >
+                ENTREGAR
+              </button>
+            )}
+            {requisicao.status === 'Entregue' && !requisicao.tra_gerada_em && (
               <button
                 onClick={handleExportTRA}
                 className="px-3 py-2 text-indigo-700 hover:bg-indigo-50 rounded-lg border border-indigo-300 transition-colors"
-                title={requisicao.status === 'EM EXPEDICAO' ? 'Baixar TRA — o status passará a Entregue' : 'Baixar TRA novamente (se perdeu o ficheiro)'}
+                title="Gerar TRA"
               >
-                {requisicao.status === 'EM EXPEDICAO' ? 'Baixar TRA' : 'TRA (baixar novamente)'}
+                GERAR TRA
               </button>
             )}
           </div>

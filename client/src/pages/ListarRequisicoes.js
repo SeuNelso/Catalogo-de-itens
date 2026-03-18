@@ -1,9 +1,11 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useLayoutEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useConfirm } from '../contexts/ConfirmContext';
 import Toast from '../components/Toast';
 import { FaSearch, FaPlus, FaEdit, FaTrash, FaFilter, FaBoxOpen, FaChevronDown, FaChevronUp, FaCheck, FaFileImport } from 'react-icons/fa';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
 
 const ListarRequisicoes = () => {
   const [requisicoes, setRequisicoes] = useState([]);
@@ -50,6 +52,28 @@ const ListarRequisicoes = () => {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [contextMenu.visible]);
 
+  useLayoutEffect(() => {
+    if (!contextMenu.visible) return;
+    const el = contextMenuRef.current;
+    if (!el) return;
+
+    const rect = el.getBoundingClientRect();
+    const padding = 8;
+
+    let x = contextMenu.x;
+    let y = contextMenu.y;
+
+    const maxX = window.innerWidth - rect.width - padding;
+    const maxY = window.innerHeight - rect.height - padding;
+
+    x = Math.max(padding, Math.min(x, maxX));
+    y = Math.max(padding, Math.min(y, maxY));
+
+    if (x !== contextMenu.x || y !== contextMenu.y) {
+      setContextMenu(prev => ({ ...prev, x, y }));
+    }
+  }, [contextMenu.visible, contextMenu.x, contextMenu.y]);
+
   const fetchArmazens = async () => {
     try {
       const token = localStorage.getItem('token');
@@ -83,12 +107,15 @@ const ListarRequisicoes = () => {
       if (response.ok) {
         const data = await response.json();
         setRequisicoes(data);
+        return data;
       } else {
         setToast({ type: 'error', message: 'Erro ao carregar requisições' });
+        return null;
       }
     } catch (error) {
       console.error('Erro ao buscar requisições:', error);
       setToast({ type: 'error', message: 'Erro ao carregar requisições' });
+      return null;
     } finally {
       setLoading(false);
     }
@@ -115,14 +142,338 @@ const ListarRequisicoes = () => {
     setToast({ type: 'success', message: successMsg });
   };
 
-  const handleExportTRFL = async (reqId) => {
+  const marcarEmExpedicao = async (reqId) => {
+    const token = localStorage.getItem('token');
+    const response = await fetch(`/api/requisicoes/${reqId}/marcar-em-expedicao`, {
+      method: 'PATCH',
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.error || 'Erro ao marcar em expedição');
+    }
+  };
+
+  const marcarEntregue = async (reqId) => {
+    const token = localStorage.getItem('token');
+    const response = await fetch(`/api/requisicoes/${reqId}/marcar-entregue`, {
+      method: 'PATCH',
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.error || 'Erro ao marcar como entregue');
+    }
+  };
+
+  const fetchRequisicaoDetalhe = async (reqId) => {
+    const token = localStorage.getItem('token');
+    const response = await fetch(`/api/requisicoes/${reqId}`, {
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    if (!response.ok) return null;
+    const data = await response.json().catch(() => null);
+    return data;
+  };
+
+  const desenharAssinaturasRodape = (doc) => {
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const pageHeight = doc.internal.pageSize.getHeight();
+
+    const marginX = 60;
+    const bottomMargin = 60;
+    const blockHeight = 70;
+    const topY = pageHeight - bottomMargin - blockHeight;
+
+    const leftX1 = marginX;
+    const leftX2 = pageWidth / 2 - 20;
+    const rightX1 = pageWidth / 2 + 20;
+    const rightX2 = pageWidth - marginX;
+
+    doc.setFontSize(10);
+    doc.text('Assinatura do Armazém', (leftX1 + leftX2) / 2, topY, { align: 'center' });
+    doc.line(leftX1, topY + 34, leftX2, topY + 34);
+    doc.text('Nome / assinatura', (leftX1 + leftX2) / 2, topY + 52, { align: 'center' });
+
+    doc.text('Assinatura do Recebedor', (rightX1 + rightX2) / 2, topY, { align: 'center' });
+    doc.line(rightX1, topY + 34, rightX2, topY + 34);
+    doc.text('Nome / assinatura', (rightX1 + rightX2) / 2, topY + 52, { align: 'center' });
+  };
+
+  const baixarPdfEntregaMultiRespeitandoDestino = (reqs) => {
+    const arr = (Array.isArray(reqs) ? reqs : []).filter(Boolean);
+    if (arr.length === 0) return;
+
+    const destinos = new Set(arr.map(r => String(r.armazem_id ?? r.armazem_destino_id ?? r.armazem_descricao ?? '')));
+    if (destinos.size <= 1) {
+      gerarPdfEntrega(arr);
+      return;
+    }
+
+    // Destinos diferentes: gera 1 PDF por requisição
+    for (const r of arr) {
+      gerarPdfEntrega([r]);
+    }
+  };
+
+  const gerarPdfEntrega = (reqs) => {
+    const arr = Array.isArray(reqs) ? reqs : [];
+    const today = new Date();
+    const dateStr = today.toISOString().slice(0, 10);
+
+    const doc = new jsPDF({ unit: 'pt', format: 'a4' });
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const pageHeight = doc.internal.pageSize.getHeight();
+
+    doc.setFontSize(16);
+    doc.text('Comprovativo de Entrega', pageWidth / 2, 48, { align: 'center' });
+    doc.setFontSize(10);
+    doc.text(`Data: ${today.toLocaleString('pt-BR')}`, 40, 66);
+
+    let cursorY = 90;
+
+    arr.forEach((req, idx) => {
+      if (idx > 0) cursorY += 18;
+      const id = req?.id ?? '';
+      const origem = req?.armazem_origem_descricao || '';
+      const destino = req?.armazem_descricao || '';
+
+      doc.setFontSize(12);
+      doc.text(`Requisição #${id}`, 40, cursorY);
+      doc.setFontSize(10);
+      doc.text(`Origem: ${origem}`, 40, cursorY + 14);
+      doc.text(`Destino: ${destino}`, 40, cursorY + 28);
+
+      const itens = Array.isArray(req?.itens) ? req.itens : [];
+      const body = [];
+      for (const it of itens) {
+        const codigo = String(it.item_codigo ?? it.codigo ?? '');
+        const desc = String(it.item_descricao ?? it.descricao ?? '');
+        const qtyBase = it.quantidade_preparada ?? it.quantidade ?? 0;
+        const qty = Number(qtyBase) || 0;
+
+        const bobinas = Array.isArray(it.bobinas) ? it.bobinas : [];
+        if (bobinas.length > 0) {
+          for (const b of bobinas) {
+            body.push([
+              codigo,
+              desc,
+              String(b.metros ?? ''),
+              String(b.lote ?? ''),
+              String(b.serialnumber ?? '')
+            ]);
+          }
+        } else {
+          body.push([
+            codigo,
+            desc,
+            String(qty),
+            String(it.lote ?? ''),
+            String(it.serialnumber ?? '')
+          ]);
+        }
+      }
+
+      autoTable(doc, {
+        startY: cursorY + 40,
+        head: [['Código', 'Descrição', 'Qtd', 'Lote', 'S/N']],
+        body: body.length > 0 ? body : [['', 'Sem itens', '', '', '']],
+        styles: { fontSize: 9, cellPadding: 4 },
+        headStyles: { textColor: 20, fillColor: [255, 255, 255] },
+        theme: 'grid',
+        margin: { left: 40, right: 40 }
+      });
+
+      cursorY = (doc.lastAutoTable?.finalY || (cursorY + 120));
+      // Mantém espaço para assinaturas no rodapé da página final
+      const sigTop = pageHeight - 60 - 70;
+      if (cursorY + 30 > sigTop) {
+        doc.addPage();
+        cursorY = 60;
+      }
+    });
+
+    // Assinaturas no rodapé (última página)
+    const sigTop = pageHeight - 60 - 70;
+    const lastY = doc.lastAutoTable?.finalY || cursorY;
+    if (lastY + 30 > sigTop) {
+      doc.addPage();
+    }
+    desenharAssinaturasRodape(doc);
+
+    const filename = arr.length === 1
+      ? `ENTREGA_requisicao_${arr[0]?.id || ''}_${dateStr}.pdf`
+      : `ENTREGA_multi_${dateStr}.pdf`;
+
+    doc.save(filename);
+  };
+
+  const handleEntregar = async (req) => {
+    const reqId = req?.id;
     try {
+      if (!reqId) throw new Error('Requisição inválida');
+      if (req.status !== 'EM EXPEDICAO') {
+        throw new Error('Só é possível entregar quando a requisição está em expedição.');
+      }
+      const ok = await confirm({
+        title: 'Entregar',
+        message: 'Tem certeza que deseja continuar? Isso vai alterar o status para Entregue.',
+        confirmLabel: 'Sim, entregar',
+        variant: 'warning'
+      });
+      if (!ok) return;
+
+      const detalhe = await fetchRequisicaoDetalhe(reqId);
+      gerarPdfEntrega([detalhe || req]);
+      await marcarEntregue(reqId);
+      setToast({ type: 'success', message: 'Requisição marcada como Entregue.' });
+      await fetchRequisicoes();
+    } catch (error) {
+      setToast({ type: 'error', message: error.message || 'Erro ao entregar' });
+    }
+  };
+
+  const handleEntregarMulti = async (ids) => {
+    const uniqueIds = Array.from(new Set(ids || [])).map(x => parseInt(x, 10)).filter(Boolean);
+    const entregaveis = uniqueIds.filter(id => {
+      const r = requisicoes.find(x => x.id === id);
+      return r?.status === 'EM EXPEDICAO';
+    });
+    if (entregaveis.length === 0) {
+      setToast({ type: 'error', message: 'Selecione requisições em expedição para entregar.' });
+      return;
+    }
+    try {
+      const reqs = [];
+      for (const id of entregaveis) {
+        // eslint-disable-next-line no-await-in-loop
+        const detalhe = await fetchRequisicaoDetalhe(id);
+        reqs.push(detalhe || requisicoes.find(x => x.id === id));
+      }
+
+      const arr = reqs.filter(Boolean);
+      const destinos = new Set(arr.map(r => String(r.armazem_id ?? r.armazem_destino_id ?? r.armazem_descricao ?? '')));
+      const msgDocs = destinos.size <= 1
+        ? `Será gerado 1 PDF com ${arr.length} requisição(ões) (mesmo armazém destino).`
+        : `Os armazéns destino são diferentes. Serão gerados ${arr.length} PDFs separados (1 por requisição).`;
+
+      const ok = await confirm({
+        title: 'Entregar (múltiplas)',
+        message: `Tem certeza que deseja continuar? Isso vai marcar ${arr.length} requisição(ões) como Entregue. ${msgDocs}`,
+        confirmLabel: 'Sim, entregar',
+        variant: 'warning'
+      });
+      if (!ok) return;
+
+      baixarPdfEntregaMultiRespeitandoDestino(reqs);
+      for (const id of entregaveis) {
+        // eslint-disable-next-line no-await-in-loop
+        await marcarEntregue(id);
+      }
+      setToast({ type: 'success', message: 'Requisições marcadas como Entregue.' });
+      await fetchRequisicoes();
+    } catch (error) {
+      setToast({ type: 'error', message: error.message || 'Erro ao entregar' });
+    }
+  };
+
+  const handleBaixarPdfEntrega = async (req) => {
+    const reqId = req?.id;
+    try {
+      if (!reqId) throw new Error('Requisição inválida');
+      if (!['Entregue', 'FINALIZADO'].includes(req.status)) {
+        throw new Error('O comprovativo de entrega só está disponível após a requisição estar Entregue.');
+      }
+      const ok = await confirm({
+        title: 'Baixar comprovativo de entrega',
+        message: 'Deseja baixar novamente?',
+        confirmLabel: 'Baixar novamente',
+        variant: 'warning'
+      });
+      if (!ok) return;
+
+      const detalhe = await fetchRequisicaoDetalhe(reqId);
+      gerarPdfEntrega([detalhe || req]);
+    } catch (error) {
+      setToast({ type: 'error', message: error.message || 'Erro ao baixar comprovativo de entrega' });
+    }
+  };
+
+  const handleBaixarPdfEntregaMulti = async (ids) => {
+    const uniqueIds = Array.from(new Set(ids || [])).map(x => parseInt(x, 10)).filter(Boolean);
+    const byId = new Map((requisicoes || []).map(r => [r.id, r]));
+    const elegiveis = uniqueIds.filter(id => ['Entregue', 'FINALIZADO'].includes(byId.get(id)?.status));
+    if (elegiveis.length === 0) {
+      setToast({ type: 'error', message: 'Selecione requisições Entregues/Finalizadas para baixar o comprovativo.' });
+      return;
+    }
+    try {
+      const reqs = [];
+      for (const id of elegiveis) {
+        // eslint-disable-next-line no-await-in-loop
+        const detalhe = await fetchRequisicaoDetalhe(id);
+        reqs.push(detalhe || byId.get(id));
+      }
+
+      const arr = reqs.filter(Boolean);
+      const destinos = new Set(arr.map(r => String(r.armazem_id ?? r.armazem_destino_id ?? r.armazem_descricao ?? '')));
+      const msgDocs = destinos.size <= 1
+        ? `Será gerado 1 PDF com ${arr.length} requisição(ões) (mesmo armazém destino).`
+        : `Os armazéns destino são diferentes. Serão gerados ${arr.length} PDFs separados (1 por requisição).`;
+
+      const ok = await confirm({
+        title: 'Baixar comprovativo (múltiplas)',
+        message: `Deseja baixar novamente? ${msgDocs}`,
+        confirmLabel: 'Baixar novamente',
+        variant: 'warning'
+      });
+      if (!ok) return;
+
+      baixarPdfEntregaMultiRespeitandoDestino(reqs);
+    } catch (error) {
+      setToast({ type: 'error', message: error.message || 'Erro ao baixar comprovativo' });
+    }
+  };
+
+  const handleExportTRFL = async (req, opts = {}) => {
+    const reqId = req?.id;
+    try {
+      if (!reqId) throw new Error('Requisição inválida');
+
+      const isRedownload = Boolean(opts.redownload);
+      if (isRedownload) {
+        const ok = await confirm({
+          title: 'Baixar TRFL',
+          message: 'Deseja baixar novamente?',
+          confirmLabel: 'Baixar novamente',
+          variant: 'warning'
+        });
+        if (!ok) return;
+      } else {
+        const ok = await confirm({
+          title: 'Gerar TRFL',
+          message: 'Deseja continuar? Ao continuar, a requisição será marcada como Em expedição.',
+          confirmLabel: 'Continuar'
+        });
+        if (!ok) return;
+      }
+
       await downloadExport(
         `/api/requisicoes/${reqId}/export-trfl`,
         `TRFL_requisicao_${reqId}_${new Date().toISOString().slice(0, 10)}.xlsx`,
-        'TRFL exportada. Requisição passou a Em expedição.'
+        isRedownload ? 'TRFL baixada novamente.' : 'TRFL gerada com sucesso.'
       );
-      fetchRequisicoes();
+      if (req.status === 'separado') {
+        try {
+          await marcarEmExpedicao(reqId);
+        } catch (err) {
+          const data = await fetchRequisicoes();
+          const updated = Array.isArray(data) ? data.find(x => x.id === reqId) : null;
+          if ((updated?.status || '') !== 'EM EXPEDICAO') throw err;
+          return;
+        }
+      }
+      await fetchRequisicoes();
     } catch (error) {
       console.error('Erro ao exportar TRFL:', error);
       const msg = error.response?.data?.error || error.message || 'Erro ao exportar TRFL';
@@ -130,18 +481,100 @@ const ListarRequisicoes = () => {
     }
   };
 
-  const handleExportTRA = async (reqId) => {
+  const handleExportTRA = async (req, opts = {}) => {
+    const reqId = req?.id;
     try {
+      if (!reqId) throw new Error('Requisição inválida');
+      if (req.status === 'EM EXPEDICAO') {
+        throw new Error('Antes de gerar a TRA, clique em ENTREGAR para mudar o status para Entregue.');
+      }
+
+      const isRedownload = Boolean(opts.redownload);
+      if (isRedownload) {
+        const ok = await confirm({
+          title: 'Baixar TRA',
+          message: 'Deseja baixar novamente?',
+          confirmLabel: 'Baixar novamente',
+          variant: 'warning'
+        });
+        if (!ok) return;
+      } else {
+        const ok = await confirm({
+          title: 'Gerar TRA',
+          message: 'Deseja continuar? Após gerar a TRA, esta requisição ficará apta para FINALIZAR.',
+          confirmLabel: 'Continuar'
+        });
+        if (!ok) return;
+      }
+
       await downloadExport(
         `/api/requisicoes/${reqId}/export-tra`,
         `TRA_requisicao_${reqId}_${new Date().toISOString().slice(0, 10)}.xlsx`,
-        'TRA exportada. Requisição passou a Entregue.'
+        isRedownload ? 'TRA baixada novamente.' : 'TRA gerada com sucesso.'
       );
-      fetchRequisicoes();
+      await fetchRequisicoes();
     } catch (error) {
       console.error('Erro ao exportar TRA:', error);
       const msg = error.response?.data?.error || error.message || 'Erro ao exportar TRA';
       setToast({ type: 'error', message: msg });
+    }
+  };
+
+  const handleFinalizar = async (reqId) => {
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch(`/api/requisicoes/${reqId}/finalizar`, {
+        method: 'PATCH',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || 'Erro ao finalizar requisição');
+      }
+      setToast({ type: 'success', message: 'Requisição finalizada.' });
+      fetchRequisicoes();
+    } catch (error) {
+      setToast({ type: 'error', message: error.message || 'Erro ao finalizar requisição' });
+    }
+  };
+
+  const handleFinalizarMulti = async (ids) => {
+    const uniqueIds = Array.from(new Set(ids || [])).map(x => parseInt(x, 10)).filter(Boolean);
+    if (uniqueIds.length === 0) return;
+
+    // Finalizar apenas as que estão Entregue e já tiveram TRA gerada ao menos 1x
+    const byId = new Map((requisicoes || []).map(r => [r.id, r]));
+    const elegiveis = uniqueIds.filter(id => {
+      const r = byId.get(id);
+      return r?.status === 'Entregue' && Boolean(r?.tra_gerada_em);
+    });
+    const ignoradas = uniqueIds.filter(id => !elegiveis.includes(id));
+
+    if (elegiveis.length === 0) {
+      setToast({ type: 'error', message: 'Nenhuma requisição selecionada está elegível para finalizar (precisa estar Entregue e ter TRA gerada).' });
+      return;
+    }
+
+    try {
+      const token = localStorage.getItem('token');
+      let okCount = 0;
+      let failCount = 0;
+      for (const id of elegiveis) {
+        const response = await fetch(`/api/requisicoes/${id}/finalizar`, {
+          method: 'PATCH',
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (response.ok) okCount++;
+        else failCount++;
+      }
+      await fetchRequisicoes();
+      const parts = [];
+      if (okCount) parts.push(`${okCount} finalizada(s)`);
+      if (failCount) parts.push(`${failCount} falhou(aram)`);
+      if (ignoradas.length) parts.push(`${ignoradas.length} ignorada(s) (não Entregue)`);
+      setToast({ type: 'success', message: `Finalização concluída: ${parts.join(', ')}.` });
+    } catch (error) {
+      setToast({ type: 'error', message: error.message || 'Erro ao finalizar requisições' });
     }
   };
 
@@ -201,12 +634,36 @@ const ListarRequisicoes = () => {
     return [req.id];
   };
 
-  const handleExportMultiTRFL = async () => {
-    if (selectedIds.length < 2) {
+  const getActionTargetReqs = (req) => {
+    const ids = getActionTargetIds(req || {});
+    const byId = new Map((requisicoes || []).map(r => [r.id, r]));
+    const reqs = ids.map(id => byId.get(id)).filter(Boolean);
+    return { ids, reqs, complete: reqs.length === ids.length };
+  };
+
+  const handleExportMultiTRFL = async (idsArg, opts = {}) => {
+    const ids = Array.from(new Set(idsArg || selectedIds)).map(x => parseInt(x, 10)).filter(Boolean);
+    const isRedownload = Boolean(opts.redownload);
+
+    if (ids.length < 2) {
       setToast({ type: 'error', message: 'Selecione pelo menos 2 requisições para TRFL combinado.' });
       return;
     }
     try {
+      const ok = isRedownload
+        ? await confirm({
+          title: 'Baixar TRFL (combinado)',
+          message: 'Deseja baixar novamente?',
+          confirmLabel: 'Baixar novamente',
+          variant: 'warning'
+        })
+        : await confirm({
+          title: 'Gerar TRFL (combinado)',
+          message: 'Deseja continuar? Ao continuar, as requisições selecionadas (com status Separado) serão marcadas como Em expedição.',
+          confirmLabel: 'Continuar'
+        });
+      if (!ok) return;
+
       const token = localStorage.getItem('token');
       const res = await fetch('/api/requisicoes/export-trfl-multi', {
         method: 'POST',
@@ -214,7 +671,7 @@ const ListarRequisicoes = () => {
           'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ ids: selectedIds })
+        body: JSON.stringify({ ids })
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
@@ -227,18 +684,56 @@ const ListarRequisicoes = () => {
       a.download = `TRFL_multi_${new Date().toISOString().slice(0, 10)}.xlsx`;
       a.click();
       window.URL.revokeObjectURL(url);
+      if (!isRedownload) {
+        for (const id of ids) {
+          const r = requisicoes.find(x => x.id === id);
+          if (r?.status === 'separado') {
+            // eslint-disable-next-line no-await-in-loop
+            await marcarEmExpedicao(id);
+          }
+        }
+      }
+      await fetchRequisicoes();
     } catch (error) {
       console.error('Erro ao exportar TRFL combinado:', error);
       setToast({ type: 'error', message: error.message || 'Erro ao exportar TRFL combinado' });
     }
   };
 
-  const handleExportMultiTRA = async () => {
-    if (selectedIds.length < 2) {
+  const handleExportMultiTRA = async (idsArg, opts = {}) => {
+    const ids = Array.from(new Set(idsArg || selectedIds)).map(x => parseInt(x, 10)).filter(Boolean);
+    const isRedownload = Boolean(opts.redownload);
+
+    if (ids.length < 2) {
       setToast({ type: 'error', message: 'Selecione pelo menos 2 requisições para TRA combinado.' });
       return;
     }
+    const targets = ids.map(id => requisicoes.find(x => x.id === id)).filter(Boolean);
+    const validGenerate = targets.every(r => r.status === 'Entregue' && !r.tra_gerada_em);
+    const validRedownload = targets.every(r => (r.status === 'Entregue' && r.tra_gerada_em) || r.status === 'FINALIZADO');
+    if (!isRedownload && !validGenerate) {
+      setToast({ type: 'error', message: 'Para GERAR TRA combinado, selecione apenas requisições Entregues que ainda não tiveram TRA gerada.' });
+      return;
+    }
+    if (isRedownload && !validRedownload) {
+      setToast({ type: 'error', message: 'Para BAIXAR TRA combinado, selecione apenas requisições com TRA já gerada (Entregue/Finalizado).' });
+      return;
+    }
     try {
+      const ok = isRedownload
+        ? await confirm({
+          title: 'Baixar TRA (combinado)',
+          message: 'Deseja baixar novamente?',
+          confirmLabel: 'Baixar novamente',
+          variant: 'warning'
+        })
+        : await confirm({
+          title: 'Gerar TRA (combinado)',
+          message: 'Deseja continuar? Após gerar a TRA, as requisições selecionadas ficarão aptas para FINALIZAR.',
+          confirmLabel: 'Continuar'
+        });
+      if (!ok) return;
+
       const token = localStorage.getItem('token');
       const res = await fetch('/api/requisicoes/export-tra-multi', {
         method: 'POST',
@@ -246,7 +741,7 @@ const ListarRequisicoes = () => {
           'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ ids: selectedIds })
+        body: JSON.stringify({ ids })
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
@@ -259,6 +754,7 @@ const ListarRequisicoes = () => {
       a.download = `TRA_multi_${new Date().toISOString().slice(0, 10)}.xlsx`;
       a.click();
       window.URL.revokeObjectURL(url);
+      await fetchRequisicoes();
     } catch (error) {
       console.error('Erro ao exportar TRA combinado:', error);
       setToast({ type: 'error', message: error.message || 'Erro ao exportar TRA combinado' });
@@ -294,6 +790,7 @@ const ListarRequisicoes = () => {
       separado: 'bg-green-100 text-green-800',
       'EM EXPEDICAO': 'bg-blue-100 text-blue-800',
       Entregue: 'bg-emerald-100 text-emerald-800',
+      FINALIZADO: 'bg-slate-200 text-slate-900',
       cancelada: 'bg-red-100 text-red-800'
     };
     return badges[status] || 'bg-gray-100 text-gray-800';
@@ -305,6 +802,7 @@ const ListarRequisicoes = () => {
       separado: 'Separado',
       'EM EXPEDICAO': 'Em expedição',
       Entregue: 'Entregue',
+      FINALIZADO: 'Finalizado',
       cancelada: 'Cancelada'
     };
     return labels[status] || status;
@@ -353,14 +851,14 @@ const ListarRequisicoes = () => {
                         onClick={handleExportMultiTRFL}
                         className="inline-flex items-center gap-2 px-3 py-2 border border-blue-300 text-blue-700 rounded-lg hover:bg-blue-50 text-sm"
                       >
-                        TRFL combinado
+                        GERAR TRFL (combinado)
                       </button>
                       <button
                         type="button"
                         onClick={handleExportMultiTRA}
                         className="inline-flex items-center gap-2 px-3 py-2 border border-indigo-300 text-indigo-700 rounded-lg hover:bg-indigo-50 text-sm"
                       >
-                        TRA combinado
+                        GERAR TRA (combinado)
                       </button>
                     </>
                   )}
@@ -473,7 +971,9 @@ const ListarRequisicoes = () => {
                 className={`relative overflow-hidden rounded-lg border transition-all ${
                   selectedIds.includes(req.id)
                     ? 'border-blue-500 bg-blue-50 shadow-md'
-                    : 'border-gray-200 bg-white shadow-sm'
+                    : req.status === 'FINALIZADO'
+                      ? 'border-slate-300 bg-slate-50 shadow-sm opacity-80'
+                      : 'border-gray-200 bg-white shadow-sm'
                 }`}
                 onContextMenu={(e) => handleContextMenu(e, req)}
               >
@@ -546,24 +1046,43 @@ const ListarRequisicoes = () => {
                       </div>
                     </div>
                   <div className="flex gap-2 mt-4 sm:mt-0 flex-wrap" onClick={(e) => e.stopPropagation()}>
-                    {canPrepare && ((req.status === 'separado' && req.separacao_confirmada) || req.status === 'EM EXPEDICAO' || req.status === 'Entregue') ? (
+                    {canPrepare && (req.status === 'separado' && req.separacao_confirmada) ? (
                       <button
-                        onClick={() => handleExportTRFL(req.id)}
+                        onClick={() => handleExportTRFL(req)}
                         className="px-3 py-2 text-blue-700 hover:bg-blue-50 rounded-lg border border-blue-300 transition-colors"
-                        title={req.status === 'separado' ? 'Baixar TRFL — o status passará a Em expedição' : 'Baixar TRFL novamente (se perdeu o ficheiro)'}
+                        title="Gerar TRFL — após confirmar, o status passará a Em expedição"
                       >
-                        {req.status === 'separado' ? 'Baixar TRFL' : 'TRFL (baixar novamente)'}
+                        GERAR TRFL
                       </button>
                     ) : null}
-                    {canPrepare && (req.status === 'EM EXPEDICAO' || req.status === 'Entregue') && (
+                    {canPrepare && req.status === 'EM EXPEDICAO' && (
                       <button
-                        onClick={() => handleExportTRA(req.id)}
-                        className="px-3 py-2 text-indigo-700 hover:bg-indigo-50 rounded-lg border border-indigo-300 transition-colors"
-                        title={req.status === 'EM EXPEDICAO' ? 'Baixar TRA — o status passará a Entregue' : 'Baixar TRA novamente (se perdeu o ficheiro)'}
+                        onClick={() => handleEntregar(req)}
+                        className="px-3 py-2 bg-amber-600 text-white hover:bg-amber-700 rounded-lg transition-colors"
+                        title="Alterar status para Entregue"
                       >
-                        {req.status === 'EM EXPEDICAO' ? 'Baixar TRA' : 'TRA (baixar novamente)'}
+                        ENTREGAR
                       </button>
                     )}
+                    {canPrepare && (req.status === 'Entregue' && !req.tra_gerada_em) && (
+                      <button
+                        onClick={() => handleExportTRA(req)}
+                        className="px-3 py-2 text-indigo-700 hover:bg-indigo-50 rounded-lg border border-indigo-300 transition-colors"
+                        title="Gerar TRA"
+                      >
+                        GERAR TRA
+                      </button>
+                    )}
+                    {canPrepare && req.status === 'Entregue' && req.tra_gerada_em && (
+                      <button
+                        onClick={() => handleFinalizar(req.id)}
+                        className="px-3 py-2 bg-slate-700 text-white hover:bg-slate-800 rounded-lg transition-colors"
+                        title="Marcar como Finalizado"
+                      >
+                        Finalizar
+                      </button>
+                    )}
+                    {/* Re-download TRFL/TRA fica apenas no menu de contexto */}
                     {req.status === 'separado' && !req.separacao_confirmada && canPrepare && (
                         <button
                         onClick={() => handleConfirmarSeparacao(req.id)}
@@ -685,37 +1204,97 @@ const ListarRequisicoes = () => {
                 Editar
               </button>
             )}
-            {canPrepare && ((contextMenu.req.status === 'separado' && contextMenu.req.separacao_confirmada) ||
-              contextMenu.req.status === 'EM EXPEDICAO' || contextMenu.req.status === 'Entregue') && (
-              <button
-                className="block w-full text-left px-4 py-2 hover:bg-gray-100"
-                onClick={() => {
-                  if (selectedIds.length >= 2 && selectedIds.includes(contextMenu.req.id)) {
-                    handleExportMultiTRFL();
-                  } else {
-                    handleExportTRFL(contextMenu.req.id);
-                  }
-                  setContextMenu(prev => ({ ...prev, visible: false }));
-                }}
-              >
-                Baixar TRFL
-              </button>
-            )}
-            {canPrepare && (contextMenu.req.status === 'EM EXPEDICAO' || contextMenu.req.status === 'Entregue') && (
-              <button
-                className="block w-full text-left px-4 py-2 hover:bg-gray-100"
-                onClick={() => {
-                  if (selectedIds.length >= 2 && selectedIds.includes(contextMenu.req.id)) {
-                    handleExportMultiTRA();
-                  } else {
-                    handleExportTRA(contextMenu.req.id);
-                  }
-                  setContextMenu(prev => ({ ...prev, visible: false }));
-                }}
-              >
-                Baixar TRA
-              </button>
-            )}
+            {canPrepare && (() => {
+              const { ids, reqs, complete } = getActionTargetReqs(contextMenu.req);
+              const isMulti = ids.length >= 2;
+              const all = (pred) => complete && reqs.every(pred);
+
+              const canGerarTRFL = all(r => r.status === 'separado' && r.separacao_confirmada);
+              const canBaixarTRFL = all(r => ['EM EXPEDICAO', 'Entregue', 'FINALIZADO'].includes(r.status));
+
+              const canEntregar = all(r => r.status === 'EM EXPEDICAO');
+
+              const canGerarTRA = all(r => r.status === 'Entregue' && !r.tra_gerada_em);
+              const canBaixarTRA = all(r => (r.status === 'Entregue' && r.tra_gerada_em) || r.status === 'FINALIZADO');
+
+              const canBaixarComprovativo = all(r => ['Entregue', 'FINALIZADO'].includes(r.status));
+              const canFinalizar = all(r => r.status === 'Entregue' && r.tra_gerada_em);
+
+              return (
+                <>
+                  {(canGerarTRFL || canBaixarTRFL) && (
+                    <button
+                      className="block w-full text-left px-4 py-2 hover:bg-gray-100"
+                      onClick={() => {
+                        if (isMulti) {
+                          handleExportMultiTRFL(ids, { redownload: canBaixarTRFL && !canGerarTRFL });
+                        } else {
+                          handleExportTRFL(contextMenu.req, { redownload: canBaixarTRFL && !canGerarTRFL });
+                        }
+                        setContextMenu(prev => ({ ...prev, visible: false }));
+                      }}
+                    >
+                      {canGerarTRFL ? 'GERAR TRFL' : 'Baixar TRFL'}
+                    </button>
+                  )}
+
+                  {canEntregar && (
+                    <button
+                      className="block w-full text-left px-4 py-2 hover:bg-gray-100"
+                      onClick={() => {
+                        if (isMulti) handleEntregarMulti(ids);
+                        else handleEntregar(contextMenu.req);
+                        setContextMenu(prev => ({ ...prev, visible: false }));
+                      }}
+                    >
+                      ENTREGAR
+                    </button>
+                  )}
+
+                  {(canGerarTRA || canBaixarTRA) && (
+                    <button
+                      className="block w-full text-left px-4 py-2 hover:bg-gray-100"
+                      onClick={() => {
+                        if (isMulti) {
+                          handleExportMultiTRA(ids, { redownload: canBaixarTRA && !canGerarTRA });
+                        } else {
+                          handleExportTRA(contextMenu.req, { redownload: canBaixarTRA && !canGerarTRA });
+                        }
+                        setContextMenu(prev => ({ ...prev, visible: false }));
+                      }}
+                    >
+                      {canGerarTRA ? 'GERAR TRA' : 'Baixar TRA'}
+                    </button>
+                  )}
+
+                  {canBaixarComprovativo && (
+                    <button
+                      className="block w-full text-left px-4 py-2 hover:bg-gray-100"
+                      onClick={() => {
+                        if (isMulti) handleBaixarPdfEntregaMulti(ids);
+                        else handleBaixarPdfEntrega(contextMenu.req);
+                        setContextMenu(prev => ({ ...prev, visible: false }));
+                      }}
+                    >
+                      Baixar comprovativo de entrega
+                    </button>
+                  )}
+
+                  {canFinalizar && (
+                    <button
+                      className="block w-full text-left px-4 py-2 hover:bg-gray-100"
+                      onClick={() => {
+                        if (isMulti) handleFinalizarMulti(ids);
+                        else handleFinalizar(contextMenu.req.id);
+                        setContextMenu(prev => ({ ...prev, visible: false }));
+                      }}
+                    >
+                      Finalizar
+                    </button>
+                  )}
+                </>
+              );
+            })()}
             {canDelete && (
               <button
                 className="block w-full text-left px-4 py-2 hover:bg-red-50 text-red-600"

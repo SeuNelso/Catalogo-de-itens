@@ -13,6 +13,8 @@
     "db:migrate:lote": "node server/run-migration.js lote",
     "db:migrate:serial": "node server/run-migration.js serial",
     "db:migrate:bobinas": "node server/run-migration.js bobinas",
+    "db:migrate:status-finalizado": "node server/run-migration.js status-finalizado",
+    "db:migrate:tra-gerada": "node server/run-migration.js tra-gerada",
     "db:migrate:separacao": "node server/run-migration.js separacao-confirmada",
     "db:migrate:status-fases": "node server/run-migration.js status-fases",
     "db:migrate:preparacao-confirmada": "node server/run-migration.js preparacao-confirmada",
