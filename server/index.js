@@ -5201,9 +5201,9 @@ app.post('/api/requisicoes/reporte-dados-multi', authenticateToken, async (req, 
 
     const allRows = [];
     let includeObservacoes = false;
+    const idsClean = ids.map(x => parseInt(x, 10)).filter(Boolean);
 
-    for (const rawId of ids) {
-      const id = parseInt(rawId, 10);
+    for (const id of idsClean) {
       if (!id) continue;
 
       const requisicao = await getRequisicaoComItens(id);
@@ -5213,6 +5213,18 @@ app.post('/api/requisicoes/reporte-dados-multi', authenticateToken, async (req, 
       const destinoEPI = isDestinoEPI(requisicao);
       if (destinoEPI) includeObservacoes = true;
       const colaboradorObs = destinoEPI ? (requisicao.observacoes || '') : '';
+
+      // Linha de separação entre requisições
+      allRows.push({
+        Artigo: `--- Requisição #${id} ---`,
+        'Descrição': '',
+        Quantidade: '',
+        ORIGEM: '',
+        'S/N': '',
+        LOTE: '',
+        DESTINO: '',
+        ...(destinoEPI ? { 'Observações': '' } : {})
+      });
 
       const codigoDestino = requisicao.armazem_destino_codigo || '';
       let localizacaoOrigemTRA = LOCALIZACAO_EXPEDICAO_FALLBACK;

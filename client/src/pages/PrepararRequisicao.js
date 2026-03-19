@@ -230,7 +230,7 @@ const PrepararRequisicao = () => {
         .replace(/'/g, '&#039;');
 
       const htmlTable = `
-        <table>
+        <table style="border-collapse:collapse; font-family: Calibri, Arial, sans-serif; font-size: 11pt;">
           <thead>
             <tr>${columns.map(c => `<th>${escapeHtml(c)}</th>`).join('')}</tr>
           </thead>
