@@ -872,12 +872,24 @@ const ListarRequisicoes = () => {
       const htmlTable = `
         <table style="border-collapse:collapse; font-family: Calibri, Arial, sans-serif; font-size: 11pt;">
           <thead>
-            <tr>${columns.map(c => `<th>${escapeHtml(c)}</th>`).join('')}</tr>
+            <tr>
+              ${columns.map((c) => `<th style="border:1px solid #000; padding:4px 6px; background:#f2f2f2; font-weight:bold; text-align:center; white-space:nowrap;">${escapeHtml(c)}</th>`).join('')}
+            </tr>
           </thead>
           <tbody>
-            ${reporteModal.rows.map((r) => `
-              <tr>${columns.map(c => `<td>${escapeHtml(r?.[c] ?? '')}</td>`).join('')}</tr>
-            `).join('')}
+            ${reporteModal.rows.map((r) => {
+              const isSep = String(r?.Artigo ?? '').startsWith('--- Requisição #');
+              const trStyle = isSep ? 'background:#f2f2f2; font-weight:bold;' : '';
+              return `
+                <tr style="${trStyle}">
+                  ${columns.map((c) => {
+                    const v = r?.[c] ?? '';
+                    const align = c === 'Descrição' || c === 'Observações' ? 'left' : 'center';
+                    return `<td style="border:1px solid #000; padding:4px 6px; text-align:${align}; vertical-align:top;">${escapeHtml(v)}</td>`;
+                  }).join('')}
+                </tr>
+              `;
+            }).join('')}
           </tbody>
         </table>
       `.trim();
