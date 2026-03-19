@@ -167,6 +167,29 @@ const PrepararRequisicao = () => {
     }
   };
 
+  const handleExportReporte = async () => {
+    try {
+      if (!requisicao?.tra_gerada_em || !['Entregue', 'FINALIZADO'].includes(requisicao?.status)) {
+        setToast({ type: 'error', message: 'Ficheiro de reporte só está disponível após gerar a TRA.' });
+        return;
+      }
+      const ok = await confirm({
+        title: 'Gerar ficheiro de reporte',
+        message: 'Deseja continuar?',
+        confirmLabel: 'Continuar'
+      });
+      if (!ok) return;
+
+      await downloadExport(
+        `/api/requisicoes/${id}/export-reporte`,
+        `REPORTE_requisicao_${id}_${new Date().toISOString().slice(0, 10)}.xlsx`,
+        'Ficheiro de reporte gerado com sucesso.'
+      );
+    } catch (error) {
+      setToast({ type: 'error', message: error.message || 'Erro ao exportar ficheiro de reporte' });
+    }
+  };
+
   const handleEntregar = async () => {
     try {
       if (requisicao?.status !== 'EM EXPEDICAO') {
@@ -313,20 +336,26 @@ const PrepararRequisicao = () => {
     e.preventDefault();
     if (!canPrepare || !itemPreparando) return;
 
-    const qtd = parseInt(formItem.quantidade_preparada, 10);
-    if (isNaN(qtd) || qtd < 0) {
-      setToast({ type: 'error', message: 'Informe uma quantidade válida (use 0 se não tiver o item).' });
-      return;
+    const qtdRequisitada = parseFloat(itemPreparando.quantidade) || 0;
+    let qtdPreparadaNumerica = 0;
+
+    if ((itemPreparando.tipocontrolo || '').toUpperCase() === 'LOTE' && Array.isArray(formItem.bobinas) && formItem.bobinas.length > 0) {
+      qtdPreparadaNumerica = formItem.bobinas.reduce((sum, b) => sum + (parseFloat(b.metros) || 0), 0);
+    } else {
+      const qtd = parseFloat(formItem.quantidade_preparada);
+      if (Number.isNaN(qtd) || qtd < 0) {
+        setToast({ type: 'error', message: 'Informe uma quantidade válida (use 0 se não tiver o item).' });
+        return;
+      }
+      qtdPreparadaNumerica = qtd;
     }
-    if (qtd > itemPreparando.quantidade) {
-      setToast({ type: 'error', message: `Quantidade não pode exceder ${itemPreparando.quantidade}` });
-      return;
-    }
-    const qtdRequisitada = parseInt(itemPreparando.quantidade, 10) || 0;
-    if (qtd !== qtdRequisitada) {
+
+    if (qtdPreparadaNumerica !== qtdRequisitada) {
+      const msg = `A quantidade preparada (${qtdPreparadaNumerica}) é diferente da quantidade requisitada (${qtdRequisitada}). Confirma que esta diferença é intencional?`;
       const ok = await confirm({
-        title: 'Quantidade diferente',
-        message: `A quantidade preparada (${qtd}) é diferente da quantidade requisitada (${qtdRequisitada}). Confirma que esta diferença é intencional?`,
+        title: 'Quantidade diferente da requisitada',
+        message: msg,
+        confirmLabel: 'Sim, confirmar assim mesmo',
         variant: 'warning'
       });
       if (!ok) return;
@@ -369,7 +398,7 @@ const PrepararRequisicao = () => {
         `/api/requisicoes/${id}/atender-item`,
         {
           requisicao_item_id: itemPreparando.id,
-          quantidade_preparada: tipoControlo === 'LOTE' && bobinasPayload ? bobinasPayload.length : qtd,
+          quantidade_preparada: tipoControlo === 'LOTE' && bobinasPayload ? bobinasPayload.length : qtdPreparadaNumerica,
           localizacao_origem: locOrigem,
           lote: formItem.lote || null,
           serialnumber: formItem.serialnumber || null,
@@ -451,6 +480,15 @@ const PrepararRequisicao = () => {
                 title="Gerar TRA"
               >
                 GERAR TRA
+              </button>
+            )}
+            {['Entregue', 'FINALIZADO'].includes(requisicao.status) && requisicao.tra_gerada_em && (
+              <button
+                onClick={handleExportReporte}
+                className="px-3 py-2 text-slate-700 hover:bg-slate-100 rounded-lg border border-slate-300 transition-colors"
+                title="Gerar ficheiro de reporte"
+              >
+                FICHEIRO DE REPORTE
               </button>
             )}
           </div>
@@ -576,13 +614,15 @@ const PrepararRequisicao = () => {
                         <input
                           type="number"
                           min="0"
-                          max={item.quantidade}
                           value={formItem.quantidade_preparada}
                           onChange={(e) => setFormItem(prev => ({ ...prev, quantidade_preparada: e.target.value }))}
                           className="w-full sm:w-32 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0915FF]"
                           required
                         />
-                        <p className="text-xs text-gray-500 mt-1">Máximo: {item.quantidade}. Use 0 se não tiver o item.</p>
+                        <p className="text-xs text-gray-500 mt-1">
+                          Requisitada: {item.quantidade}. Pode ser diferente (para mais ou para menos); o sistema irá pedir confirmação.
+                          Use 0 se não tiver o item.
+                        </p>
                       </div>
                       {(item.tipocontrolo || '').toUpperCase() === 'LOTE' && (
                         <div className="space-y-3">

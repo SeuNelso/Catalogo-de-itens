@@ -520,6 +520,30 @@ const ListarRequisicoes = () => {
     }
   };
 
+  const handleExportReporte = async (req) => {
+    const reqId = req?.id;
+    try {
+      if (!reqId) throw new Error('Requisição inválida');
+      if (!req.tra_gerada_em || !['Entregue', 'FINALIZADO'].includes(req.status)) {
+        throw new Error('Ficheiro de reporte só está disponível após gerar a TRA.');
+      }
+      const ok = await confirm({
+        title: 'Gerar ficheiro de reporte',
+        message: 'Deseja continuar?',
+        confirmLabel: 'Continuar'
+      });
+      if (!ok) return;
+
+      await downloadExport(
+        `/api/requisicoes/${reqId}/export-reporte`,
+        `REPORTE_requisicao_${reqId}_${new Date().toISOString().slice(0, 10)}.xlsx`,
+        'Ficheiro de reporte gerado com sucesso.'
+      );
+    } catch (error) {
+      setToast({ type: 'error', message: error.message || 'Erro ao gerar ficheiro de reporte' });
+    }
+  };
+
   const handleFinalizar = async (reqId) => {
     try {
       const token = localStorage.getItem('token');
@@ -758,6 +782,51 @@ const ListarRequisicoes = () => {
     } catch (error) {
       console.error('Erro ao exportar TRA combinado:', error);
       setToast({ type: 'error', message: error.message || 'Erro ao exportar TRA combinado' });
+    }
+  };
+
+  const handleExportMultiReporte = async (idsArg) => {
+    const ids = Array.from(new Set(idsArg || selectedIds)).map(x => parseInt(x, 10)).filter(Boolean);
+    if (ids.length < 2) {
+      setToast({ type: 'error', message: 'Selecione pelo menos 2 requisições para ficheiro de reporte combinado.' });
+      return;
+    }
+    const targets = ids.map(id => requisicoes.find(x => x.id === id)).filter(Boolean);
+    const valid = targets.every(r => (r.status === 'Entregue' || r.status === 'FINALIZADO') && r.tra_gerada_em);
+    if (!valid) {
+      setToast({ type: 'error', message: 'Selecione apenas requisições com TRA já gerada para o ficheiro de reporte.' });
+      return;
+    }
+    try {
+      const ok = await confirm({
+        title: 'Gerar ficheiro de reporte (combinado)',
+        message: 'Deseja continuar?',
+        confirmLabel: 'Continuar'
+      });
+      if (!ok) return;
+
+      const token = localStorage.getItem('token');
+      const res = await fetch('/api/requisicoes/export-reporte-multi', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ ids })
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || 'Erro ao exportar ficheiro de reporte');
+      }
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `REPORTE_multi_${new Date().toISOString().slice(0, 10)}.xlsx`;
+      a.click();
+      window.URL.revokeObjectURL(url);
+    } catch (error) {
+      setToast({ type: 'error', message: error.message || 'Erro ao exportar ficheiro de reporte' });
     }
   };
 
@@ -1216,6 +1285,7 @@ const ListarRequisicoes = () => {
 
               const canGerarTRA = all(r => r.status === 'Entregue' && !r.tra_gerada_em);
               const canBaixarTRA = all(r => (r.status === 'Entregue' && r.tra_gerada_em) || r.status === 'FINALIZADO');
+              const canGerarReporte = all(r => (r.status === 'Entregue' || r.status === 'FINALIZADO') && r.tra_gerada_em);
 
               const canBaixarComprovativo = all(r => ['Entregue', 'FINALIZADO'].includes(r.status));
               const canFinalizar = all(r => r.status === 'Entregue' && r.tra_gerada_em);
@@ -1264,6 +1334,19 @@ const ListarRequisicoes = () => {
                       }}
                     >
                       {canGerarTRA ? 'GERAR TRA' : 'Baixar TRA'}
+                    </button>
+                  )}
+
+                  {canGerarReporte && (
+                    <button
+                      className="block w-full text-left px-4 py-2 hover:bg-gray-100"
+                      onClick={() => {
+                        if (isMulti) handleExportMultiReporte(ids);
+                        else handleExportReporte(contextMenu.req);
+                        setContextMenu(prev => ({ ...prev, visible: false }));
+                      }}
+                    >
+                      Gerar ficheiro de reporte
                     </button>
                   )}
 

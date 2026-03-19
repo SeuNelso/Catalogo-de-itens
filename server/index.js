@@ -4387,6 +4387,76 @@ function buildExcelTransferencia(rows, res, filename) {
   res.send(buffer);
 }
 
+// Helper: gera ficheiro de reporte formatado no template
+// (Artigo, Descrição, Quantidade, ORIGEM, S/N, LOTE, DESTINO)
+async function buildExcelReporte(rows, res, filename) {
+  const ExcelJS = require('exceljs');
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet('Reporte');
+
+  sheet.columns = [
+    { header: 'Artigo', key: 'Artigo', width: 14 },
+    { header: 'Descrição', key: 'Descrição', width: 60 },
+    { header: 'Quantidade', key: 'Quantidade', width: 14 },
+    { header: 'ORIGEM', key: 'ORIGEM', width: 18 },
+    { header: 'S/N', key: 'S/N', width: 12 },
+    { header: 'LOTE', key: 'LOTE', width: 24 },
+    { header: 'DESTINO', key: 'DESTINO', width: 12 }
+  ];
+
+  const safeRows = rows.length
+    ? rows
+    : [{ Artigo: '', 'Descrição': '', Quantidade: '', ORIGEM: '', 'S/N': '', LOTE: '', DESTINO: '' }];
+
+  safeRows.forEach(r => sheet.addRow(r));
+
+  // Cabeçalho no estilo do modelo (fundo cinza, texto claro, negrito)
+  const header = sheet.getRow(1);
+  header.height = 22;
+  header.eachCell((cell) => {
+    cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 12 };
+    cell.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FF8C8C8C' }
+    };
+    cell.alignment = { vertical: 'middle', horizontal: 'center' };
+    cell.border = {
+      top: { style: 'thin', color: { argb: 'FF404040' } },
+      left: { style: 'thin', color: { argb: 'FF404040' } },
+      bottom: { style: 'thin', color: { argb: 'FF404040' } },
+      right: { style: 'thin', color: { argb: 'FF404040' } }
+    };
+  });
+
+  // Corpo com espaçamento/legibilidade e bordas
+  for (let i = 2; i <= sheet.rowCount; i++) {
+    const row = sheet.getRow(i);
+    row.height = 22;
+    row.eachCell((cell, colNumber) => {
+      cell.font = { size: 11 };
+      cell.alignment = {
+        vertical: 'middle',
+        horizontal: colNumber === 2 ? 'left' : 'center',
+        wrapText: colNumber === 2
+      };
+      cell.border = {
+        top: { style: 'thin', color: { argb: 'FF808080' } },
+        left: { style: 'thin', color: { argb: 'FF808080' } },
+        bottom: { style: 'thin', color: { argb: 'FF808080' } },
+        right: { style: 'thin', color: { argb: 'FF808080' } }
+      };
+    });
+  }
+
+  sheet.views = [{ state: 'frozen', ySplit: 1 }];
+
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  await workbook.xlsx.write(res);
+  res.end();
+}
+
 // Buscar requisição + itens (reutilizado por TRFL e TRA)
 async function getRequisicaoComItens(id) {
   let reqResult = await pool.query(`
@@ -4401,7 +4471,7 @@ async function getRequisicaoComItens(id) {
   if (reqResult.rows.length === 0) return null;
   const requisicao = reqResult.rows[0];
   const itensResult = await pool.query(`
-    SELECT ri.*, i.codigo as item_codigo, i.tipocontrolo
+    SELECT ri.*, i.codigo as item_codigo, i.descricao as item_descricao, i.tipocontrolo
     FROM requisicoes_itens ri
     INNER JOIN itens i ON ri.item_id = i.id
     WHERE ri.requisicao_id = $1
@@ -4922,6 +4992,165 @@ app.post('/api/requisicoes/export-tra-multi', authenticateToken, async (req, res
   } catch (error) {
     console.error('Erro ao exportar TRA multi:', error);
     res.status(500).json({ error: 'Erro ao exportar TRA combinado', details: error.message });
+  }
+});
+
+// Ficheiro de Reporte (template): disponível após gerar TRA
+app.get('/api/requisicoes/:id/export-reporte', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const requisicao = await getRequisicaoComItens(id);
+    if (!requisicao) return res.status(404).json({ error: 'Requisição não encontrada' });
+    if (!['Entregue', 'FINALIZADO'].includes(requisicao.status) || !requisicao.tra_gerada_em) {
+      return res.status(400).json({ error: 'Ficheiro de reporte só está disponível após gerar a TRA.' });
+    }
+
+    // Mesma origem/destino usados na TRA
+    const codigoDestino = requisicao.armazem_destino_codigo || '';
+    let localizacaoOrigemTRA = LOCALIZACAO_EXPEDICAO_FALLBACK;
+    if (requisicao.armazem_origem_id) {
+      const locExp = await pool.query(
+        `SELECT localizacao FROM armazens_localizacoes WHERE armazem_id = $1 AND LOWER(COALESCE(tipo_localizacao, '')) = 'expedicao' ORDER BY id LIMIT 1`,
+        [requisicao.armazem_origem_id]
+      );
+      if (locExp.rows.length > 0 && locExp.rows[0].localizacao) {
+        localizacaoOrigemTRA = locExp.rows[0].localizacao;
+      }
+    }
+
+    let bobinas = [];
+    try {
+      const bobinasResult = await pool.query(`
+        SELECT b.*, ri.item_id, i.codigo as item_codigo, i.descricao as item_descricao
+        FROM requisicoes_itens_bobinas b
+        INNER JOIN requisicoes_itens ri ON b.requisicao_item_id = ri.id
+        INNER JOIN itens i ON ri.item_id = i.id
+        WHERE ri.requisicao_id = $1
+      `, [id]);
+      bobinas = bobinasResult.rows;
+    } catch (_) {
+      bobinas = [];
+    }
+
+    const rows = [];
+    for (const b of bobinas) {
+      rows.push({
+        Artigo: String(b.item_codigo || ''),
+        'Descrição': String(b.item_descricao || ''),
+        Quantidade: Number(b.metros) || 0,
+        ORIGEM: localizacaoOrigemTRA,
+        'S/N': b.serialnumber || '',
+        LOTE: b.lote || '',
+        DESTINO: codigoDestino
+      });
+    }
+
+    for (const ri of requisicao.itens || []) {
+      const tipoControlo = (ri.tipocontrolo || '').toUpperCase();
+      const temBobinas = bobinas.some(b => b.item_id === ri.item_id);
+      if (tipoControlo === 'LOTE' && temBobinas) continue;
+
+      const qty = parseFloat(ri.quantidade_preparada ?? ri.quantidade) || 0;
+      if (qty <= 0) continue;
+      rows.push({
+        Artigo: String(ri.item_codigo || ''),
+        'Descrição': String(ri.item_descricao || ''),
+        Quantidade: qty,
+        ORIGEM: localizacaoOrigemTRA,
+        'S/N': ri.serialnumber || '',
+        LOTE: ri.lote || '',
+        DESTINO: codigoDestino
+      });
+    }
+
+    await buildExcelReporte(rows, res, `REPORTE_requisicao_${id}_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  } catch (error) {
+    console.error('Erro ao exportar reporte:', error);
+    res.status(500).json({ error: 'Erro ao exportar reporte', details: error.message });
+  }
+});
+
+// Ficheiro de Reporte combinado
+app.post('/api/requisicoes/export-reporte-multi', authenticateToken, async (req, res) => {
+  try {
+    const { ids } = req.body || {};
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ error: 'Envie um array de IDs de requisições.' });
+    }
+
+    let allRows = [];
+    for (const rawId of ids) {
+      const id = parseInt(rawId, 10);
+      if (!id) continue;
+      const requisicao = await getRequisicaoComItens(id);
+      if (!requisicao) continue;
+      if (!['Entregue', 'FINALIZADO'].includes(requisicao.status) || !requisicao.tra_gerada_em) continue;
+
+      // Mesma origem/destino usados na TRA (por requisição)
+      const codigoDestino = requisicao.armazem_destino_codigo || '';
+      let localizacaoOrigemTRA = LOCALIZACAO_EXPEDICAO_FALLBACK;
+      if (requisicao.armazem_origem_id) {
+        const locExp = await pool.query(
+          `SELECT localizacao FROM armazens_localizacoes WHERE armazem_id = $1 AND LOWER(COALESCE(tipo_localizacao, '')) = 'expedicao' ORDER BY id LIMIT 1`,
+          [requisicao.armazem_origem_id]
+        );
+        if (locExp.rows.length > 0 && locExp.rows[0].localizacao) {
+          localizacaoOrigemTRA = locExp.rows[0].localizacao;
+        }
+      }
+
+      let bobinas = [];
+      try {
+        const bobinasResult = await pool.query(`
+          SELECT b.*, ri.item_id, i.codigo as item_codigo, i.descricao as item_descricao
+          FROM requisicoes_itens_bobinas b
+          INNER JOIN requisicoes_itens ri ON b.requisicao_item_id = ri.id
+          INNER JOIN itens i ON ri.item_id = i.id
+          WHERE ri.requisicao_id = $1
+        `, [id]);
+        bobinas = bobinasResult.rows;
+      } catch (_) {
+        bobinas = [];
+      }
+
+      for (const b of bobinas) {
+        allRows.push({
+          Artigo: String(b.item_codigo || ''),
+          'Descrição': String(b.item_descricao || ''),
+          Quantidade: Number(b.metros) || 0,
+          ORIGEM: localizacaoOrigemTRA,
+          'S/N': b.serialnumber || '',
+          LOTE: b.lote || '',
+          DESTINO: codigoDestino
+        });
+      }
+
+      for (const ri of requisicao.itens || []) {
+        const tipoControlo = (ri.tipocontrolo || '').toUpperCase();
+        const temBobinas = bobinas.some(b => b.item_id === ri.item_id);
+        if (tipoControlo === 'LOTE' && temBobinas) continue;
+        const qty = parseFloat(ri.quantidade_preparada ?? ri.quantidade) || 0;
+        if (qty <= 0) continue;
+        allRows.push({
+          Artigo: String(ri.item_codigo || ''),
+          'Descrição': String(ri.item_descricao || ''),
+          Quantidade: qty,
+          ORIGEM: localizacaoOrigemTRA,
+          'S/N': ri.serialnumber || '',
+          LOTE: ri.lote || '',
+          DESTINO: codigoDestino
+        });
+      }
+    }
+
+    if (allRows.length === 0) {
+      return res.status(400).json({ error: 'Nenhuma requisição válida para gerar ficheiro de reporte.' });
+    }
+
+    await buildExcelReporte(allRows, res, `REPORTE_multi_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  } catch (error) {
+    console.error('Erro ao exportar reporte multi:', error);
+    res.status(500).json({ error: 'Erro ao exportar reporte combinado', details: error.message });
   }
 });
 
@@ -5484,9 +5713,6 @@ app.patch('/api/requisicoes/:id/atender-item', authenticateToken, async (req, re
       return res.status(404).json({ error: 'Item não encontrado nesta requisição' });
     }
     const item = itemCheck.rows[0];
-    if (quantidade_preparada > item.quantidade) {
-      return res.status(400).json({ error: `Quantidade preparada não pode exceder ${item.quantidade}` });
-    }
 
     // Validar Lote/Serial/Bobinas conforme tipo de controlo do item, apenas quando há saída
     const tipoControlo = (item.tipocontrolo || '').toUpperCase();
@@ -5840,4 +6066,4 @@ app.listen(PORT, () => {
 
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, '../client/build', 'index.html'));
-});  
+});
