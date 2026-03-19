@@ -4388,25 +4388,46 @@ function buildExcelTransferencia(rows, res, filename) {
 }
 
 // Helper: gera ficheiro de reporte formatado no template
-// (Artigo, Descrição, Quantidade, ORIGEM, S/N, LOTE, DESTINO)
-async function buildExcelReporte(rows, res, filename) {
+// (Artigo, Descrição, Quantidade, ORIGEM, S/N, LOTE, DESTINO[, Observações])
+async function buildExcelReporte(rows, res, filename, opts = {}) {
+  const includeObservacoes = Boolean(opts.includeObservacoes);
   const ExcelJS = require('exceljs');
   const workbook = new ExcelJS.Workbook();
   const sheet = workbook.addWorksheet('Reporte');
 
-  sheet.columns = [
-    { header: 'Artigo', key: 'Artigo', width: 14 },
-    { header: 'Descrição', key: 'Descrição', width: 60 },
-    { header: 'Quantidade', key: 'Quantidade', width: 14 },
-    { header: 'ORIGEM', key: 'ORIGEM', width: 18 },
-    { header: 'S/N', key: 'S/N', width: 12 },
-    { header: 'LOTE', key: 'LOTE', width: 24 },
-    { header: 'DESTINO', key: 'DESTINO', width: 12 }
+  const baseColumns = [
+    { header: 'Artigo', key: 'Artigo', minWidth: 10, maxWidth: 22 },
+    { header: 'Descrição', key: 'Descrição', minWidth: 18, maxWidth: 70 },
+    { header: 'Quantidade', key: 'Quantidade', minWidth: 10, maxWidth: 18 },
+    { header: 'ORIGEM', key: 'ORIGEM', minWidth: 12, maxWidth: 28 },
+    { header: 'S/N', key: 'S/N', minWidth: 8, maxWidth: 20 },
+    { header: 'LOTE', key: 'LOTE', minWidth: 10, maxWidth: 36 },
+    { header: 'DESTINO', key: 'DESTINO', minWidth: 10, maxWidth: 20 }
   ];
+  if (includeObservacoes) {
+    baseColumns.push({ header: 'Observações', key: 'Observações', minWidth: 14, maxWidth: 45 });
+  }
 
   const safeRows = rows.length
     ? rows
-    : [{ Artigo: '', 'Descrição': '', Quantidade: '', ORIGEM: '', 'S/N': '', LOTE: '', DESTINO: '' }];
+    : [{ Artigo: '', 'Descrição': '', Quantidade: '', ORIGEM: '', 'S/N': '', LOTE: '', DESTINO: '', 'Observações': '' }];
+
+  // Largura automática por conteúdo (header + dados), com limites por coluna.
+  const columnsWithWidth = baseColumns.map((col) => {
+    const headerLen = String(col.header || '').length;
+    let maxLen = headerLen;
+    for (const r of safeRows) {
+      const cellVal = r[col.key] === null || r[col.key] === undefined ? '' : String(r[col.key]);
+      const len = cellVal.length;
+      if (len > maxLen) maxLen = len;
+    }
+    // +2 de folga visual
+    const calculated = maxLen + 2;
+    const width = Math.max(col.minWidth, Math.min(col.maxWidth, calculated));
+    return { header: col.header, key: col.key, width };
+  });
+
+  sheet.columns = columnsWithWidth;
 
   safeRows.forEach(r => sheet.addRow(r));
 
@@ -4437,8 +4458,8 @@ async function buildExcelReporte(rows, res, filename) {
       cell.font = { size: 11 };
       cell.alignment = {
         vertical: 'middle',
-        horizontal: colNumber === 2 ? 'left' : 'center',
-        wrapText: colNumber === 2
+        horizontal: (colNumber === 2 || (includeObservacoes && colNumber === baseColumns.length)) ? 'left' : 'center',
+        wrapText: (colNumber === 2 || (includeObservacoes && colNumber === baseColumns.length))
       };
       cell.border = {
         top: { style: 'thin', color: { argb: 'FF808080' } },
@@ -4462,6 +4483,7 @@ async function getRequisicaoComItens(id) {
   let reqResult = await pool.query(`
     SELECT r.*,
       a.codigo as armazem_destino_codigo,
+      a.descricao as armazem_destino_descricao,
       ao.codigo as armazem_origem_codigo
     FROM requisicoes r
     INNER JOIN armazens a ON r.armazem_id = a.id
@@ -4479,6 +4501,12 @@ async function getRequisicaoComItens(id) {
   `, [id]);
   requisicao.itens = itensResult.rows;
   return requisicao;
+}
+
+function isDestinoEPI(requisicao) {
+  const codigo = String(requisicao?.armazem_destino_codigo || '').toUpperCase();
+  const descricao = String(requisicao?.armazem_destino_descricao || '').toUpperCase();
+  return codigo.includes('EPI') || descricao.includes('EPI');
 }
 
 // TRFL — Só quando armazém de origem é geral (central). Destino = localização de expedição do armazém de origem.
@@ -5032,6 +5060,8 @@ app.get('/api/requisicoes/:id/export-reporte', authenticateToken, async (req, re
       bobinas = [];
     }
 
+    const destinoEPI = isDestinoEPI(requisicao);
+    const colaboradorObs = destinoEPI ? (requisicao.observacoes || '') : '';
     const rows = [];
     for (const b of bobinas) {
       rows.push({
@@ -5041,7 +5071,8 @@ app.get('/api/requisicoes/:id/export-reporte', authenticateToken, async (req, re
         ORIGEM: localizacaoOrigemTRA,
         'S/N': b.serialnumber || '',
         LOTE: b.lote || '',
-        DESTINO: codigoDestino
+        DESTINO: codigoDestino,
+        'Observações': colaboradorObs
       });
     }
 
@@ -5059,11 +5090,17 @@ app.get('/api/requisicoes/:id/export-reporte', authenticateToken, async (req, re
         ORIGEM: localizacaoOrigemTRA,
         'S/N': ri.serialnumber || '',
         LOTE: ri.lote || '',
-        DESTINO: codigoDestino
+        DESTINO: codigoDestino,
+        'Observações': colaboradorObs
       });
     }
 
-    await buildExcelReporte(rows, res, `REPORTE_requisicao_${id}_${new Date().toISOString().slice(0, 10)}.xlsx`);
+    await buildExcelReporte(
+      rows,
+      res,
+      `REPORTE_requisicao_${id}_${new Date().toISOString().slice(0, 10)}.xlsx`,
+      { includeObservacoes: destinoEPI }
+    );
   } catch (error) {
     console.error('Erro ao exportar reporte:', error);
     res.status(500).json({ error: 'Erro ao exportar reporte', details: error.message });
@@ -5079,12 +5116,16 @@ app.post('/api/requisicoes/export-reporte-multi', authenticateToken, async (req,
     }
 
     let allRows = [];
+    let includeObservacoes = false;
     for (const rawId of ids) {
       const id = parseInt(rawId, 10);
       if (!id) continue;
       const requisicao = await getRequisicaoComItens(id);
       if (!requisicao) continue;
       if (!['Entregue', 'FINALIZADO'].includes(requisicao.status) || !requisicao.tra_gerada_em) continue;
+      const destinoEPI = isDestinoEPI(requisicao);
+      const colaboradorObs = destinoEPI ? (requisicao.observacoes || '') : '';
+      if (destinoEPI) includeObservacoes = true;
 
       // Mesma origem/destino usados na TRA (por requisição)
       const codigoDestino = requisicao.armazem_destino_codigo || '';
@@ -5121,7 +5162,8 @@ app.post('/api/requisicoes/export-reporte-multi', authenticateToken, async (req,
           ORIGEM: localizacaoOrigemTRA,
           'S/N': b.serialnumber || '',
           LOTE: b.lote || '',
-          DESTINO: codigoDestino
+          DESTINO: codigoDestino,
+          'Observações': colaboradorObs
         });
       }
 
@@ -5138,7 +5180,8 @@ app.post('/api/requisicoes/export-reporte-multi', authenticateToken, async (req,
           ORIGEM: localizacaoOrigemTRA,
           'S/N': ri.serialnumber || '',
           LOTE: ri.lote || '',
-          DESTINO: codigoDestino
+          DESTINO: codigoDestino,
+          'Observações': colaboradorObs
         });
       }
     }
@@ -5147,7 +5190,12 @@ app.post('/api/requisicoes/export-reporte-multi', authenticateToken, async (req,
       return res.status(400).json({ error: 'Nenhuma requisição válida para gerar ficheiro de reporte.' });
     }
 
-    await buildExcelReporte(allRows, res, `REPORTE_multi_${new Date().toISOString().slice(0, 10)}.xlsx`);
+    await buildExcelReporte(
+      allRows,
+      res,
+      `REPORTE_multi_${new Date().toISOString().slice(0, 10)}.xlsx`,
+      { includeObservacoes }
+    );
   } catch (error) {
     console.error('Erro ao exportar reporte multi:', error);
     res.status(500).json({ error: 'Erro ao exportar reporte combinado', details: error.message });
