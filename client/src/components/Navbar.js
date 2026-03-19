@@ -20,7 +20,7 @@ const Navbar = () => {
   const isController = user && (user.role === 'admin' || user.role === 'controller');
   const canSeeRequisicoes = user && ['admin', 'controller', 'operador', 'backoffice_operations', 'backoffice_armazem'].includes(user.role);
   const isBackofficeArmazem = user && user.role === 'backoffice_armazem';
-  const showGerirMenu = isAdmin || isBackofficeArmazem;
+  const showGerirMenu = isAdmin;
 
   // Fechar menu mobile ao navegar
   const handleNavigation = () => {

@@ -37,7 +37,11 @@ const migrationFile = path.join(
               ? 'migrate-requisicoes-itens-serial.sql'
               : arg === 'bobinas'
                 ? 'migrate-requisicoes-itens-bobinas.sql'
-                : 'migrate-requisicoes-itens-preparacao.sql'
+                : arg === 'usuarios-requisicoes-armazem-origem'
+                  ? 'migrate-usuarios-requisicoes-armazem-origem.sql'
+                  : arg === 'usuarios-dados-pessoais'
+                    ? 'migrate-usuarios-dados-pessoais.sql'
+                    : 'migrate-requisicoes-itens-preparacao.sql'
 );
 
 async function run() {

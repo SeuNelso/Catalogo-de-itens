@@ -43,9 +43,18 @@ export function ConfirmProvider({ children }) {
     <ConfirmContext.Provider value={{ confirm }}>
       {children}
       {state.open && (
-        <div className="fixed inset-0 z-[9998] flex items-center justify-center p-4 bg-black/50" aria-modal="true" role="dialog">
-          <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6 animate-fade-in">
-            <h3 className="text-lg font-semibold text-gray-900 mb-2">{state.title}</h3>
+        <div
+          className="fixed inset-0 z-[99999] flex items-center justify-center p-4 bg-black/50"
+          aria-modal="true"
+          role="dialog"
+          aria-labelledby="confirm-dialog-title"
+          onClick={handleCancel}
+        >
+          <div
+            className="bg-white rounded-xl shadow-xl max-w-md w-full p-6 animate-fade-in"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 id="confirm-dialog-title" className="text-lg font-semibold text-gray-900 mb-2">{state.title}</h3>
             <p className="text-gray-600 mb-6">{state.message}</p>
             <div className="flex gap-3 justify-end">
               <button

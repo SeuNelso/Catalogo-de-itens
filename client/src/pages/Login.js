@@ -35,8 +35,8 @@ const Login = () => {
     e.preventDefault();
     setFieldError('');
     
-    if (!formData.username || !formData.password) {
-      setFieldError('Por favor, preencha todos os campos');
+    if (!formData.username?.trim() || !formData.password) {
+      setFieldError('Indique o nº de colaborador ou o utilizador e a palavra-passe.');
       return;
     }
 
@@ -89,7 +89,7 @@ const Login = () => {
           {/* Username */}
           <div>
             <label className="flex items-center text-blue-600 font-semibold mb-2 text-sm sm:text-base">
-              <User className="w-4 h-4 sm:w-5 sm:h-5 mr-2 text-blue-400" /> Usuário
+              <User className="w-4 h-4 sm:w-5 sm:h-5 mr-2 text-blue-400" /> N.º colaborador ou utilizador
             </label>
             <input
               type="text"
@@ -97,7 +97,8 @@ const Login = () => {
               value={formData.username}
               onChange={handleInputChange}
               className="w-full border-2 border-gray-300 rounded-lg px-3 sm:px-4 py-2 sm:py-3 text-sm sm:text-base outline-none transition-all duration-200 bg-white/90 shadow-sm"
-              placeholder="Digite seu usuário"
+              placeholder="Ex.: 12345 ou o seu username"
+              autoComplete="username"
               required
               onFocus={e => e.target.classList.add('border-blue-600')}
               onBlur={e => e.target.classList.remove('border-blue-600')}
@@ -118,8 +119,9 @@ const Login = () => {
                   if (fieldError) setFieldError('');
                 }}
                 className="w-full border-2 border-gray-300 rounded-lg px-3 sm:px-4 py-2 sm:py-3 text-sm sm:text-base outline-none transition-all duration-200 bg-white/90 shadow-sm pr-10 sm:pr-12"
-                placeholder="Digite sua senha"
+                placeholder="Palavra-passe"
                 required
+                autoComplete="current-password"
                 onFocus={e => e.target.classList.add('border-blue-600')}
                 onBlur={e => e.target.classList.remove('border-blue-600')}
               />

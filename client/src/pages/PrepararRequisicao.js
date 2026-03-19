@@ -167,6 +167,19 @@ const PrepararRequisicao = () => {
         `TRA_requisicao_${id}_${new Date().toISOString().slice(0, 10)}.xlsx`,
         'TRA gerada com sucesso.'
       );
+
+      const okClog = await confirm({
+        title: 'Clog',
+        message: 'Deseja gerar o ficheiro Clog (saída de armazém) após gerar a TRA?',
+        confirmLabel: 'Gerar Clog'
+      });
+      if (okClog) {
+        await downloadExport(
+          `/api/requisicoes/${id}/export-clog`,
+          `CLOG_requisicao_${id}_${new Date().toISOString().slice(0, 10)}.xlsx`,
+          'Clog gerado com sucesso.'
+        );
+      }
       await fetchRequisicao(true);
     } catch (error) {
       console.error('Erro ao exportar TRA:', error);
@@ -176,8 +189,14 @@ const PrepararRequisicao = () => {
 
   const handleExportReporte = async () => {
     try {
-      if (!requisicao?.tra_gerada_em || !['Entregue', 'FINALIZADO'].includes(requisicao?.status)) {
-        setToast({ type: 'error', message: 'Ficheiro de reporte só está disponível após gerar a TRA.' });
+      const st = requisicao?.status;
+      const podeReporte =
+        ['Entregue', 'FINALIZADO'].includes(st) && (st === 'FINALIZADO' || requisicao?.tra_gerada_em);
+      if (!podeReporte) {
+        setToast({
+          type: 'error',
+          message: 'Ficheiro de reporte só está disponível após gerar a TRA (Entregue) ou quando a requisição estiver finalizada.'
+        });
         return;
       }
 
@@ -586,7 +605,7 @@ const PrepararRequisicao = () => {
                 GERAR TRA
               </button>
             )}
-            {['Entregue', 'FINALIZADO'].includes(requisicao.status) && requisicao.tra_gerada_em && (
+            {((requisicao.status === 'Entregue' && requisicao.tra_gerada_em) || requisicao.status === 'FINALIZADO') && (
               <button
                 onClick={handleExportReporte}
                 className="px-3 py-2 text-slate-700 hover:bg-slate-100 rounded-lg border border-slate-300 transition-colors"

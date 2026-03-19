@@ -1,7 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Upload, FileText } from 'react-feather';
 import Toast from '../components/Toast';
+import { useAuth } from '../contexts/AuthContext';
+import { getRequisicoesArmazemOrigemIds } from '../utils/requisicoesArmazemOrigem';
 
 const ImportarRequisicao = () => {
   const [file, setFile] = useState(null);
@@ -11,6 +13,20 @@ const ImportarRequisicao = () => {
   const [toast, setToast] = useState(null);
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 600);
   const navigate = useNavigate();
+  const { user } = useAuth();
+
+  const armazensLista = useMemo(() => {
+    const allowed = getRequisicoesArmazemOrigemIds(user);
+    if (allowed.length === 0 || user?.role === 'admin' || user?.role === 'controller') return armazens;
+    const set = new Set(allowed);
+    return armazens.filter((a) => set.has(a.id));
+  }, [armazens, user]);
+
+  useEffect(() => {
+    const allowed = getRequisicoesArmazemOrigemIds(user);
+    if (allowed.length !== 1 || user?.role === 'admin' || user?.role === 'controller') return;
+    setArmazemOrigemId(String(allowed[0]));
+  }, [user]);
 
   useEffect(() => {
     const handleResize = () => setIsMobile(window.innerWidth <= 600);
@@ -136,10 +152,16 @@ const ImportarRequisicao = () => {
             <select
               value={armazemOrigemId}
               onChange={(e) => setArmazemOrigemId(e.target.value)}
+              disabled={
+                armazensLista.length === 1 &&
+                getRequisicoesArmazemOrigemIds(user).length >= 1 &&
+                user?.role !== 'admin' &&
+                user?.role !== 'controller'
+              }
               className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0915FF] focus:border-transparent text-sm"
             >
               <option value="">Selecione o armazém origem</option>
-              {armazens.map((a) => (
+              {armazensLista.map((a) => (
                 <option key={a.id} value={a.id}>
                   {a.codigo ? `${a.codigo} - ${a.descricao}` : a.descricao}
                 </option>

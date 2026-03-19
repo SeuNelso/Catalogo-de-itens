@@ -1,8 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { useConfirm } from '../contexts/ConfirmContext';
 import Toast from '../components/Toast';
-import { FaPlus, FaEdit, FaTrash, FaWarehouse, FaMapMarkerAlt, FaChevronDown, FaChevronUp } from 'react-icons/fa';
+import { FaPlus, FaEdit, FaTrash, FaWarehouse, FaSearch } from 'react-icons/fa';
 import axios from 'axios';
 
 const Armazens = () => {
@@ -19,10 +19,193 @@ const Armazens = () => {
   });
   const [submitting, setSubmitting] = useState(false);
   const [loadingEdit, setLoadingEdit] = useState(false);
-  const [expandedId, setExpandedId] = useState(null);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [tipoFiltro, setTipoFiltro] = useState('todos'); // todos | central | viatura
+  const [centralBulkText, setCentralBulkText] = useState('');
+  const [importingLocFile, setImportingLocFile] = useState(false);
+  const [editingLocIdx, setEditingLocIdx] = useState(null);
+  const [editingLocValue, setEditingLocValue] = useState('');
+  const [editingLocTipo, setEditingLocTipo] = useState('normal');
   const { user } = useAuth();
   const confirm = useConfirm();
-  const canManageArmazens = user && (user.role === 'admin' || user.role === 'backoffice_armazem');
+  const canManageArmazens = user && user.role === 'admin';
+
+  const parseCentralBulkText = (text) => {
+    const lines = String(text || '')
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean);
+
+    const parsed = [];
+    for (const line of lines) {
+      // Formatos aceitos:
+      // - LOCALIZACAO
+      // - tipo;LOCALIZACAO
+      // - tipo,LOCALIZACAO
+      // tipo = recebimento | expedicao | normal
+      let tipo = 'normal';
+      let localizacao = line;
+
+      const parts = line.includes(';')
+        ? line.split(';')
+        : (line.includes(',') ? line.split(',') : [line]);
+
+      if (parts.length >= 2) {
+        const tipoRaw = (parts[0] || '').trim().toLowerCase();
+        localizacao = parts.slice(1).join(';').trim();
+        if (tipoRaw.startsWith('rec')) tipo = 'recebimento';
+        else if (tipoRaw.startsWith('exp')) tipo = 'expedicao';
+        else tipo = 'normal';
+      }
+
+      if (!localizacao) continue;
+      parsed.push({ localizacao, tipo_localizacao: tipo });
+    }
+
+    // Remove duplicadas por combinação tipo+localização
+    const unique = [];
+    const seen = new Set();
+    for (const l of parsed) {
+      const key = `${String(l.tipo_localizacao)}|${String(l.localizacao).toUpperCase()}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      unique.push(l);
+    }
+    return unique;
+  };
+
+  const buildCentralBulkText = (locs = []) => {
+    return (locs || [])
+      .filter(l => (l?.localizacao || '').trim())
+      .map((l) => `${l.tipo_localizacao || 'normal'};${(l.localizacao || '').trim()}`)
+      .join('\n');
+  };
+
+  const formatLocLine = (l) => `${l.tipo_localizacao || 'normal'};${(l.localizacao || '').trim()}`;
+
+  const mapTipoToInternal = (tipoRaw) => {
+    const t = String(tipoRaw || '').trim().toUpperCase();
+    if (t === 'REC' || t === 'RECEBIMENTO') return 'recebimento';
+    if (t === 'EXP' || t === 'EXPEDICAO' || t === 'EXPEDIÇÃO') return 'expedicao';
+    if (t === 'N' || t === 'NORMAL' || t === '') return 'normal';
+    return null;
+  };
+
+  const handleImportCentralFile = async (file) => {
+    if (!file) return;
+    try {
+      setImportingLocFile(true);
+      const name = String(file.name || '').toLowerCase();
+      let records = [];
+
+      if (name.endsWith('.csv') || name.endsWith('.txt')) {
+        const text = await file.text();
+        const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+        records = lines.map((line) => {
+          const parts = line.includes(';') ? line.split(';') : line.split(',');
+          return {
+            localizacao: String(parts[0] || '').trim(),
+            tipo: String(parts[1] || '').trim()
+          };
+        });
+      } else {
+        const XLSX = await import('xlsx');
+        const buf = await file.arrayBuffer();
+        const wb = XLSX.read(buf, { type: 'array' });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const rows = XLSX.utils.sheet_to_json(ws, { defval: '' });
+        records = rows.map((r) => {
+          const localizacao = r.localizacao ?? r.LOCALIZACAO ?? r.LOCALIZAÇÃO ?? r.Localizacao ?? r.Localização ?? r.LOCATION ?? r.Location ?? '';
+          const tipo = r.tipo ?? r.TIPO ?? r.Tipo ?? r.type ?? r.TYPE ?? '';
+          return { localizacao: String(localizacao || '').trim(), tipo: String(tipo || '').trim() };
+        });
+
+        // fallback sem cabeçalho: assume col A=localizacao, col B=tipo
+        if (!records.length) {
+          const rawRows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+          records = rawRows
+            .slice(1)
+            .map((r) => ({
+              localizacao: String(r?.[0] || '').trim(),
+              tipo: String(r?.[1] || '').trim()
+            }));
+        }
+      }
+
+      const locs = [];
+      const invalid = [];
+      for (const rec of records) {
+        if (!rec.localizacao) continue;
+        const mappedTipo = mapTipoToInternal(rec.tipo);
+        if (!mappedTipo) {
+          invalid.push(rec.tipo);
+          continue;
+        }
+        locs.push({ localizacao: rec.localizacao, tipo_localizacao: mappedTipo });
+      }
+
+      const unique = [];
+      const seen = new Set();
+      for (const l of locs) {
+        const key = `${l.tipo_localizacao}|${l.localizacao.toUpperCase()}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        unique.push(l);
+      }
+
+      setCentralBulkText(buildCentralBulkText(unique));
+      setEditingLocIdx(null);
+      setEditingLocValue('');
+      setEditingLocTipo('normal');
+
+      const hasRec = unique.some(l => l.tipo_localizacao === 'recebimento');
+      const hasExp = unique.some(l => l.tipo_localizacao === 'expedicao');
+      const extra = invalid.length ? ` Tipos inválidos ignorados: ${Array.from(new Set(invalid)).slice(0, 5).join(', ')}.` : '';
+      const reqMsg = (!hasRec || !hasExp)
+        ? ' Atenção: ainda precisa ter pelo menos 1 REC e 1 EXP.'
+        : '';
+      setToast({
+        type: unique.length ? 'success' : 'error',
+        message: unique.length
+          ? `${unique.length} localização(ões) importadas com sucesso.${reqMsg}${extra}`
+          : 'Nenhuma localização válida encontrada no ficheiro.'
+      });
+    } catch (error) {
+      console.error(error);
+      setToast({ type: 'error', message: 'Erro ao importar ficheiro de localizações.' });
+    } finally {
+      setImportingLocFile(false);
+    }
+  };
+
+  const handleDownloadCentralTemplate = async () => {
+    try {
+      const XLSX = await import('xlsx');
+      const templateData = [
+        { localizacao: 'E.REC', tipo: 'REC' },
+        { localizacao: 'E.EXP01', tipo: 'EXP' },
+        { localizacao: 'E.A01', tipo: 'N' }
+      ];
+      const ws = XLSX.utils.json_to_sheet(templateData, {
+        header: ['localizacao', 'tipo']
+      });
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Template');
+      const excelBuffer = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+      const blob = new Blob([excelBuffer], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'template_localizacoes_central.xlsx';
+      a.click();
+      window.URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error(error);
+      setToast({ type: 'error', message: 'Erro ao gerar template em Excel.' });
+    }
+  };
 
   useEffect(() => {
     fetchArmazens();
@@ -55,13 +238,7 @@ const Armazens = () => {
       setToast({ type: 'error', message: 'A descrição é obrigatória (ex: BBCH06)' });
       return;
     }
-    const locsCentrais = (formData.localizacoes || [])
-      .filter(l => (l.localizacao || '').trim())
-      .map(l => {
-        const loc = (l.localizacao || '').trim();
-        const tipoLoc = (l.tipo_localizacao === 'recebimento' || l.tipo_localizacao === 'expedicao' || l.tipo_localizacao === 'FERR') ? l.tipo_localizacao : 'normal';
-        return { localizacao: loc, tipo_localizacao: tipoLoc };
-      });
+    const locsCentrais = parseCentralBulkText(centralBulkText);
     const payload = {
       codigo: formData.codigo.trim(),
       descricao: formData.descricao.trim(),
@@ -104,6 +281,7 @@ const Armazens = () => {
       }
 
       setFormData({ codigo: '', descricao: '', tipo: 'viatura', localizacoes: [] });
+      setCentralBulkText('');
       setEditandoId(null);
       setMostrarForm(false);
       fetchArmazens();
@@ -125,6 +303,7 @@ const Armazens = () => {
     }
     setEditandoId(null);
     setFormData({ codigo: '', descricao: '', tipo: 'viatura', localizacoes: [] });
+    setCentralBulkText('');
     setLoadingEdit(true);
     setMostrarForm(true);
     try {
@@ -170,6 +349,11 @@ const Armazens = () => {
         tipo,
         localizacoes: tipo === 'central' ? (locs.length > 0 ? locs : [{ localizacao: '', tipo_localizacao: 'normal' }]) : locs
       });
+      if (tipo === 'central') {
+        setCentralBulkText(buildCentralBulkText(locs));
+      } else {
+        setCentralBulkText('');
+      }
       setEditandoId(data.id);
     } catch (error) {
       console.error('Erro ao carregar armazém:', error);
@@ -182,8 +366,66 @@ const Armazens = () => {
 
   const handleCancel = () => {
     setFormData({ codigo: '', descricao: '', tipo: 'viatura', localizacoes: [] });
+    setCentralBulkText('');
+    setEditingLocIdx(null);
+    setEditingLocValue('');
+    setEditingLocTipo('normal');
     setEditandoId(null);
     setMostrarForm(false);
+  };
+
+  const parsedCentralLocs = useMemo(
+    () => parseCentralBulkText(centralBulkText),
+    [centralBulkText]
+  );
+
+  const applyLocList = (list) => {
+    setCentralBulkText((list || []).map(formatLocLine).join('\n'));
+    setEditingLocIdx(null);
+    setEditingLocValue('');
+    setEditingLocTipo('normal');
+  };
+
+  const selectLocForEdit = (idx) => {
+    const item = parsedCentralLocs[idx];
+    if (!item) return;
+    setEditingLocIdx(idx);
+    setEditingLocValue(String(item.localizacao || ''));
+    setEditingLocTipo(item.tipo_localizacao || 'normal');
+  };
+
+  const startCreateLoc = () => {
+    setEditingLocIdx(-1); // modo criação
+    setEditingLocValue('');
+    setEditingLocTipo('normal');
+  };
+
+  const saveLocEdit = () => {
+    const loc = String(editingLocValue || '').trim();
+    if (!loc) {
+      setToast({ type: 'error', message: 'A localização não pode ficar vazia.' });
+      return;
+    }
+    const tipo = editingLocTipo || 'normal';
+    const next = [...parsedCentralLocs];
+    if (editingLocIdx === -1 || editingLocIdx === null) {
+      next.push({ localizacao: loc, tipo_localizacao: tipo });
+    } else {
+      next[editingLocIdx] = { localizacao: loc, tipo_localizacao: tipo };
+    }
+    applyLocList(next);
+  };
+
+  const deleteLocEdit = async () => {
+    if (editingLocIdx === null || editingLocIdx < 0) return;
+    const ok = await confirm({
+      title: 'Apagar localização',
+      message: 'Deseja apagar a localização selecionada?',
+      variant: 'danger'
+    });
+    if (!ok) return;
+    const next = parsedCentralLocs.filter((_, idx) => idx !== editingLocIdx);
+    applyLocList(next);
   };
 
   const handleDelete = async (id) => {
@@ -222,6 +464,34 @@ const Armazens = () => {
       </div>
     );
   }
+
+  const normalize = (v) => String(v || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+
+  const armazensFiltrados = (armazens || [])
+    .filter((a) => {
+      if (tipoFiltro !== 'todos' && (a.tipo || '') !== tipoFiltro) return false;
+      const q = normalize(searchTerm.trim());
+      if (!q) return true;
+
+      const locs = a.localizacoes || (a.localizacao ? [{ localizacao: a.localizacao, tipo_localizacao: 'normal' }] : []);
+      const locTexto = locs
+        .map((l) => (typeof l === 'object' && l !== null ? l.localizacao : l))
+        .filter(Boolean)
+        .join(' ');
+      const target = normalize([a.codigo, a.descricao, a.tipo, locTexto].join(' '));
+      return target.includes(q);
+    })
+    .sort((a, b) => {
+      const ac = String(a?.codigo || '');
+      const bc = String(b?.codigo || '');
+      return ac.localeCompare(bc, 'pt', { numeric: true, sensitivity: 'base' });
+    });
+
+  const totalCentrais = (armazens || []).filter(a => a.tipo === 'central').length;
+  const totalViaturas = (armazens || []).filter(a => a.tipo === 'viatura').length;
 
   return (
     <div className="min-h-screen bg-[#F7F8FA] p-4 sm:p-6 lg:p-8">
@@ -350,58 +620,116 @@ const Armazens = () => {
                   <label className="block text-sm font-medium text-gray-700 mb-2">
                     Localizações (central) <span className="text-red-500">*</span>
                   </label>
-                  <p className="text-xs text-gray-500 mb-2">Obrigatório: pelo menos uma de Recebimento e uma ou mais de Expedição. As restantes podem ser Normal.</p>
-                  {(formData.localizacoes.length === 0 ? [{ localizacao: '', tipo_localizacao: 'normal' }] : formData.localizacoes).map((loc, idx) => (
-                    <div key={idx} className="flex gap-2 mb-2 flex-wrap items-center">
-                      <input
-                        type="text"
-                        value={loc.localizacao || ''}
-                        onChange={(e) => {
-                          const newLocs = [...(formData.localizacoes.length ? formData.localizacoes : [{ localizacao: '', tipo_localizacao: 'normal' }])];
-                          if (!newLocs[idx]) newLocs[idx] = { localizacao: '', tipo_localizacao: 'normal' };
-                          newLocs[idx] = { ...newLocs[idx], localizacao: e.target.value };
-                          setFormData(prev => ({ ...prev, localizacoes: newLocs }));
-                        }}
-                        className="flex-1 min-w-[120px] px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0915FF] focus:border-transparent"
-                        placeholder="Ex: E, EXPEDICAO, Prateleira A..."
-                      />
-                      <select
-                        value={loc.tipo_localizacao || 'normal'}
-                        onChange={(e) => {
-                          const newLocs = [...(formData.localizacoes.length ? formData.localizacoes : [{ localizacao: '', tipo_localizacao: 'normal' }])];
-                          if (!newLocs[idx]) newLocs[idx] = { localizacao: '', tipo_localizacao: 'normal' };
-                          newLocs[idx] = { ...newLocs[idx], tipo_localizacao: e.target.value };
-                          setFormData(prev => ({ ...prev, localizacoes: newLocs }));
-                        }}
-                        className="w-36 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0915FF]"
-                      >
-                        <option value="recebimento">Recebimento</option>
-                        <option value="expedicao">Expedição</option>
-                        <option value="normal">Normal</option>
-                      </select>
+                  <p className="text-xs text-gray-500 mb-2">
+                    Obrigatório: pelo menos uma de Recebimento e uma ou mais de Expedição.
+                  </p>
+                  <div className="space-y-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <label className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-gray-300 bg-white hover:bg-gray-50 cursor-pointer text-sm">
+                        <span>{importingLocFile ? 'Importando...' : 'Importar ficheiro (CSV/XLSX)'}</span>
+                        <input
+                          type="file"
+                          accept=".csv,.txt,.xlsx,.xls"
+                          className="hidden"
+                          disabled={importingLocFile}
+                          onChange={async (e) => {
+                            const f = e.target.files?.[0];
+                            if (f) await handleImportCentralFile(f);
+                            e.target.value = '';
+                          }}
+                        />
+                      </label>
                       <button
                         type="button"
-                        onClick={() => setFormData(prev => ({
-                          ...prev,
-                          localizacoes: prev.localizacoes.filter((_, i) => i !== idx)
-                        }))}
-                        className="p-2 text-red-600 hover:bg-red-50 rounded-lg"
-                        title="Remover"
+                        onClick={handleDownloadCentralTemplate}
+                        className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-[#0915FF] text-[#0915FF] bg-white hover:bg-[#0915FF]/5 text-sm"
                       >
-                        <FaTrash />
+                        Baixar template
                       </button>
+                      <span className="text-xs text-gray-500">
+                        Colunas esperadas: <strong>localizacao</strong> e <strong>tipo</strong> (N, EXP, REC)
+                      </span>
                     </div>
-                  ))}
-                  <button
-                    type="button"
-                    onClick={() => setFormData(prev => ({
-                      ...prev,
-                      localizacoes: [...(prev.localizacoes.length ? prev.localizacoes : [{ localizacao: '', tipo_localizacao: 'normal' }]), { localizacao: '', tipo_localizacao: 'normal' }]
-                    }))}
-                    className="flex items-center gap-2 text-[#0915FF] hover:underline text-sm mt-2"
-                  >
-                    <FaPlus /> Adicionar localização
-                  </button>
+                    <div className="text-xs text-gray-600">
+                      {parsedCentralLocs.length} localização(ões) válidas detectadas.
+                    </div>
+                    <div className="mt-2 grid grid-cols-1 lg:grid-cols-3 gap-3">
+                      <div className="lg:col-span-2">
+                        <div className="rounded-lg border border-gray-200 bg-white">
+                          <div className="px-3 py-2 text-xs text-gray-600 border-b border-gray-100">
+                            Lista de localizações
+                          </div>
+                          <div className="max-h-64 overflow-auto">
+                            {parsedCentralLocs.length === 0 ? (
+                              <div className="px-3 py-3 text-sm text-gray-500">Sem localizações para mostrar.</div>
+                            ) : (
+                              <ul className="divide-y divide-gray-100">
+                                {parsedCentralLocs.map((loc, idx) => {
+                                  const selected = editingLocIdx === idx;
+                                  return (
+                                    <li
+                                      key={`${idx}-${loc.tipo_localizacao}-${loc.localizacao}`}
+                                      onClick={() => selectLocForEdit(idx)}
+                                      className={`px-3 py-2 text-sm cursor-pointer ${selected ? 'bg-blue-50' : 'hover:bg-gray-50'}`}
+                                      title="Clique para editar"
+                                    >
+                                      <span className="font-mono">{loc.localizacao}</span>
+                                      <span className="ml-2 text-xs text-gray-500 uppercase">({loc.tipo_localizacao})</span>
+                                    </li>
+                                  );
+                                })}
+                              </ul>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="space-y-2">
+                        <button
+                          type="button"
+                          onClick={startCreateLoc}
+                          className="w-full px-3 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50"
+                        >
+                          Nova localização
+                        </button>
+                        <input
+                          type="text"
+                          value={editingLocValue}
+                          onChange={(e) => setEditingLocValue(e.target.value)}
+                          placeholder="LOCALIZACAO"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0915FF] focus:border-transparent"
+                          disabled={editingLocIdx === null}
+                        />
+                        <select
+                          value={editingLocTipo}
+                          onChange={(e) => setEditingLocTipo(e.target.value)}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0915FF]"
+                          disabled={editingLocIdx === null}
+                        >
+                          <option value="normal">Normal</option>
+                          <option value="expedicao">Expedição</option>
+                          <option value="recebimento">Recebimento</option>
+                        </select>
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            onClick={saveLocEdit}
+                            disabled={editingLocIdx === null}
+                            className="flex-1 px-3 py-2 rounded-lg bg-[#0915FF] text-white hover:bg-[#070FCC] disabled:opacity-50"
+                          >
+                            Gravar
+                          </button>
+                          <button
+                            type="button"
+                            onClick={deleteLocEdit}
+                            disabled={editingLocIdx === null || editingLocIdx === -1}
+                            className="px-3 py-2 rounded-lg border border-red-300 text-red-600 hover:bg-red-50 disabled:opacity-50"
+                          >
+                            Apagar
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
                 </div>
               )}
               <div className="flex gap-3">
@@ -436,11 +764,68 @@ const Armazens = () => {
           </div>
         )}
 
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
+          <button
+            type="button"
+            onClick={() => setTipoFiltro('todos')}
+            className={`text-left rounded-xl border p-5 shadow-sm transition-all ${
+              tipoFiltro === 'todos'
+                ? 'bg-[#0915FF]/10 border-[#0915FF] text-[#0915FF]'
+                : 'bg-white border-gray-200 text-gray-800 hover:shadow-md'
+            }`}
+          >
+            <div className="text-sm font-semibold opacity-90">Todos</div>
+            <div className="mt-2 text-3xl font-bold">{armazens.length}</div>
+          </button>
+          <button
+            type="button"
+            onClick={() => setTipoFiltro('central')}
+            className={`text-left rounded-xl border p-5 shadow-sm transition-all ${
+              tipoFiltro === 'central'
+                ? 'bg-blue-50 border-blue-300 text-blue-800'
+                : 'bg-white border-gray-200 text-gray-800 hover:shadow-md'
+            }`}
+          >
+            <div className="text-sm font-semibold opacity-90">Armazéns Centrais</div>
+            <div className="mt-2 text-3xl font-bold">{totalCentrais}</div>
+          </button>
+          <button
+            type="button"
+            onClick={() => setTipoFiltro('viatura')}
+            className={`text-left rounded-xl border p-5 shadow-sm transition-all ${
+              tipoFiltro === 'viatura'
+                ? 'bg-amber-50 border-amber-300 text-amber-800'
+                : 'bg-white border-gray-200 text-gray-800 hover:shadow-md'
+            }`}
+          >
+            <div className="text-sm font-semibold opacity-90">Viaturas</div>
+            <div className="mt-2 text-3xl font-bold">{totalViaturas}</div>
+          </button>
+        </div>
+
         <div className="bg-white rounded-lg shadow-sm overflow-hidden">
-          {armazens.length === 0 ? (
+          <div className="p-4 border-b border-gray-100 bg-gray-50">
+            <div className="flex flex-col lg:flex-row gap-3 lg:items-center lg:justify-between">
+              <div className="relative w-full lg:max-w-xl">
+                <FaSearch className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                <input
+                  type="text"
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  placeholder="Buscar por código, descrição, tipo ou localização..."
+                  className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0915FF] focus:border-transparent"
+                />
+              </div>
+            </div>
+            <div className="mt-2 text-xs text-gray-600">
+              {armazensFiltrados.length} armazém(ns) encontrado(s)
+            </div>
+          </div>
+
+          {armazensFiltrados.length === 0 ? (
             <div className="p-8 text-center text-gray-500">
               <FaWarehouse className="mx-auto text-4xl text-gray-300 mb-4" />
-              <p className="text-lg">Nenhum armazém cadastrado</p>
+              <p className="text-lg">Nenhum armazém encontrado</p>
               {canManageArmazens && (
                 <button
                   type="button"
@@ -453,18 +838,18 @@ const Armazens = () => {
             </div>
           ) : (
             <ul className="divide-y divide-gray-200">
-              {armazens.map((armazem) => {
+              {armazensFiltrados.map((armazem) => {
                 const locs = armazem.localizacoes || (armazem.localizacao ? [{ localizacao: armazem.localizacao, tipo_localizacao: 'normal' }] : []);
                 const numLocs = locs.length;
-                const isExpanded = expandedId === armazem.id;
+                const locPreview = locs
+                  .map((l) => (typeof l === 'object' && l !== null && l.localizacao != null ? l.localizacao : (typeof l === 'string' ? l : '')))
+                  .filter(Boolean)
+                  .slice(0, 3)
+                  .join(' | ');
                 return (
-                  <li key={armazem.id} className="p-4 sm:p-6 hover:bg-gray-50 flex flex-col gap-2">
+                  <li key={armazem.id} className="p-4 sm:p-5 hover:bg-gray-50 flex flex-col gap-2">
                     <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-                      <button
-                        type="button"
-                        onClick={() => setExpandedId(isExpanded ? null : armazem.id)}
-                        className="flex-1 text-left flex items-center gap-2 flex-wrap"
-                      >
+                      <div className="flex-1 text-left flex items-center gap-2 flex-wrap">
                         <FaWarehouse className="text-[#0915FF]" />
                         <span className="font-semibold text-gray-900">
                           {armazem.codigo ? `${armazem.codigo} - ${armazem.descricao}` : armazem.descricao}
@@ -477,13 +862,7 @@ const Armazens = () => {
                         {armazem.ativo === false && (
                           <span className="px-2 py-0.5 text-xs bg-gray-200 text-gray-600 rounded">Inativo</span>
                         )}
-                        {numLocs > 0 && (
-                          <span className="inline-flex items-center gap-1 text-xs text-gray-500">
-                            {isExpanded ? <FaChevronUp /> : <FaChevronDown />}
-                            {numLocs} localização(ões) — {isExpanded ? 'recolher' : 'ver'}
-                          </span>
-                        )}
-                      </button>
+                      </div>
                       {canManageArmazens && (
                         <div className="flex gap-2" onClick={(e) => e.stopPropagation()}>
                           <button
@@ -505,19 +884,10 @@ const Armazens = () => {
                         </div>
                       )}
                     </div>
-                    {numLocs > 0 && isExpanded && (
-                      <div className="pl-8 pt-2 pb-1 flex flex-wrap gap-1 border-t border-gray-100">
-                        {locs.map((l, i) => (
-                          <span key={i} className="inline-flex items-center gap-1 px-2 py-1 bg-gray-100 text-gray-600 rounded text-xs">
-                            <FaMapMarkerAlt />
-                            {typeof l === 'object' && l !== null && l.localizacao != null ? l.localizacao : (typeof l === 'string' ? l : '')}
-                            {typeof l === 'object' && l !== null && l.tipo_localizacao && l.tipo_localizacao !== 'normal' && (
-                              <span className="text-gray-500">({l.tipo_localizacao})</span>
-                            )}
-                          </span>
-                        ))}
-                      </div>
-                    )}
+                    <div className="text-xs text-gray-600 border-t border-gray-100 pt-2">
+                      <strong>{numLocs}</strong> localização(ões)
+                      {locPreview ? ` - ${locPreview}${numLocs > 3 ? ' ...' : ''}` : ''}
+                    </div>
                   </li>
                 );
               })}

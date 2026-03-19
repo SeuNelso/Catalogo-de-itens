@@ -1,11 +1,13 @@
 import React, { useEffect } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate, useNavigationType } from 'react-router-dom';
 import { Database, Search, Shield } from 'react-feather';
 import { useAuth } from '../contexts/AuthContext';
 
 
 const Home = () => {
   const { isAuthenticated, loading } = useAuth();
+  const navigate = useNavigate();
+  const navigationType = useNavigationType();
   // const [isMobile, setIsMobile] = useState(window.innerWidth <= 600);
 
   useEffect(() => {
@@ -16,6 +18,17 @@ const Home = () => {
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
   }, []);
+
+  useEffect(() => {
+    if (loading || !isAuthenticated) return;
+    // Se chegou à Home pelo botão "voltar", retorna para a última rota útil.
+    if (navigationType === 'POP') {
+      const lastRoute = sessionStorage.getItem('lastRoute');
+      if (lastRoute && lastRoute !== '/' && lastRoute !== '/login') {
+        navigate(lastRoute, { replace: true });
+      }
+    }
+  }, [isAuthenticated, loading, navigate, navigationType]);
 
   return (
     <div className="min-h-screen bg-[#f5f6fa] flex items-center justify-center px-2 sm:px-4">

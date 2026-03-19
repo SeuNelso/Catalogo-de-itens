@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef, useLayoutEffect } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useConfirm } from '../contexts/ConfirmContext';
 import Toast from '../components/Toast';
-import { FaSearch, FaPlus, FaEdit, FaTrash, FaFilter, FaBoxOpen, FaChevronDown, FaChevronUp, FaCheck, FaFileImport } from 'react-icons/fa';
+import { FaSearch, FaPlus, FaEdit, FaTrash, FaBoxOpen, FaCheck, FaFileImport } from 'react-icons/fa';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
@@ -13,19 +13,18 @@ const ListarRequisicoes = () => {
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [filtros, setFiltros] = useState({
-    status: '',
-    armazem_id: ''
+    status: ''
   });
-  const [armazens, setArmazens] = useState([]);
-  const [mostrarFiltros, setMostrarFiltros] = useState(false);
-  const [expandedId, setExpandedId] = useState(null);
   const [selectedIds, setSelectedIds] = useState([]);
   const [selectionMode, setSelectionMode] = useState(false);
+  const [showStatusBoard, setShowStatusBoard] = useState(true);
   const [contextMenu, setContextMenu] = useState({ visible: false, x: 0, y: 0, req: null });
   const contextMenuRef = useRef(null);
+  const latestFetchIdRef = useRef(0);
   const [reporteModal, setReporteModal] = useState({
     open: false,
     title: '',
+    kind: 'reporte', // 'reporte' | 'clog'
     mode: 'single', // 'single' | 'multi'
     reqId: null,
     ids: [],
@@ -34,6 +33,7 @@ const ListarRequisicoes = () => {
   });
   const [reporteLoading, setReporteLoading] = useState(false);
   const navigate = useNavigate();
+  const location = useLocation();
   const { user } = useAuth();
   const confirm = useConfirm();
   const canCreateOrEdit = user && ['admin', 'controller', 'backoffice_operations', 'backoffice_armazem'].includes(user.role);
@@ -41,14 +41,25 @@ const ListarRequisicoes = () => {
   const canPrepare = user && ['admin', 'controller', 'operador', 'backoffice_armazem'].includes(user.role);
 
   useEffect(() => {
-    fetchArmazens();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  useEffect(() => {
     fetchRequisicoes();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filtros]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search || '');
+    const statusParam = params.get('status') || '';
+    const temFiltroNaUrl = Boolean(statusParam);
+
+    setFiltros(prev => {
+      if (prev.status === statusParam) return prev;
+      return {
+        ...prev,
+        status: statusParam
+      };
+    });
+    setShowStatusBoard(!temFiltroNaUrl);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.search]);
 
   useEffect(() => {
     const handleClickOutside = (event) => {
@@ -84,29 +95,14 @@ const ListarRequisicoes = () => {
     }
   }, [contextMenu.visible, contextMenu.x, contextMenu.y]);
 
-  const fetchArmazens = async () => {
-    try {
-      const token = localStorage.getItem('token');
-      const response = await fetch('/api/armazens?ativo=true', {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      if (response.ok) {
-        const data = await response.json();
-        setArmazens(data);
-      }
-    } catch (error) {
-      console.error('Erro ao buscar armazéns:', error);
-    }
-  };
-
   const fetchRequisicoes = async () => {
+    const fetchId = ++latestFetchIdRef.current;
     try {
       setLoading(true);
       const token = localStorage.getItem('token');
       
       const params = new URLSearchParams();
       if (filtros.status) params.append('status', filtros.status);
-      if (filtros.armazem_id) params.append('armazem_id', filtros.armazem_id);
 
       const response = await fetch(`/api/requisicoes?${params.toString()}`, {
         headers: {
@@ -116,7 +112,10 @@ const ListarRequisicoes = () => {
 
       if (response.ok) {
         const data = await response.json();
-        setRequisicoes(data);
+        // Evita sobrescrever estado com resposta antiga (race condition de filtros).
+        if (fetchId === latestFetchIdRef.current) {
+          setRequisicoes(data);
+        }
         return data;
       } else {
         setToast({ type: 'error', message: 'Erro ao carregar requisições' });
@@ -127,7 +126,9 @@ const ListarRequisicoes = () => {
       setToast({ type: 'error', message: 'Erro ao carregar requisições' });
       return null;
     } finally {
-      setLoading(false);
+      if (fetchId === latestFetchIdRef.current) {
+        setLoading(false);
+      }
     }
   };
 
@@ -522,6 +523,21 @@ const ListarRequisicoes = () => {
         `TRA_requisicao_${reqId}_${new Date().toISOString().slice(0, 10)}.xlsx`,
         isRedownload ? 'TRA baixada novamente.' : 'TRA gerada com sucesso.'
       );
+
+      if (!isRedownload) {
+        const okClog = await confirm({
+          title: 'Clog',
+          message: 'Deseja gerar o ficheiro Clog (saída de armazém) após gerar a TRA?',
+          confirmLabel: 'Gerar Clog'
+        });
+        if (okClog) {
+          await downloadExport(
+            `/api/requisicoes/${reqId}/export-clog`,
+            `CLOG_requisicao_${reqId}_${new Date().toISOString().slice(0, 10)}.xlsx`,
+            'Clog gerado com sucesso.'
+          );
+        }
+      }
       await fetchRequisicoes();
     } catch (error) {
       console.error('Erro ao exportar TRA:', error);
@@ -550,6 +566,7 @@ const ListarRequisicoes = () => {
       setReporteModal({
         open: true,
         title: `Reporte (Requisição #${reqId})`,
+        kind: 'reporte',
         mode: 'single',
         reqId,
         ids: [reqId],
@@ -797,6 +814,37 @@ const ListarRequisicoes = () => {
       a.download = `TRA_multi_${new Date().toISOString().slice(0, 10)}.xlsx`;
       a.click();
       window.URL.revokeObjectURL(url);
+
+      if (!isRedownload) {
+        const okClog = await confirm({
+          title: 'Clog',
+          message: `Deseja gerar o ficheiro Clog (saída de armazém) para ${ids.length} requisição(ões) após gerar a TRA?`,
+          confirmLabel: 'Gerar Clog'
+        });
+        if (okClog) {
+          const token = localStorage.getItem('token');
+          const resClog = await fetch('/api/requisicoes/export-clog-multi', {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${token}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ ids })
+          });
+          if (!resClog.ok) {
+            const data = await resClog.json().catch(() => ({}));
+            throw new Error(data.error || 'Erro ao exportar Clog multi');
+          }
+          const blobClog = await resClog.blob();
+          const urlClog = window.URL.createObjectURL(blobClog);
+          const a2 = document.createElement('a');
+          a2.href = urlClog;
+          a2.download = `CLOG_multi_${new Date().toISOString().slice(0, 10)}.xlsx`;
+          a2.click();
+          window.URL.revokeObjectURL(urlClog);
+          setToast({ type: 'success', message: 'Clog gerado com sucesso.' });
+        }
+      }
       await fetchRequisicoes();
     } catch (error) {
       console.error('Erro ao exportar TRA combinado:', error);
@@ -829,6 +877,7 @@ const ListarRequisicoes = () => {
       setReporteModal({
         open: true,
         title: `Reporte (Multi: ${ids.length} requisição(ões))`,
+        kind: 'reporte',
         mode: 'multi',
         reqId: null,
         ids,
@@ -837,6 +886,79 @@ const ListarRequisicoes = () => {
       });
     } catch (error) {
       setToast({ type: 'error', message: error.message || 'Erro ao preparar reporte' });
+    } finally {
+      setReporteLoading(false);
+    }
+  };
+
+  const handleExportClog = async (req) => {
+    const reqId = req?.id;
+    if (!reqId) {
+      setToast({ type: 'error', message: 'Requisição inválida' });
+      return;
+    }
+    try {
+      setReporteLoading(true);
+      const token = localStorage.getItem('token');
+      const response = await fetch(`/api/requisicoes/${reqId}/clog-dados`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || 'Erro ao obter dados do Clog');
+      }
+      const data = await response.json();
+      setReporteModal({
+        open: true,
+        title: `Clog (Requisição #${reqId})`,
+        kind: 'clog',
+        mode: 'single',
+        reqId,
+        ids: [reqId],
+        columns: data.columns || [],
+        rows: data.rows || []
+      });
+    } catch (error) {
+      setToast({ type: 'error', message: error.message || 'Erro ao preparar Clog' });
+    } finally {
+      setReporteLoading(false);
+    }
+  };
+
+  const handleExportMultiClog = async (idsArg) => {
+    const ids = Array.from(new Set(idsArg || selectedIds)).map(x => parseInt(x, 10)).filter(Boolean);
+    if (ids.length < 2) {
+      setToast({ type: 'error', message: 'Selecione pelo menos 2 requisições para o Clog combinado.' });
+      return;
+    }
+    try {
+      setReporteLoading(true);
+      const token = localStorage.getItem('token');
+      const response = await fetch('/api/requisicoes/clog-dados-multi', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ ids })
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || 'Erro ao obter dados do Clog combinado');
+      }
+      const data = await response.json();
+      setReporteModal({
+        open: true,
+        title: `Clog (Multi: ${ids.length} requisição(ões))`,
+        kind: 'clog',
+        mode: 'multi',
+        reqId: null,
+        ids,
+        columns: data.columns || [],
+        rows: data.rows || []
+      });
+    } catch (error) {
+      setToast({ type: 'error', message: error.message || 'Erro ao preparar Clog' });
     } finally {
       setReporteLoading(false);
     }
@@ -858,9 +980,10 @@ const ListarRequisicoes = () => {
         return;
       }
 
+      const isClog = reporteModal.kind === 'clog';
       const headerLine = columns.join('\t');
       const bodyLines = reporteModal.rows.map(r => columns.map(c => (r?.[c] ?? '').toString().replace(/\r?\n/g, ' ')).join('\t'));
-      const tsv = [headerLine, ...bodyLines].join('\n');
+      const tsv = isClog ? bodyLines.join('\n') : [headerLine, ...bodyLines].join('\n');
 
       const escapeHtml = (val) => String(val ?? '')
         .replace(/&/g, '&amp;')
@@ -869,22 +992,29 @@ const ListarRequisicoes = () => {
         .replace(/"/g, '&quot;')
         .replace(/'/g, '&#039;');
 
-      const htmlTable = `
-        <table style="border-collapse:collapse; font-family: Calibri, Arial, sans-serif; font-size: 11pt;">
+      const htmlHeader = isClog
+        ? ''
+        : `
           <thead>
             <tr>
               ${columns.map((c) => `<th style="border:1px solid #000; padding:4px 6px; background:#f2f2f2; font-weight:bold; text-align:center; white-space:nowrap;">${escapeHtml(c)}</th>`).join('')}
             </tr>
           </thead>
+        `;
+      const htmlTable = `
+        <table style="border-collapse:collapse; font-family: Calibri, Arial, sans-serif; font-size: 11pt;">
+          ${htmlHeader}
           <tbody>
             ${reporteModal.rows.map((r) => {
-              const isSep = String(r?.Artigo ?? '').startsWith('--- Requisição #');
+              const isSepReporte = String(r?.Artigo ?? '').startsWith('--- Requisição #');
+              const isSepClog = String(r?.['REF.'] ?? '').startsWith('--- Requisição #');
+              const isSep = isSepReporte || isSepClog;
               const trStyle = isSep ? 'background:#f2f2f2; font-weight:bold;' : '';
               return `
                 <tr style="${trStyle}">
                   ${columns.map((c) => {
                     const v = r?.[c] ?? '';
-                    const align = c === 'Descrição' || c === 'Observações' ? 'left' : 'center';
+                    const align = c === 'Descrição' || c === 'DESCRIPTION' || c === 'Observações' ? 'left' : 'center';
                     return `<td style="border:1px solid #000; padding:4px 6px; text-align:${align}; vertical-align:top;">${escapeHtml(v)}</td>`;
                   }).join('')}
                 </tr>
@@ -917,7 +1047,12 @@ const ListarRequisicoes = () => {
         document.body.removeChild(textarea);
       }
 
-      setToast({ type: 'success', message: 'Tabela do reporte copiada (para colar no Outlook).' });
+      setToast({
+        type: 'success',
+        message: reporteModal.kind === 'clog'
+          ? 'Tabela do Clog copiada (para colar no Outlook).'
+          : 'Tabela do reporte copiada (para colar no Outlook).'
+      });
     } catch (error) {
       console.error(error);
       setToast({ type: 'error', message: error.message || 'Erro ao copiar tabela' });
@@ -927,17 +1062,18 @@ const ListarRequisicoes = () => {
   const downloadReporteXlsx = async () => {
     try {
       const dateStr = new Date().toISOString().slice(0, 10);
+      const isClog = reporteModal.kind === 'clog';
       if (reporteModal.mode === 'single') {
         const reqId = reporteModal.reqId;
         await downloadExport(
-          `/api/requisicoes/${reqId}/export-reporte`,
-          `REPORTE_requisicao_${reqId}_${dateStr}.xlsx`,
-          'Ficheiro de reporte gerado com sucesso.'
+          isClog ? `/api/requisicoes/${reqId}/export-clog` : `/api/requisicoes/${reqId}/export-reporte`,
+          isClog ? `CLOG_requisicao_${reqId}_${dateStr}.xlsx` : `REPORTE_requisicao_${reqId}_${dateStr}.xlsx`,
+          isClog ? 'Ficheiro Clog gerado com sucesso.' : 'Ficheiro de reporte gerado com sucesso.'
         );
       } else {
         const ids = Array.isArray(reporteModal.ids) ? reporteModal.ids : [];
         const token = localStorage.getItem('token');
-        const res = await fetch('/api/requisicoes/export-reporte-multi', {
+        const res = await fetch(isClog ? '/api/requisicoes/export-clog-multi' : '/api/requisicoes/export-reporte-multi', {
           method: 'POST',
           headers: {
             'Authorization': `Bearer ${token}`,
@@ -953,13 +1089,13 @@ const ListarRequisicoes = () => {
         const url = window.URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `REPORTE_multi_${dateStr}.xlsx`;
+        a.download = isClog ? `CLOG_multi_${dateStr}.xlsx` : `REPORTE_multi_${dateStr}.xlsx`;
         a.click();
         window.URL.revokeObjectURL(url);
       }
       closeReporteModal();
     } catch (error) {
-      setToast({ type: 'error', message: error.message || 'Erro ao baixar ficheiro de reporte' });
+      setToast({ type: 'error', message: error.message || 'Erro ao baixar ficheiro' });
     }
   };
 
@@ -1010,17 +1146,89 @@ const ListarRequisicoes = () => {
     return labels[status] || status;
   };
 
+  const canDeleteRequisicao = (reqObj) => {
+    if (!canDelete) return false;
+    const status = String(reqObj?.status || '');
+    const precisaAdmin = ['separado', 'EM EXPEDICAO', 'Entregue'].includes(status);
+    return !precisaAdmin || user?.role === 'admin';
+  };
+
+  const normalize = (v) => String(v || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+
   const filteredRequisicoes = requisicoes.filter(req => {
-    const searchLower = searchTerm.toLowerCase();
-    return (
-      req.armazem_descricao?.toLowerCase().includes(searchLower) ||
-      req.usuario_nome?.toLowerCase().includes(searchLower) ||
-      req.itens?.some(item => 
-        item.item_codigo?.toLowerCase().includes(searchLower) ||
-        item.item_descricao?.toLowerCase().includes(searchLower)
-      )
-    );
+    const raw = String(searchTerm || '').trim();
+    if (!raw) return true;
+    const searchLower = normalize(raw);
+    const searchFlat = searchLower.replace(/[^a-z0-9]/g, '');
+
+    const data = req.created_at ? new Date(req.created_at) : null;
+    const dataBr = data && !Number.isNaN(data.getTime())
+      ? `${String(data.getDate()).padStart(2, '0')}/${String(data.getMonth() + 1).padStart(2, '0')}/${data.getFullYear()}`
+      : '';
+    const dataIso = data && !Number.isNaN(data.getTime())
+      ? data.toISOString().slice(0, 10)
+      : '';
+
+    const baseCampos = [
+      req.id,
+      req.status,
+      req.armazem_descricao,
+      req.armazem_origem_descricao,
+      req.usuario_nome,
+      req.observacoes,
+      dataBr,
+      dataIso
+    ];
+
+    // Extrai tokens de equipa/viatura para permitir buscas como "grd02"
+    const equipeTokens = [];
+    for (const campo of [req.armazem_descricao, req.armazem_origem_descricao]) {
+      const txt = normalize(campo);
+      if (!txt) continue;
+      const partes = txt.split(/[\s-]+/).filter(Boolean);
+      for (const p of partes) {
+        equipeTokens.push(p);
+        const sub = p.split('_');
+        if (sub.length > 1) equipeTokens.push(sub[sub.length - 1]); // ex: con_grd02 -> grd02
+      }
+    }
+
+    const itensTextos = (req.itens || []).flatMap(item => [item.item_codigo, item.item_descricao]);
+    const campos = [...baseCampos, ...equipeTokens, ...itensTextos];
+
+    return campos.some((campo) => {
+      const n = normalize(campo);
+      if (!n) return false;
+      if (n.includes(searchLower)) return true;
+      const nFlat = n.replace(/[^a-z0-9]/g, '');
+      return Boolean(searchFlat) && nFlat.includes(searchFlat);
+    });
   });
+
+  const requisicoesOrdenadas = [...filteredRequisicoes].sort((a, b) => {
+    if (filtros.status) {
+      // FIFO por status: mais antigas primeiro.
+      return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+    }
+    return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+  });
+
+  const statusCards = [
+    { key: 'pendente', label: 'Pendentes', color: 'bg-yellow-50 border-yellow-200 text-yellow-800' },
+    { key: 'separado', label: 'Separadas', color: 'bg-green-50 border-green-200 text-green-800' },
+    { key: 'EM EXPEDICAO', label: 'Em expedição', color: 'bg-blue-50 border-blue-200 text-blue-800' },
+    { key: 'Entregue', label: 'Entregues', color: 'bg-emerald-50 border-emerald-200 text-emerald-800' },
+    { key: 'FINALIZADO', label: 'Finalizadas', color: 'bg-slate-50 border-slate-300 text-slate-800' },
+    { key: 'cancelada', label: 'Canceladas', color: 'bg-red-50 border-red-200 text-red-800' }
+  ];
+  const countsByStatus = requisicoes.reduce((acc, r) => {
+    const s = r.status || 'pendente';
+    acc[s] = (acc[s] || 0) + 1;
+    return acc;
+  }, {});
 
   if (loading) {
     return (
@@ -1040,7 +1248,11 @@ const ListarRequisicoes = () => {
         <div className="mb-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
           <div>
             <h1 className="text-2xl sm:text-3xl font-bold text-gray-800 mb-2">Requisições</h1>
-            <p className="text-gray-600">Lista de requisições. Clique em uma para preparar e atender os itens.</p>
+            <p className="text-gray-600">
+              {showStatusBoard
+                ? 'Selecione um status para abrir a lista e gerir por FIFO.'
+                : `Lista de requisições${filtros.status ? ` (${getStatusLabel(filtros.status)})` : ''}.`}
+            </p>
           </div>
           {canCreateOrEdit && (
             <div className="flex flex-wrap gap-2 justify-end">
@@ -1090,6 +1302,33 @@ const ListarRequisicoes = () => {
           )}
         </div>
 
+        {showStatusBoard && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
+            {statusCards.map((card) => {
+              const qty = countsByStatus[card.key] || 0;
+              return (
+                <button
+                  key={card.key}
+                  type="button"
+                  onClick={() => {
+                    const params = new URLSearchParams();
+                    params.set('status', card.key);
+                    navigate(`/requisicoes?${params.toString()}`);
+                    setSelectionMode(false);
+                    setSelectedIds([]);
+                  }}
+                  className={`text-left rounded-xl border p-5 shadow-sm hover:shadow-md transition-all ${card.color}`}
+                >
+                  <div className="text-sm font-semibold opacity-90">{card.label}</div>
+                  <div className="mt-2 text-3xl font-bold">{qty}</div>
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+        {!showStatusBoard && (
+          <>
         {/* Filtros e Busca */}
         <div className="bg-white rounded-lg shadow-sm p-4 mb-6">
           <div className="flex flex-col sm:flex-row gap-4">
@@ -1098,62 +1337,30 @@ const ListarRequisicoes = () => {
               <FaSearch className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
               <input
                 type="text"
-                placeholder="Buscar por armazém, item ou usuário..."
+                placeholder="Buscar por data, viatura/equipa, item, usuário..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
                 className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0915FF] focus:border-transparent"
               />
             </div>
 
-            {/* Botão Filtros */}
             <button
-              onClick={() => setMostrarFiltros(!mostrarFiltros)}
-              className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 flex items-center gap-2"
+              type="button"
+              onClick={() => {
+                navigate('/requisicoes');
+                setSearchTerm('');
+                setSelectionMode(false);
+                setSelectedIds([]);
+              }}
+              className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50"
             >
-              <FaFilter /> Filtros
+              Voltar aos status
             </button>
           </div>
-
-          {/* Painel de Filtros */}
-          {mostrarFiltros && (
-            <div className="mt-4 pt-4 border-t border-gray-200 grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Status</label>
-                <select
-                  value={filtros.status}
-                  onChange={(e) => setFiltros({ ...filtros, status: e.target.value })}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0915FF]"
-                >
-                  <option value="">Todos</option>
-                  <option value="pendente">Pendente</option>
-                  <option value="separado">Separado</option>
-                  <option value="EM EXPEDICAO">Em expedição</option>
-                  <option value="Entregue">Entregue</option>
-                  <option value="cancelada">Cancelada</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Armazém</label>
-                <select
-                  value={filtros.armazem_id}
-                  onChange={(e) => setFiltros({ ...filtros, armazem_id: e.target.value })}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0915FF]"
-                >
-                  <option value="">Todos</option>
-                  {armazens.map((armazem) => (
-                    <option key={armazem.id} value={armazem.id}>
-                      {armazem.codigo ? `${armazem.codigo} - ${armazem.descricao}` : armazem.descricao}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-          )}
         </div>
 
         {/* Lista de Requisições */}
-        {filteredRequisicoes.length === 0 ? (
+        {requisicoesOrdenadas.length === 0 ? (
           <div className="bg-white rounded-lg shadow-sm p-8 text-center">
             <p className="text-gray-500 text-lg">Nenhuma requisição encontrada</p>
             {canCreateOrEdit && (
@@ -1167,10 +1374,15 @@ const ListarRequisicoes = () => {
           </div>
         ) : (
           <div className="space-y-4">
-            {filteredRequisicoes.map((req) => (
+            {filtros.status && (
+              <div className="text-xs text-gray-600 px-1">
+                FIFO ativo: listagem da mais antiga para a mais nova.
+              </div>
+            )}
+            {requisicoesOrdenadas.map((req, idx) => (
               <div
                 key={req.id}
-                className={`relative overflow-hidden rounded-lg border transition-all ${
+                className={`relative overflow-hidden rounded-lg border transition-all duration-200 hover:-translate-y-0.5 hover:shadow-lg ${
                   selectedIds.includes(req.id)
                     ? 'border-blue-500 bg-blue-50 shadow-md'
                     : req.status === 'FINALIZADO'
@@ -1179,6 +1391,11 @@ const ListarRequisicoes = () => {
                 }`}
                 onContextMenu={(e) => handleContextMenu(e, req)}
               >
+                {filtros.status && (
+                  <span className="absolute left-3 top-3 px-2 py-0.5 text-[10px] rounded-full bg-indigo-100 text-indigo-700 font-semibold">
+                    FIFO #{idx + 1}
+                  </span>
+                )}
                 {(selectionMode || selectedIds.length > 0) && (
                   <input
                     type="checkbox"
@@ -1190,23 +1407,20 @@ const ListarRequisicoes = () => {
                     }}
                   />
                 )}
-                {/* Header da Requisição — clicável para expandir/recolher itens ou selecionar em modo seleção */}
+                {/* Header da Requisição — clicável para selecionar em modo seleção */}
                 <div
                   onClick={() => {
                     if (selectionMode || selectedIds.length > 0) {
                       const isSelected = selectedIds.includes(req.id);
                       handleToggleSelect(req.id, !isSelected);
                     } else {
-                      setExpandedId(prev => prev === req.id ? null : req.id);
+                      navigate(`/requisicoes/preparar/${req.id}`);
                     }
                   }}
                   className="p-6 cursor-pointer hover:bg-gray-50/50 transition-colors"
                 >
                   <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between">
-                    <div className="flex-1 flex items-start gap-3">
-                      <span className="text-gray-400 mt-0.5">
-                        {expandedId === req.id ? <FaChevronUp /> : <FaChevronDown />}
-                      </span>
+                    <div className="flex-1">
                       <div>
                         <div className="flex items-center gap-3 mb-2 flex-wrap">
                           <span className="text-lg font-bold text-gray-900">#{req.id}</span>
@@ -1220,7 +1434,7 @@ const ListarRequisicoes = () => {
                           )}
                           {req.itens && req.itens.length > 0 && (
                             <span className="text-xs text-gray-500">
-                              {req.itens.length} {req.itens.length === 1 ? 'item' : 'itens'} — clique para {expandedId === req.id ? 'recolher' : 'ver'}
+                              {req.itens.length} {req.itens.length === 1 ? 'item' : 'itens'}
                             </span>
                           )}
                           {req.status === 'pendente' && canPrepare && (
@@ -1311,7 +1525,7 @@ const ListarRequisicoes = () => {
                         <FaEdit />
                       </button>
                     )}
-                    {canDelete && (
+                    {canDeleteRequisicao(req) && (
                       <button
                         onClick={() => handleDelete(req.id)}
                         className="px-3 py-2 text-red-600 hover:bg-red-600 hover:text-white rounded-lg transition-colors"
@@ -1324,44 +1538,11 @@ const ListarRequisicoes = () => {
                   </div>
                 </div>
 
-                {/* Itens e Observações — só visíveis ao expandir */}
-                {expandedId === req.id && (
-                  <div className="px-6 pb-6 pt-0 border-t border-gray-200 bg-gray-50/50">
-                    {req.itens && req.itens.length > 0 && (
-                      <div className="mb-4">
-                        <h4 className="text-sm font-medium text-gray-700 mb-2">
-                          Itens ({req.itens.length})
-                        </h4>
-                        <div className="space-y-2">
-                          {req.itens.map((item, index) => (
-                            <div
-                              key={item.item_id || index}
-                              className="flex items-center justify-between p-3 bg-white rounded-lg border border-gray-100"
-                            >
-                              <div className="flex-1">
-                                <div className="font-medium text-gray-900">{item.item_codigo}</div>
-                                <div className="text-sm text-gray-500">{item.item_descricao}</div>
-                              </div>
-                              <div className="text-sm font-medium text-gray-700">
-                                Qtd: <span className="text-[#0915FF]">{item.quantidade}</span>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                    {req.observacoes && (
-                      <div>
-                        <p className="text-sm text-gray-600">
-                          <strong>Observações:</strong> {req.observacoes}
-                        </p>
-                      </div>
-                    )}
-                  </div>
-                )}
               </div>
             ))}
           </div>
+        )}
+          </>
         )}
 
         {/* Context menu para requisições (clique direito) */}
@@ -1418,7 +1599,8 @@ const ListarRequisicoes = () => {
 
               const canGerarTRA = all(r => r.status === 'Entregue' && !r.tra_gerada_em);
               const canBaixarTRA = all(r => (r.status === 'Entregue' && r.tra_gerada_em) || r.status === 'FINALIZADO');
-              const canGerarReporte = all(r => (r.status === 'Entregue' || r.status === 'FINALIZADO') && r.tra_gerada_em);
+              const canGerarReporte = all(r => (r.status === 'Entregue' && r.tra_gerada_em) || r.status === 'FINALIZADO');
+              const canGerarClog = all(r => (r.status === 'Entregue' && r.tra_gerada_em) || r.status === 'FINALIZADO');
 
               const canBaixarComprovativo = all(r => ['Entregue', 'FINALIZADO'].includes(r.status));
               const canFinalizar = all(r => r.status === 'Entregue' && r.tra_gerada_em);
@@ -1479,7 +1661,20 @@ const ListarRequisicoes = () => {
                         setContextMenu(prev => ({ ...prev, visible: false }));
                       }}
                     >
-                      Gerar ficheiro de reporte
+                      Reporte
+                    </button>
+                  )}
+
+                  {canGerarClog && (
+                    <button
+                      className="block w-full text-left px-4 py-2 hover:bg-gray-100"
+                      onClick={() => {
+                        if (isMulti) handleExportMultiClog(ids);
+                        else handleExportClog(contextMenu.req);
+                        setContextMenu(prev => ({ ...prev, visible: false }));
+                      }}
+                    >
+                      Clog
                     </button>
                   )}
 
@@ -1511,7 +1706,11 @@ const ListarRequisicoes = () => {
                 </>
               );
             })()}
-            {canDelete && (
+            {(() => {
+              const { reqs, complete } = getActionTargetReqs(contextMenu.req);
+              const canDeleteCtx = complete && reqs.length > 0 && reqs.every(canDeleteRequisicao);
+              if (!canDeleteCtx) return null;
+              return (
               <button
                 className="block w-full text-left px-4 py-2 hover:bg-red-50 text-red-600"
                 onClick={() => {
@@ -1527,7 +1726,8 @@ const ListarRequisicoes = () => {
               >
                 Excluir requisição
               </button>
-            )}
+              );
+            })()}
           </div>
         )}
 

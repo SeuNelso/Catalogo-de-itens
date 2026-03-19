@@ -1,5 +1,5 @@
-import React from 'react';
-import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
+import React, { useEffect } from 'react';
+import { BrowserRouter as Router, Routes, Route, useLocation } from 'react-router-dom';
 import { AuthProvider } from './contexts/AuthContext';
 import { ConfirmProvider } from './contexts/ConfirmContext';
 import { ImportProgressProvider } from './contexts/ImportProgressContext';
@@ -33,12 +33,27 @@ import PrepararRequisicao from './pages/PrepararRequisicao';
 import Armazens from './pages/Armazens';
 import './App.css';
 
+function RouteTracker() {
+  const location = useLocation();
+
+  useEffect(() => {
+    const p = location.pathname || '/';
+    // Guarda a última rota útil para o "voltar" do navegador.
+    if (p !== '/' && p !== '/login') {
+      sessionStorage.setItem('lastRoute', p);
+    }
+  }, [location.pathname]);
+
+  return null;
+}
+
 function App() {
   return (
     <ImportProgressProvider>
       <AuthProvider>
         <ConfirmProvider>
         <Router>
+          <RouteTracker />
           <div className="App min-h-screen bg-[#F7F8FA] flex flex-col">
             <Navbar />
             <div className="flex-1 pt-0">
@@ -205,7 +220,7 @@ function App() {
                 <Route 
                   path="/armazens" 
                   element={
-                    <ProtectedRoute allowedRoles={['admin', 'backoffice_armazem']}>
+                    <ProtectedRoute allowedRoles={['admin']}>
                       <Armazens />
                     </ProtectedRoute>
                   } 

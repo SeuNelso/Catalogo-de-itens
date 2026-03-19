@@ -6,6 +6,8 @@ CREATE TABLE IF NOT EXISTS usuarios (
   id SERIAL PRIMARY KEY,
   username VARCHAR(255) UNIQUE,
   nome VARCHAR(255) NOT NULL,
+  sobrenome VARCHAR(255),
+  telemovel VARCHAR(50),
   email VARCHAR(255) UNIQUE,
   password VARCHAR(255),
   numero_colaborador VARCHAR(100) UNIQUE,

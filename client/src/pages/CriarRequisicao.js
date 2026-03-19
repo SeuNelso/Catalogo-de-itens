@@ -1,6 +1,7 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
+import { getRequisicoesArmazemOrigemIds } from '../utils/requisicoesArmazemOrigem';
 import Toast from '../components/Toast';
 import { FaArrowLeft, FaSave, FaPlus, FaTrash, FaChevronDown } from 'react-icons/fa';
 import axios from 'axios';
@@ -32,13 +33,22 @@ const CriarRequisicao = () => {
   const refBuscaItem = useRef(null);
   const refListaItens = useRef(null);
   const navigate = useNavigate();
-  useAuth(); // auth context
+  const { user } = useAuth();
 
   useEffect(() => {
     fetchItens();
     fetchArmazens();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    const allowed = getRequisicoesArmazemOrigemIds(user);
+    if (allowed.length !== 1 || user?.role === 'admin' || user?.role === 'controller') return;
+    setFormData((prev) => {
+      if (prev.armazem_origem_id) return prev;
+      return { ...prev, armazem_origem_id: String(allowed[0]) };
+    });
+  }, [user]);
 
   useEffect(() => {
     if (buscaItem.trim()) {
@@ -152,7 +162,17 @@ const CriarRequisicao = () => {
     );
   };
 
-  const armazensOrigemFiltrados = filterArmazens(armazens, buscaArmazemOrigem);
+  const armazensListaOrigem = useMemo(() => {
+    const centrais = (armazens || []).filter((a) => (a.tipo || '').toLowerCase() === 'central');
+    const allowed = getRequisicoesArmazemOrigemIds(user);
+    if (allowed.length > 0 && user?.role !== 'admin' && user?.role !== 'controller') {
+      const set = new Set(allowed);
+      return centrais.filter((a) => set.has(a.id));
+    }
+    return centrais;
+  }, [armazens, user]);
+
+  const armazensOrigemFiltrados = filterArmazens(armazensListaOrigem, buscaArmazemOrigem);
   const armazensDestinoFiltrados = filterArmazens(armazens, buscaArmazemDestino);
 
   const armazemOrigemSelecionado = armazens.find(a => a.id === parseInt(formData.armazem_origem_id, 10));

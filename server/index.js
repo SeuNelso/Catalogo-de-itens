@@ -19,6 +19,8 @@ const pool = new Pool({
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const XLSX = require('xlsx');
+const ExcelJS = require('exceljs');
+const { v4: uuidv4 } = require('uuid');
 const { uploadToS3 } = require('./s3Upload');
 
 // Função para converter URL do Google Sheets para formato de exportação
@@ -135,6 +137,135 @@ const authenticateToken = (req, res, next) => {
   });
 };
 
+/** Quem ignora o filtro de armazém nas requisições */
+function roleComAcessoTotalRequisicoes(role) {
+  return role === 'admin' || role === 'controller';
+}
+
+/** Cache apenas quando a coluna existe (evita ficar preso a "false" após migração sem reinício). */
+let _cacheUsuariosColReqArmOrigem = false;
+
+async function usuariosTemColunaRequisicoesArmazemOrigem() {
+  if (_cacheUsuariosColReqArmOrigem) {
+    return true;
+  }
+  try {
+    const r = await pool.query(
+      `SELECT 1 AS ok FROM information_schema.columns
+       WHERE table_schema = 'public'
+         AND table_name = 'usuarios'
+         AND column_name = 'requisicoes_armazem_origem_id'
+       LIMIT 1`
+    );
+    if (r.rows.length > 0) {
+      _cacheUsuariosColReqArmOrigem = true;
+      return true;
+    }
+  } catch (err) {
+    console.error('[DB] Falha ao verificar coluna requisicoes_armazem_origem_id:', err.message);
+  }
+  return false;
+}
+
+/** Tabela N:N usuario_requisicoes_armazens (migração multi-armazém). Cache só quando existe. */
+let _cacheJunctionTableUsuariosArmazens = false;
+
+async function usuarioRequisicaoArmazemJunctionTableExists() {
+  if (_cacheJunctionTableUsuariosArmazens) return true;
+  try {
+    const r = await pool.query(
+      `SELECT 1 FROM information_schema.tables
+       WHERE table_schema = 'public' AND table_name = 'usuario_requisicoes_armazens' LIMIT 1`
+    );
+    if (r.rows.length > 0) {
+      _cacheJunctionTableUsuariosArmazens = true;
+      return true;
+    }
+  } catch (err) {
+    console.error('[DB] Falha ao verificar tabela usuario_requisicoes_armazens:', err.message);
+  }
+  return false;
+}
+
+/** Lista de armazéns de origem permitidos para requisições. Vazio = sem filtro extra. */
+async function fetchRequisicoesArmazemIdsForUser(userId) {
+  if (!userId) return [];
+  if (await usuarioRequisicaoArmazemJunctionTableExists()) {
+    const r = await pool.query(
+      'SELECT armazem_id FROM usuario_requisicoes_armazens WHERE usuario_id = $1 ORDER BY armazem_id',
+      [userId]
+    );
+    return r.rows.map((row) => parseInt(row.armazem_id, 10));
+  }
+  if (await usuariosTemColunaRequisicoesArmazemOrigem()) {
+    const r = await pool.query(
+      'SELECT requisicoes_armazem_origem_id FROM usuarios WHERE id = $1',
+      [userId]
+    );
+    const v = r.rows[0]?.requisicoes_armazem_origem_id;
+    if (v != null && v !== '') return [parseInt(v, 10)];
+  }
+  return [];
+}
+
+/** Scope após requisicaoScopeMiddleware: requisicaoArmazemOrigemIds = array; vazio ⇒ sem filtro */
+async function requisicaoScopeMiddleware(req, res, next) {
+  try {
+    req.requisicaoArmazemOrigemIds = [];
+    if (!req.user || !req.user.id) return next();
+    if (roleComAcessoTotalRequisicoes(req.user.role)) {
+      return next();
+    }
+    req.requisicaoArmazemOrigemIds = await fetchRequisicoesArmazemIdsForUser(req.user.id);
+    next();
+  } catch (e) {
+    next(e);
+  }
+}
+
+function requisicaoArmazemOrigemAcessoPermitido(req, armazemOrigemId) {
+  if (!req.user) return false;
+  if (roleComAcessoTotalRequisicoes(req.user.role)) return true;
+  const allowed = req.requisicaoArmazemOrigemIds;
+  if (!allowed || allowed.length === 0) return true;
+  const sid = armazemOrigemId != null && armazemOrigemId !== ''
+    ? parseInt(armazemOrigemId, 10)
+    : NaN;
+  if (Number.isNaN(sid)) return false;
+  return allowed.includes(sid);
+}
+
+/** Valida scope para exportação multi; lanha se algum id fora dos armazéns permitidos. */
+async function assertIdsRequisicoesPermitidas(req, idsRaw) {
+  const idsClean = [...new Set((idsRaw || []).map((x) => parseInt(x, 10)).filter(Boolean))];
+  if (idsClean.length === 0) return;
+  if (roleComAcessoTotalRequisicoes(req.user.role)) return;
+  const allowed = req.requisicaoArmazemOrigemIds;
+  if (!allowed || allowed.length === 0) return;
+  const bad = await pool.query(
+    `SELECT id FROM requisicoes WHERE id = ANY($1::int[])
+     AND (armazem_origem_id IS NULL OR NOT (armazem_origem_id = ANY($2::int[])))
+     LIMIT 1`,
+    [idsClean, allowed]
+  );
+  if (bad.rows.length > 0) {
+    const e = new Error('Acesso negado a uma ou mais requisições.');
+    e.statusCode = 403;
+    throw e;
+  }
+}
+
+const requisicaoAuth = [authenticateToken, requisicaoScopeMiddleware];
+
+/** Nome público: nome + sobrenome (compatível sem coluna sobrenome). */
+function nomeCompletoUsuario(row) {
+  if (!row) return '';
+  const n = row.nome != null ? String(row.nome).trim() : '';
+  const s = row.sobrenome != null ? String(row.sobrenome).trim() : '';
+  const full = [n, s].filter(Boolean).join(' ').trim();
+  return full || n || '';
+}
+
 // Middleware global para logar todas as requisições recebidas
 app.use((req, res, next) => {
   
@@ -185,7 +316,6 @@ const upload = multer({
 
 // --- Importação assíncrona de Excel com progresso em memória ---
 const importStatus = {};
-const { v4: uuidv4 } = require('uuid');
 
 const excelUpload = multer({ dest: 'uploads/' });
 app.post('/api/importar-excel', authenticateToken, excelUpload.single('arquivo'), async (req, res) => {
@@ -215,11 +345,6 @@ app.post('/api/importar-excel', authenticateToken, excelUpload.single('arquivo')
 
   setImmediate(async () => {
     try {
-      const XLSX = require('xlsx');
-      const fs = require('fs');
-      const https = require('https');
-      const http = require('http');
-      
       let workbook;
       let filePath;
       
@@ -424,9 +549,6 @@ app.post('/api/importar-itens', authenticateToken, excelUploadItens.single('arqu
   if (!req.file) {
     return res.status(400).json({ error: 'Arquivo não enviado.' });
   }
-  const XLSX = require('xlsx');
-  const fs = require('fs');
-  const { v4: uuidv4 } = require('uuid');
   const importId = uuidv4();
   importStatus[importId] = {
     status: 'iniciando',
@@ -479,16 +601,6 @@ app.post('/api/importar-itens', authenticateToken, excelUploadItens.single('arqu
           const unidadeArmazenamento = row['Unidade Armazenamento']?.toString().trim() || null;
           const tipocontrolo = row['Tipo Controle']?.toString().trim() || null;
           
-          // Debug: Log dos valores para verificar se estão sendo lidos corretamente
-          console.log('Debug - Valores lidos do Excel:', {
-            codigo,
-            familia: row['Família'],
-            subfamilia: row['Subfamília'],
-            unidadeArmazenamento: row['Unidade Armazenamento'],
-            tipocontrolo: row['Tipo Controle'],
-            observacoes: row['Observações']
-          });
-          
           if (!codigo || !nome) {
             importStatus[importId].erros.push({ linha: idx + 2, motivo: 'Código ou descrição ausente', codigo: codigo || 'N/A' });
             processados++;
@@ -502,13 +614,6 @@ app.post('/api/importar-itens', authenticateToken, excelUploadItens.single('arqu
             importStatus[importId].processados = processados;
             return;
           }
-          // Inserir novo item com todos os campos (apenas colunas que existem)
-          console.log('Inserindo item com valores:', {
-            nome, descricao, categoria, codigo, quantidade, preco,
-            localizacao, observacoes, familia, subfamilia, setor, comprimento,
-            largura, altura, unidade, peso, unidadePeso, unidadeArmazenamento, tipocontrolo
-          });
-          
           const result = await pool.query(
             `INSERT INTO itens (
               nome, descricao, categoria, codigo, quantidade, preco, 
@@ -566,8 +671,6 @@ app.get('/api/download-template', authenticateToken, (req, res) => {
   }
 
   try {
-    const XLSX = require('xlsx');
-    
     // Criar dados de exemplo para o template (apenas colunas que existem na tabela)
     const dadosExemplo = [
       {
@@ -670,8 +773,6 @@ app.post('/api/importar-dados-itens', authenticateToken, dadosItensUpload.single
 
   setImmediate(async () => {
     try {
-      const XLSX = require('xlsx');
-      const fs = require('fs');
       const workbook = XLSX.readFile(req.file.path);
       const sheetName = workbook.SheetNames[0];
       const sheet = workbook.Sheets[sheetName];
@@ -791,30 +892,42 @@ app.get('/api/importar-dados-itens-status/:id', authenticateToken, (req, res) =>
   res.json(importStatus[importId]);
 });
 
-// Inicialização do banco de dados
-// const db = new sqlite3.Database('catalogo.db');
-
-// Criar tabelas
-// const db = new sqlite3.Database('catalogo.db');
-
 // Rotas da API
 
 // Autenticação
-app.post('/api/login', (req, res) => {
-  const { username, password } = req.body;
+app.post('/api/login', async (req, res) => {
+  const loginIdRaw = req.body.username ?? req.body.login ?? req.body.numero_colaborador;
+  const { password } = req.body;
+  const loginId = loginIdRaw != null ? String(loginIdRaw).trim() : '';
 
-  if (!username || !password) {
-    return res.status(400).json({ error: 'Username e password são obrigatórios' });
+  if (!loginId || !password) {
+    return res.status(400).json({
+      error: 'Indique o nº de colaborador ou o utilizador (username) e a palavra-passe.'
+    });
   }
 
-  pool.query('SELECT * FROM usuarios WHERE LOWER(username) = LOWER($1)', [username], (err, result) => {
-    if (err) {
-      console.error('[LOGIN] Erro no banco:', err.message);
-      return res.status(500).json({ error: 'Erro ao conectar. Verifique se o banco está configurado e se a tabela usuarios existe (com colunas username e password).', details: process.env.NODE_ENV === 'development' ? err.message : undefined });
+  try {
+    let result;
+    try {
+      result = await pool.query(
+        `SELECT * FROM usuarios WHERE
+          TRIM(COALESCE(numero_colaborador::text, '')) = TRIM($1)
+          OR LOWER(TRIM(COALESCE(username, ''))) = LOWER(TRIM($1))`,
+        [loginId]
+      );
+    } catch (dbErr) {
+      console.error('[LOGIN] Erro no banco:', dbErr.message);
+      return res.status(500).json({
+        error: 'Erro ao conectar. Verifique se o banco está configurado e se a tabela usuarios existe (com colunas username e password).',
+        details: process.env.NODE_ENV === 'development' ? dbErr.message : undefined
+      });
     }
 
     if (result.rows.length === 0) {
-      return res.status(401).json({ error: 'Usuário não encontrado' });
+      return res.status(401).json({ error: 'Credenciais inválidas.' });
+    }
+    if (result.rows.length > 1) {
+      return res.status(401).json({ error: 'Várias contas correspondem a estes dados. Contacte o administrador.' });
     }
 
     const user = result.rows[0];
@@ -835,9 +948,17 @@ app.post('/api/login', (req, res) => {
       return res.status(401).json({ error: 'Senha incorreta' });
     }
 
+    const reqArmIds = await fetchRequisicoesArmazemIdsForUser(user.id);
+
     try {
       const token = jwt.sign(
-        { id: user.id, username: user.username || user.email, role: user.role },
+        {
+          id: user.id,
+          username: user.username || String(user.numero_colaborador || ''),
+          role: user.role,
+          requisicoes_armazem_origem_ids: reqArmIds,
+          requisicoes_armazem_origem_id: reqArmIds.length === 1 ? reqArmIds[0] : null
+        },
         JWT_SECRET,
         { expiresIn: '24h' }
       );
@@ -847,21 +968,68 @@ app.post('/api/login', (req, res) => {
         token,
         user: {
           id: user.id,
-          username: user.username || user.email,
-          nome: user.nome,
-          role: user.role
+          username: user.username || user.numero_colaborador,
+          nome: nomeCompletoUsuario(user),
+          nome_proprio: user.nome,
+          sobrenome: user.sobrenome,
+          email: user.email,
+          telemovel: user.telemovel,
+          numero_colaborador: user.numero_colaborador,
+          role: user.role,
+          requisicoes_armazem_origem_ids: reqArmIds,
+          requisicoes_armazem_origem_id: reqArmIds.length === 1 ? reqArmIds[0] : null
         }
       });
     } catch (jwtErr) {
       console.error('[LOGIN] Erro ao gerar token:', jwtErr.message);
       return res.status(500).json({ error: 'Erro ao gerar sessão.' });
     }
-  });
+  } catch (e) {
+    console.error('[LOGIN]', e);
+    return res.status(500).json({ error: 'Erro no login.', details: e.message });
+  }
 });
 
-// Verificar token
-app.get('/api/verify-token', authenticateToken, (req, res) => {
-  res.json({ valid: true, user: req.user });
+// Verificar token (dados atualizados da BD, incl. armazéns de requisições)
+app.get('/api/verify-token', authenticateToken, async (req, res) => {
+  try {
+    let r;
+    try {
+      r = await pool.query(
+        `SELECT id, username, nome, sobrenome, telemovel, email, numero_colaborador, role FROM usuarios WHERE id = $1`,
+        [req.user.id]
+      );
+    } catch (colErr) {
+      if (colErr.code !== '42703') throw colErr;
+      r = await pool.query(
+        `SELECT id, username, nome, email, numero_colaborador, role FROM usuarios WHERE id = $1`,
+        [req.user.id]
+      );
+    }
+    if (r.rows.length === 0) {
+      return res.status(403).json({ error: 'Utilizador inválido.' });
+    }
+    const u = r.rows[0];
+    const reqArmIds = await fetchRequisicoesArmazemIdsForUser(u.id);
+    res.json({
+      valid: true,
+      user: {
+        id: u.id,
+        username: u.username,
+        nome: nomeCompletoUsuario(u),
+        nome_proprio: u.nome,
+        sobrenome: u.sobrenome,
+        email: u.email,
+        telemovel: u.telemovel,
+        numero_colaborador: u.numero_colaborador,
+        role: u.role,
+        requisicoes_armazem_origem_ids: reqArmIds,
+        requisicoes_armazem_origem_id: reqArmIds.length === 1 ? reqArmIds[0] : null
+      }
+    });
+  } catch (e) {
+    res.status(500).json({ error: 'Erro ao validar sessão.', details: e.message });
+  }
 });
 
 // Listar todos os itens (público) COM paginação
@@ -2081,7 +2249,6 @@ app.get('/api/exportar-itens', authenticateToken, async (req, res) => {
       return res.status(404).json({ error: 'Nenhum item encontrado.' });
     }
     
-    const ExcelJS = require('exceljs');
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet('Itens');
     
@@ -2195,25 +2362,169 @@ app.post('/api/usuarios', authenticateToken, async (req, res) => {
   }
 });
 
-// Cadastro de novo usuário
+// Cadastro de novo usuário (admin na UI; só nome e nº colaborador obrigatórios)
 app.post('/api/cadastrar-usuario', async (req, res) => {
-  const { nome, numero_colaborador, senha } = req.body;
-  if (!nome || !numero_colaborador || !senha) {
-    return res.status(400).json({ error: 'Nome, número de colaborador e senha são obrigatórios.' });
+  const {
+    nome: nomeRaw,
+    sobrenome: sobrenomeRaw,
+    telemovel: telemovelRaw,
+    email: emailRaw,
+    username: usernameRaw,
+    numero_colaborador: numColRaw,
+    senha: senhaRaw,
+    requisicoes_armazem_origem_id,
+    requisicoes_armazem_origem_ids
+  } = req.body;
+
+  const nome = String(nomeRaw || '').trim();
+  const sobrenome = String(sobrenomeRaw || '').trim() || null;
+  const telemovel = String(telemovelRaw || '').trim() || null;
+  const email = String(emailRaw || '').trim() || null;
+  let username = String(usernameRaw || '').trim() || null;
+  const numero_colaborador = String(numColRaw || '').trim();
+  let senha = senhaRaw != null ? String(senhaRaw) : '';
+  const senhaFoiDefinida = String(senha).trim().length > 0;
+
+  if (!nome || !numero_colaborador) {
+    return res.status(400).json({ error: 'Nome e número de colaborador são obrigatórios.' });
   }
+
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return res.status(400).json({ error: 'E-mail inválido.' });
+  }
+
+  if (!username) {
+    username = numero_colaborador;
+  }
+
+  if (!String(senha).trim()) {
+    senha = numero_colaborador;
+  }
+
   try {
-    // Verifica se já existe
-    const existe = await pool.query('SELECT id FROM usuarios WHERE numero_colaborador = $1', [numero_colaborador]);
+    let armIds = Array.isArray(requisicoes_armazem_origem_ids) ? requisicoes_armazem_origem_ids : null;
+    if (armIds == null && requisicoes_armazem_origem_id != null && requisicoes_armazem_origem_id !== '') {
+      armIds = [requisicoes_armazem_origem_id];
+    }
+    if (armIds == null) armIds = [];
+    const armIdsNorm = [...new Set(armIds.map((x) => parseInt(x, 10)).filter(Boolean))];
+    for (const aid of armIdsNorm) {
+      const ch = await pool.query(
+        "SELECT id FROM armazens WHERE id = $1 AND ativo = true AND LOWER(COALESCE(tipo,'')) = 'central'",
+        [aid]
+      );
+      if (ch.rows.length === 0) {
+        return res.status(400).json({ error: `Armazém central inválido ou inativo (id ${aid}).` });
+      }
+    }
+
+    const existe = await pool.query('SELECT id FROM usuarios WHERE TRIM(numero_colaborador::text) = TRIM($1)', [numero_colaborador]);
     if (existe.rows.length > 0) {
       return res.status(400).json({ error: 'Número de colaborador já cadastrado.' });
     }
+
+    if (email) {
+      const em = await pool.query('SELECT id FROM usuarios WHERE LOWER(TRIM(email)) = LOWER(TRIM($1))', [email]);
+      if (em.rows.length > 0) {
+        return res.status(400).json({ error: 'Este e-mail já está registado.' });
+      }
+    }
+
+    const un = await pool.query('SELECT id FROM usuarios WHERE LOWER(TRIM(username)) = LOWER(TRIM($1))', [username]);
+    if (un.rows.length > 0) {
+      return res.status(400).json({ error: 'Este nome de utilizador já está em uso.' });
+    }
+
     const hash = bcrypt.hashSync(senha, 10);
-    // Agora inclui username (igual ao numero_colaborador)
-    await pool.query(
-      'INSERT INTO usuarios (nome, numero_colaborador, username, password, role) VALUES ($1, $2, $3, $4, $5)',
-      [nome, numero_colaborador, numero_colaborador, hash, 'basico']
-    );
-    res.status(201).json({ message: 'Usuário cadastrado com sucesso!' });
+    const hasJunc = await usuarioRequisicaoArmazemJunctionTableExists();
+    const hasCol = await usuariosTemColunaRequisicoesArmazemOrigem();
+
+    if (armIdsNorm.length > 0 && !hasJunc && !hasCol) {
+      return res.status(400).json({
+        error: 'Execute a migração do banco antes de associar armazéns às requisições.',
+        detalhes: 'npm run db:migrate:usuarios-req-armazem-multi'
+      });
+    }
+    if (!hasJunc && hasCol && armIdsNorm.length > 1) {
+      return res.status(400).json({
+        error: 'Vários armazéns exigem a migração N:N.',
+        detalhes: 'npm run db:migrate:usuarios-req-armazem-multi'
+      });
+    }
+
+    const baseVals = [nome, sobrenome, telemovel, email, username, numero_colaborador, hash, 'basico'];
+
+    const runInsert = async (sql, params) => pool.query(sql, params);
+
+    try {
+      if (hasJunc) {
+        const ins = await runInsert(
+          `INSERT INTO usuarios (nome, sobrenome, telemovel, email, username, numero_colaborador, password, role)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
+          baseVals
+        );
+        const newUserId = ins.rows[0].id;
+        for (const aid of armIdsNorm) {
+          await pool.query(
+            'INSERT INTO usuario_requisicoes_armazens (usuario_id, armazem_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+            [newUserId, aid]
+          );
+        }
+      } else if (hasCol) {
+        const single = armIdsNorm.length ? armIdsNorm[0] : null;
+        await runInsert(
+          `INSERT INTO usuarios (nome, sobrenome, telemovel, email, username, numero_colaborador, password, role, requisicoes_armazem_origem_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+          [...baseVals, single]
+        );
+      } else {
+        await runInsert(
+          `INSERT INTO usuarios (nome, sobrenome, telemovel, email, username, numero_colaborador, password, role)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+          baseVals
+        );
+      }
+    } catch (insertErr) {
+      if (insertErr.code === '42703') {
+        const nomeDb = sobrenome ? `${nome} ${sobrenome}`.trim() : nome;
+        if (hasJunc) {
+          const ins = await pool.query(
+            `INSERT INTO usuarios (nome, numero_colaborador, username, password, role, email)
+             VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+            [nomeDb, numero_colaborador, username, hash, 'basico', email]
+          );
+          const newUserId = ins.rows[0].id;
+          for (const aid of armIdsNorm) {
+            await pool.query(
+              'INSERT INTO usuario_requisicoes_armazens (usuario_id, armazem_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+              [newUserId, aid]
+            );
+          }
+        } else if (hasCol) {
+          const single = armIdsNorm.length ? armIdsNorm[0] : null;
+          await pool.query(
+            `INSERT INTO usuarios (nome, numero_colaborador, username, password, role, requisicoes_armazem_origem_id, email)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+            [nomeDb, numero_colaborador, username, hash, 'basico', single, email]
+          );
+        } else {
+          await pool.query(
+            `INSERT INTO usuarios (nome, numero_colaborador, username, password, role, email)
+             VALUES ($1, $2, $3, $4, $5, $6)`,
+            [nomeDb, numero_colaborador, username, hash, 'basico', email]
+          );
+        }
+      } else {
+        throw insertErr;
+      }
+    }
+
+    res.status(201).json({
+      message: 'Usuário cadastrado com sucesso!',
+      aviso: !senhaFoiDefinida
+        ? 'Palavra-passe inicial igual ao número de colaborador — recomende alteração no primeiro acesso.'
+        : undefined
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -2225,29 +2536,296 @@ app.get('/api/usuarios', authenticateToken, async (req, res) => {
     return res.status(403).json({ error: 'Apenas administradores ou controllers podem acessar esta rota.' });
   }
   try {
-    const result = await pool.query('SELECT id, username, numero_colaborador, nome, role, email, data_criacao FROM usuarios ORDER BY id DESC');
-    res.json(result.rows);
+    const hasJunc = await usuarioRequisicaoArmazemJunctionTableExists();
+    const hasCol = await usuariosTemColunaRequisicoesArmazemOrigem();
+    let sql;
+    if (hasJunc) {
+      sql = `
+      SELECT u.id, u.username, u.numero_colaborador, u.nome, u.sobrenome, u.telemovel, u.role, u.email, u.data_criacao,
+        COALESCE(
+          (SELECT json_agg(ura.armazem_id ORDER BY ura.armazem_id)
+           FROM usuario_requisicoes_armazens ura WHERE ura.usuario_id = u.id),
+          '[]'::json
+        ) AS requisicoes_armazem_origem_ids,
+        COALESCE(
+          (SELECT json_agg(json_build_object('id', a2.id, 'codigo', a2.codigo, 'descricao', a2.descricao) ORDER BY a2.id)
+           FROM usuario_requisicoes_armazens ura2
+           INNER JOIN armazens a2 ON a2.id = ura2.armazem_id
+           WHERE ura2.usuario_id = u.id),
+          '[]'::json
+        ) AS requisicoes_armazens_origem
+      FROM usuarios u
+      ORDER BY u.id DESC
+    `;
+    } else if (hasCol) {
+      sql = `
+      SELECT u.id, u.username, u.numero_colaborador, u.nome, u.sobrenome, u.telemovel, u.role, u.email, u.data_criacao, u.requisicoes_armazem_origem_id,
+        a.codigo as requisicoes_armazem_origem_codigo,
+        a.descricao as requisicoes_armazem_origem_descricao,
+        CASE WHEN u.requisicoes_armazem_origem_id IS NOT NULL
+          THEN json_build_array(u.requisicoes_armazem_origem_id) ELSE '[]'::json END AS requisicoes_armazem_origem_ids,
+        CASE WHEN u.requisicoes_armazem_origem_id IS NOT NULL
+          THEN json_build_array(json_build_object('id', a.id, 'codigo', a.codigo, 'descricao', a.descricao))
+          ELSE '[]'::json END AS requisicoes_armazens_origem
+      FROM usuarios u
+      LEFT JOIN armazens a ON a.id = u.requisicoes_armazem_origem_id
+      ORDER BY u.id DESC
+    `;
+    } else {
+      sql = `
+      SELECT u.id, u.username, u.numero_colaborador, u.nome, u.sobrenome, u.telemovel, u.role, u.email, u.data_criacao,
+        NULL::integer AS requisicoes_armazem_origem_id,
+        NULL::text AS requisicoes_armazem_origem_codigo,
+        NULL::text AS requisicoes_armazem_origem_descricao,
+        '[]'::json AS requisicoes_armazem_origem_ids,
+        '[]'::json AS requisicoes_armazens_origem
+      FROM usuarios u
+      ORDER BY u.id DESC
+    `;
+    }
+    let result;
+    try {
+      result = await pool.query(sql);
+    } catch (listErr) {
+      if (listErr.code !== '42703') throw listErr;
+      result = await pool.query(sql.replace(/u\.sobrenome, u\.telemovel, /g, ''));
+    }
+    const rows = result.rows.map((row) => {
+      let ids = row.requisicoes_armazem_origem_ids;
+      if (typeof ids === 'string') {
+        try {
+          ids = JSON.parse(ids);
+        } catch (_) {
+          ids = [];
+        }
+      }
+      if (!Array.isArray(ids)) ids = [];
+      ids = ids.map((x) => parseInt(x, 10)).filter((n) => !Number.isNaN(n));
+      return { ...row, requisicoes_armazem_origem_ids: ids };
+    });
+    res.json(rows);
   } catch (error) {
     res.status(500).json({ error: 'Erro ao listar usuários.', details: error.message });
   }
 });
 
-// Atualizar o role de um usuário (apenas admin/controller)
+// Atualizar utilizador: dados pessoais (só admin), role e armazéns (admin/controller)
 app.patch('/api/usuarios/:id', authenticateToken, async (req, res) => {
   if (!req.user || (req.user.role !== 'admin' && req.user.role !== 'controller')) {
     return res.status(403).json({ error: 'Apenas administradores ou controllers podem acessar esta rota.' });
   }
-  const { id } = req.params;
-  const { role } = req.body;
+  const isAdmin = req.user.role === 'admin';
+  const id = parseInt(req.params.id, 10);
+  if (!id) {
+    return res.status(400).json({ error: 'ID inválido.' });
+  }
+
+  const {
+    role,
+    requisicoes_armazem_origem_id,
+    requisicoes_armazem_origem_ids,
+    nome,
+    sobrenome,
+    telemovel,
+    email,
+    username,
+    numero_colaborador,
+    nova_senha,
+    senha: senhaBody
+  } = req.body;
+
+  const pwdIn =
+    nova_senha != null && String(nova_senha).trim()
+      ? String(nova_senha).trim()
+      : senhaBody != null && String(senhaBody).trim()
+        ? String(senhaBody).trim()
+        : null;
+
   const rolesValidos = ['admin', 'controller', 'basico', 'usuario', 'backoffice_operations', 'backoffice_armazem', 'operador'];
-  if (!role || !rolesValidos.includes(role)) {
-    return res.status(400).json({ error: 'Role inválido.' });
+  const updates = [];
+  const params = [];
+  let pi = 1;
+
+  const hasJunc = await usuarioRequisicaoArmazemJunctionTableExists();
+  const hasCol = await usuariosTemColunaRequisicoesArmazemOrigem();
+
+  let idsPayload = requisicoes_armazem_origem_ids;
+  if (idsPayload === undefined && requisicoes_armazem_origem_id !== undefined) {
+    if (requisicoes_armazem_origem_id === null || requisicoes_armazem_origem_id === '') idsPayload = [];
+    else idsPayload = [requisicoes_armazem_origem_id];
+  }
+
+  if (idsPayload !== undefined && !hasJunc && !hasCol) {
+    return res.status(400).json({
+      error: 'Não é possível guardar armazéns sem migração da base de dados.',
+      detalhes: 'npm run db:migrate:usuarios-req-armazem ou npm run db:migrate:usuarios-req-armazem-multi'
+    });
+  }
+
+  if (isAdmin) {
+    if (nome !== undefined) {
+      const n = String(nome || '').trim();
+      if (!n) {
+        return res.status(400).json({ error: 'O nome não pode ficar vazio.' });
+      }
+      updates.push(`nome = $${pi++}`);
+      params.push(n);
+    }
+    if (sobrenome !== undefined) {
+      const s = String(sobrenome || '').trim() || null;
+      updates.push(`sobrenome = $${pi++}`);
+      params.push(s);
+    }
+    if (telemovel !== undefined) {
+      const t = String(telemovel || '').trim() || null;
+      updates.push(`telemovel = $${pi++}`);
+      params.push(t);
+    }
+    if (email !== undefined) {
+      const em = String(email || '').trim() || null;
+      if (em && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(em)) {
+        return res.status(400).json({ error: 'E-mail inválido.' });
+      }
+      if (em) {
+        const clash = await pool.query(
+          'SELECT id FROM usuarios WHERE LOWER(TRIM(email)) = LOWER(TRIM($1)) AND id <> $2',
+          [em, id]
+        );
+        if (clash.rows.length > 0) {
+          return res.status(400).json({ error: 'Este e-mail já está a ser usado por outro utilizador.' });
+        }
+      }
+      updates.push(`email = $${pi++}`);
+      params.push(em);
+    }
+    if (username !== undefined) {
+      const un = String(username || '').trim();
+      if (!un) {
+        return res.status(400).json({ error: 'O username não pode ficar vazio.' });
+      }
+      const clash = await pool.query(
+        'SELECT id FROM usuarios WHERE LOWER(TRIM(username)) = LOWER(TRIM($1)) AND id <> $2',
+        [un, id]
+      );
+      if (clash.rows.length > 0) {
+        return res.status(400).json({ error: 'Este username já está em uso.' });
+      }
+      updates.push(`username = $${pi++}`);
+      params.push(un);
+    }
+    if (numero_colaborador !== undefined) {
+      const nc = String(numero_colaborador || '').trim();
+      if (!nc) {
+        return res.status(400).json({ error: 'O número de colaborador não pode ficar vazio.' });
+      }
+      const clash = await pool.query(
+        'SELECT id FROM usuarios WHERE TRIM(numero_colaborador::text) = TRIM($1) AND id <> $2',
+        [nc, id]
+      );
+      if (clash.rows.length > 0) {
+        return res.status(400).json({ error: 'Este número de colaborador já está registado.' });
+      }
+      updates.push(`numero_colaborador = $${pi++}`);
+      params.push(nc);
+    }
+    if (pwdIn) {
+      updates.push(`password = $${pi++}`);
+      params.push(bcrypt.hashSync(pwdIn, 10));
+    }
+  }
+
+  if (role !== undefined && role !== null) {
+    if (!rolesValidos.includes(role)) {
+      return res.status(400).json({ error: 'Role inválido.' });
+    }
+    updates.push(`role = $${pi++}`);
+    params.push(role);
+  }
+
+  if (idsPayload !== undefined) {
+    if (!Array.isArray(idsPayload)) {
+      return res.status(400).json({ error: 'requisicoes_armazem_origem_ids deve ser um array de ids.' });
+    }
+    const armIdsNorm = [...new Set(idsPayload.map((x) => parseInt(x, 10)).filter(Boolean))];
+    for (const aid of armIdsNorm) {
+      const ch = await pool.query(
+        "SELECT id FROM armazens WHERE id = $1 AND ativo = true AND LOWER(COALESCE(tipo,'')) = 'central'",
+        [aid]
+      );
+      if (ch.rows.length === 0) {
+        return res.status(400).json({ error: `Armazém central inválido ou inativo (id ${aid}).` });
+      }
+    }
+    if (hasJunc) {
+      await pool.query('DELETE FROM usuario_requisicoes_armazens WHERE usuario_id = $1', [id]);
+      for (const aid of armIdsNorm) {
+        await pool.query(
+          'INSERT INTO usuario_requisicoes_armazens (usuario_id, armazem_id) VALUES ($1, $2)',
+          [id, aid]
+        );
+      }
+    } else if (hasCol) {
+      if (armIdsNorm.length > 1) {
+        return res.status(400).json({
+          error: 'Vários armazéns exigem a migração N:N (usuario_requisicoes_armazens).'
+        });
+      }
+      if (armIdsNorm.length === 0) {
+        updates.push('requisicoes_armazem_origem_id = NULL');
+      } else {
+        updates.push(`requisicoes_armazem_origem_id = $${pi++}`);
+        params.push(armIdsNorm[0]);
+      }
+    }
+  }
+
+  if (updates.length === 0 && idsPayload === undefined) {
+    return res.status(400).json({
+      error: 'Nada a atualizar. Envie dados do perfil (admin), role, armazéns de requisições ou nova palavra-passe.'
+    });
+  }
+
+  params.push(id);
+  try {
+    if (updates.length > 0) {
+      await pool.query(`UPDATE usuarios SET ${updates.join(', ')} WHERE id = $${pi}`, params);
+    }
+    res.json({ message: 'Utilizador atualizado com sucesso.' });
+  } catch (error) {
+    if (error.code === '42703') {
+      return res.status(400).json({
+        error: 'Coluna em falta na base de dados.',
+        detalhes: 'Execute: npm run db:migrate:usuarios-dados-pessoais'
+      });
+    }
+    res.status(500).json({ error: 'Erro ao atualizar utilizador.', details: error.message });
+  }
+});
+
+// Excluir utilizador (apenas admin)
+app.delete('/api/usuarios/:id', authenticateToken, async (req, res) => {
+  if (!req.user || req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Apenas administradores podem excluir utilizadores.' });
+  }
+  const id = parseInt(req.params.id, 10);
+  if (!id) {
+    return res.status(400).json({ error: 'ID inválido.' });
+  }
+  if (Number(req.user.id) === id) {
+    return res.status(400).json({ error: 'Não pode excluir a sua própria conta.' });
   }
   try {
-    await pool.query('UPDATE usuarios SET role = $1 WHERE id = $2', [role, id]);
-    res.json({ message: 'Role atualizado com sucesso.' });
+    const del = await pool.query('DELETE FROM usuarios WHERE id = $1 RETURNING id', [id]);
+    if (del.rows.length === 0) {
+      return res.status(404).json({ error: 'Utilizador não encontrado.' });
+    }
+    res.json({ message: 'Utilizador excluído com sucesso.' });
   } catch (error) {
-    res.status(500).json({ error: 'Erro ao atualizar role.', details: error.message });
+    console.error('[DELETE /api/usuarios]', error);
+    res.status(500).json({
+      error: 'Erro ao excluir utilizador.',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
   }
 });
 
@@ -4168,7 +4746,7 @@ app.delete('/api/armazens/:id', authenticateToken, async (req, res) => {
 // ============================================
 
 // Listar todas as requisições (com informações dos itens)
-app.get('/api/requisicoes', authenticateToken, async (req, res) => {
+app.get('/api/requisicoes', ...requisicaoAuth, async (req, res) => {
   try {
     const { status, armazem_id, item_id } = req.query;
     
@@ -4199,6 +4777,11 @@ app.get('/api/requisicoes', authenticateToken, async (req, res) => {
       params.push(armazem_id);
     }
 
+    if (req.requisicaoArmazemOrigemIds && req.requisicaoArmazemOrigemIds.length > 0) {
+      query += ` AND r.armazem_origem_id = ANY($${paramCount++}::int[])`;
+      params.push(req.requisicaoArmazemOrigemIds);
+    }
+
     query += ` ORDER BY r.created_at DESC`;
 
     let requisicoesResult;
@@ -4218,6 +4801,9 @@ app.get('/api/requisicoes', authenticateToken, async (req, res) => {
         let pc = 1;
         if (status) { fallbackQuery += ` AND r.status = $${pc++}`; }
         if (armazem_id) { fallbackQuery += ` AND r.armazem_id = $${pc++}`; }
+        if (req.requisicaoArmazemOrigemIds && req.requisicaoArmazemOrigemIds.length > 0) {
+          fallbackQuery += ` AND r.armazem_origem_id = ANY($${pc++}::int[])`;
+        }
         fallbackQuery += ` ORDER BY r.created_at DESC`;
         requisicoesResult = await pool.query(fallbackQuery, params);
       } else {
@@ -4226,25 +4812,35 @@ app.get('/api/requisicoes', authenticateToken, async (req, res) => {
     }
     const requisicoes = requisicoesResult.rows;
 
-    // Para cada requisição, buscar seus itens
-    for (let req of requisicoes) {
+    // Otimização: buscar todos os itens das requisições em uma única consulta (evita N+1 queries)
+    if (requisicoes.length > 0) {
+      const reqIds = requisicoes.map(r => r.id).filter(Boolean);
       let itensQuery = `
-        SELECT 
+        SELECT
           ri.*,
           i.codigo as item_codigo,
           i.descricao as item_descricao
         FROM requisicoes_itens ri
         INNER JOIN itens i ON ri.item_id = i.id
-        WHERE ri.requisicao_id = $1
+        WHERE ri.requisicao_id = ANY($1::int[])
       `;
-      
+      const itensParams = [reqIds];
       if (item_id) {
-        itensQuery += ` AND ri.item_id = $2`;
-        const itensResult = await pool.query(itensQuery, [req.id, item_id]);
-        req.itens = itensResult.rows;
-      } else {
-        const itensResult = await pool.query(itensQuery, [req.id]);
-        req.itens = itensResult.rows;
+        itensQuery += ' AND ri.item_id = $2';
+        itensParams.push(item_id);
+      }
+      itensQuery += ' ORDER BY ri.requisicao_id, ri.id';
+
+      const itensResult = await pool.query(itensQuery, itensParams);
+      const itensPorRequisicao = new Map();
+      for (const row of itensResult.rows) {
+        const list = itensPorRequisicao.get(row.requisicao_id) || [];
+        list.push(row);
+        itensPorRequisicao.set(row.requisicao_id, list);
+      }
+
+      for (const req of requisicoes) {
+        req.itens = itensPorRequisicao.get(req.id) || [];
       }
     }
 
@@ -4266,7 +4862,7 @@ app.get('/api/requisicoes', authenticateToken, async (req, res) => {
 });
 
 // Exportar requisição no formato exigido pelo sistema da empresa (uma folha, colunas fixas)
-app.get('/api/requisicoes/:id/export-excel', authenticateToken, async (req, res) => {
+app.get('/api/requisicoes/:id/export-excel', ...requisicaoAuth, async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -4309,6 +4905,9 @@ app.get('/api/requisicoes/:id/export-excel', authenticateToken, async (req, res)
     }
 
     const requisicao = reqResult.rows[0];
+    if (!requisicaoArmazemOrigemAcessoPermitido(req, requisicao.armazem_origem_id)) {
+      return res.status(403).json({ error: 'Sem acesso a esta requisição.' });
+    }
     const itensResult = await pool.query(`
       SELECT ri.*, i.codigo as item_codigo, i.descricao as item_descricao,
         i.familia as item_familia, i.subfamilia as item_subfamilia
@@ -4391,7 +4990,6 @@ function buildExcelTransferencia(rows, res, filename) {
 // (Artigo, Descrição, Quantidade, ORIGEM, S/N, LOTE, DESTINO[, Observações])
 async function buildExcelReporte(rows, res, filename, opts = {}) {
   const includeObservacoes = Boolean(opts.includeObservacoes);
-  const ExcelJS = require('exceljs');
   const workbook = new ExcelJS.Workbook();
   const sheet = workbook.addWorksheet('Reporte');
 
@@ -4478,8 +5076,112 @@ async function buildExcelReporte(rows, res, filename, opts = {}) {
   res.end();
 }
 
-// Buscar requisição + itens (reutilizado por TRFL e TRA)
-async function getRequisicaoComItens(id) {
+// Helper: ficheiro Clog (saída de armazém) no formato aproximado do template
+async function buildExcelClog(rows, res, filename) {
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet('Clog');
+
+  const baseColumns = [
+    { header: 'Tipo de Movimento', key: 'Tipo de Movimento', minWidth: 16, maxWidth: 24 },
+    { header: 'Dt_Recepção', key: 'Dt_Recepção', minWidth: 12, maxWidth: 16 },
+    { header: 'REF.', key: 'REF.', minWidth: 8, maxWidth: 14 },
+    { header: 'DESCRIPTION', key: 'DESCRIPTION', minWidth: 18, maxWidth: 55 },
+    { header: 'QTY', key: 'QTY', minWidth: 8, maxWidth: 16 },
+    { header: 'Loc_Inicial', key: 'Loc_Inicial', minWidth: 12, maxWidth: 20 },
+    { header: 'S/N', key: 'S/N', minWidth: 8, maxWidth: 18 },
+    { header: 'Lote', key: 'Lote', minWidth: 10, maxWidth: 18 },
+    { header: 'Novo Armazém', key: 'Novo Armazém', minWidth: 12, maxWidth: 18 },
+    { header: 'TRA / DEV', key: 'TRA / DEV', minWidth: 10, maxWidth: 16 },
+    { header: 'New Localização', key: 'New Localização', minWidth: 14, maxWidth: 22 },
+    { header: 'DEP', key: 'DEP', minWidth: 6, maxWidth: 12 },
+    { header: 'Observações', key: 'Observações', minWidth: 14, maxWidth: 30 }
+  ];
+
+  const safeRows = rows.length
+    ? rows
+    : [{
+        'Tipo de Movimento': '',
+        'Dt_Recepção': '',
+        'REF.': '',
+        DESCRIPTION: '',
+        QTY: '',
+        Loc_Inicial: '',
+        'S/N': '',
+        Lote: '',
+        'Novo Armazém': '',
+        'TRA / DEV': '',
+        'New Localização': '',
+        DEP: '',
+        Observações: ''
+      }];
+
+  const rowCount = safeRows.length;
+  // Largura fixa (média min/max): evita O(linhas × colunas) que destróia desempenho em requisições grandes.
+  sheet.columns = baseColumns.map((col) => ({
+    header: col.header,
+    key: col.key,
+    width: Math.min(col.maxWidth, Math.max(col.minWidth, Math.ceil((col.minWidth + col.maxWidth) / 2)))
+  }));
+
+  // Uma operação em lote em vez de addRow por linha
+  sheet.addRows(safeRows);
+
+  const header = sheet.getRow(1);
+  header.height = 22;
+  header.eachCell((cell) => {
+    cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
+    cell.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FF8C8C8C' }
+    };
+    cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+    cell.border = {
+      top: { style: 'thin', color: { argb: 'FF404040' } },
+      left: { style: 'thin', color: { argb: 'FF404040' } },
+      bottom: { style: 'thin', color: { argb: 'FF404040' } },
+      right: { style: 'thin', color: { argb: 'FF404040' } }
+    };
+  });
+
+  // Corpo: para muitas linhas, bordas/célula são o maior custo no ExcelJS — formato leve.
+  const LIMITE_ESTILO_CORPO = 400;
+  if (rowCount <= LIMITE_ESTILO_CORPO) {
+    for (let i = 2; i <= sheet.rowCount; i++) {
+      const row = sheet.getRow(i);
+      row.height = 20;
+      row.eachCell((cell, colNumber) => {
+        cell.font = { size: 10 };
+        const isDesc = colNumber === 4;
+        const isObs = colNumber === baseColumns.length;
+        cell.alignment = {
+          vertical: 'middle',
+          horizontal: (isDesc || isObs) ? 'left' : 'center',
+          wrapText: (isDesc || isObs)
+        };
+        cell.border = {
+          top: { style: 'thin', color: { argb: 'FF808080' } },
+          left: { style: 'thin', color: { argb: 'FF808080' } },
+          bottom: { style: 'thin', color: { argb: 'FF808080' } },
+          right: { style: 'thin', color: { argb: 'FF808080' } }
+        };
+      });
+    }
+  } else {
+    sheet.getColumn(4).alignment = { vertical: 'middle', horizontal: 'left', wrapText: true };
+    sheet.getColumn(baseColumns.length).alignment = { vertical: 'middle', horizontal: 'left', wrapText: true };
+  }
+
+  sheet.views = [{ state: 'frozen', ySplit: 1 }];
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  await workbook.xlsx.write(res);
+  res.end();
+}
+
+// Buscar requisição + itens (reutilizado por TRFL e TRA).
+// includeItens=false evita consulta pesada quando os itens são carregados noutro passo (ex.: Clog).
+async function getRequisicaoComItens(id, includeItens = true) {
   let reqResult = await pool.query(`
     SELECT r.*,
       a.codigo as armazem_destino_codigo,
@@ -4492,6 +5194,10 @@ async function getRequisicaoComItens(id) {
   `, [id]);
   if (reqResult.rows.length === 0) return null;
   const requisicao = reqResult.rows[0];
+  if (!includeItens) {
+    requisicao.itens = [];
+    return requisicao;
+  }
   const itensResult = await pool.query(`
     SELECT ri.*, i.codigo as item_codigo, i.descricao as item_descricao, i.tipocontrolo
     FROM requisicoes_itens ri
@@ -4509,12 +5215,29 @@ function isDestinoEPI(requisicao) {
   return codigo.includes('EPI') || descricao.includes('EPI');
 }
 
+/** Reporte/Clog: em Entregue exige TRA (`tra_gerada_em`); em FINALIZADO permite mesmo sem data (dados antigos / fluxo sem registo). */
+function podeExportarReporteOuClog(requisicao) {
+  const st = requisicao?.status;
+  if (!['Entregue', 'FINALIZADO'].includes(st)) return false;
+  if (st === 'FINALIZADO') return true;
+  return !!requisicao?.tra_gerada_em;
+}
+
+function formatDateBR(dateObj) {
+  const d = dateObj instanceof Date ? dateObj : new Date(dateObj);
+  if (Number.isNaN(d.getTime())) return '';
+  return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
+}
+
 // TRFL — Só quando armazém de origem é geral (central). Destino = localização de expedição do armazém de origem.
-app.get('/api/requisicoes/:id/export-trfl', authenticateToken, async (req, res) => {
+app.get('/api/requisicoes/:id/export-trfl', ...requisicaoAuth, async (req, res) => {
   try {
     const { id } = req.params;
     const requisicao = await getRequisicaoComItens(id);
     if (!requisicao) return res.status(404).json({ error: 'Requisição não encontrada' });
+    if (!requisicaoArmazemOrigemAcessoPermitido(req, requisicao.armazem_origem_id)) {
+      return res.status(403).json({ error: 'Sem acesso a esta requisição.' });
+    }
     if (!requisicao.separacao_confirmada) {
       return res.status(400).json({ error: 'TRFL só está disponível após confirmar a separação da requisição.' });
     }
@@ -4612,11 +5335,18 @@ app.get('/api/requisicoes/:id/export-trfl', authenticateToken, async (req, res) 
 });
 
 // TRFL combinado — várias requisições em um único ficheiro
-app.post('/api/requisicoes/export-trfl-multi', authenticateToken, async (req, res) => {
+app.post('/api/requisicoes/export-trfl-multi', ...requisicaoAuth, async (req, res) => {
   try {
     const { ids } = req.body || {};
     if (!Array.isArray(ids) || ids.length === 0) {
       return res.status(400).json({ error: 'Envie um array de IDs de requisições.' });
+    }
+
+    try {
+      await assertIdsRequisicoesPermitidas(req, ids);
+    } catch (e) {
+      if (e.statusCode === 403) return res.status(403).json({ error: e.message });
+      throw e;
     }
 
     let allRows = [];
@@ -4718,11 +5448,14 @@ app.post('/api/requisicoes/export-trfl-multi', authenticateToken, async (req, re
 });
 
 // TRA — Transferência: origem = mesmo destino da TRFL (armazém origem + expedição) → destino (Vxxx). Alinhado à TRFL.
-app.get('/api/requisicoes/:id/export-tra', authenticateToken, async (req, res) => {
+app.get('/api/requisicoes/:id/export-tra', ...requisicaoAuth, async (req, res) => {
   try {
     const { id } = req.params;
     const requisicao = await getRequisicaoComItens(id);
     if (!requisicao) return res.status(404).json({ error: 'Requisição não encontrada' });
+    if (!requisicaoArmazemOrigemAcessoPermitido(req, requisicao.armazem_origem_id)) {
+      return res.status(403).json({ error: 'Sem acesso a esta requisição.' });
+    }
     if (!requisicao.separacao_confirmada) {
       return res.status(400).json({ error: 'TRA só está disponível após confirmar a separação da requisição.' });
     }
@@ -4866,11 +5599,18 @@ app.get('/api/requisicoes/:id/export-tra', authenticateToken, async (req, res) =
 });
 
 // TRA combinado — várias requisições em um único ficheiro
-app.post('/api/requisicoes/export-tra-multi', authenticateToken, async (req, res) => {
+app.post('/api/requisicoes/export-tra-multi', ...requisicaoAuth, async (req, res) => {
   try {
     const { ids } = req.body || {};
     if (!Array.isArray(ids) || ids.length === 0) {
       return res.status(400).json({ error: 'Envie um array de IDs de requisições.' });
+    }
+
+    try {
+      await assertIdsRequisicoesPermitidas(req, ids);
+    } catch (e) {
+      if (e.statusCode === 403) return res.status(403).json({ error: e.message });
+      throw e;
     }
 
     let allRows = [];
@@ -5023,14 +5763,429 @@ app.post('/api/requisicoes/export-tra-multi', authenticateToken, async (req, res
   }
 });
 
+// Clog — saída de armazém (quantidades negativas) baseado na TRA gerada
+function computeDestLocFerrNormal(codigoDestino, locResultRows) {
+  let localizacaoFERR = codigoDestino + '.FERR';
+  let localizacaoNormal = codigoDestino;
+  if (locResultRows && locResultRows.length > 0) {
+    const locs = locResultRows.map((r) => r.localizacao);
+    const comFerr = locs.find((l) => (l || '').toUpperCase().includes('.FERR'));
+    const semFerr = locs.find((l) => !(l || '').toUpperCase().includes('.FERR'));
+    if (comFerr) localizacaoFERR = comFerr;
+    if (semFerr) localizacaoNormal = semFerr;
+  }
+  return { localizacaoFERR, localizacaoNormal };
+}
+
+function clogRowsFromItemData(
+  dateStr,
+  codigoDestino,
+  colaboradorObs,
+  localizacaoOrigemTRA,
+  localizacaoFERR,
+  localizacaoNormal,
+  itensComFerramenta,
+  bobinas
+) {
+  const rows = [];
+  const itemByItemId = new Map(itensComFerramenta.map((it) => [it.item_id, it]));
+  const itemIdsComBobina = new Set(bobinas.map((b) => b.item_id));
+
+  for (const b of bobinas) {
+    const itemMeta = itemByItemId.get(b.item_id) || {};
+    const qty = -Number(b.metros) || 0;
+    if (qty === 0) continue;
+
+    rows.push({
+      'Tipo de Movimento': 'Saida de Armazem',
+      'Dt_Recepção': dateStr,
+      'REF.': String(b.item_codigo || ''),
+      DESCRIPTION: String(b.item_descricao || ''),
+      QTY: qty,
+      Loc_Inicial: localizacaoOrigemTRA,
+      'S/N': b.serialnumber || '',
+      Lote: b.lote || '',
+      'Novo Armazém': codigoDestino,
+      'TRA / DEV': '',
+      'New Localização': itemMeta.is_ferramenta ? localizacaoFERR : localizacaoNormal,
+      DEP: '',
+      Observações: colaboradorObs
+    });
+  }
+
+  for (const ri of itensComFerramenta) {
+    const tipoControlo = (ri.tipocontrolo || '').toUpperCase();
+    if (tipoControlo === 'LOTE' && itemIdsComBobina.has(ri.item_id)) continue;
+
+    const qtyBase = ri.quantidade_preparada !== null && ri.quantidade_preparada !== undefined
+      ? ri.quantidade_preparada
+      : ri.quantidade;
+    const qty = -Number(qtyBase) || 0;
+    if (qty === 0) continue;
+
+    rows.push({
+      'Tipo de Movimento': 'Saida de Armazem',
+      'Dt_Recepção': dateStr,
+      'REF.': String(ri.item_codigo || ''),
+      DESCRIPTION: String(ri.item_descricao || ''),
+      QTY: qty,
+      Loc_Inicial: localizacaoOrigemTRA,
+      'S/N': ri.serialnumber || '',
+      Lote: ri.lote || '',
+      'Novo Armazém': codigoDestino,
+      'TRA / DEV': '',
+      'New Localização': ri.is_ferramenta ? localizacaoFERR : localizacaoNormal,
+      DEP: '',
+      Observações: colaboradorObs
+    });
+  }
+
+  return rows;
+}
+
+/** Várias requisições: ~4–5 queries em vez de ~5N (muito mais rápido para Clog multi). */
+async function buildClogRowsForRequisicaoIds(idsClean, dateStr) {
+  if (!idsClean.length) return [];
+
+  const idsUnique = [...new Set(idsClean)];
+  const reqRes = await pool.query(`
+    SELECT r.*,
+      a.codigo as armazem_destino_codigo,
+      a.descricao as armazem_destino_descricao,
+      ao.codigo as armazem_origem_codigo
+    FROM requisicoes r
+    INNER JOIN armazens a ON r.armazem_id = a.id
+    LEFT JOIN armazens ao ON r.armazem_origem_id = ao.id
+    WHERE r.id = ANY($1::int[])
+  `, [idsUnique]);
+
+  const byId = new Map(reqRes.rows.map((r) => [r.id, r]));
+  const candidatas = idsClean.map((id) => byId.get(id)).filter(Boolean)
+    .filter((r) => podeExportarReporteOuClog(r) && r.armazem_origem_id);
+  if (candidatas.length === 0) return [];
+
+  const origemIds = [...new Set(candidatas.map((r) => r.armazem_origem_id))];
+  const armRes = await pool.query(
+    'SELECT id, codigo, tipo FROM armazens WHERE id = ANY($1::int[])',
+    [origemIds]
+  );
+  const armById = new Map(armRes.rows.map((a) => [a.id, a]));
+
+  const central = candidatas.filter((r) => {
+    const a = armById.get(r.armazem_origem_id);
+    return a && String(a.tipo || '').toLowerCase() === 'central';
+  });
+  if (central.length === 0) return [];
+
+  const requisicaoIdsCentral = [...new Set(central.map((r) => r.id))];
+  const origemIdsCentral = [...new Set(central.map((r) => r.armazem_origem_id))];
+  const destArmIds = [...new Set(central.map((r) => r.armazem_id))];
+
+  const [expRes, allLocsRes, itensRes, bobRes] = await Promise.all([
+    pool.query(
+      `SELECT DISTINCT ON (al.armazem_id) al.armazem_id, al.localizacao
+       FROM armazens_localizacoes al
+       WHERE al.armazem_id = ANY($1::int[])
+         AND LOWER(COALESCE(al.tipo_localizacao, '')) = 'expedicao'
+       ORDER BY al.armazem_id, al.id`,
+      [origemIdsCentral]
+    ),
+    pool.query(
+      `SELECT armazem_id, localizacao, id
+       FROM armazens_localizacoes
+       WHERE armazem_id = ANY($1::int[])
+       ORDER BY armazem_id, id`,
+      [destArmIds]
+    ),
+    pool.query(`
+      SELECT ri.*,
+        i.codigo as item_codigo,
+        i.descricao as item_descricao,
+        i.tipocontrolo,
+        EXISTS (
+          SELECT 1 FROM itens_setores is2
+          WHERE is2.item_id = i.id AND UPPER(TRIM(is2.setor)) = 'FERRAMENTA'
+        ) as is_ferramenta
+      FROM requisicoes_itens ri
+      INNER JOIN itens i ON ri.item_id = i.id
+      WHERE ri.requisicao_id = ANY($1::int[])
+      ORDER BY ri.requisicao_id, ri.id
+    `, [requisicaoIdsCentral]),
+    pool.query(`
+      SELECT b.*,
+        ri.requisicao_id,
+        ri.item_id,
+        i.codigo as item_codigo,
+        i.descricao as item_descricao
+      FROM requisicoes_itens_bobinas b
+      INNER JOIN requisicoes_itens ri ON b.requisicao_item_id = ri.id
+      INNER JOIN itens i ON ri.item_id = i.id
+      WHERE ri.requisicao_id = ANY($1::int[])
+    `, [requisicaoIdsCentral])
+  ]);
+
+  const expByArm = new Map(expRes.rows.map((row) => [row.armazem_id, row.localizacao]));
+  const locsByDestArm = new Map();
+  for (const row of allLocsRes.rows) {
+    if (!locsByDestArm.has(row.armazem_id)) locsByDestArm.set(row.armazem_id, []);
+    locsByDestArm.get(row.armazem_id).push(row);
+  }
+
+  const itensByReq = new Map();
+  for (const row of itensRes.rows) {
+    if (!itensByReq.has(row.requisicao_id)) itensByReq.set(row.requisicao_id, []);
+    itensByReq.get(row.requisicao_id).push(row);
+  }
+  const bobByReq = new Map();
+  for (const row of bobRes.rows) {
+    if (!bobByReq.has(row.requisicao_id)) bobByReq.set(row.requisicao_id, []);
+    bobByReq.get(row.requisicao_id).push(row);
+  }
+
+  const centralEligibleById = new Map(central.map((r) => [r.id, r]));
+  const allRows = [];
+
+  for (const id of idsClean) {
+    const r = centralEligibleById.get(id);
+    if (!r) continue;
+    const codigoDestino = r.armazem_destino_codigo || '';
+    const localizacaoOrigemTRA = expByArm.get(r.armazem_origem_id) || LOCALIZACAO_EXPEDICAO_FALLBACK;
+    const locRows = locsByDestArm.get(r.armazem_id) || [];
+    const { localizacaoFERR, localizacaoNormal } = computeDestLocFerrNormal(codigoDestino, locRows);
+    const itens = itensByReq.get(id) || [];
+    const bobinas = bobByReq.get(id) || [];
+    const rows = clogRowsFromItemData(
+      dateStr,
+      codigoDestino,
+      r.observacoes || '',
+      localizacaoOrigemTRA,
+      localizacaoFERR,
+      localizacaoNormal,
+      itens,
+      bobinas
+    );
+    allRows.push(...rows);
+  }
+
+  return allRows;
+}
+
+async function buildClogRowsFromRequisicao(requisicao, dateStr) {
+  if (!requisicao?.armazem_origem_id) return { rows: [], eligible: false, reason: 'Requisição sem armazém de origem.' };
+
+  const armazemOrigem = await pool.query('SELECT id, codigo, tipo FROM armazens WHERE id = $1', [requisicao.armazem_origem_id]);
+  if (armazemOrigem.rows.length === 0) {
+    return { rows: [], eligible: false, reason: 'Armazém de origem não encontrado.' };
+  }
+  const tipoOrigem = (armazemOrigem.rows[0].tipo || '').toLowerCase();
+  if (tipoOrigem !== 'central') {
+    return { rows: [], eligible: false, reason: 'Clog só é gerado quando a origem é armazém central.' };
+  }
+
+  const codigoDestino = requisicao.armazem_destino_codigo || '';
+  const armazemDestinoId = requisicao.armazem_id;
+
+  let localizacaoOrigemTRA = LOCALIZACAO_EXPEDICAO_FALLBACK;
+  if (requisicao.armazem_origem_id) {
+    const locExp = await pool.query(
+      `SELECT localizacao
+       FROM armazens_localizacoes
+       WHERE armazem_id = $1 AND LOWER(COALESCE(tipo_localizacao, '')) = 'expedicao'
+       ORDER BY id
+       LIMIT 1`,
+      [requisicao.armazem_origem_id]
+    );
+    if (locExp.rows.length > 0 && locExp.rows[0].localizacao) {
+      localizacaoOrigemTRA = locExp.rows[0].localizacao;
+    }
+  }
+
+  let locResultRows = [];
+  try {
+    const locResult = await pool.query(
+      'SELECT localizacao FROM armazens_localizacoes WHERE armazem_id = $1 ORDER BY id',
+      [armazemDestinoId]
+    );
+    locResultRows = locResult.rows;
+  } catch (_) {
+    locResultRows = [];
+  }
+  const { localizacaoFERR, localizacaoNormal } = computeDestLocFerrNormal(codigoDestino, locResultRows);
+
+  let itensComFerramenta = [];
+  try {
+    const itensResult = await pool.query(`
+      SELECT ri.*,
+        i.codigo as item_codigo,
+        i.descricao as item_descricao,
+        i.tipocontrolo,
+        EXISTS (
+          SELECT 1 FROM itens_setores is2
+          WHERE is2.item_id = i.id AND UPPER(TRIM(is2.setor)) = 'FERRAMENTA'
+        ) as is_ferramenta
+      FROM requisicoes_itens ri
+      INNER JOIN itens i ON ri.item_id = i.id
+      WHERE ri.requisicao_id = $1
+      ORDER BY ri.id
+    `, [requisicao.id]);
+    itensComFerramenta = itensResult.rows;
+  } catch (_) {
+    itensComFerramenta = (requisicao.itens || []).map((riRow) => ({ ...riRow, is_ferramenta: false }));
+  }
+
+  let bobinas = [];
+  try {
+    const bobinasResult = await pool.query(`
+      SELECT b.*,
+        ri.item_id,
+        i.codigo as item_codigo,
+        i.descricao as item_descricao
+      FROM requisicoes_itens_bobinas b
+      INNER JOIN requisicoes_itens ri ON b.requisicao_item_id = ri.id
+      INNER JOIN itens i ON ri.item_id = i.id
+      WHERE ri.requisicao_id = $1
+    `, [requisicao.id]);
+    bobinas = bobinasResult.rows;
+  } catch (_) {
+    bobinas = [];
+  }
+
+  const colaboradorObs = requisicao.observacoes || '';
+  const rows = clogRowsFromItemData(
+    dateStr,
+    codigoDestino,
+    colaboradorObs,
+    localizacaoOrigemTRA,
+    localizacaoFERR,
+    localizacaoNormal,
+    itensComFerramenta,
+    bobinas
+  );
+
+  return { rows, eligible: true };
+}
+
+app.get('/api/requisicoes/:id/export-clog', ...requisicaoAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const requisicao = await getRequisicaoComItens(id, false);
+    if (!requisicao) return res.status(404).json({ error: 'Requisição não encontrada' });
+    if (!requisicaoArmazemOrigemAcessoPermitido(req, requisicao.armazem_origem_id)) {
+      return res.status(403).json({ error: 'Sem acesso a esta requisição.' });
+    }
+    if (!podeExportarReporteOuClog(requisicao)) {
+      return res.status(400).json({ error: 'Clog só está disponível após gerar a TRA (Entregue) ou quando a requisição estiver finalizada.' });
+    }
+
+    const dateStr = formatDateBR(new Date());
+    const { rows, eligible, reason } = await buildClogRowsFromRequisicao(requisicao, dateStr);
+    if (!eligible || rows.length === 0) {
+      return res.status(400).json({ error: reason || 'Nenhuma linha elegível para Clog.' });
+    }
+
+    await buildExcelClog(rows, res, `CLOG_requisicao_${id}_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  } catch (error) {
+    console.error('Erro ao exportar Clog:', error);
+    res.status(500).json({ error: 'Erro ao exportar Clog', details: error.message });
+  }
+});
+
+app.post('/api/requisicoes/export-clog-multi', ...requisicaoAuth, async (req, res) => {
+  try {
+    const { ids } = req.body || {};
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ error: 'Envie um array de IDs de requisições.' });
+    }
+
+    try {
+      await assertIdsRequisicoesPermitidas(req, ids);
+    } catch (e) {
+      if (e.statusCode === 403) return res.status(403).json({ error: e.message });
+      throw e;
+    }
+
+    const idsClean = ids.map(x => parseInt(x, 10)).filter(Boolean);
+    const dateStr = formatDateBR(new Date());
+    const allRows = await buildClogRowsForRequisicaoIds(idsClean, dateStr);
+
+    if (allRows.length === 0) {
+      return res.status(400).json({ error: 'Nenhuma requisição elegível para gerar Clog (origem central; TRA em Entregue ou requisição finalizada).' });
+    }
+
+    await buildExcelClog(allRows, res, `CLOG_multi_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  } catch (error) {
+    console.error('Erro ao exportar Clog multi:', error);
+    res.status(500).json({ error: 'Erro ao exportar Clog multi', details: error.message });
+  }
+});
+
+app.get('/api/requisicoes/:id/clog-dados', ...requisicaoAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const requisicao = await getRequisicaoComItens(id, false);
+    if (!requisicao) return res.status(404).json({ error: 'Requisição não encontrada' });
+    if (!requisicaoArmazemOrigemAcessoPermitido(req, requisicao.armazem_origem_id)) {
+      return res.status(403).json({ error: 'Sem acesso a esta requisição.' });
+    }
+    if (!podeExportarReporteOuClog(requisicao)) {
+      return res.status(400).json({ error: 'Clog só está disponível após gerar a TRA (Entregue) ou quando a requisição estiver finalizada.' });
+    }
+
+    const dateStr = formatDateBR(new Date());
+    const { rows, eligible, reason } = await buildClogRowsFromRequisicao(requisicao, dateStr);
+    if (!eligible || rows.length === 0) {
+      return res.status(400).json({ error: reason || 'Nenhuma linha elegível para Clog.' });
+    }
+
+    const columns = ['Tipo de Movimento', 'Dt_Recepção', 'REF.', 'DESCRIPTION', 'QTY', 'Loc_Inicial', 'S/N', 'Lote', 'Novo Armazém', 'TRA / DEV', 'New Localização', 'DEP', 'Observações'];
+    res.json({ columns, rows });
+  } catch (error) {
+    console.error('Erro ao obter dados do Clog:', error);
+    res.status(500).json({ error: 'Erro ao obter dados do Clog', details: error.message });
+  }
+});
+
+app.post('/api/requisicoes/clog-dados-multi', ...requisicaoAuth, async (req, res) => {
+  try {
+    const { ids } = req.body || {};
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ error: 'Envie um array de IDs de requisições.' });
+    }
+
+    try {
+      await assertIdsRequisicoesPermitidas(req, ids);
+    } catch (e) {
+      if (e.statusCode === 403) return res.status(403).json({ error: e.message });
+      throw e;
+    }
+
+    const idsClean = ids.map(x => parseInt(x, 10)).filter(Boolean);
+    const dateStr = formatDateBR(new Date());
+    const allRows = await buildClogRowsForRequisicaoIds(idsClean, dateStr);
+
+    if (allRows.length === 0) {
+      return res.status(400).json({ error: 'Nenhuma requisição elegível para Clog (origem central; TRA em Entregue ou requisição finalizada).' });
+    }
+
+    const columns = ['Tipo de Movimento', 'Dt_Recepção', 'REF.', 'DESCRIPTION', 'QTY', 'Loc_Inicial', 'S/N', 'Lote', 'Novo Armazém', 'TRA / DEV', 'New Localização', 'DEP', 'Observações'];
+    res.json({ columns, rows: allRows });
+  } catch (error) {
+    console.error('Erro ao obter dados do Clog multi:', error);
+    res.status(500).json({ error: 'Erro ao obter dados do Clog multi', details: error.message });
+  }
+});
+
 // Ficheiro de Reporte (template): disponível após gerar TRA
-app.get('/api/requisicoes/:id/export-reporte', authenticateToken, async (req, res) => {
+app.get('/api/requisicoes/:id/export-reporte', ...requisicaoAuth, async (req, res) => {
   try {
     const { id } = req.params;
     const requisicao = await getRequisicaoComItens(id);
     if (!requisicao) return res.status(404).json({ error: 'Requisição não encontrada' });
-    if (!['Entregue', 'FINALIZADO'].includes(requisicao.status) || !requisicao.tra_gerada_em) {
-      return res.status(400).json({ error: 'Ficheiro de reporte só está disponível após gerar a TRA.' });
+    if (!requisicaoArmazemOrigemAcessoPermitido(req, requisicao.armazem_origem_id)) {
+      return res.status(403).json({ error: 'Sem acesso a esta requisição.' });
+    }
+    if (!podeExportarReporteOuClog(requisicao)) {
+      return res.status(400).json({ error: 'Ficheiro de reporte só está disponível após gerar a TRA (Entregue) ou quando a requisição estiver finalizada.' });
     }
 
     // Mesma origem/destino usados na TRA
@@ -5108,13 +6263,16 @@ app.get('/api/requisicoes/:id/export-reporte', authenticateToken, async (req, re
 });
 
 // Retorna os dados do ficheiro de reporte (para copiar a tabela sem baixar o XLSX)
-app.get('/api/requisicoes/:id/reporte-dados', authenticateToken, async (req, res) => {
+app.get('/api/requisicoes/:id/reporte-dados', ...requisicaoAuth, async (req, res) => {
   try {
     const { id } = req.params;
     const requisicao = await getRequisicaoComItens(id);
     if (!requisicao) return res.status(404).json({ error: 'Requisição não encontrada' });
-    if (!['Entregue', 'FINALIZADO'].includes(requisicao.status) || !requisicao.tra_gerada_em) {
-      return res.status(400).json({ error: 'Dados do reporte só estão disponíveis após gerar a TRA.' });
+    if (!requisicaoArmazemOrigemAcessoPermitido(req, requisicao.armazem_origem_id)) {
+      return res.status(403).json({ error: 'Sem acesso a esta requisição.' });
+    }
+    if (!podeExportarReporteOuClog(requisicao)) {
+      return res.status(400).json({ error: 'Dados do reporte só estão disponíveis após gerar a TRA (Entregue) ou quando a requisição estiver finalizada.' });
     }
 
     const destinoEPI = isDestinoEPI(requisicao);
@@ -5192,11 +6350,18 @@ app.get('/api/requisicoes/:id/reporte-dados', authenticateToken, async (req, res
 });
 
 // Dados do ficheiro de reporte (multi)
-app.post('/api/requisicoes/reporte-dados-multi', authenticateToken, async (req, res) => {
+app.post('/api/requisicoes/reporte-dados-multi', ...requisicaoAuth, async (req, res) => {
   try {
     const { ids } = req.body || {};
     if (!Array.isArray(ids) || ids.length === 0) {
       return res.status(400).json({ error: 'Envie um array de IDs de requisições.' });
+    }
+
+    try {
+      await assertIdsRequisicoesPermitidas(req, ids);
+    } catch (e) {
+      if (e.statusCode === 403) return res.status(403).json({ error: e.message });
+      throw e;
     }
 
     const allRows = [];
@@ -5208,7 +6373,7 @@ app.post('/api/requisicoes/reporte-dados-multi', authenticateToken, async (req, 
 
       const requisicao = await getRequisicaoComItens(id);
       if (!requisicao) continue;
-      if (!['Entregue', 'FINALIZADO'].includes(requisicao.status) || !requisicao.tra_gerada_em) continue;
+      if (!podeExportarReporteOuClog(requisicao)) continue;
 
       const destinoEPI = isDestinoEPI(requisicao);
       if (destinoEPI) includeObservacoes = true;
@@ -5301,11 +6466,18 @@ app.post('/api/requisicoes/reporte-dados-multi', authenticateToken, async (req, 
 });
 
 // Ficheiro de Reporte combinado
-app.post('/api/requisicoes/export-reporte-multi', authenticateToken, async (req, res) => {
+app.post('/api/requisicoes/export-reporte-multi', ...requisicaoAuth, async (req, res) => {
   try {
     const { ids } = req.body || {};
     if (!Array.isArray(ids) || ids.length === 0) {
       return res.status(400).json({ error: 'Envie um array de IDs de requisições.' });
+    }
+
+    try {
+      await assertIdsRequisicoesPermitidas(req, ids);
+    } catch (e) {
+      if (e.statusCode === 403) return res.status(403).json({ error: e.message });
+      throw e;
     }
 
     let allRows = [];
@@ -5315,7 +6487,7 @@ app.post('/api/requisicoes/export-reporte-multi', authenticateToken, async (req,
       if (!id) continue;
       const requisicao = await getRequisicaoComItens(id);
       if (!requisicao) continue;
-      if (!['Entregue', 'FINALIZADO'].includes(requisicao.status) || !requisicao.tra_gerada_em) continue;
+      if (!podeExportarReporteOuClog(requisicao)) continue;
       const destinoEPI = isDestinoEPI(requisicao);
       const colaboradorObs = destinoEPI ? (requisicao.observacoes || '') : '';
       if (destinoEPI) includeObservacoes = true;
@@ -5396,7 +6568,7 @@ app.post('/api/requisicoes/export-reporte-multi', authenticateToken, async (req,
 });
 
 // Buscar requisição por ID (com todos os itens)
-app.get('/api/requisicoes/:id', authenticateToken, async (req, res) => {
+app.get('/api/requisicoes/:id', ...requisicaoAuth, async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -5435,6 +6607,9 @@ app.get('/api/requisicoes/:id', authenticateToken, async (req, res) => {
     }
 
     const requisicao = reqResult.rows[0];
+    if (!requisicaoArmazemOrigemAcessoPermitido(req, requisicao.armazem_origem_id)) {
+      return res.status(403).json({ error: 'Sem acesso a esta requisição.' });
+    }
 
     const itensResult = await pool.query(`
       SELECT ri.*, i.codigo as item_codigo, i.descricao as item_descricao,
@@ -5481,7 +6656,7 @@ app.get('/api/requisicoes/:id', authenticateToken, async (req, res) => {
 });
 
 // Criar nova requisição (com múltiplos itens)
-app.post('/api/requisicoes', authenticateToken, async (req, res) => {
+app.post('/api/requisicoes', ...requisicaoAuth, async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -5512,6 +6687,14 @@ app.post('/api/requisicoes', authenticateToken, async (req, res) => {
       }
     }
 
+    if (req.requisicaoArmazemOrigemIds && req.requisicaoArmazemOrigemIds.length > 0) {
+      const orig = armazem_origem_id ? parseInt(armazem_origem_id, 10) : null;
+      if (orig == null || !req.requisicaoArmazemOrigemIds.includes(orig)) {
+        await client.query('ROLLBACK');
+        return res.status(403).json({ error: 'Só pode criar requisições com origem num dos armazéns centrais atribuídos ao seu utilizador.' });
+      }
+    }
+
     // Validar itens: apenas existência e quantidade aqui; Lote e Serial serão definidos na separação
     for (const item of itens) {
       if (!item.item_id || !item.quantidade || item.quantidade <= 0) {
@@ -5536,14 +6719,14 @@ app.post('/api/requisicoes', authenticateToken, async (req, res) => {
         INSERT INTO requisicoes (armazem_origem_id, armazem_id, observacoes, usuario_id, status)
         VALUES ($1, $2, $3, $4, 'pendente')
         RETURNING *
-      `, [armazem_origem_id || null, armazem_id, observacoes || null, req.user.userId]);
+      `, [armazem_origem_id || null, armazem_id, observacoes || null, req.user.id]);
     } catch (insertErr) {
       if (insertErr.code === '42703') {
         reqResult = await client.query(`
           INSERT INTO requisicoes (armazem_id, observacoes, usuario_id, status)
           VALUES ($1, $2, $3, 'pendente')
           RETURNING *
-        `, [armazem_id, observacoes || null, req.user.userId]);
+        `, [armazem_id, observacoes || null, req.user.id]);
       } else {
         throw insertErr;
       }
@@ -5621,7 +6804,7 @@ app.post('/api/requisicoes', authenticateToken, async (req, res) => {
 });
 
 // Importar requisição a partir de ficheiro Excel (modelo TRFL/TRA interno)
-app.post('/api/requisicoes/importar-excel', authenticateToken, excelUploadRequisicoes.single('arquivo'), async (req, res) => {
+app.post('/api/requisicoes/importar-excel', authenticateToken, requisicaoScopeMiddleware, excelUploadRequisicoes.single('arquivo'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'Arquivo Excel (.xlsx) é obrigatório.' });
@@ -5641,6 +6824,14 @@ app.post('/api/requisicoes/importar-excel', authenticateToken, excelUploadRequis
       return res.status(400).json({ error: 'Armazém origem não encontrado, inativo ou não é um armazém central.' });
     }
     const armazemOrigemId = ao.rows[0].id;
+
+    if (
+      req.requisicaoArmazemOrigemIds &&
+      req.requisicaoArmazemOrigemIds.length > 0 &&
+      !req.requisicaoArmazemOrigemIds.includes(armazemOrigemId)
+    ) {
+      return res.status(403).json({ error: 'Só pode importar requisições para um dos armazéns centrais atribuídos ao seu utilizador.' });
+    }
 
     const workbook = XLSX.readFile(req.file.path);
     const sheetName = workbook.SheetNames[0];
@@ -5700,8 +6891,9 @@ app.post('/api/requisicoes/importar-excel', authenticateToken, excelUploadRequis
       return res.status(400).json({ error: 'Cabeçalho Artigo/Descrição/Quantidade não encontrado no Excel.' });
     }
 
-    // 3) Ler linhas de itens
-    const itens = [];
+    // 3) Ler linhas de itens (sem query por linha — era o principal gargalo com muitas linhas)
+    /** última quantidade vence se o mesmo código aparecer em várias linhas (igual ao INSERT em loop com ON CONFLICT) */
+    const quantidadePorCodigo = new Map();
     for (let R = headerRowNumber + 1; R <= range.e.r; R++) {
       const cellArtigo = sheet[XLSX.utils.encode_cell({ r: R, c: colArtigo })];
       const cellQtd = sheet[XLSX.utils.encode_cell({ r: R, c: colQuantidade })];
@@ -5712,12 +6904,25 @@ app.post('/api/requisicoes/importar-excel', authenticateToken, excelUploadRequis
       const quantidade = parseInt(qtdStr, 10);
       if (!quantidade || quantidade <= 0) continue;
 
-      const itemRes = await pool.query('SELECT id FROM itens WHERE codigo = $1', [codigo]);
-      if (itemRes.rows.length === 0) {
-        // Ignorar artigos não cadastrados nesta importação
-        continue;
-      }
-      itens.push({ item_id: itemRes.rows[0].id, quantidade });
+      quantidadePorCodigo.set(codigo, quantidade);
+    }
+
+    const codigosUnicos = [...quantidadePorCodigo.keys()];
+    if (codigosUnicos.length === 0) {
+      return res.status(400).json({ error: 'Nenhum item válido encontrado na planilha.' });
+    }
+
+    const itensLookup = await pool.query(
+      'SELECT id, codigo FROM itens WHERE codigo = ANY($1::text[])',
+      [codigosUnicos]
+    );
+    const idPorCodigo = new Map(itensLookup.rows.map((row) => [row.codigo, row.id]));
+
+    const itens = [];
+    for (const codigo of codigosUnicos) {
+      const itemId = idPorCodigo.get(codigo);
+      if (itemId == null) continue;
+      itens.push({ item_id: itemId, quantidade: quantidadePorCodigo.get(codigo) });
     }
 
     if (itens.length === 0) {
@@ -5733,18 +6938,20 @@ app.post('/api/requisicoes/importar-excel', authenticateToken, excelUploadRequis
         INSERT INTO requisicoes (armazem_origem_id, armazem_id, observacoes, usuario_id, status)
         VALUES ($1, $2, $3, $4, 'pendente')
         RETURNING *
-      `, [armazemOrigemId || null, armazemDestinoId, 'Importada de Excel', req.user.userId]);
+      `, [armazemOrigemId || null, armazemDestinoId, 'Importada de Excel', req.user.id]);
 
       const requisicaoId = reqResult.rows[0].id;
 
-      for (const item of itens) {
-        await client.query(`
-          INSERT INTO requisicoes_itens (requisicao_id, item_id, quantidade)
-          VALUES ($1, $2, $3)
-          ON CONFLICT (requisicao_id, item_id)
-          DO UPDATE SET quantidade = EXCLUDED.quantidade
-        `, [requisicaoId, item.item_id, item.quantidade]);
-      }
+      const itemIds = itens.map((i) => i.item_id);
+      const quantidades = itens.map((i) => i.quantidade);
+      await client.query(
+        `INSERT INTO requisicoes_itens (requisicao_id, item_id, quantidade)
+         SELECT $1::int, x.item_id, x.quantidade
+         FROM unnest($2::int[], $3::int[]) AS x(item_id, quantidade)
+         ON CONFLICT (requisicao_id, item_id)
+         DO UPDATE SET quantidade = EXCLUDED.quantidade`,
+        [requisicaoId, itemIds, quantidades]
+      );
 
       await client.query('COMMIT');
 
@@ -5763,7 +6970,7 @@ app.post('/api/requisicoes/importar-excel', authenticateToken, excelUploadRequis
 });
 
 // Atualizar requisição
-app.put('/api/requisicoes/:id', authenticateToken, async (req, res) => {
+app.put('/api/requisicoes/:id', ...requisicaoAuth, async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -5776,6 +6983,10 @@ app.put('/api/requisicoes/:id', authenticateToken, async (req, res) => {
     if (checkReq.rows.length === 0) {
       await client.query('ROLLBACK');
       return res.status(404).json({ error: 'Requisição não encontrada' });
+    }
+    if (!requisicaoArmazemOrigemAcessoPermitido(req, checkReq.rows[0].armazem_origem_id)) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ error: 'Sem acesso a esta requisição.' });
     }
 
     // Validações
@@ -5790,6 +7001,13 @@ app.put('/api/requisicoes/:id', authenticateToken, async (req, res) => {
     let paramCount = 1;
 
     if (armazem_origem_id !== undefined) {
+      if (req.requisicaoArmazemOrigemIds && req.requisicaoArmazemOrigemIds.length > 0) {
+        const newOrig = armazem_origem_id ? parseInt(armazem_origem_id, 10) : null;
+        if (newOrig == null || !req.requisicaoArmazemOrigemIds.includes(newOrig)) {
+          await client.query('ROLLBACK');
+          return res.status(403).json({ error: 'Não pode alterar o armazém de origem para fora dos armazéns permitidos.' });
+        }
+      }
       if (armazem_origem_id) {
         const origCheck = await client.query('SELECT id FROM armazens WHERE id = $1 AND ativo = true', [armazem_origem_id]);
         if (origCheck.rows.length === 0) {
@@ -5917,7 +7135,7 @@ app.put('/api/requisicoes/:id', authenticateToken, async (req, res) => {
 });
 
 // Preparar item individual da requisição (quantidade, localização origem, localização destino)
-app.patch('/api/requisicoes/:id/atender-item', authenticateToken, async (req, res) => {
+app.patch('/api/requisicoes/:id/atender-item', ...requisicaoAuth, async (req, res) => {
   try {
     const { id } = req.params;
     const { requisicao_item_id, quantidade_preparada, localizacao_origem, localizacao_destino, lote, serialnumber, bobinas } = req.body;
@@ -5931,9 +7149,12 @@ app.patch('/api/requisicoes/:id/atender-item', authenticateToken, async (req, re
       return res.status(400).json({ error: 'Localização de saída (onde está saindo) é obrigatória quando há quantidade preparada.' });
     }
 
-    const check = await pool.query('SELECT id, status FROM requisicoes WHERE id = $1', [id]);
+    const check = await pool.query('SELECT id, status, armazem_origem_id FROM requisicoes WHERE id = $1', [id]);
     if (check.rows.length === 0) {
       return res.status(404).json({ error: 'Requisição não encontrada' });
+    }
+    if (!requisicaoArmazemOrigemAcessoPermitido(req, check.rows[0].armazem_origem_id)) {
+      return res.status(403).json({ error: 'Sem acesso a esta requisição.' });
     }
     if (['EM EXPEDICAO', 'Entregue'].includes(check.rows[0].status)) {
       return res.status(400).json({ error: 'Requisição já em expedição ou entregue; não é possível alterar a preparação.' });
@@ -6058,14 +7279,17 @@ app.patch('/api/requisicoes/:id/atender-item', authenticateToken, async (req, re
 });
 
 // Atender requisição (marcar como separado e opcionalmente preencher localização) — legado/alternativo
-app.patch('/api/requisicoes/:id/atender', authenticateToken, async (req, res) => {
+app.patch('/api/requisicoes/:id/atender', ...requisicaoAuth, async (req, res) => {
   try {
     const { id } = req.params;
     const { localizacao } = req.body;
 
-    const check = await pool.query('SELECT id, status FROM requisicoes WHERE id = $1', [id]);
+    const check = await pool.query('SELECT id, status, armazem_origem_id FROM requisicoes WHERE id = $1', [id]);
     if (check.rows.length === 0) {
       return res.status(404).json({ error: 'Requisição não encontrada' });
+    }
+    if (!requisicaoArmazemOrigemAcessoPermitido(req, check.rows[0].armazem_origem_id)) {
+      return res.status(403).json({ error: 'Sem acesso a esta requisição.' });
     }
     if (['separado', 'EM EXPEDICAO', 'Entregue'].includes(check.rows[0].status)) {
       return res.status(400).json({ error: 'Requisição já foi preparada' });
@@ -6127,12 +7351,15 @@ app.patch('/api/requisicoes/:id/atender', authenticateToken, async (req, res) =>
 });
 
 // Completar separação da requisição (todos os itens preparados → status separado)
-app.patch('/api/requisicoes/:id/completar-separacao', authenticateToken, async (req, res) => {
+app.patch('/api/requisicoes/:id/completar-separacao', ...requisicaoAuth, async (req, res) => {
   try {
     const { id } = req.params;
-    const check = await pool.query('SELECT id, status FROM requisicoes WHERE id = $1', [id]);
+    const check = await pool.query('SELECT id, status, armazem_origem_id FROM requisicoes WHERE id = $1', [id]);
     if (check.rows.length === 0) {
       return res.status(404).json({ error: 'Requisição não encontrada' });
+    }
+    if (!requisicaoArmazemOrigemAcessoPermitido(req, check.rows[0].armazem_origem_id)) {
+      return res.status(403).json({ error: 'Sem acesso a esta requisição.' });
     }
     if (check.rows[0].status !== 'pendente') {
       return res.status(400).json({ error: 'Só pode completar a separação quando a requisição está pendente e todos os itens foram preparados.' });
@@ -6172,12 +7399,15 @@ app.patch('/api/requisicoes/:id/completar-separacao', authenticateToken, async (
 });
 
 // Confirmar separação (após os itens terem sido recolhidos) — só para requisições com status separado
-app.patch('/api/requisicoes/:id/confirmar-separacao', authenticateToken, async (req, res) => {
+app.patch('/api/requisicoes/:id/confirmar-separacao', ...requisicaoAuth, async (req, res) => {
   try {
     const { id } = req.params;
-    const check = await pool.query('SELECT id, status FROM requisicoes WHERE id = $1', [id]);
+    const check = await pool.query('SELECT id, status, armazem_origem_id FROM requisicoes WHERE id = $1', [id]);
     if (check.rows.length === 0) {
       return res.status(404).json({ error: 'Requisição não encontrada' });
+    }
+    if (!requisicaoArmazemOrigemAcessoPermitido(req, check.rows[0].armazem_origem_id)) {
+      return res.status(403).json({ error: 'Sem acesso a esta requisição.' });
     }
     if (check.rows[0].status !== 'separado') {
       return res.status(400).json({ error: 'Só é possível confirmar separação quando a requisição está separada (todos os itens preparados).' });
@@ -6201,12 +7431,15 @@ app.patch('/api/requisicoes/:id/confirmar-separacao', authenticateToken, async (
 });
 
 // Marcar como EM EXPEDICAO (após baixar o ficheiro TRFL)
-app.patch('/api/requisicoes/:id/marcar-em-expedicao', authenticateToken, async (req, res) => {
+app.patch('/api/requisicoes/:id/marcar-em-expedicao', ...requisicaoAuth, async (req, res) => {
   try {
     const { id } = req.params;
-    const check = await pool.query('SELECT id, status, separacao_confirmada FROM requisicoes WHERE id = $1', [id]);
+    const check = await pool.query('SELECT id, status, separacao_confirmada, armazem_origem_id FROM requisicoes WHERE id = $1', [id]);
     if (check.rows.length === 0) {
       return res.status(404).json({ error: 'Requisição não encontrada' });
+    }
+    if (!requisicaoArmazemOrigemAcessoPermitido(req, check.rows[0].armazem_origem_id)) {
+      return res.status(403).json({ error: 'Sem acesso a esta requisição.' });
     }
     if (check.rows[0].status !== 'separado') {
       return res.status(400).json({ error: 'Só pode marcar em expedição quando a requisição está separada.' });
@@ -6230,12 +7463,15 @@ app.patch('/api/requisicoes/:id/marcar-em-expedicao', authenticateToken, async (
 });
 
 // Marcar como Entregue (após baixar o ficheiro TRA)
-app.patch('/api/requisicoes/:id/marcar-entregue', authenticateToken, async (req, res) => {
+app.patch('/api/requisicoes/:id/marcar-entregue', ...requisicaoAuth, async (req, res) => {
   try {
     const { id } = req.params;
-    const check = await pool.query('SELECT id, status FROM requisicoes WHERE id = $1', [id]);
+    const check = await pool.query('SELECT id, status, armazem_origem_id FROM requisicoes WHERE id = $1', [id]);
     if (check.rows.length === 0) {
       return res.status(404).json({ error: 'Requisição não encontrada' });
+    }
+    if (!requisicaoArmazemOrigemAcessoPermitido(req, check.rows[0].armazem_origem_id)) {
+      return res.status(403).json({ error: 'Sem acesso a esta requisição.' });
     }
     if (check.rows[0].status !== 'EM EXPEDICAO') {
       return res.status(400).json({ error: 'Só pode marcar como entregue quando a requisição está em expedição.' });
@@ -6256,11 +7492,14 @@ app.patch('/api/requisicoes/:id/marcar-entregue', authenticateToken, async (req,
 });
 
 // Marcar como FINALIZADO (após baixar a TRA e concluir o processo)
-app.patch('/api/requisicoes/:id/finalizar', authenticateToken, async (req, res) => {
+app.patch('/api/requisicoes/:id/finalizar', ...requisicaoAuth, async (req, res) => {
   try {
     const { id } = req.params;
-    const check = await pool.query('SELECT id, status FROM requisicoes WHERE id = $1', [id]);
+    const check = await pool.query('SELECT id, status, armazem_origem_id FROM requisicoes WHERE id = $1', [id]);
     if (check.rows.length === 0) return res.status(404).json({ error: 'Requisição não encontrada' });
+    if (!requisicaoArmazemOrigemAcessoPermitido(req, check.rows[0].armazem_origem_id)) {
+      return res.status(403).json({ error: 'Sem acesso a esta requisição.' });
+    }
     if (check.rows[0].status === 'cancelada') return res.status(400).json({ error: 'Requisição cancelada' });
     if (check.rows[0].status !== 'Entregue') {
       return res.status(400).json({ error: 'Só é possível finalizar requisições com status Entregue.' });
@@ -6275,14 +7514,26 @@ app.patch('/api/requisicoes/:id/finalizar', authenticateToken, async (req, res) 
 });
 
 // Deletar requisição
-app.delete('/api/requisicoes/:id', authenticateToken, async (req, res) => {
+app.delete('/api/requisicoes/:id', ...requisicaoAuth, async (req, res) => {
   try {
     const { id } = req.params;
+    const userRole = req.user?.role || '';
 
     // Verificar se a requisição existe
     const checkReq = await pool.query('SELECT * FROM requisicoes WHERE id = $1', [id]);
     if (checkReq.rows.length === 0) {
       return res.status(404).json({ error: 'Requisição não encontrada' });
+    }
+    const requisicao = checkReq.rows[0];
+    if (!requisicaoArmazemOrigemAcessoPermitido(req, requisicao.armazem_origem_id)) {
+      return res.status(403).json({ error: 'Sem acesso a esta requisição.' });
+    }
+    const status = String(requisicao.status || '');
+    const statusRestritosAdmin = ['separado', 'EM EXPEDICAO', 'Entregue'];
+    if (statusRestritosAdmin.includes(status) && userRole !== 'admin') {
+      return res.status(403).json({
+        error: 'A exclusão de requisições com status Separado, Em expedição ou Entregue é permitida apenas para ADMIN.'
+      });
     }
 
     // Deletar requisição (itens serão deletados automaticamente por CASCADE)
