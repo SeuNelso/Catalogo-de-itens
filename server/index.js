@@ -5107,6 +5107,187 @@ app.get('/api/requisicoes/:id/export-reporte', authenticateToken, async (req, re
   }
 });
 
+// Retorna os dados do ficheiro de reporte (para copiar a tabela sem baixar o XLSX)
+app.get('/api/requisicoes/:id/reporte-dados', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const requisicao = await getRequisicaoComItens(id);
+    if (!requisicao) return res.status(404).json({ error: 'Requisição não encontrada' });
+    if (!['Entregue', 'FINALIZADO'].includes(requisicao.status) || !requisicao.tra_gerada_em) {
+      return res.status(400).json({ error: 'Dados do reporte só estão disponíveis após gerar a TRA.' });
+    }
+
+    const destinoEPI = isDestinoEPI(requisicao);
+    const colaboradorObs = destinoEPI ? (requisicao.observacoes || '') : '';
+
+    // Mesma origem/destino usados na TRA
+    const codigoDestino = requisicao.armazem_destino_codigo || '';
+    let localizacaoOrigemTRA = LOCALIZACAO_EXPEDICAO_FALLBACK;
+    if (requisicao.armazem_origem_id) {
+      const locExp = await pool.query(
+        `SELECT localizacao FROM armazens_localizacoes WHERE armazem_id = $1 AND LOWER(COALESCE(tipo_localizacao, '')) = 'expedicao' ORDER BY id LIMIT 1`,
+        [requisicao.armazem_origem_id]
+      );
+      if (locExp.rows.length > 0 && locExp.rows[0].localizacao) {
+        localizacaoOrigemTRA = locExp.rows[0].localizacao;
+      }
+    }
+
+    let bobinas = [];
+    try {
+      const bobinasResult = await pool.query(`
+        SELECT b.*, ri.item_id, i.codigo as item_codigo, i.descricao as item_descricao
+        FROM requisicoes_itens_bobinas b
+        INNER JOIN requisicoes_itens ri ON b.requisicao_item_id = ri.id
+        INNER JOIN itens i ON ri.item_id = i.id
+        WHERE ri.requisicao_id = $1
+      `, [id]);
+      bobinas = bobinasResult.rows;
+    } catch (_) {
+      bobinas = [];
+    }
+
+    const rows = [];
+    for (const b of bobinas) {
+      rows.push({
+        Artigo: String(b.item_codigo || ''),
+        'Descrição': String(b.item_descricao || ''),
+        Quantidade: Number(b.metros) || 0,
+        ORIGEM: localizacaoOrigemTRA,
+        'S/N': b.serialnumber || '',
+        LOTE: b.lote || '',
+        DESTINO: codigoDestino,
+        'Observações': colaboradorObs
+      });
+    }
+
+    for (const ri of requisicao.itens || []) {
+      const tipoControlo = (ri.tipocontrolo || '').toUpperCase();
+      const temBobinas = bobinas.some(b => b.item_id === ri.item_id);
+      if (tipoControlo === 'LOTE' && temBobinas) continue;
+
+      const qty = parseFloat(ri.quantidade_preparada ?? ri.quantidade) || 0;
+      if (qty <= 0) continue;
+
+      rows.push({
+        Artigo: String(ri.item_codigo || ''),
+        'Descrição': String(ri.item_descricao || ''),
+        Quantidade: qty,
+        ORIGEM: localizacaoOrigemTRA,
+        'S/N': ri.serialnumber || '',
+        LOTE: ri.lote || '',
+        DESTINO: codigoDestino,
+        'Observações': colaboradorObs
+      });
+    }
+
+    const columns = ['Artigo', 'Descrição', 'Quantidade', 'ORIGEM', 'S/N', 'LOTE', 'DESTINO'];
+    if (destinoEPI) columns.push('Observações');
+
+    res.json({ columns, rows });
+  } catch (error) {
+    console.error('Erro ao obter dados do reporte:', error);
+    res.status(500).json({ error: 'Erro ao obter dados do reporte', details: error.message });
+  }
+});
+
+// Dados do ficheiro de reporte (multi)
+app.post('/api/requisicoes/reporte-dados-multi', authenticateToken, async (req, res) => {
+  try {
+    const { ids } = req.body || {};
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ error: 'Envie um array de IDs de requisições.' });
+    }
+
+    const allRows = [];
+    let includeObservacoes = false;
+
+    for (const rawId of ids) {
+      const id = parseInt(rawId, 10);
+      if (!id) continue;
+
+      const requisicao = await getRequisicaoComItens(id);
+      if (!requisicao) continue;
+      if (!['Entregue', 'FINALIZADO'].includes(requisicao.status) || !requisicao.tra_gerada_em) continue;
+
+      const destinoEPI = isDestinoEPI(requisicao);
+      if (destinoEPI) includeObservacoes = true;
+      const colaboradorObs = destinoEPI ? (requisicao.observacoes || '') : '';
+
+      const codigoDestino = requisicao.armazem_destino_codigo || '';
+      let localizacaoOrigemTRA = LOCALIZACAO_EXPEDICAO_FALLBACK;
+      if (requisicao.armazem_origem_id) {
+        const locExp = await pool.query(
+          `SELECT localizacao FROM armazens_localizacoes WHERE armazem_id = $1 AND LOWER(COALESCE(tipo_localizacao, '')) = 'expedicao' ORDER BY id LIMIT 1`,
+          [requisicao.armazem_origem_id]
+        );
+        if (locExp.rows.length > 0 && locExp.rows[0].localizacao) {
+          localizacaoOrigemTRA = locExp.rows[0].localizacao;
+        }
+      }
+
+      let bobinas = [];
+      try {
+        const bobinasResult = await pool.query(`
+          SELECT b.*, ri.item_id, i.codigo as item_codigo, i.descricao as item_descricao
+          FROM requisicoes_itens_bobinas b
+          INNER JOIN requisicoes_itens ri ON b.requisicao_item_id = ri.id
+          INNER JOIN itens i ON ri.item_id = i.id
+          WHERE ri.requisicao_id = $1
+        `, [id]);
+        bobinas = bobinasResult.rows;
+      } catch (_) {
+        bobinas = [];
+      }
+
+      for (const b of bobinas) {
+        allRows.push({
+          Artigo: String(b.item_codigo || ''),
+          'Descrição': String(b.item_descricao || ''),
+          Quantidade: Number(b.metros) || 0,
+          ORIGEM: localizacaoOrigemTRA,
+          'S/N': b.serialnumber || '',
+          LOTE: b.lote || '',
+          DESTINO: codigoDestino,
+          'Observações': colaboradorObs
+        });
+      }
+
+      for (const ri of requisicao.itens || []) {
+        const tipoControlo = (ri.tipocontrolo || '').toUpperCase();
+        const temBobinas = bobinas.some(b => b.item_id === ri.item_id);
+        if (tipoControlo === 'LOTE' && temBobinas) continue;
+
+        const qty = parseFloat(ri.quantidade_preparada ?? ri.quantidade) || 0;
+        if (qty <= 0) continue;
+
+        allRows.push({
+          Artigo: String(ri.item_codigo || ''),
+          'Descrição': String(ri.item_descricao || ''),
+          Quantidade: qty,
+          ORIGEM: localizacaoOrigemTRA,
+          'S/N': ri.serialnumber || '',
+          LOTE: ri.lote || '',
+          DESTINO: codigoDestino,
+          'Observações': colaboradorObs
+        });
+      }
+    }
+
+    if (allRows.length === 0) {
+      return res.status(400).json({ error: 'Nenhuma requisição válida para gerar dados do reporte.' });
+    }
+
+    const columns = ['Artigo', 'Descrição', 'Quantidade', 'ORIGEM', 'S/N', 'LOTE', 'DESTINO'];
+    if (includeObservacoes) columns.push('Observações');
+
+    res.json({ columns, rows: allRows });
+  } catch (error) {
+    console.error('Erro ao obter dados do reporte multi:', error);
+    res.status(500).json({ error: 'Erro ao obter dados do reporte multi', details: error.message });
+  }
+});
+
 // Ficheiro de Reporte combinado
 app.post('/api/requisicoes/export-reporte-multi', authenticateToken, async (req, res) => {
   try {

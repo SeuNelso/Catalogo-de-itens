@@ -23,6 +23,16 @@ const ListarRequisicoes = () => {
   const [selectionMode, setSelectionMode] = useState(false);
   const [contextMenu, setContextMenu] = useState({ visible: false, x: 0, y: 0, req: null });
   const contextMenuRef = useRef(null);
+  const [reporteModal, setReporteModal] = useState({
+    open: false,
+    title: '',
+    mode: 'single', // 'single' | 'multi'
+    reqId: null,
+    ids: [],
+    columns: [],
+    rows: []
+  });
+  const [reporteLoading, setReporteLoading] = useState(false);
   const navigate = useNavigate();
   const { user } = useAuth();
   const confirm = useConfirm();
@@ -522,25 +532,34 @@ const ListarRequisicoes = () => {
 
   const handleExportReporte = async (req) => {
     const reqId = req?.id;
+    if (!reqId) {
+      setToast({ type: 'error', message: 'Requisição inválida' });
+      return;
+    }
     try {
-      if (!reqId) throw new Error('Requisição inválida');
-      if (!req.tra_gerada_em || !['Entregue', 'FINALIZADO'].includes(req.status)) {
-        throw new Error('Ficheiro de reporte só está disponível após gerar a TRA.');
-      }
-      const ok = await confirm({
-        title: 'Gerar ficheiro de reporte',
-        message: 'Deseja continuar?',
-        confirmLabel: 'Continuar'
+      setReporteLoading(true);
+      const token = localStorage.getItem('token');
+      const response = await fetch(`/api/requisicoes/${reqId}/reporte-dados`, {
+        headers: { 'Authorization': `Bearer ${token}` }
       });
-      if (!ok) return;
-
-      await downloadExport(
-        `/api/requisicoes/${reqId}/export-reporte`,
-        `REPORTE_requisicao_${reqId}_${new Date().toISOString().slice(0, 10)}.xlsx`,
-        'Ficheiro de reporte gerado com sucesso.'
-      );
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || 'Erro ao obter dados do reporte');
+      }
+      const data = await response.json();
+      setReporteModal({
+        open: true,
+        title: `Reporte (Requisição #${reqId})`,
+        mode: 'single',
+        reqId,
+        ids: [reqId],
+        columns: data.columns || [],
+        rows: data.rows || []
+      });
     } catch (error) {
-      setToast({ type: 'error', message: error.message || 'Erro ao gerar ficheiro de reporte' });
+      setToast({ type: 'error', message: error.message || 'Erro ao preparar reporte' });
+    } finally {
+      setReporteLoading(false);
     }
   };
 
@@ -788,25 +807,13 @@ const ListarRequisicoes = () => {
   const handleExportMultiReporte = async (idsArg) => {
     const ids = Array.from(new Set(idsArg || selectedIds)).map(x => parseInt(x, 10)).filter(Boolean);
     if (ids.length < 2) {
-      setToast({ type: 'error', message: 'Selecione pelo menos 2 requisições para ficheiro de reporte combinado.' });
-      return;
-    }
-    const targets = ids.map(id => requisicoes.find(x => x.id === id)).filter(Boolean);
-    const valid = targets.every(r => (r.status === 'Entregue' || r.status === 'FINALIZADO') && r.tra_gerada_em);
-    if (!valid) {
-      setToast({ type: 'error', message: 'Selecione apenas requisições com TRA já gerada para o ficheiro de reporte.' });
+      setToast({ type: 'error', message: 'Selecione pelo menos 2 requisições para o reporte combinado.' });
       return;
     }
     try {
-      const ok = await confirm({
-        title: 'Gerar ficheiro de reporte (combinado)',
-        message: 'Deseja continuar?',
-        confirmLabel: 'Continuar'
-      });
-      if (!ok) return;
-
+      setReporteLoading(true);
       const token = localStorage.getItem('token');
-      const res = await fetch('/api/requisicoes/export-reporte-multi', {
+      const response = await fetch('/api/requisicoes/reporte-dados-multi', {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -814,19 +821,133 @@ const ListarRequisicoes = () => {
         },
         body: JSON.stringify({ ids })
       });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.error || 'Erro ao exportar ficheiro de reporte');
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || 'Erro ao obter dados do reporte combinado');
       }
-      const blob = await res.blob();
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `REPORTE_multi_${new Date().toISOString().slice(0, 10)}.xlsx`;
-      a.click();
-      window.URL.revokeObjectURL(url);
+      const data = await response.json();
+      setReporteModal({
+        open: true,
+        title: `Reporte (Multi: ${ids.length} requisição(ões))`,
+        mode: 'multi',
+        reqId: null,
+        ids,
+        columns: data.columns || [],
+        rows: data.rows || []
+      });
     } catch (error) {
-      setToast({ type: 'error', message: error.message || 'Erro ao exportar ficheiro de reporte' });
+      setToast({ type: 'error', message: error.message || 'Erro ao preparar reporte' });
+    } finally {
+      setReporteLoading(false);
+    }
+  };
+
+  const closeReporteModal = () => {
+    setReporteModal(prev => ({ ...prev, open: false }));
+  };
+
+  const copyReporteTable = async () => {
+    try {
+      if (!reporteModal?.rows?.length) {
+        setToast({ type: 'error', message: 'Nada para copiar' });
+        return;
+      }
+      const columns = Array.isArray(reporteModal.columns) ? reporteModal.columns : [];
+      if (!columns.length) {
+        setToast({ type: 'error', message: 'Sem colunas para copiar' });
+        return;
+      }
+
+      const headerLine = columns.join('\t');
+      const bodyLines = reporteModal.rows.map(r => columns.map(c => (r?.[c] ?? '').toString().replace(/\r?\n/g, ' ')).join('\t'));
+      const tsv = [headerLine, ...bodyLines].join('\n');
+
+      const escapeHtml = (val) => String(val ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+
+      const htmlTable = `
+        <table>
+          <thead>
+            <tr>${columns.map(c => `<th>${escapeHtml(c)}</th>`).join('')}</tr>
+          </thead>
+          <tbody>
+            ${reporteModal.rows.map((r) => `
+              <tr>${columns.map(c => `<td>${escapeHtml(r?.[c] ?? '')}</td>`).join('')}</tr>
+            `).join('')}
+          </tbody>
+        </table>
+      `.trim();
+
+      // Outlook costuma pastar melhor quando recebemos HTML além de texto.
+      if (navigator?.clipboard?.write && window?.ClipboardItem) {
+        const items = [
+          new window.ClipboardItem({
+            'text/html': new Blob([htmlTable], { type: 'text/html' }),
+            'text/plain': new Blob([tsv], { type: 'text/plain' })
+          })
+        ];
+        await navigator.clipboard.write(items);
+      } else if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(tsv);
+      } else {
+        const textarea = document.createElement('textarea');
+        textarea.value = tsv;
+        textarea.style.position = 'fixed';
+        textarea.style.left = '-9999px';
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+      }
+
+      setToast({ type: 'success', message: 'Tabela do reporte copiada (para colar no Outlook).' });
+    } catch (error) {
+      console.error(error);
+      setToast({ type: 'error', message: error.message || 'Erro ao copiar tabela' });
+    }
+  };
+
+  const downloadReporteXlsx = async () => {
+    try {
+      const dateStr = new Date().toISOString().slice(0, 10);
+      if (reporteModal.mode === 'single') {
+        const reqId = reporteModal.reqId;
+        await downloadExport(
+          `/api/requisicoes/${reqId}/export-reporte`,
+          `REPORTE_requisicao_${reqId}_${dateStr}.xlsx`,
+          'Ficheiro de reporte gerado com sucesso.'
+        );
+      } else {
+        const ids = Array.isArray(reporteModal.ids) ? reporteModal.ids : [];
+        const token = localStorage.getItem('token');
+        const res = await fetch('/api/requisicoes/export-reporte-multi', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ ids })
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          throw new Error(data.error || 'Erro ao exportar ficheiro de reporte');
+        }
+        const blob = await res.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `REPORTE_multi_${dateStr}.xlsx`;
+        a.click();
+        window.URL.revokeObjectURL(url);
+      }
+      closeReporteModal();
+    } catch (error) {
+      setToast({ type: 'error', message: error.message || 'Erro ao baixar ficheiro de reporte' });
     }
   };
 
@@ -1395,6 +1516,85 @@ const ListarRequisicoes = () => {
                 Excluir requisição
               </button>
             )}
+          </div>
+        )}
+
+        {reporteModal.open && (
+          <div
+            className="fixed inset-0 z-[10000] flex items-center justify-center p-4 bg-black/50"
+            aria-modal="true"
+            role="dialog"
+            onClick={(e) => {
+              if (e.target === e.currentTarget) closeReporteModal();
+            }}
+          >
+            <div className="bg-white rounded-xl shadow-xl w-full max-w-5xl">
+              <div className="flex items-center justify-between p-4 border-b">
+                <h3 className="text-base sm:text-lg font-semibold text-gray-900">
+                  {reporteModal.title || 'Reporte'}
+                </h3>
+                <button
+                  type="button"
+                  onClick={closeReporteModal}
+                  className="px-3 py-1 rounded-lg border border-gray-200 text-gray-700 hover:bg-gray-50"
+                >
+                  Fechar
+                </button>
+              </div>
+              <div className="p-4 overflow-auto max-h-[60vh]">
+                {reporteLoading ? (
+                  <p className="text-sm text-gray-600">A carregar tabela...</p>
+                ) : (
+                  <>
+                    <div className="text-xs text-gray-500 mb-2">
+                      {reporteModal.rows.length > 200 ? `A mostrar 200 de ${reporteModal.rows.length} linhas.` : null}
+                    </div>
+                    <div className="overflow-auto">
+                      <table className="min-w-full text-xs border-collapse">
+                        <thead>
+                          <tr>
+                            {(reporteModal.columns || []).map((c) => (
+                              <th key={c} className="sticky top-0 z-10 bg-gray-100 border border-gray-300 px-2 py-1 text-gray-800">
+                                {c}
+                              </th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(reporteModal.rows || []).slice(0, 200).map((r, idx) => (
+                            <tr key={idx}>
+                              {(reporteModal.columns || []).map((c) => (
+                                <td key={c} className="border border-gray-200 px-2 py-1 text-gray-900">
+                                  {String(r?.[c] ?? '')}
+                                </td>
+                              ))}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
+                )}
+              </div>
+              <div className="p-4 border-t flex justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={copyReporteTable}
+                  disabled={reporteLoading}
+                  className="px-4 py-2 rounded-lg bg-gray-100 text-gray-800 hover:bg-gray-200 disabled:opacity-60 disabled:cursor-not-allowed"
+                >
+                  Copiar tabela
+                </button>
+                <button
+                  type="button"
+                  onClick={downloadReporteXlsx}
+                  disabled={reporteLoading}
+                  className="px-4 py-2 rounded-lg bg-[#0915FF] text-white hover:bg-[#070FCC] disabled:opacity-60 disabled:cursor-not-allowed"
+                >
+                  Baixar XLSX
+                </button>
+              </div>
+            </div>
           </div>
         )}
 

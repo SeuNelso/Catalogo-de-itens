@@ -17,6 +17,13 @@ const PrepararRequisicao = () => {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(null);
   const [toast, setToast] = useState(null);
+  const [reporteModal, setReporteModal] = useState({
+    open: false,
+    title: '',
+    columns: [],
+    rows: [],
+    loading: false
+  });
   const [itemPreparando, setItemPreparando] = useState(null);
   const [formItem, setFormItem] = useState({
     quantidade_preparada: '',
@@ -173,20 +180,105 @@ const PrepararRequisicao = () => {
         setToast({ type: 'error', message: 'Ficheiro de reporte só está disponível após gerar a TRA.' });
         return;
       }
-      const ok = await confirm({
-        title: 'Gerar ficheiro de reporte',
-        message: 'Deseja continuar?',
-        confirmLabel: 'Continuar'
-      });
-      if (!ok) return;
 
+      setReporteModal(prev => ({ ...prev, open: false, loading: true }));
+      const token = localStorage.getItem('token');
+      const response = await fetch(`/api/requisicoes/${id}/reporte-dados`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || 'Erro ao obter dados do reporte');
+      }
+      const data = await response.json();
+      setReporteModal({
+        open: true,
+        title: `Reporte (Requisição #${id})`,
+        columns: data.columns || [],
+        rows: data.rows || [],
+        loading: false
+      });
+    } catch (error) {
+      setToast({ type: 'error', message: error.message || 'Erro ao preparar reporte' });
+      setReporteModal(prev => ({ ...prev, loading: false }));
+    }
+  };
+
+  const closeReporteModal = () => {
+    setReporteModal(prev => ({ ...prev, open: false }));
+  };
+
+  const copyReporteTable = async () => {
+    try {
+      if (!reporteModal?.rows?.length) {
+        setToast({ type: 'error', message: 'Nada para copiar' });
+        return;
+      }
+      const columns = Array.isArray(reporteModal.columns) ? reporteModal.columns : [];
+      if (!columns.length) {
+        setToast({ type: 'error', message: 'Sem colunas para copiar' });
+        return;
+      }
+      const headerLine = columns.join('\t');
+      const bodyLines = reporteModal.rows.map(r => columns.map(c => (r?.[c] ?? '').toString().replace(/\r?\n/g, ' ')).join('\t'));
+      const tsv = [headerLine, ...bodyLines].join('\n');
+      const escapeHtml = (val) => String(val ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+
+      const htmlTable = `
+        <table>
+          <thead>
+            <tr>${columns.map(c => `<th>${escapeHtml(c)}</th>`).join('')}</tr>
+          </thead>
+          <tbody>
+            ${reporteModal.rows.map((r) => `
+              <tr>${columns.map(c => `<td>${escapeHtml(r?.[c] ?? '')}</td>`).join('')}</tr>
+            `).join('')}
+          </tbody>
+        </table>
+      `.trim();
+
+      if (navigator?.clipboard?.write && window?.ClipboardItem) {
+        const items = [
+          new window.ClipboardItem({
+            'text/html': new Blob([htmlTable], { type: 'text/html' }),
+            'text/plain': new Blob([tsv], { type: 'text/plain' })
+          })
+        ];
+        await navigator.clipboard.write(items);
+      } else if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(tsv);
+      } else {
+        const textarea = document.createElement('textarea');
+        textarea.value = tsv;
+        textarea.style.position = 'fixed';
+        textarea.style.left = '-9999px';
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+      }
+      setToast({ type: 'success', message: 'Tabela do reporte copiada (TSV).' });
+    } catch (error) {
+      setToast({ type: 'error', message: error.message || 'Erro ao copiar tabela' });
+    }
+  };
+
+  const downloadReporteXlsx = async () => {
+    try {
       await downloadExport(
         `/api/requisicoes/${id}/export-reporte`,
         `REPORTE_requisicao_${id}_${new Date().toISOString().slice(0, 10)}.xlsx`,
         'Ficheiro de reporte gerado com sucesso.'
       );
+      closeReporteModal();
     } catch (error) {
-      setToast({ type: 'error', message: error.message || 'Erro ao exportar ficheiro de reporte' });
+      setToast({ type: 'error', message: error.message || 'Erro ao baixar ficheiro de reporte' });
     }
   };
 
@@ -906,6 +998,85 @@ const PrepararRequisicao = () => {
             </div>
           )}
         </div>
+
+        {reporteModal.open && (
+          <div
+            className="fixed inset-0 z-[10000] flex items-center justify-center p-4 bg-black/50"
+            aria-modal="true"
+            role="dialog"
+            onClick={(e) => {
+              if (e.target === e.currentTarget) closeReporteModal();
+            }}
+          >
+            <div className="bg-white rounded-xl shadow-xl w-full max-w-5xl">
+              <div className="flex items-center justify-between p-4 border-b">
+                <h3 className="text-base sm:text-lg font-semibold text-gray-900">
+                  {reporteModal.title || 'Reporte'}
+                </h3>
+                <button
+                  type="button"
+                  onClick={closeReporteModal}
+                  className="px-3 py-1 rounded-lg border border-gray-200 text-gray-700 hover:bg-gray-50"
+                >
+                  Fechar
+                </button>
+              </div>
+              <div className="p-4 overflow-auto max-h-[60vh]">
+                {reporteModal.loading ? (
+                  <p className="text-sm text-gray-600">A carregar tabela...</p>
+                ) : (
+                  <>
+                    <div className="text-xs text-gray-500 mb-2">
+                      {reporteModal.rows.length > 200 ? `A mostrar 200 de ${reporteModal.rows.length} linhas.` : null}
+                    </div>
+                    <div className="overflow-auto">
+                      <table className="min-w-full text-xs border-collapse">
+                        <thead>
+                          <tr>
+                            {(reporteModal.columns || []).map((c) => (
+                              <th key={c} className="sticky top-0 z-10 bg-gray-100 border border-gray-300 px-2 py-1 text-gray-800">
+                                {c}
+                              </th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(reporteModal.rows || []).slice(0, 200).map((r, idx) => (
+                            <tr key={idx}>
+                              {(reporteModal.columns || []).map((c) => (
+                                <td key={c} className="border border-gray-200 px-2 py-1 text-gray-900">
+                                  {String(r?.[c] ?? '')}
+                                </td>
+                              ))}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
+                )}
+              </div>
+              <div className="p-4 border-t flex justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={copyReporteTable}
+                  disabled={reporteModal.loading}
+                  className="px-4 py-2 rounded-lg bg-gray-100 text-gray-800 hover:bg-gray-200 disabled:opacity-60 disabled:cursor-not-allowed"
+                >
+                  Copiar tabela
+                </button>
+                <button
+                  type="button"
+                  onClick={downloadReporteXlsx}
+                  disabled={reporteModal.loading}
+                  className="px-4 py-2 rounded-lg bg-[#0915FF] text-white hover:bg-[#070FCC] disabled:opacity-60 disabled:cursor-not-allowed"
+                >
+                  Baixar XLSX
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {toast && (
           <Toast type={toast.type} message={toast.message} onClose={() => setToast(null)} />
