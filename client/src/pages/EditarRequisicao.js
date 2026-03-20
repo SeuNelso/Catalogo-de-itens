@@ -68,6 +68,7 @@ const EditarRequisicao = () => {
           status: req.status,
           observacoes: req.observacoes || ''
         });
+        setCriadorMeta(req);
         // Carregar itens da requisição
         if (req.itens && Array.isArray(req.itens)) {
           setItensRequisicao(req.itens.map(item => ({
