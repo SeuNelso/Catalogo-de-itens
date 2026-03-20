@@ -11,8 +11,21 @@ No projeto no Railway → **Variables**:
 | `DATABASE_URL`  | **Sim**     | URL do PostgreSQL (ex.: `postgresql://user:pass@host:5432/dbname`). Pode usar o Postgres do Railway (Add Plugin → PostgreSQL) e ele preenche sozinho. |
 | `JWT_SECRET`     | **Sim**     | Chave secreta para os tokens de login (ex.: uma string longa e aleatória). |
 | `NODE_ENV`      | Opcional    | Use `production` em produção. |
+| `PGPOOL_MAX`    | Opcional    | Máx. de ligações do pool Node→Postgres (omissão **25**). Suba para **35–50** se tiver muitos utilizadores em paralelo e o Postgres permitir (`max_connections`). |
+| `PGPOOL_IDLE_MS` | Opcional   | Fechar ligações ociosas após N ms (omissão **30000**). |
+| `PGPOOL_CONN_TIMEOUT_MS` | Opcional | Tempo máx. à espera de uma ligação livre (omissão **10000**). |
+| `TRUST_PROXY`   | Opcional    | `1` ou `true` se estiver atrás de nginx/Railway proxy e precisar de `req.ip` / HTTPS correto. |
+| `JSON_BODY_LIMIT` | Opcional  | Limite do body JSON (omissão **12mb**). |
 
 Sem `DATABASE_URL` o servidor não consegue acessar o banco e o login falha com 500.
+
+### Desempenho (índices na BD)
+
+Com muitos utilizadores, execute uma vez na base (local ou Railway → Query):
+
+`npm run db:migrate:performance-indexes`
+
+Isso cria índices extra (login, listagens de requisições, stocks por item) e corre `ANALYZE`. Requer tabelas `usuarios`, `requisicoes` e `armazens_item` já existentes.
 
 ## 2. Banco de dados e tabela `usuarios`
 

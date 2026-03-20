@@ -4,6 +4,7 @@ import { useAuth } from '../contexts/AuthContext';
 import Toast from '../components/Toast';
 import { FaArrowLeft, FaSave, FaPlus, FaTrash } from 'react-icons/fa';
 import axios from 'axios';
+import { formatCriadorRequisicao, isRequisicaoDoUtilizadorAtual } from '../utils/requisicaoCriador';
 
 const EditarRequisicao = () => {
   const { id } = useParams();
@@ -19,6 +20,8 @@ const EditarRequisicao = () => {
   const [loading, setLoading] = useState(false);
   const [loadingData, setLoadingData] = useState(true);
   const [toast, setToast] = useState(null);
+  /** Metadados do criador (só leitura) */
+  const [criadorMeta, setCriadorMeta] = useState(null);
   const [buscaItem, setBuscaItem] = useState('');
   const [itensFiltrados, setItensFiltrados] = useState([]);
   const [mostrarListaItens, setMostrarListaItens] = useState(false);
@@ -229,6 +232,18 @@ const EditarRequisicao = () => {
           <h1 className="text-2xl sm:text-3xl font-bold text-gray-800 mb-2">Editar Requisição #{id}</h1>
           <p className="text-gray-600">Atualize as informações da requisição</p>
         </div>
+
+        {criadorMeta && (
+          <div className="mb-4 rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-800 flex flex-wrap items-center gap-2">
+            <strong className="text-gray-700">Criado por:</strong>
+            <span>{formatCriadorRequisicao(criadorMeta)}</span>
+            {isRequisicaoDoUtilizadorAtual(criadorMeta, user) && (
+              <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-violet-100 text-violet-800">
+                A sua requisição
+              </span>
+            )}
+          </div>
+        )}
 
         {/* Form */}
         <div className="bg-white rounded-lg shadow-sm p-6">

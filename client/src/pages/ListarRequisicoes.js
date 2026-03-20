@@ -5,7 +5,12 @@ import { useConfirm } from '../contexts/ConfirmContext';
 import Toast from '../components/Toast';
 import { FaSearch, FaPlus, FaEdit, FaTrash, FaBoxOpen, FaCheck, FaFileImport } from 'react-icons/fa';
 import jsPDF from 'jspdf';
-import autoTable from 'jspdf-autotable';
+import {
+  formatCriadorRequisicao,
+  isRequisicaoDoUtilizadorAtual,
+  preparacaoReservadaOutroUtilizador
+} from '../utils/requisicaoCriador';
+import { desenharPaginaNotaEntregaDigi } from '../utils/notaEntregaPdf';
 
 const ListarRequisicoes = () => {
   const [requisicoes, setRequisicoes] = useState([]);
@@ -32,6 +37,8 @@ const ListarRequisicoes = () => {
     rows: []
   });
   const [reporteLoading, setReporteLoading] = useState(false);
+  /** Só requisições criadas pelo utilizador atual */
+  const [somenteMinhas, setSomenteMinhas] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
   const { user } = useAuth();
@@ -43,7 +50,7 @@ const ListarRequisicoes = () => {
   useEffect(() => {
     fetchRequisicoes();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filtros]);
+  }, [filtros, somenteMinhas]);
 
   useEffect(() => {
     const params = new URLSearchParams(location.search || '');
@@ -103,6 +110,7 @@ const ListarRequisicoes = () => {
       
       const params = new URLSearchParams();
       if (filtros.status) params.append('status', filtros.status);
+      if (somenteMinhas) params.append('minhas', '1');
 
       const response = await fetch(`/api/requisicoes?${params.toString()}`, {
         headers: {
@@ -233,88 +241,25 @@ const ListarRequisicoes = () => {
     const dateStr = today.toISOString().slice(0, 10);
 
     const doc = new jsPDF({ unit: 'pt', format: 'a4' });
-    const pageWidth = doc.internal.pageSize.getWidth();
     const pageHeight = doc.internal.pageSize.getHeight();
 
-    doc.setFontSize(16);
-    doc.text('Comprovativo de Entrega', pageWidth / 2, 48, { align: 'center' });
-    doc.setFontSize(10);
-    doc.text(`Data: ${today.toLocaleString('pt-BR')}`, 40, 66);
-
-    let cursorY = 90;
-
     arr.forEach((req, idx) => {
-      if (idx > 0) cursorY += 18;
-      const id = req?.id ?? '';
-      const origem = req?.armazem_origem_descricao || '';
-      const destino = req?.armazem_descricao || '';
-
-      doc.setFontSize(12);
-      doc.text(`Requisição #${id}`, 40, cursorY);
-      doc.setFontSize(10);
-      doc.text(`Origem: ${origem}`, 40, cursorY + 14);
-      doc.text(`Destino: ${destino}`, 40, cursorY + 28);
-
-      const itens = Array.isArray(req?.itens) ? req.itens : [];
-      const body = [];
-      for (const it of itens) {
-        const codigo = String(it.item_codigo ?? it.codigo ?? '');
-        const desc = String(it.item_descricao ?? it.descricao ?? '');
-        const qtyBase = it.quantidade_preparada ?? it.quantidade ?? 0;
-        const qty = Number(qtyBase) || 0;
-
-        const bobinas = Array.isArray(it.bobinas) ? it.bobinas : [];
-        if (bobinas.length > 0) {
-          for (const b of bobinas) {
-            body.push([
-              codigo,
-              desc,
-              String(b.metros ?? ''),
-              String(b.lote ?? ''),
-              String(b.serialnumber ?? '')
-            ]);
-          }
-        } else {
-          body.push([
-            codigo,
-            desc,
-            String(qty),
-            String(it.lote ?? ''),
-            String(it.serialnumber ?? '')
-          ]);
-        }
-      }
-
-      autoTable(doc, {
-        startY: cursorY + 40,
-        head: [['Código', 'Descrição', 'Qtd', 'Lote', 'S/N']],
-        body: body.length > 0 ? body : [['', 'Sem itens', '', '', '']],
-        styles: { fontSize: 9, cellPadding: 4 },
-        headStyles: { textColor: 20, fillColor: [255, 255, 255] },
-        theme: 'grid',
-        margin: { left: 40, right: 40 }
+      desenharPaginaNotaEntregaDigi(doc, req, {
+        isFirstPage: idx === 0,
+        dataRef: today
       });
-
-      cursorY = (doc.lastAutoTable?.finalY || (cursorY + 120));
-      // Mantém espaço para assinaturas no rodapé da página final
-      const sigTop = pageHeight - 60 - 70;
-      if (cursorY + 30 > sigTop) {
-        doc.addPage();
-        cursorY = 60;
-      }
     });
 
-    // Assinaturas no rodapé (última página)
     const sigTop = pageHeight - 60 - 70;
-    const lastY = doc.lastAutoTable?.finalY || cursorY;
+    const lastY = doc.lastAutoTable?.finalY ?? 0;
     if (lastY + 30 > sigTop) {
       doc.addPage();
     }
     desenharAssinaturasRodape(doc);
 
     const filename = arr.length === 1
-      ? `ENTREGA_requisicao_${arr[0]?.id || ''}_${dateStr}.pdf`
-      : `ENTREGA_multi_${dateStr}.pdf`;
+      ? `NOTA_ENTREGA_${arr[0]?.id || ''}_${dateStr}.pdf`
+      : `NOTA_ENTREGA_multi_${dateStr}.pdf`;
 
     doc.save(filename);
   };
@@ -524,20 +469,6 @@ const ListarRequisicoes = () => {
         isRedownload ? 'TRA baixada novamente.' : 'TRA gerada com sucesso.'
       );
 
-      if (!isRedownload) {
-        const okClog = await confirm({
-          title: 'Clog',
-          message: 'Deseja gerar o ficheiro Clog (saída de armazém) após gerar a TRA?',
-          confirmLabel: 'Gerar Clog'
-        });
-        if (okClog) {
-          await downloadExport(
-            `/api/requisicoes/${reqId}/export-clog`,
-            `CLOG_requisicao_${reqId}_${new Date().toISOString().slice(0, 10)}.xlsx`,
-            'Clog gerado com sucesso.'
-          );
-        }
-      }
       await fetchRequisicoes();
     } catch (error) {
       console.error('Erro ao exportar TRA:', error);
@@ -815,36 +746,6 @@ const ListarRequisicoes = () => {
       a.click();
       window.URL.revokeObjectURL(url);
 
-      if (!isRedownload) {
-        const okClog = await confirm({
-          title: 'Clog',
-          message: `Deseja gerar o ficheiro Clog (saída de armazém) para ${ids.length} requisição(ões) após gerar a TRA?`,
-          confirmLabel: 'Gerar Clog'
-        });
-        if (okClog) {
-          const token = localStorage.getItem('token');
-          const resClog = await fetch('/api/requisicoes/export-clog-multi', {
-            method: 'POST',
-            headers: {
-              'Authorization': `Bearer ${token}`,
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({ ids })
-          });
-          if (!resClog.ok) {
-            const data = await resClog.json().catch(() => ({}));
-            throw new Error(data.error || 'Erro ao exportar Clog multi');
-          }
-          const blobClog = await resClog.blob();
-          const urlClog = window.URL.createObjectURL(blobClog);
-          const a2 = document.createElement('a');
-          a2.href = urlClog;
-          a2.download = `CLOG_multi_${new Date().toISOString().slice(0, 10)}.xlsx`;
-          a2.click();
-          window.URL.revokeObjectURL(urlClog);
-          setToast({ type: 'success', message: 'Clog gerado com sucesso.' });
-        }
-      }
       await fetchRequisicoes();
     } catch (error) {
       console.error('Erro ao exportar TRA combinado:', error);
@@ -1125,6 +1026,7 @@ const ListarRequisicoes = () => {
   const getStatusBadge = (status) => {
     const badges = {
       pendente: 'bg-yellow-100 text-yellow-800',
+      'EM SEPARACAO': 'bg-orange-100 text-orange-900',
       separado: 'bg-green-100 text-green-800',
       'EM EXPEDICAO': 'bg-blue-100 text-blue-800',
       Entregue: 'bg-emerald-100 text-emerald-800',
@@ -1137,7 +1039,8 @@ const ListarRequisicoes = () => {
   const getStatusLabel = (status) => {
     const labels = {
       pendente: 'Pendente',
-      separado: 'Separado',
+      'EM SEPARACAO': 'Em separação',
+      separado: 'Separadas',
       'EM EXPEDICAO': 'Em expedição',
       Entregue: 'Entregue',
       FINALIZADO: 'Finalizado',
@@ -1149,7 +1052,7 @@ const ListarRequisicoes = () => {
   const canDeleteRequisicao = (reqObj) => {
     if (!canDelete) return false;
     const status = String(reqObj?.status || '');
-    const precisaAdmin = ['separado', 'EM EXPEDICAO', 'Entregue'].includes(status);
+    const precisaAdmin = ['EM SEPARACAO', 'separado', 'EM EXPEDICAO', 'Entregue'].includes(status);
     return !precisaAdmin || user?.role === 'admin';
   };
 
@@ -1178,6 +1081,9 @@ const ListarRequisicoes = () => {
       req.armazem_descricao,
       req.armazem_origem_descricao,
       req.usuario_nome,
+      req.criador_username,
+      req.criador_numero_colaborador,
+      req.separador_nome,
       req.observacoes,
       dataBr,
       dataIso
@@ -1218,6 +1124,7 @@ const ListarRequisicoes = () => {
 
   const statusCards = [
     { key: 'pendente', label: 'Pendentes', color: 'bg-yellow-50 border-yellow-200 text-yellow-800' },
+    { key: 'EM SEPARACAO', label: 'Em separação', color: 'bg-orange-50 border-orange-200 text-orange-900' },
     { key: 'separado', label: 'Separadas', color: 'bg-green-50 border-green-200 text-green-800' },
     { key: 'EM EXPEDICAO', label: 'Em expedição', color: 'bg-blue-50 border-blue-200 text-blue-800' },
     { key: 'Entregue', label: 'Entregues', color: 'bg-emerald-50 border-emerald-200 text-emerald-800' },
@@ -1331,31 +1238,42 @@ const ListarRequisicoes = () => {
           <>
         {/* Filtros e Busca */}
         <div className="bg-white rounded-lg shadow-sm p-4 mb-6">
-          <div className="flex flex-col sm:flex-row gap-4">
-            {/* Busca */}
-            <div className="flex-1 relative">
-              <FaSearch className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
-              <input
-                type="text"
-                placeholder="Buscar por data, viatura/equipa, item, usuário..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0915FF] focus:border-transparent"
-              />
-            </div>
+          <div className="flex flex-col gap-4">
+            <div className="flex flex-col sm:flex-row gap-4">
+              {/* Busca */}
+              <div className="flex-1 relative">
+                <FaSearch className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
+                <input
+                  type="text"
+                  placeholder="Buscar por data, viatura/equipa, item, criador..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0915FF] focus:border-transparent"
+                />
+              </div>
 
-            <button
-              type="button"
-              onClick={() => {
-                navigate('/requisicoes');
-                setSearchTerm('');
-                setSelectionMode(false);
-                setSelectedIds([]);
-              }}
-              className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50"
-            >
-              Voltar aos status
-            </button>
+              <button
+                type="button"
+                onClick={() => {
+                  navigate('/requisicoes');
+                  setSearchTerm('');
+                  setSelectionMode(false);
+                  setSelectedIds([]);
+                }}
+                className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50"
+              >
+                Voltar aos status
+              </button>
+            </div>
+            <label className="inline-flex items-center gap-2 text-sm text-gray-700 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={somenteMinhas}
+                onChange={(e) => setSomenteMinhas(e.target.checked)}
+                className="rounded border-gray-300 text-[#0915FF] focus:ring-[#0915FF]"
+              />
+              Apenas requisições que eu criei
+            </label>
           </div>
         </div>
 
@@ -1379,7 +1297,13 @@ const ListarRequisicoes = () => {
                 FIFO ativo: listagem da mais antiga para a mais nova.
               </div>
             )}
-            {requisicoesOrdenadas.map((req, idx) => (
+            {requisicoesOrdenadas.map((req, idx) => {
+              const prepBloqueio = preparacaoReservadaOutroUtilizador(req, user);
+              const separadorNome =
+                req.separador_nome != null && String(req.separador_nome).trim() !== ''
+                  ? String(req.separador_nome).trim()
+                  : null;
+              return (
               <div
                 key={req.id}
                 className={`relative overflow-hidden rounded-lg border transition-all duration-200 hover:-translate-y-0.5 hover:shadow-lg ${
@@ -1413,6 +1337,11 @@ const ListarRequisicoes = () => {
                     if (selectionMode || selectedIds.length > 0) {
                       const isSelected = selectedIds.includes(req.id);
                       handleToggleSelect(req.id, !isSelected);
+                    } else if (prepBloqueio) {
+                      setToast({
+                        type: 'error',
+                        message: `Esta requisição está reservada para separação (${separadorNome || 'outro operador'}).`
+                      });
                     } else {
                       navigate(`/requisicoes/preparar/${req.id}`);
                     }
@@ -1432,14 +1361,33 @@ const ListarRequisicoes = () => {
                               Selecionada
                             </span>
                           )}
+                          {isRequisicaoDoUtilizadorAtual(req, user) && (
+                            <span className="px-2 py-0.5 text-[10px] font-semibold rounded-full bg-violet-100 text-violet-800 uppercase tracking-wide">
+                              Minha requisição
+                            </span>
+                          )}
+                          {req.separador_usuario_id != null && separadorNome && (
+                            <span
+                              className="px-2 py-0.5 text-[10px] font-semibold rounded-full bg-amber-100 text-amber-900 uppercase tracking-wide"
+                              title="Utilizador que iniciou a separação / preparação"
+                            >
+                              Separação: {separadorNome}
+                            </span>
+                          )}
                           {req.itens && req.itens.length > 0 && (
                             <span className="text-xs text-gray-500">
                               {req.itens.length} {req.itens.length === 1 ? 'item' : 'itens'}
                             </span>
                           )}
-                          {req.status === 'pendente' && canPrepare && (
+                          {(req.status === 'pendente' || req.status === 'EM SEPARACAO') && canPrepare && !prepBloqueio && (
                             <span className="text-xs text-[#0915FF] flex items-center gap-1">
-                              <FaBoxOpen /> Use o botão Preparar abaixo
+                              <FaBoxOpen />{' '}
+                              {req.status === 'EM SEPARACAO' ? 'Separação em curso — use Continuar preparação' : 'Use o botão Preparar abaixo'}
+                            </span>
+                          )}
+                          {(req.status === 'pendente' || req.status === 'EM SEPARACAO') && canPrepare && prepBloqueio && (
+                            <span className="text-xs text-amber-700 flex items-center gap-1">
+                              Em preparação por {separadorNome || 'outro operador'}
                             </span>
                           )}
                           {req.status === 'separado' && req.separacao_confirmada && req.separacao_confirmada_em && (
@@ -1456,7 +1404,7 @@ const ListarRequisicoes = () => {
                           {req.localizacao && (
                             <div><strong>Localização:</strong> {req.localizacao}</div>
                           )}
-                          <div><strong>Criado por:</strong> {req.usuario_nome || 'N/A'}</div>
+                          <div><strong>Criado por:</strong> {formatCriadorRequisicao(req)}</div>
                           <div><strong>Data:</strong> {new Date(req.created_at).toLocaleDateString('pt-BR')}</div>
                         </div>
                       </div>
@@ -1464,36 +1412,56 @@ const ListarRequisicoes = () => {
                   <div className="flex gap-2 mt-4 sm:mt-0 flex-wrap" onClick={(e) => e.stopPropagation()}>
                     {canPrepare && (req.status === 'separado' && req.separacao_confirmada) ? (
                       <button
+                        type="button"
+                        disabled={prepBloqueio}
                         onClick={() => handleExportTRFL(req)}
-                        className="px-3 py-2 text-blue-700 hover:bg-blue-50 rounded-lg border border-blue-300 transition-colors"
-                        title="Gerar TRFL — após confirmar, o status passará a Em expedição"
+                        className={`px-3 py-2 text-blue-700 rounded-lg border border-blue-300 transition-colors ${
+                          prepBloqueio ? 'opacity-50 cursor-not-allowed' : 'hover:bg-blue-50'
+                        }`}
+                        title={
+                          prepBloqueio
+                            ? 'Reservada para separação a outro operador'
+                            : 'Gerar TRFL — após confirmar, o status passará a Em expedição'
+                        }
                       >
                         GERAR TRFL
                       </button>
                     ) : null}
                     {canPrepare && req.status === 'EM EXPEDICAO' && (
                       <button
+                        type="button"
+                        disabled={prepBloqueio}
                         onClick={() => handleEntregar(req)}
-                        className="px-3 py-2 bg-amber-600 text-white hover:bg-amber-700 rounded-lg transition-colors"
-                        title="Alterar status para Entregue"
+                        className={`px-3 py-2 bg-amber-600 text-white rounded-lg transition-colors ${
+                          prepBloqueio ? 'opacity-50 cursor-not-allowed' : 'hover:bg-amber-700'
+                        }`}
+                        title={prepBloqueio ? 'Reservada para separação a outro operador' : 'Alterar status para Entregue'}
                       >
                         ENTREGAR
                       </button>
                     )}
                     {canPrepare && (req.status === 'Entregue' && !req.tra_gerada_em) && (
                       <button
+                        type="button"
+                        disabled={prepBloqueio}
                         onClick={() => handleExportTRA(req)}
-                        className="px-3 py-2 text-indigo-700 hover:bg-indigo-50 rounded-lg border border-indigo-300 transition-colors"
-                        title="Gerar TRA"
+                        className={`px-3 py-2 text-indigo-700 rounded-lg border border-indigo-300 transition-colors ${
+                          prepBloqueio ? 'opacity-50 cursor-not-allowed' : 'hover:bg-indigo-50'
+                        }`}
+                        title={prepBloqueio ? 'Reservada para separação a outro operador' : 'Gerar TRA'}
                       >
                         GERAR TRA
                       </button>
                     )}
                     {canPrepare && req.status === 'Entregue' && req.tra_gerada_em && (
                       <button
+                        type="button"
+                        disabled={prepBloqueio}
                         onClick={() => handleFinalizar(req.id)}
-                        className="px-3 py-2 bg-slate-700 text-white hover:bg-slate-800 rounded-lg transition-colors"
-                        title="Marcar como Finalizado"
+                        className={`px-3 py-2 bg-slate-700 text-white rounded-lg transition-colors ${
+                          prepBloqueio ? 'opacity-50 cursor-not-allowed' : 'hover:bg-slate-800'
+                        }`}
+                        title={prepBloqueio ? 'Reservada para separação a outro operador' : 'Marcar como Finalizado'}
                       >
                         Finalizar
                       </button>
@@ -1501,19 +1469,36 @@ const ListarRequisicoes = () => {
                     {/* Re-download TRFL/TRA fica apenas no menu de contexto */}
                     {req.status === 'separado' && !req.separacao_confirmada && canPrepare && (
                         <button
+                        type="button"
+                        disabled={prepBloqueio}
                         onClick={() => handleConfirmarSeparacao(req.id)}
-                        className="px-3 py-2 bg-emerald-600 text-white hover:bg-emerald-700 rounded-lg transition-colors flex items-center gap-2"
-                        title="Confirmar que os itens foram recolhidos (obrigatório antes de TRFL)"
+                        className={`px-3 py-2 bg-emerald-600 text-white rounded-lg transition-colors flex items-center gap-2 ${
+                          prepBloqueio ? 'opacity-50 cursor-not-allowed' : 'hover:bg-emerald-700'
+                        }`}
+                        title={
+                          prepBloqueio
+                            ? 'Reservada para separação a outro operador'
+                            : 'Confirmar que os itens foram recolhidos (obrigatório antes de TRFL)'
+                        }
                       >
                         <FaCheck /> Confirmar separação
                       </button>
                     )}
-                    {req.status === 'pendente' && canPrepare && (
+                    {(req.status === 'pendente' || req.status === 'EM SEPARACAO') && canPrepare && (
                         <button
+                        type="button"
+                        disabled={prepBloqueio}
                         onClick={() => navigate(`/requisicoes/preparar/${req.id}`)}
-                        className="px-3 py-2 bg-green-600 text-white hover:bg-green-700 rounded-lg transition-colors flex items-center gap-2"
+                        className={`px-3 py-2 bg-green-600 text-white rounded-lg transition-colors flex items-center gap-2 ${
+                          prepBloqueio ? 'opacity-50 cursor-not-allowed' : 'hover:bg-green-700'
+                        }`}
+                        title={
+                          prepBloqueio
+                            ? `Em preparação por ${separadorNome || 'outro operador'}`
+                            : req.status === 'EM SEPARACAO' ? 'Continuar separação' : 'Abrir preparação'
+                        }
                       >
-                        <FaBoxOpen /> Preparar
+                        <FaBoxOpen /> {req.status === 'EM SEPARACAO' ? 'Continuar preparação' : 'Preparar'}
                       </button>
                     )}
                     {req.status === 'pendente' && canCreateOrEdit && (
@@ -1539,7 +1524,8 @@ const ListarRequisicoes = () => {
                 </div>
 
               </div>
-            ))}
+              );
+            })}
           </div>
         )}
           </>
@@ -1556,6 +1542,19 @@ const ListarRequisicoes = () => {
             <button
               className="block w-full text-left px-4 py-2 hover:bg-gray-100"
               onClick={() => {
+                if (preparacaoReservadaOutroUtilizador(contextMenu.req, user)) {
+                  const nome =
+                    contextMenu.req.separador_nome != null &&
+                    String(contextMenu.req.separador_nome).trim() !== ''
+                      ? String(contextMenu.req.separador_nome).trim()
+                      : 'outro operador';
+                  setToast({
+                    type: 'error',
+                    message: `Esta requisição está reservada para separação (${nome}).`
+                  });
+                  setContextMenu(prev => ({ ...prev, visible: false }));
+                  return;
+                }
                 navigate(`/requisicoes/preparar/${contextMenu.req.id}`);
                 setContextMenu(prev => ({ ...prev, visible: false }));
               }}
@@ -1591,6 +1590,7 @@ const ListarRequisicoes = () => {
               const { ids, reqs, complete } = getActionTargetReqs(contextMenu.req);
               const isMulti = ids.length >= 2;
               const all = (pred) => complete && reqs.every(pred);
+              const algumaPrepBloqueio = complete && reqs.some(r => preparacaoReservadaOutroUtilizador(r, user));
 
               const canGerarTRFL = all(r => r.status === 'separado' && r.separacao_confirmada);
               const canBaixarTRFL = all(r => ['EM EXPEDICAO', 'Entregue', 'FINALIZADO'].includes(r.status));
@@ -1605,11 +1605,21 @@ const ListarRequisicoes = () => {
               const canBaixarComprovativo = all(r => ['Entregue', 'FINALIZADO'].includes(r.status));
               const canFinalizar = all(r => r.status === 'Entregue' && r.tra_gerada_em);
 
+              const ctxTrflGerarBloqueado = Boolean(canGerarTRFL && algumaPrepBloqueio);
+              const ctxTraGerarBloqueado = Boolean(canGerarTRA && algumaPrepBloqueio);
+              const ctxEntregarBloqueado = Boolean(canEntregar && algumaPrepBloqueio);
+              const ctxFinalizarBloqueado = Boolean(canFinalizar && algumaPrepBloqueio);
+
               return (
                 <>
                   {(canGerarTRFL || canBaixarTRFL) && (
                     <button
-                      className="block w-full text-left px-4 py-2 hover:bg-gray-100"
+                      type="button"
+                      disabled={ctxTrflGerarBloqueado}
+                      className={`block w-full text-left px-4 py-2 hover:bg-gray-100 ${
+                        ctxTrflGerarBloqueado ? 'opacity-50 cursor-not-allowed' : ''
+                      }`}
+                      title={ctxTrflGerarBloqueado ? 'Reservada para separação a outro operador' : undefined}
                       onClick={() => {
                         if (isMulti) {
                           handleExportMultiTRFL(ids, { redownload: canBaixarTRFL && !canGerarTRFL });
@@ -1625,7 +1635,12 @@ const ListarRequisicoes = () => {
 
                   {canEntregar && (
                     <button
-                      className="block w-full text-left px-4 py-2 hover:bg-gray-100"
+                      type="button"
+                      disabled={ctxEntregarBloqueado}
+                      className={`block w-full text-left px-4 py-2 hover:bg-gray-100 ${
+                        ctxEntregarBloqueado ? 'opacity-50 cursor-not-allowed' : ''
+                      }`}
+                      title={ctxEntregarBloqueado ? 'Reservada para separação a outro operador' : undefined}
                       onClick={() => {
                         if (isMulti) handleEntregarMulti(ids);
                         else handleEntregar(contextMenu.req);
@@ -1638,7 +1653,12 @@ const ListarRequisicoes = () => {
 
                   {(canGerarTRA || canBaixarTRA) && (
                     <button
-                      className="block w-full text-left px-4 py-2 hover:bg-gray-100"
+                      type="button"
+                      disabled={ctxTraGerarBloqueado}
+                      className={`block w-full text-left px-4 py-2 hover:bg-gray-100 ${
+                        ctxTraGerarBloqueado ? 'opacity-50 cursor-not-allowed' : ''
+                      }`}
+                      title={ctxTraGerarBloqueado ? 'Reservada para separação a outro operador' : undefined}
                       onClick={() => {
                         if (isMulti) {
                           handleExportMultiTRA(ids, { redownload: canBaixarTRA && !canGerarTRA });
@@ -1693,7 +1713,12 @@ const ListarRequisicoes = () => {
 
                   {canFinalizar && (
                     <button
-                      className="block w-full text-left px-4 py-2 hover:bg-gray-100"
+                      type="button"
+                      disabled={ctxFinalizarBloqueado}
+                      className={`block w-full text-left px-4 py-2 hover:bg-gray-100 ${
+                        ctxFinalizarBloqueado ? 'opacity-50 cursor-not-allowed' : ''
+                      }`}
+                      title={ctxFinalizarBloqueado ? 'Reservada para separação a outro operador' : undefined}
                       onClick={() => {
                         if (isMulti) handleFinalizarMulti(ids);
                         else handleFinalizar(contextMenu.req.id);

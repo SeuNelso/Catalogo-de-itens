@@ -7,7 +7,12 @@ import { FaArrowLeft, FaCheck, FaBox, FaMapMarkerAlt, FaArrowRight, FaEdit, FaQr
 import axios from 'axios';
 import QrScannerModal from '../components/QrScannerModal';
 import jsPDF from 'jspdf';
-import autoTable from 'jspdf-autotable';
+import {
+  formatCriadorRequisicao,
+  isRequisicaoDoUtilizadorAtual,
+  preparacaoReservadaOutroUtilizador
+} from '../utils/requisicaoCriador';
+import { desenharPaginaNotaEntregaDigi } from '../utils/notaEntregaPdf';
 
 const PrepararRequisicao = () => {
   const { id } = useParams();
@@ -168,18 +173,6 @@ const PrepararRequisicao = () => {
         'TRA gerada com sucesso.'
       );
 
-      const okClog = await confirm({
-        title: 'Clog',
-        message: 'Deseja gerar o ficheiro Clog (saída de armazém) após gerar a TRA?',
-        confirmLabel: 'Gerar Clog'
-      });
-      if (okClog) {
-        await downloadExport(
-          `/api/requisicoes/${id}/export-clog`,
-          `CLOG_requisicao_${id}_${new Date().toISOString().slice(0, 10)}.xlsx`,
-          'Clog gerado com sucesso.'
-        );
-      }
       await fetchRequisicao(true);
     } catch (error) {
       console.error('Erro ao exportar TRA:', error);
@@ -327,74 +320,26 @@ const PrepararRequisicao = () => {
       });
       if (!ok) return;
 
-      // PDF com lista de artigos (download antes de mudar status)
+      // PDF «Nota de entrega» (template DIGI) antes de mudar status
       try {
         const today = new Date();
         const dateStr = today.toISOString().slice(0, 10);
         const doc = new jsPDF({ unit: 'pt', format: 'a4' });
-        const pageWidth = doc.internal.pageSize.getWidth();
-        const pageHeight = doc.internal.pageSize.getHeight();
-        doc.setFontSize(16);
-        doc.text('Comprovativo de Entrega', pageWidth / 2, 48, { align: 'center' });
-        doc.setFontSize(10);
-        doc.text(`Data: ${today.toLocaleString('pt-BR')}`, 40, 66);
-        doc.setFontSize(12);
-        doc.text(`Requisição #${id}`, 40, 90);
-        doc.setFontSize(10);
-        doc.text(`Origem: ${requisicao?.armazem_origem_descricao || ''}`, 40, 106);
-        doc.text(`Destino: ${requisicao?.armazem_descricao || ''}`, 40, 122);
+        const pageHeightActual = doc.internal.pageSize.getHeight();
 
-        const itens = Array.isArray(requisicao?.itens) ? requisicao.itens : [];
-        const body = [];
-        for (const it of itens) {
-          const codigo = String(it.item_codigo ?? it.codigo ?? '');
-          const desc = String(it.item_descricao ?? it.descricao ?? '');
-          const qtyBase = it.quantidade_preparada ?? it.quantidade ?? 0;
-          const qty = Number(qtyBase) || 0;
+        desenharPaginaNotaEntregaDigi(doc, requisicao, { isFirstPage: true, dataRef: today });
 
-          const bobinas = Array.isArray(it.bobinas) ? it.bobinas : [];
-          if (bobinas.length > 0) {
-            for (const b of bobinas) {
-              body.push([
-                codigo,
-                desc,
-                String(b.metros ?? ''),
-                String(b.lote ?? ''),
-                String(b.serialnumber ?? '')
-              ]);
-            }
-          } else {
-            body.push([
-              codigo,
-              desc,
-              String(qty),
-              String(it.lote ?? ''),
-              String(it.serialnumber ?? '')
-            ]);
-          }
+        const sigTop = pageHeightActual - 60 - 70;
+        const lastY = doc.lastAutoTable?.finalY || 0;
+        if (lastY + 30 > sigTop) {
+          doc.addPage();
         }
 
-        autoTable(doc, {
-          startY: 140,
-          head: [['Código', 'Descrição', 'Qtd', 'Lote', 'S/N']],
-          body: body.length > 0 ? body : [['', 'Sem itens', '', '', '']],
-          styles: { fontSize: 9, cellPadding: 4 },
-          headStyles: { textColor: 20, fillColor: [255, 255, 255] },
-          theme: 'grid',
-          margin: { left: 40, right: 40 }
-        });
-
-        // Assinaturas no rodapé (fim da folha)
+        const pageWidth = doc.internal.pageSize.getWidth();
         const leftX1 = 60;
         const leftX2 = pageWidth / 2 - 20;
         const rightX1 = pageWidth / 2 + 20;
         const rightX2 = pageWidth - 60;
-
-        const sigTop = pageHeight - 60 - 70;
-        const lastY = doc.lastAutoTable?.finalY || 220;
-        if (lastY + 30 > sigTop) {
-          doc.addPage();
-        }
         const y = doc.internal.pageSize.getHeight() - 60 - 70;
 
         doc.setFontSize(10);
@@ -406,8 +351,9 @@ const PrepararRequisicao = () => {
         doc.line(rightX1, y + 34, rightX2, y + 34);
         doc.text('Nome / assinatura', (rightX1 + rightX2) / 2, y + 52, { align: 'center' });
 
-        doc.save(`ENTREGA_requisicao_${id}_${dateStr}.pdf`);
+        doc.save(`NOTA_ENTREGA_${id}_${dateStr}.pdf`);
       } catch (_) {}
+
 
       const token = localStorage.getItem('token');
       const resp = await fetch(`/api/requisicoes/${id}/marcar-entregue`, {
@@ -431,6 +377,10 @@ const PrepararRequisicao = () => {
   };
 
   const handleCompletarSeparacao = async () => {
+    if (preparacaoReservadaOutroUtilizador(requisicao, user)) {
+      setToast({ type: 'error', message: 'Esta requisição está a ser preparada por outro utilizador.' });
+      return;
+    }
     const itensInsatisfeitos = requisicao.itens?.filter(it => (parseInt(it.quantidade_preparada) || 0) < (parseInt(it.quantidade) || 0)) ?? [];
     if (itensInsatisfeitos.length > 0) {
       const ok = await confirm({
@@ -562,14 +512,29 @@ const PrepararRequisicao = () => {
   if (!requisicao) return null;
 
   const isPendente = requisicao.status === 'pendente';
+  const isEmSeparacao = requisicao.status === 'EM SEPARACAO';
   const isSeparado = requisicao.status === 'separado';
+  const podeEditarItensPreparacao = isPendente || isEmSeparacao || isSeparado;
+  const fasePreparacaoAberta = isPendente || isEmSeparacao;
   const locsOrigem = armazemOrigem?.localizacoes?.map(l => l.localizacao).filter(Boolean) || [];
   const todosPreparados = requisicao.itens?.every(it => it.preparacao_confirmada === true) ?? false;
   const itensPorConfirmar = requisicao.itens?.filter(it => it.preparacao_confirmada !== true) ?? [];
+  const preparacaoBloqueadaOutrem = preparacaoReservadaOutroUtilizador(requisicao, user);
+  const podeAgirSeparacao = canPrepare && !preparacaoBloqueadaOutrem;
 
   return (
     <div className="min-h-screen bg-[#F7F8FA] p-4 sm:p-6 lg:p-8">
       <div className="max-w-4xl mx-auto">
+        {preparacaoBloqueadaOutrem && (
+          <div className="mb-4 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-amber-900 text-sm">
+            <strong>Separação em curso por outro utilizador.</strong>{' '}
+            {requisicao.separador_nome && requisicao.separador_nome !== '—' ? (
+              <>Atribuída a <strong>{requisicao.separador_nome}</strong>. Só esse utilizador ou um administrador/controller pode preparar ou avançar esta requisição.</>
+            ) : (
+              <>Só o utilizador que iniciou a preparação ou um administrador/controller pode continuar.</>
+            )}
+          </div>
+        )}
         <div className="mb-4 flex items-center justify-between gap-4 flex-wrap">
           <button
             onClick={() => navigate('/requisicoes')}
@@ -578,7 +543,7 @@ const PrepararRequisicao = () => {
             <FaArrowLeft /> Voltar
           </button>
           <div className="flex gap-2 flex-wrap">
-            {(requisicao.status === 'separado' && requisicao.separacao_confirmada) && (
+            {(requisicao.status === 'separado' && requisicao.separacao_confirmada) && podeAgirSeparacao && (
               <button
                 onClick={handleExportTRFL}
                 className="px-3 py-2 text-blue-700 hover:bg-blue-50 rounded-lg border border-blue-300 transition-colors"
@@ -587,7 +552,7 @@ const PrepararRequisicao = () => {
                 GERAR TRFL
               </button>
             )}
-            {requisicao.status === 'EM EXPEDICAO' && (
+            {requisicao.status === 'EM EXPEDICAO' && podeAgirSeparacao && (
               <button
                 onClick={handleEntregar}
                 className="px-3 py-2 bg-amber-600 text-white hover:bg-amber-700 rounded-lg transition-colors"
@@ -596,7 +561,7 @@ const PrepararRequisicao = () => {
                 ENTREGAR
               </button>
             )}
-            {requisicao.status === 'Entregue' && !requisicao.tra_gerada_em && (
+            {requisicao.status === 'Entregue' && !requisicao.tra_gerada_em && podeAgirSeparacao && (
               <button
                 onClick={handleExportTRA}
                 className="px-3 py-2 text-indigo-700 hover:bg-indigo-50 rounded-lg border border-indigo-300 transition-colors"
@@ -605,7 +570,7 @@ const PrepararRequisicao = () => {
                 GERAR TRA
               </button>
             )}
-            {((requisicao.status === 'Entregue' && requisicao.tra_gerada_em) || requisicao.status === 'FINALIZADO') && (
+            {((requisicao.status === 'Entregue' && requisicao.tra_gerada_em) || requisicao.status === 'FINALIZADO') && podeAgirSeparacao && (
               <button
                 onClick={handleExportReporte}
                 className="px-3 py-2 text-slate-700 hover:bg-slate-100 rounded-lg border border-slate-300 transition-colors"
@@ -639,16 +604,47 @@ const PrepararRequisicao = () => {
               <p className="font-medium text-gray-900">{requisicao.armazem_descricao}</p>
             </div>
             <div>
+              <span className="text-sm text-gray-500">Criado por</span>
+              <p className="font-medium text-gray-900 flex flex-wrap items-center gap-2">
+                {formatCriadorRequisicao(requisicao)}
+                {isRequisicaoDoUtilizadorAtual(requisicao, user) && (
+                  <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-violet-100 text-violet-800">
+                    A sua requisição
+                  </span>
+                )}
+              </p>
+            </div>
+            {requisicao.separador_usuario_id != null && requisicao.separador_nome && (
+              <div>
+                <span className="text-sm text-gray-500">Separação / preparação</span>
+                <p className="font-medium text-gray-900">
+                  {requisicao.separador_nome}
+                  {Number(requisicao.separador_usuario_id) === Number(user?.id) && (
+                    <span className="ml-2 text-xs font-semibold text-emerald-700">(consigo continuar)</span>
+                  )}
+                </p>
+              </div>
+            )}
+            <div>
               <span className="text-sm text-gray-500">Status</span>
               <p>
                 <span className={`px-2 py-1 text-xs font-semibold rounded-full ${
                   requisicao.status === 'pendente' ? 'bg-yellow-100 text-yellow-800' :
+                  requisicao.status === 'EM SEPARACAO' ? 'bg-orange-100 text-orange-900' :
                   requisicao.status === 'separado' ? 'bg-green-100 text-green-800' :
                   requisicao.status === 'EM EXPEDICAO' ? 'bg-blue-100 text-blue-800' :
                   requisicao.status === 'Entregue' ? 'bg-emerald-100 text-emerald-800' :
-                  'bg-red-100 text-red-800'
+                  requisicao.status === 'FINALIZADO' ? 'bg-slate-200 text-slate-900' :
+                  requisicao.status === 'cancelada' ? 'bg-red-100 text-red-800' :
+                  'bg-gray-100 text-gray-800'
                 }`}>
-                  {requisicao.status === 'pendente' ? 'Pendente' : requisicao.status === 'separado' ? 'Separado' : requisicao.status === 'EM EXPEDICAO' ? 'Em expedição' : requisicao.status === 'Entregue' ? 'Entregue' : 'Cancelada'}
+                  {requisicao.status === 'pendente' ? 'Pendente' :
+                    requisicao.status === 'EM SEPARACAO' ? 'Em separação' :
+                    requisicao.status === 'separado' ? 'Separadas' :
+                    requisicao.status === 'EM EXPEDICAO' ? 'Em expedição' :
+                    requisicao.status === 'Entregue' ? 'Entregue' :
+                    requisicao.status === 'FINALIZADO' ? 'Finalizado' :
+                    requisicao.status === 'cancelada' ? 'Cancelada' : requisicao.status}
                 </span>
               </p>
             </div>
@@ -708,7 +704,7 @@ const PrepararRequisicao = () => {
                         </div>
                       )}
                     </div>
-                    {canPrepare && !item.preparacao_confirmada && (isPendente || isSeparado) && (
+                    {podeAgirSeparacao && !item.preparacao_confirmada && podeEditarItensPreparacao && (
                       <button
                         type="button"
                         onClick={() => abrirPrepararItem(item)}
@@ -718,7 +714,7 @@ const PrepararRequisicao = () => {
                         <FaBox /> Preparar item
                       </button>
                     )}
-                    {canPrepare && item.preparacao_confirmada && (isPendente || isSeparado) && (
+                    {podeAgirSeparacao && item.preparacao_confirmada && podeEditarItensPreparacao && (
                       <button
                         type="button"
                         onClick={() => abrirPrepararItem(item)}
@@ -981,7 +977,7 @@ const PrepararRequisicao = () => {
             })}
           </div>
 
-          {isPendente && canPrepare && (
+          {fasePreparacaoAberta && podeAgirSeparacao && (
             <div className="mt-6 pt-6 border-t border-gray-200">
               {todosPreparados ? (
                 <>
@@ -1019,7 +1015,7 @@ const PrepararRequisicao = () => {
 
           {isSeparado && (
             <div className="mt-6 pt-6 border-t border-gray-200">
-              <p className="text-green-600 font-medium">✓ Requisição totalmente preparada (Separado)</p>
+              <p className="text-green-600 font-medium">✓ Requisição totalmente preparada (Separadas)</p>
             </div>
           )}
 

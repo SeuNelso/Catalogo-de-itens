@@ -5,6 +5,7 @@
  *   node server/run-migration.js separacao-confirmada → migração de confirmação de separação
  *   npm run db:migrate                              → preparação
  *   npm run db:migrate:separacao                    → confirmação de separação
+ *   npm run db:migrate:em-separacao                 → status EM SEPARACAO (separação em curso)
  */
 require('dotenv').config({ path: require('path').join(__dirname, '.env') });
 const { Pool } = require('pg');
@@ -41,6 +42,14 @@ const migrationFile = path.join(
                   ? 'migrate-usuarios-requisicoes-armazem-origem.sql'
                   : arg === 'usuarios-dados-pessoais'
                     ? 'migrate-usuarios-dados-pessoais.sql'
+                  : arg === 'performance-indexes'
+                    ? 'migrate-performance-indexes.sql'
+                  : arg === 'itens-trgm'
+                    ? 'migrate-itens-search-trgm.sql'
+                  : arg === 'requisicoes-separador' || arg === 'separador-preparacao'
+                    ? 'migrate-requisicoes-separador-usuario.sql'
+                  : arg === 'em-separacao' || arg === 'status-em-separacao'
+                    ? 'migrate-requisicoes-status-em-separacao.sql'
                     : 'migrate-requisicoes-itens-preparacao.sql'
 );
 
