@@ -17,6 +17,7 @@ const ItensNaoCadastrados = () => {
   const [paginaAtual, setPaginaAtual] = useState(1);
   const [itensPorPagina] = useState(20);
   const [searchTerm, setSearchTerm] = useState('');
+  const [cadastrandoTodos, setCadastrandoTodos] = useState(false);
 
   // Verificar se o usuário tem permissão
   const isAdmin = user && user.role === 'admin';
@@ -120,6 +121,57 @@ const ItensNaoCadastrados = () => {
         type: 'error',
         message: 'Erro ao conectar com o servidor'
       });
+    }
+  };
+
+  const handleCadastrarTodos = async () => {
+    const ok = await confirm({
+      title: 'Cadastrar todos no catálogo',
+      message:
+        'Serão criados itens com código, descrição e quantidades por armazém conforme o stock nacional importado. ' +
+        'Itens sem descrição falham. Continuar?',
+      variant: 'warning'
+    });
+    if (!ok) return;
+
+    try {
+      setCadastrandoTodos(true);
+      const token = localStorage.getItem('token');
+      const response = await fetch('/api/itens-nao-cadastrados/cadastrar-todos', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        }
+      });
+      const data = await response.json().catch(() => ({}));
+      if (response.ok) {
+        const nOk = data.cadastrados ?? 0;
+        const nFal = data.falhas && data.falhas.length ? data.falhas.length : 0;
+        setToast({
+          type: nFal && !nOk ? 'error' : nFal ? 'error' : 'success',
+          message:
+            (data.message || 'Concluído.') +
+            (nFal ? ` Abra a consola (F12) para ver ${nFal} falha(s).` : '')
+        });
+        if (nFal) {
+          console.warn('Cadastro em lote — falhas:', data.falhas);
+        }
+        await fetchNaoCadastrados();
+      } else {
+        setToast({
+          type: 'error',
+          message: data.error || 'Erro ao cadastrar todos'
+        });
+      }
+    } catch (error) {
+      console.error('Erro ao cadastrar todos:', error);
+      setToast({
+        type: 'error',
+        message: 'Erro ao conectar com o servidor'
+      });
+    } finally {
+      setCadastrandoTodos(false);
     }
   };
 
@@ -284,7 +336,7 @@ const ItensNaoCadastrados = () => {
                   </div>
                   
                   {/* Botões de ação */}
-                  <div className="flex items-center space-x-2">
+                  <div className="flex flex-wrap items-center gap-2">
                     <button
                       onClick={fetchNaoCadastrados}
                       className="bg-blue-600 text-white px-3 py-1.5 rounded-lg hover:bg-blue-700 transition-colors text-sm"
@@ -292,12 +344,22 @@ const ItensNaoCadastrados = () => {
                       Atualizar
                     </button>
                     {naoCadastrados.length > 0 && (
-                      <button
-                        onClick={handleLimparTodos}
-                        className="bg-red-600 text-white px-3 py-1.5 rounded-lg hover:bg-red-700 transition-colors text-sm"
-                      >
-                        Limpar Todos
-                      </button>
+                      <>
+                        <button
+                          type="button"
+                          onClick={handleCadastrarTodos}
+                          disabled={cadastrandoTodos}
+                          className="bg-emerald-600 text-white px-3 py-1.5 rounded-lg hover:bg-emerald-700 transition-colors text-sm disabled:opacity-60 disabled:cursor-not-allowed"
+                        >
+                          {cadastrandoTodos ? 'A cadastrar…' : 'Cadastrar todos (stock nacional)'}
+                        </button>
+                        <button
+                          onClick={handleLimparTodos}
+                          className="bg-red-600 text-white px-3 py-1.5 rounded-lg hover:bg-red-700 transition-colors text-sm"
+                        >
+                          Limpar Todos
+                        </button>
+                      </>
                     )}
                   </div>
                 </div>

@@ -1,0 +1,11 @@
+---
+description: Scripts SQL e migrações PostgreSQL do projeto
+globs: server/**/*.sql
+alwaysApply: false
+---
+
+# SQL (`server/*.sql`)
+
+- Scripts destinam-se a **PostgreSQL**; manter idempotência ou documentar ordem de execução se dependerem de migrações anteriores.
+- Ao adicionar tabelas ou colunas, alinhar nomes e tipos ao estilo das migrações existentes (`create-*.sql`, etc.).
+- Índices e constraints: seguir padrões já usados no repositório para performance e integridade.

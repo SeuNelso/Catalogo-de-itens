@@ -7,15 +7,12 @@
  *   npm run db:migrate:separacao                    → confirmação de separação
  *   npm run db:migrate:em-separacao                 → status EM SEPARACAO (separação em curso)
  */
-require('dotenv').config({ path: require('path').join(__dirname, '.env') });
-const { Pool } = require('pg');
 const path = require('path');
+require('dotenv').config({ path: path.join(__dirname, '.env') });
 const fs = require('fs');
-
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL || `postgres://${process.env.DB_USER}:${process.env.DB_PASSWORD}@${process.env.DB_HOST}:${process.env.DB_PORT}/${process.env.DB_NAME}`,
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
-});
+// Mesma resolução de DATABASE_URL / DATABASE_URL_RAILWAY / SSL que server/db/pool.js
+const { pool, getConnectionTargetInfo } = require('./db/pool');
+const { ensureSchemaMigrationsTable, recordSchemaMigration } = require('./utils/schemaMigrationsLog');
 
 const arg = process.argv[2];
 const migrationFile = path.join(
@@ -42,6 +39,10 @@ const migrationFile = path.join(
                   ? 'migrate-usuarios-requisicoes-armazem-origem.sql'
                   : arg === 'usuarios-dados-pessoais'
                     ? 'migrate-usuarios-dados-pessoais.sql'
+                  : arg === 'usuarios-timestamps'
+                    ? 'migrate-usuarios-timestamps.sql'
+                  : arg === 'catalog-timestamps'
+                    ? 'migrate-catalog-timestamps.sql'
                   : arg === 'performance-indexes'
                     ? 'migrate-performance-indexes.sql'
                   : arg === 'itens-trgm'
@@ -50,13 +51,22 @@ const migrationFile = path.join(
                     ? 'migrate-requisicoes-separador-usuario.sql'
                   : arg === 'em-separacao' || arg === 'status-em-separacao'
                     ? 'migrate-requisicoes-status-em-separacao.sql'
+                  : arg === 'itens-nao-cadastrados' || arg === 'itens-nao-cadastrados-columns'
+                    ? 'migrate-itens-nao-cadastrados-columns.sql'
                     : 'migrate-requisicoes-itens-preparacao.sql'
 );
 
 async function run() {
   let client;
   try {
+    const t = getConnectionTargetInfo();
+    console.log(
+      `[MIGRATE] Destino: host=${t.host} port=${t.port} database=${t.database} ` +
+        '(definido por DATABASE_URL; DATABASE_URL_RAILWAY só é usada se DATABASE_URL estiver vazio e DB_* forem placeholders.)'
+    );
     client = await pool.connect();
+    await ensureSchemaMigrationsTable(client);
+
     const sql = fs.readFileSync(migrationFile, 'utf8');
     // Remove comentários de linha (-- ...) e divide por ; para executar cada comando
     const statements = sql
@@ -73,7 +83,19 @@ async function run() {
         console.log('OK:', statement.substring(0, 60) + '...');
       }
     }
-    console.log('Migração concluída com sucesso.');
+    try {
+      await recordSchemaMigration(client, {
+        migrationArg: arg || 'default',
+        migrationFile,
+      });
+      console.log('Migração concluída com sucesso (registada em schema_migrations).');
+    } catch (logErr) {
+      console.warn(
+        'AVISO: migração SQL executada, mas falhou o registo em schema_migrations:',
+        logErr.message
+      );
+      console.log('Migração concluída com sucesso.');
+    }
   } catch (e) {
     console.error('Erro na migração:', e.message);
     process.exit(1);

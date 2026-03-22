@@ -6,13 +6,17 @@ import Toast from '../components/Toast';
 import { FaArrowLeft, FaSave, FaPlus, FaTrash, FaChevronDown } from 'react-icons/fa';
 import axios from 'axios';
 
+function itemTextoSecundario(item) {
+  if (!item) return '';
+  return (item.descricao || item.nome || '').trim();
+}
+
 const CriarRequisicao = () => {
   const [formData, setFormData] = useState({
     armazem_origem_id: '',
     armazem_id: '',
     observacoes: ''
   });
-  const [itens, setItens] = useState([]);
   const [armazens, setArmazens] = useState([]);
   const [itensRequisicao, setItensRequisicao] = useState([]); // Array de {item_id, quantidade}
   const [loading, setLoading] = useState(false);
@@ -27,16 +31,19 @@ const CriarRequisicao = () => {
   const [openOrigem, setOpenOrigem] = useState(false);
   const [openDestino, setOpenDestino] = useState(false);
   const [selectedItemIndex, setSelectedItemIndex] = useState(-1);
+  const [itensBuscaLoading, setItensBuscaLoading] = useState(false);
   const refOrigem = useRef(null);
   const refDestino = useRef(null);
   const refQuantidadeInput = useRef(null);
   const refBuscaItem = useRef(null);
   const refListaItens = useRef(null);
+  const debounceBuscaRef = useRef(null);
+  const skipBuscaRef = useRef(false);
+  const abortBuscaRef = useRef(null);
   const navigate = useNavigate();
   const { user } = useAuth();
 
   useEffect(() => {
-    fetchItens();
     fetchArmazens();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -51,20 +58,56 @@ const CriarRequisicao = () => {
   }, [user]);
 
   useEffect(() => {
-    if (buscaItem.trim()) {
-      const filtrados = itens.filter(item =>
-        item.codigo.toLowerCase().includes(buscaItem.toLowerCase()) ||
-        item.descricao.toLowerCase().includes(buscaItem.toLowerCase())
-      ).slice(0, 10);
-      setItensFiltrados(filtrados);
-      setMostrarListaItens(true);
-      setSelectedItemIndex(filtrados.length > 0 ? 0 : -1);
-    } else {
+    if (skipBuscaRef.current) {
+      skipBuscaRef.current = false;
+      return;
+    }
+    const q = buscaItem.trim();
+    if (!q) {
+      if (abortBuscaRef.current) abortBuscaRef.current.abort();
       setItensFiltrados([]);
       setMostrarListaItens(false);
       setSelectedItemIndex(-1);
+      setItensBuscaLoading(false);
+      return;
     }
-  }, [buscaItem, itens]);
+    if (debounceBuscaRef.current) clearTimeout(debounceBuscaRef.current);
+    debounceBuscaRef.current = setTimeout(async () => {
+      if (abortBuscaRef.current) abortBuscaRef.current.abort();
+      const ac = new AbortController();
+      abortBuscaRef.current = ac;
+      setItensBuscaLoading(true);
+      try {
+        const token = localStorage.getItem('token');
+        const { data } = await axios.get('/api/itens', {
+          params: {
+            search: q,
+            limit: 200,
+            page: 1,
+            incluirInativos: true
+          },
+          headers: { Authorization: `Bearer ${token}` },
+          signal: ac.signal
+        });
+        if (abortBuscaRef.current !== ac) return;
+        const list = data.itens || [];
+        setItensFiltrados(list);
+        setMostrarListaItens(true);
+        setSelectedItemIndex(list.length > 0 ? 0 : -1);
+      } catch (err) {
+        if (axios.isCancel?.(err) || err.code === 'ERR_CANCELED' || err.name === 'CanceledError') return;
+        console.error('Erro ao buscar itens:', err);
+        setItensFiltrados([]);
+        setToast({ type: 'error', message: 'Erro ao pesquisar itens' });
+      } finally {
+        if (abortBuscaRef.current === ac) setItensBuscaLoading(false);
+      }
+    }, 280);
+    return () => {
+      clearTimeout(debounceBuscaRef.current);
+      abortBuscaRef.current?.abort();
+    };
+  }, [buscaItem]);
 
   useEffect(() => {
     if (mostrarListaItens && selectedItemIndex >= 0 && refListaItens.current) {
@@ -72,21 +115,6 @@ const CriarRequisicao = () => {
       el?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
     }
   }, [selectedItemIndex, mostrarListaItens]);
-
-  const fetchItens = async () => {
-    try {
-      const token = localStorage.getItem('token');
-      const response = await axios.get('/api/itens?ativo=true&limit=1000', {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      if (response.data) {
-        setItens(response.data.itens || response.data || []);
-      }
-    } catch (error) {
-      console.error('Erro ao buscar itens:', error);
-      setToast({ type: 'error', message: 'Erro ao carregar itens' });
-    }
-  };
 
   const fetchArmazens = async () => {
     try {
@@ -104,8 +132,11 @@ const CriarRequisicao = () => {
   };
 
   const handleItemSelect = (item) => {
+    if (debounceBuscaRef.current) clearTimeout(debounceBuscaRef.current);
+    if (abortBuscaRef.current) abortBuscaRef.current.abort();
+    skipBuscaRef.current = true;
     setItemSelecionado(item);
-    setBuscaItem(`${item.codigo} - ${item.descricao}`);
+    setBuscaItem(`${item.codigo} - ${itemTextoSecundario(item)}`);
     setMostrarListaItens(false);
     setSelectedItemIndex(-1);
     setTimeout(() => refQuantidadeInput.current?.focus(), 0);
@@ -135,7 +166,7 @@ const CriarRequisicao = () => {
         item_id: itemSelecionado.id,
         quantidade: parseInt(quantidadeAtual),
         item_codigo: itemSelecionado.codigo,
-        item_descricao: itemSelecionado.descricao
+        item_descricao: itemTextoSecundario(itemSelecionado)
       }]);
     }
 
@@ -372,13 +403,11 @@ const CriarRequisicao = () => {
                       <input
                         ref={refBuscaItem}
                         type="text"
-                        placeholder="Buscar item por código ou descrição..."
+                        placeholder="Pesquisa no catálogo (todos os itens, ativos e inativos)…"
                         value={buscaItem}
                         onChange={(e) => {
                           setBuscaItem(e.target.value);
-                          if (!e.target.value) {
-                            setItemSelecionado(null);
-                          }
+                          setItemSelecionado(null);
                         }}
                         onFocus={() => {
                           if (buscaItem.trim()) {
@@ -410,26 +439,32 @@ const CriarRequisicao = () => {
                         }}
                         className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0915FF] focus:border-transparent"
                       />
-                      {mostrarListaItens && itensFiltrados.length > 0 && (
+                      {mostrarListaItens && buscaItem.trim() && (
                         <div
                           ref={refListaItens}
                           className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-60 overflow-y-auto"
                         >
-                          {itensFiltrados.map((item, index) => (
-                            <div
-                              key={item.id}
-                              data-item-index={index}
-                              onClick={() => handleItemSelect(item)}
-                              className={`px-4 py-2 cursor-pointer border-b border-gray-200 last:border-b-0 ${
-                                index === selectedItemIndex
-                                  ? 'bg-[#0915FF]/15 text-[#0915FF]'
-                                  : 'hover:bg-gray-100'
-                              }`}
-                            >
-                              <div className="font-medium text-gray-900">{item.codigo}</div>
-                              <div className="text-sm text-gray-500">{item.descricao}</div>
-                            </div>
-                          ))}
+                          {itensBuscaLoading ? (
+                            <div className="px-4 py-3 text-sm text-gray-500">A pesquisar…</div>
+                          ) : itensFiltrados.length === 0 ? (
+                            <div className="px-4 py-3 text-sm text-gray-500">Nenhum item encontrado</div>
+                          ) : (
+                            itensFiltrados.map((item, index) => (
+                              <div
+                                key={item.id}
+                                data-item-index={index}
+                                onClick={() => handleItemSelect(item)}
+                                className={`px-4 py-2 cursor-pointer border-b border-gray-200 last:border-b-0 ${
+                                  index === selectedItemIndex
+                                    ? 'bg-[#0915FF]/15 text-[#0915FF]'
+                                    : 'hover:bg-gray-100'
+                                }`}
+                              >
+                                <div className="font-medium text-gray-900">{item.codigo}</div>
+                                <div className="text-sm text-gray-500">{itemTextoSecundario(item)}</div>
+                              </div>
+                            ))
+                          )}
                         </div>
                       )}
                     </div>

@@ -19,6 +19,23 @@ No projeto no Railway → **Variables**:
 
 Sem `DATABASE_URL` o servidor não consegue acessar o banco e o login falha com 500.
 
+### Desenvolvimento local apontando para o Postgres do Railway
+
+1. No Railway, abra o serviço **PostgreSQL** → **Variables** ou **Connect** e copie a `DATABASE_URL` (em geral a variável pública, se existir separada da rede interna).
+2. No seu PC, em `server/.env`, defina **só** essa linha (ajuste o valor):
+
+   `DATABASE_URL=postgresql://...`
+
+   Pode comentar ou ignorar `DB_HOST`, `DB_USER`, etc.; o pool usa `DATABASE_URL` com prioridade.
+3. O backend já usa **SSL** quando o host não é `localhost`, compatível com o Postgres gerido do Railway.
+4. `JWT_SECRET` no `.env` local pode ser qualquer valor em desenvolvimento; se for diferente do Railway, só precisa voltar a fazer login após mudar.
+
+### Importar Stock Nacional → itens não cadastrados
+
+A importação grava em `itens_nao_cadastrados` colunas **`armazens`** (JSON) e **`data_importacao`**. Bases antigas criadas só com `init-db.sql` antigo podem não ter essas colunas — a inserção falha em silêncio no lote. Execute **uma vez**:
+
+`npm run db:migrate:itens-nao-cadastrados`
+
 ### Desempenho (índices na BD)
 
 Com muitos utilizadores, execute uma vez na base (local ou Railway → Query):
@@ -57,6 +74,11 @@ ON CONFLICT (username) DO NOTHING;
 
 Em **Deployments** → clique no deploy → **View Logs**.  
 Erros como `[LOGIN] Erro no banco:` indicam problema de conexão ou tabela/coluna faltando.
+
+### Erro ao conectar no PC (dev local)
+
+- **`password authentication failed for user "usuario"`** — o `DATABASE_URL` no `server/.env` ainda é o exemplo (`localhost` / `usuario`) ou está vazio e cai nos placeholders. Cole a URL **pública** do Postgres (Railway → PostgreSQL → **Connect**).
+- **`getaddrinfo ENOTFOUND postgres.railway.internal`** (ou timeout) — você está usando a URL **interna** do Railway. No notebook ela não resolve; use a conexão **pública** / TCP proxy (host do tipo `*.proxy.rlwy.net` ou o que o painel mostrar em “Public network”).
 
 ## 4. Build
 

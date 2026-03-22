@@ -73,6 +73,8 @@ CREATE TABLE IF NOT EXISTS itens_nao_cadastrados (
   setor VARCHAR(100),
   quantidade INTEGER DEFAULT 0,
   observacoes TEXT,
+  armazens JSONB,
+  data_importacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -85,6 +87,7 @@ CREATE INDEX IF NOT EXISTS idx_imagens_itens_item_id ON imagens_itens(item_id);
 CREATE INDEX IF NOT EXISTS idx_itens_compostos_pai ON itens_compostos(item_pai_id);
 CREATE INDEX IF NOT EXISTS idx_itens_compostos_componente ON itens_compostos(item_componente_id);
 CREATE INDEX IF NOT EXISTS idx_itens_nao_cadastrados_codigo ON itens_nao_cadastrados(codigo);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_itens_nao_cadastrados_codigo_unique ON itens_nao_cadastrados(codigo);
 
 -- Função para atualizar updated_at automaticamente
 CREATE OR REPLACE FUNCTION update_updated_at_column()
@@ -95,13 +98,16 @@ BEGIN
 END;
 $$ language 'plpgsql';
 
--- Triggers para atualizar updated_at
+-- Triggers para atualizar updated_at (DROP permite reexecutar o script com segurança)
+DROP TRIGGER IF EXISTS update_usuarios_updated_at ON usuarios;
 CREATE TRIGGER update_usuarios_updated_at BEFORE UPDATE ON usuarios
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+DROP TRIGGER IF EXISTS update_itens_updated_at ON itens;
 CREATE TRIGGER update_itens_updated_at BEFORE UPDATE ON itens
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+DROP TRIGGER IF EXISTS update_itens_nao_cadastrados_updated_at ON itens_nao_cadastrados;
 CREATE TRIGGER update_itens_nao_cadastrados_updated_at BEFORE UPDATE ON itens_nao_cadastrados
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 

@@ -1,0 +1,28 @@
+---
+description: Contexto geral do Catálogo de Itens — stack, execução e limites de mudança
+alwaysApply: true
+---
+
+# Catálogo de itens
+
+Monorepo Node: API **Express** em `server/` (CommonJS) e SPA **React 18** (Create React App) em `client/`. Postgres via `pg` (`server/db/pool.js`). Funcionalidades: catálogo, importações Excel, requisições/armazéns, reconhecimento de imagem (AWS Rekognition / Google Vision), uploads (R2).
+
+## Como desenvolver
+
+- Raiz: `npm run dev` — sobe API (`nodemon server/index.js`, porta típica **3001**) e cliente (`client`, **3000**).
+- Build produção: `npm run build` (client); `npm start` serve API + estáticos do build quando `NODE_ENV=production`.
+
+## Segredos e configuração
+
+- **Nunca** commitar credenciais, `.env`, JSON de credenciais GCP, nem chaves em código.
+- Novas variáveis: documentar em `server/env.example` e usar `process.env` / `REACT_APP_*` no client.
+- Banco: preferir `DATABASE_URL`; detalhes em `server/env.example` e deploy em `RAILWAY_DEPLOY.md`.
+
+## Escopo das alterações
+
+- Mudanças **mínimas** e alinhadas ao pedido; não refatorar arquivos grandes (ex.: `server/index.js`) sem necessidade.
+- Seguir padrões e nomes já usados no repositório; extrair para `server/routes/` ou `server/utils/` quando fizer sentido e for coerente com o restante.
+
+## Documentação
+
+- Não criar arquivos `.md` novos salvo pedido explícito do utilizador; preferir regras em `.cursor/rules/` e comentários só onde acrescentar contexto real.

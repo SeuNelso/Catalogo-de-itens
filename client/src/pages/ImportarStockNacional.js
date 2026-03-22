@@ -42,29 +42,7 @@ const ImportarStockNacional = () => {
           const naoCad = (data.erros || []).filter(e => e.motivo === 'Artigo não cadastrado');
   
           setNaoCadastrados(naoCad);
-          
-          // Salvar no servidor para sincronização entre dispositivos
-          if (naoCad.length > 0) {
-            try {
-              const token = localStorage.getItem('token');
-              const response = await fetch('/api/itens-nao-cadastrados', {
-                method: 'POST',
-                headers: {
-                  'Authorization': `Bearer ${token}`,
-                  'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({ itens: naoCad })
-              });
-              
-              if (response.ok) {
-        
-              } else {
-                console.error('Erro ao sincronizar itens não cadastrados:', response.statusText);
-              }
-            } catch (error) {
-              console.error('Erro ao sincronizar itens não cadastrados:', error);
-            }
-          }
+          // Os itens não cadastrados já são gravados na BD durante /api/importar-excel (não apagar com POST).
         }
       }
     }, 1500);
@@ -165,7 +143,7 @@ const ImportarStockNacional = () => {
           <h1 className="text-[#0A7B83] font-black text-[18px] sm:text-[28px] text-center m-0 tracking-wide">Importar Stock Nacional</h1>
           <p className="text-[#333] text-[13px] sm:text-[16px] text-center m-0 max-w-[95vw] sm:max-w-[420px] font-medium">
             Faça upload de um arquivo Excel (.xlsx ou .csv) ou use uma URL do Google Sheets no formato de <span className="text-[#0A7B83] font-bold">Stock Nacional</span> para atualizar as quantidades dos itens em cada armazém.<br/>
-            <span className="text-[#0A7B83] font-bold">Atenção:</span> O arquivo deve conter as colunas <span className="text-[#0A7B83] font-bold">Artigo, Descrição</span> e pelo menos um armazém (ex: WH1, WH2, ...).
+            <span className="text-[#0A7B83] font-bold">Formatos suportados:</span> (1) Primavera / stock nacional — folha tipo <span className="font-semibold">PRIMAVERA STOCK_RESUME</span> com <span className="font-semibold">Artigo</span>, <span className="font-semibold">Descrição</span>, colunas <span className="font-semibold">WH - A …</span> e <span className="font-semibold">TOTAL</span>. (2) Colunas <span className="font-semibold">WH1</span>, <span className="font-semibold">WH2</span>… (3) Pivot / guarda — <span className="font-semibold">REF.</span>, <span className="font-semibold">DEP</span>, <span className="font-semibold">Sum of QTY</span>, etc. Cabeçalhos e folha resumo são detetados automaticamente.
           </p>
           <a href="/exemplo_stock_nacional.xlsx" download className="text-[#0A7B83] font-bold text-[12px] sm:text-[14px] mt-2 underline">Baixar exemplo de arquivo</a>
         </div>

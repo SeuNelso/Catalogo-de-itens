@@ -128,27 +128,17 @@ const CadastrarItem = () => {
               'Authorization': `Bearer ${token}`
             }
           });
-          
+
           if (responseNaoCadastrados.ok) {
             const itensNaoCadastrados = await responseNaoCadastrados.json();
-            const itemParaRemover = itensNaoCadastrados.find(item => item.codigo === formData.codigo);
-            
-            if (itemParaRemover) {
-              // Remover apenas este item específico
-              const novosItens = itensNaoCadastrados.filter(item => item.codigo !== formData.codigo);
-              
-              const responseUpdate = await fetch('/api/itens-nao-cadastrados', {
-                method: 'POST',
-                headers: {
-                  'Authorization': `Bearer ${token}`,
-                  'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({ itens: novosItens })
+            const itemParaRemover = itensNaoCadastrados.find(
+              (item) => item.codigo === formData.codigo
+            );
+            if (itemParaRemover && itemParaRemover.id != null) {
+              await fetch(`/api/itens-nao-cadastrados/${itemParaRemover.id}`, {
+                method: 'DELETE',
+                headers: { Authorization: `Bearer ${token}` }
               });
-              
-              if (responseUpdate.ok) {
-        
-              }
             }
           }
         } catch (error) {

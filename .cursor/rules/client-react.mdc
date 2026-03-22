@@ -1,0 +1,22 @@
+---
+description: Convenções do cliente React (CRA) — rotas, API e estado
+globs: client/src/**/*.js
+alwaysApply: false
+---
+
+# Cliente (`client/src/`)
+
+## Stack
+
+- **React 18**, **react-router-dom** v6, **axios**, JS (sem TypeScript).
+- Estilos: CSS global (`App.css`, etc.) e classes utilitárias já usadas no projeto (ex. padrões tipo Tailwind em strings onde existirem).
+
+## Chamadas à API
+
+- Preferir `apiUrl()` de `client/src/utils/apiUrl.js` para caminhos da API — suporta `REACT_APP_API_URL` e proxy do CRA em dev (`client/package.json` → `proxy`).
+- Manter coerência com `AuthContext` / token em pedidos autenticados como nas páginas existentes.
+
+## UI e rotas
+
+- Novas páginas: registar em `App.js` e, se necessário, na `Navbar` / `ProtectedRoute` como o resto da app.
+- Componentes reutilizáveis em `components/`; páginas em `pages/`.

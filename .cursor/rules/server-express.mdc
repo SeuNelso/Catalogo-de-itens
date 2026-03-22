@@ -1,0 +1,27 @@
+---
+description: Convenções do backend Express — Postgres, rotas e segurança
+globs: server/**/*.js
+alwaysApply: false
+---
+
+# Backend (`server/`)
+
+## Módulos e DB
+
+- **CommonJS** (`require` / `module.exports`).
+- Queries PostgreSQL via `pool` de `server/db/pool.js` — não instanciar `Pool` noutros sítios sem motivo.
+- Usar **parametrized queries** (`$1`, `$2`, …) para evitar SQL injection.
+
+## API e auth
+
+- JWT: `middleware/auth.js` (`authenticateToken`); rotas sensíveis devem manter o mesmo padrão de proteção que rotas semelhantes.
+- Requisições/armazéns: respeitar `middleware/requisicoesScope.js` e `routes/requisicoes.js` ao tocar em permissões ou âmbito por armazém.
+
+## Erros e respostas
+
+- Respostas JSON consistentes com o estilo existente; códigos HTTP apropriados.
+- Em operações async, tratar erros (evitar deixar promises sem `catch` / falhas silenciosas).
+
+## Ficheiros e uploads
+
+- Uploads locais em `uploads/`; integrações S3/R2 seguem utilitários existentes (`s3Upload`, etc.).

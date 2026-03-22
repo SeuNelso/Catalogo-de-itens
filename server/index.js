@@ -2,6 +2,15 @@
 const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '.env') });
 
+const dbUrlConfigured = String(process.env.DATABASE_URL || '').trim();
+const railwayUrlConfigured = String(process.env.DATABASE_URL_RAILWAY || '').trim();
+if (!dbUrlConfigured && process.env.DB_USER === 'seu_usuario' && !railwayUrlConfigured) {
+  console.warn(
+    '[CONFIG] Defina DATABASE_URL em server/.env (URL pública do Postgres no Railway). ' +
+    'Sem isso o backend usa localhost + placeholders e o login devolve 500.'
+  );
+}
+
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
@@ -19,6 +28,7 @@ const { convertGoogleSheetsUrlToExport } = require('./utils/googleSheets');
 const { downloadFile } = require('./utils/downloadFile');
 const { createS3Client } = require('./utils/s3Client');
 const { nomeCompletoUsuario } = require('./utils/usuarioNome');
+const { cadastrarTodosItensNaoCadastrados } = require('./utils/itensNaoCadastradosCadastroLote');
 const { SETORES_VALIDOS } = require('./config/constants');
 const { JWT_SECRET, PORT } = require('./config/secrets');
 const { createAuthenticateToken } = require('./middleware/auth');
@@ -94,6 +104,440 @@ const upload = multer({
 // --- Importação assíncrona de Excel com progresso em memória ---
 const importStatus = {};
 
+function normalizeStockHeader(field) {
+  return String(field ?? '')
+    .replace(/^\uFEFF/, '')
+    .trim()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+}
+
+/** Quantidades no Excel: números, vírgula decimal (PT), milhares com ponto, etc. */
+function parseStockQuantity(value) {
+  if (value === null || value === undefined || value === '') return 0;
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? Math.round(value) : 0;
+  }
+  let s = String(value).trim();
+  if (!s) return 0;
+  s = s.replace(/\s/g, '').replace(/[^\d,.+-]/g, '');
+  if (!s || s === '+' || s === '-') return 0;
+  const hasComma = s.includes(',');
+  const hasDot = s.includes('.');
+  if (hasComma && hasDot) {
+    if (s.lastIndexOf(',') > s.lastIndexOf('.')) {
+      s = s.replace(/\./g, '').replace(',', '.');
+    } else {
+      s = s.replace(/,/g, '');
+    }
+  } else if (hasComma) {
+    const parts = s.split(',');
+    if (parts.length === 2 && parts[1].length <= 2) {
+      s = parts[0].replace(/\./g, '') + '.' + parts[1];
+    } else {
+      s = s.replace(/,/g, '');
+    }
+  } else if (hasDot) {
+    const parts = s.split('.');
+    if (parts.length > 2) {
+      s = parts.join('');
+    } else if (parts.length === 2 && parts[1].length === 3 && /^[0-9]{1,3}$/.test(parts[0])) {
+      s = parts[0] + parts[1];
+    }
+  }
+  const n = Number(s);
+  return Number.isFinite(n) ? Math.round(n) : 0;
+}
+
+const STOCK_NON_WAREHOUSE_KEYS = new Set([
+  'artigo',
+  'sku',
+  'codigo',
+  'code',
+  'item',
+  'cod',
+  'ref',
+  'ref.',
+  'descricao',
+  'description',
+  'nome',
+  'desc',
+  'total',
+  'soma',
+  'sum',
+  'tot',
+  'quantidade',
+  'qty',
+  'qtd',
+  'stocktotal',
+  'totalstock',
+  'dep',
+  'sumofqty',
+  'unidade',
+  'medida',
+  'unidadedemedida',
+  'unidade medida',
+  '__rownum__',
+]);
+
+function stockCellFromRow(row, candidates) {
+  const map = Object.create(null);
+  for (const key of Object.keys(row || {})) {
+    map[normalizeStockHeader(key)] = row[key];
+    map[String(key).trim().toLowerCase()] = row[key];
+  }
+  for (const c of candidates) {
+    const v =
+      map[normalizeStockHeader(c)]
+      ?? map[String(c).trim().toLowerCase()]
+      ?? row[c];
+    if (v !== undefined && v !== null && String(v).trim() !== '') {
+      return String(v).trim();
+    }
+  }
+  return '';
+}
+
+function stockTotalFromRow(row) {
+  const direct = stockCellFromRow(row, [
+    'Sum of QTY',
+    'SUM OF QTY',
+    'QTD',
+    'TOTAL',
+    'Total',
+    'SOMA',
+    'Sum',
+    'TOT',
+    'Qtd Total',
+    'Quantidade Total',
+    'Total Stock',
+    'Stock Total',
+    'Total Geral',
+    'Qtd.',
+    'Quantidade',
+  ]);
+  if (direct !== '') {
+    return parseStockQuantity(direct);
+  }
+  for (const key of Object.keys(row || {})) {
+    const norm = normalizeStockHeader(key);
+    if (
+      norm === 'total'
+      || norm === 'soma'
+      || norm === 'tot'
+      || norm === 'sum'
+      || norm === 'quantidadetotal'
+      || norm === 'qtdtotal'
+      || norm === 'totalstock'
+      || norm === 'stocktotal'
+      || norm === 'totalgeral'
+      || norm === 'sum of qty'
+      || norm === 'qtd'
+    ) {
+      return parseStockQuantity(row[key]);
+    }
+    if (norm.includes('sum') && norm.includes('qty')) {
+      return parseStockQuantity(row[key]);
+    }
+  }
+  return 0;
+}
+
+/**
+ * Colunas de armazém: WH1, WH 01, e Primavera "WH - A" + quebra de linha + "CACÉM", "WH - MARKT", etc.
+ */
+function isWarehouseColumnName(rawHeader) {
+  const c = String(rawHeader).replace(/^\uFEFF/, '').trim();
+  if (!c) return false;
+  const u = c.toUpperCase();
+  const oneLine = u.replace(/\r?\n/g, ' ').replace(/\s+/g, ' ').trim();
+  const compact = u.replace(/\s/g, '');
+  if (!/^WH/i.test(oneLine)) return false;
+  if (/^WHAT\b/i.test(oneLine) || /^WHY\b/i.test(oneLine) || /^WHERE\b/i.test(oneLine)) {
+    return false;
+  }
+  if (/^WH\s*\d/.test(oneLine)) return true;
+  if (/^WH\d/.test(compact)) return true;
+  if (/^WH[-_.]\d/.test(compact)) return true;
+  // Primavera National Stock: "WH - A", "WH - MARKT" (letra ou código após o hífen)
+  if (/WH\s*-\s*[A-Z0-9]/i.test(oneLine)) return true;
+  return false;
+}
+
+function warehouseColumnDisplayLabel(rawHeader) {
+  return String(rawHeader)
+    .replace(/^\uFEFF/, '')
+    .replace(/\r?\n/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function stockArmazensFromRow(row) {
+  const armazens = {};
+  for (const col of Object.keys(row || {})) {
+    const norm = normalizeStockHeader(col);
+    if (!norm || STOCK_NON_WAREHOUSE_KEYS.has(norm)) continue;
+    if (norm === 'unidade' || norm === 'medida' || norm.includes('unidade')) continue;
+    if (!isWarehouseColumnName(col)) continue;
+    const label = warehouseColumnDisplayLabel(col);
+    armazens[label] = parseStockQuantity(row[col]);
+  }
+  return armazens;
+}
+
+function sumArmazensQuantidades(armazens) {
+  return Object.values(armazens || {}).reduce((a, b) => a + (Number(b) || 0), 0);
+}
+
+/** Descobre em que linha (0-based) estão os cabeçalhos (Artigo, REF., WH1, Sum of QTY, …). */
+function scoreStockSheetHeaderKeys(keys) {
+  if (!keys.length) return -1000;
+  const norms = keys.map((k) => normalizeStockHeader(String(k)));
+  let score = 0;
+  const emptyLike = keys.filter((k) => String(k).startsWith('__EMPTY')).length;
+  score -= emptyLike * 4;
+  for (let ki = 0; ki < keys.length; ki += 1) {
+    const k = keys[ki];
+    const n = norms[ki];
+    if (!n || n.startsWith('__empty')) continue;
+    if (n.includes('artigo') || n === 'ref' || n.startsWith('ref.') || n.includes('referencia')) score += 5;
+    if (n === 'cod' || n.includes('codigo')) score += 3;
+    if (n.includes('descri') || n.includes('description')) score += 3;
+    if (n.includes('sum') && n.includes('qty')) score += 6;
+    if (n === 'qtd' || n === 'total' || n.includes('total')) score += 2;
+    if (n.includes('qty') || n.includes('quantidade')) score += 2;
+    if (n.startsWith('wh') && /\d/.test(n)) score += 4;
+    if (isWarehouseColumnName(k)) score += 5;
+    if (n === 'dep' || n.includes('depart')) score += 2;
+  }
+  return score;
+}
+
+function detectStockImportStartRow(sheet) {
+  let best = 6;
+  let bestScore = -Infinity;
+  for (let r = 0; r <= 30; r += 1) {
+    const rows = XLSX.utils.sheet_to_json(sheet, {
+      defval: '',
+      range: r,
+      raw: false,
+    });
+    if (!rows.length) continue;
+    const s = scoreStockSheetHeaderKeys(Object.keys(rows[0]));
+    if (s > bestScore) {
+      bestScore = s;
+      best = r;
+    }
+  }
+  if (bestScore < -100) return 6;
+  console.log(
+    `📋 Stock nacional: cabeçalhos na linha ${best + 1} do Excel (índice ${best}, score ${bestScore})`
+  );
+  return best;
+}
+
+/** Folha resumo com colunas WH (evita importar só "PRIMAVERA STOCK_DETAIL" por engano). */
+function pickStockNationalSheetName(workbook) {
+  const names = workbook.SheetNames || [];
+  if (!names.length) return undefined;
+  const exact = names.find((n) => /^PRIMAVERA STOCK_RESUME$/i.test(String(n).trim()));
+  if (exact) return exact;
+  const resume = names.find(
+    (n) =>
+      /stock/i.test(n)
+      && /resume|resumo/i.test(n)
+      && !/detail|detalhe/i.test(n)
+      && !/\bape\b/i.test(String(n).toLowerCase())
+  );
+  if (resume) return resume;
+  const anyResume = names.find((n) => /resume|resumo/i.test(n) && !/detail|detalhe/i.test(n));
+  return anyResume || names[0];
+}
+
+/** Departamento / local pivot (cabeçalhos variam entre ficheiros e exportações). */
+function depFromRow(row) {
+  const direct = stockCellFromRow(row, [
+    'DEP',
+    'Dep',
+    'dep',
+    'DEP.',
+    'Departamento',
+    'DEPARTAMENTO',
+    'Department',
+    'Dept',
+    'DEPT',
+    'Depto',
+    'DEPART',
+    'Local',
+    'LOCAL',
+    'Viatura',
+    'Centro',
+  ]);
+  if (direct) return direct;
+  for (const key of Object.keys(row || {})) {
+    const n = normalizeStockHeader(key);
+    if (
+      n === 'dep'
+      || n === 'depto'
+      || n.includes('departamento')
+      || n.includes('department')
+      || (n.includes('local') && !n.includes('localizacao'))
+    ) {
+      const v = row[key];
+      if (v != null && String(v).trim() !== '') return String(v).trim();
+    }
+  }
+  return '';
+}
+
+/** Coluna tipo "Sum of QTY" do pivot (nome varia). */
+function sumOfQtyFromRow(row) {
+  if (row['Sum of QTY'] !== undefined && String(row['Sum of QTY']).trim() !== '') {
+    return parseStockQuantity(row['Sum of QTY']);
+  }
+  for (const key of Object.keys(row || {})) {
+    const n = normalizeStockHeader(key);
+    if (n.includes('sum') && n.includes('qty')) {
+      return parseStockQuantity(row[key]);
+    }
+  }
+  return stockTotalFromRow(row);
+}
+
+/**
+ * O mesmo código aparece em várias linhas (ex.: um DEP por linha). Junta quantidades por armazém/DEP
+ * e define itens.quantidade = soma coerente com o detalhe.
+ */
+function aggregateStockRecordsByCodigo(records) {
+  const map = new Map();
+  for (const rec of records) {
+    const c = String(rec.codigo || '').trim();
+    if (!c) continue;
+    if (!map.has(c)) {
+      map.set(c, {
+        codigo: c,
+        nome: rec.nome || c,
+        descricao: rec.descricao || rec.nome || c,
+        quantidadeSum: 0,
+        armazens: {},
+        lineIdx: rec.lineIdx != null ? rec.lineIdx : 999999,
+      });
+    }
+    const a = map.get(c);
+    a.quantidadeSum += Number(rec.quantidade) || 0;
+    if (rec.lineIdx != null) a.lineIdx = Math.min(a.lineIdx, rec.lineIdx);
+    if (rec.nome) a.nome = rec.nome;
+    if (rec.descricao) a.descricao = rec.descricao;
+    for (const [k, v] of Object.entries(rec.armazens || {})) {
+      const kk = String(k).trim();
+      if (!kk) continue;
+      const q = Math.round(Number(v)) || 0;
+      a.armazens[kk] = (a.armazens[kk] || 0) + q;
+    }
+  }
+
+  let ord = 0;
+  return Array.from(map.values()).map((a) => {
+    const sumWh = sumArmazensQuantidades(a.armazens);
+    let qty = a.quantidadeSum;
+    if (sumWh > qty) qty = sumWh;
+    if (qty === 0 && sumWh > 0) qty = sumWh;
+    let arms = { ...a.armazens };
+    if (Object.keys(arms).length === 0 && qty > 0) {
+      arms = { 'Sem detalhe de armazém': qty };
+    }
+    return {
+      codigo: a.codigo,
+      nome: a.nome,
+      descricao: a.descricao,
+      quantidade: qty,
+      armazens: arms,
+      idx: a.lineIdx === 999999 ? 0 : a.lineIdx,
+      ordem_importacao: ord++,
+    };
+  });
+}
+
+/**
+ * Uma linha do Excel pode ter 1 ou 2 artigos (ex.: REF.+Sum of QTY e COD+QTD lado a lado).
+ */
+function stockRecordsFromImportRow(row) {
+  const records = [];
+
+  const codigoA = stockCellFromRow(row, [
+    'REF.',
+    'REF',
+    'Referência',
+    'Referencia',
+    'Artigo',
+    'ARTIGO',
+    'Sku',
+    'SKU',
+    'Codigo',
+    'Código',
+    'Code',
+    'Item',
+  ]);
+  const descA = stockCellFromRow(row, [
+    'DESCRIPTION',
+    'Description',
+    'Descrição',
+    'Descricao',
+    'Nome',
+    'Desc.',
+    'Desc',
+  ]);
+  const dep = depFromRow(row);
+  const qA = sumOfQtyFromRow(row);
+
+  let armA = stockArmazensFromRow(row);
+  if (Object.keys(armA).length === 0) {
+    if (dep) {
+      armA = { [dep]: qA };
+    } else if (qA !== 0 || String(row['Sum of QTY'] ?? '').trim() === '0') {
+      armA = { 'Sem detalhe de armazém': qA };
+    }
+  }
+  let qtyItemA = qA;
+  if (qtyItemA === 0) qtyItemA = sumArmazensQuantidades(armA);
+
+  if (codigoA) {
+    records.push({
+      codigo: codigoA,
+      nome: descA || codigoA,
+      descricao: descA || codigoA,
+      quantidade: qtyItemA,
+      armazens: armA,
+    });
+  }
+
+  const codigoB = stockCellFromRow(row, ['COD', 'Cod']);
+  const descB = stockCellFromRow(row, ['DESCRIÇÃO', 'DESCRICAO', 'Descricao', 'Desc']);
+  let qB = 0;
+  if (row.QTD !== undefined && String(row.QTD).trim() !== '') {
+    qB = parseStockQuantity(row.QTD);
+  }
+  const depB = dep;
+  let armB = {};
+  if (qB !== 0 || String(row.QTD ?? '').trim() === '0') {
+    armB = depB ? { [depB]: qB } : { 'Sem detalhe de armazém': qB };
+  }
+  const qtyItemB = qB || sumArmazensQuantidades(armB);
+
+  if (codigoB && codigoB !== codigoA) {
+    records.push({
+      codigo: codigoB,
+      nome: descB || codigoB,
+      descricao: descB || codigoB,
+      quantidade: qtyItemB,
+      armazens: armB,
+    });
+  }
+
+  return records;
+}
+
 const excelUpload = multer({ dest: 'uploads/' });
 app.post('/api/importar-excel', authenticateToken, excelUpload.single('arquivo'), async (req, res) => {
   
@@ -146,57 +590,50 @@ app.post('/api/importar-excel', authenticateToken, excelUpload.single('arquivo')
         filePath = req.file.path;
       }
       
-      const sheetName = workbook.SheetNames[0];
+      const sheetName = pickStockNationalSheetName(workbook);
       const sheet = workbook.Sheets[sheetName];
-      
-      // Configurar para ignorar as primeiras 6 linhas (cabeçalho) e começar na linha 7
-      const data = XLSX.utils.sheet_to_json(sheet, { 
+      console.log(`📄 Folha de stock: "${sheetName}"`);
+
+      const headerRowIndex = detectStockImportStartRow(sheet);
+      const data = XLSX.utils.sheet_to_json(sheet, {
         defval: '',
-        range: 6 // Começar a partir da linha 7 (índice 6)
+        range: headerRowIndex,
+        raw: false,
       });
-      
-      console.log(`📊 Importação iniciada: ${data.length} linhas de dados encontradas (ignorando cabeçalho das primeiras 6 linhas)`);
-      
+
+      const rawStockRecs = [];
+      data.forEach((row, lineIdx) => {
+        for (const rec of stockRecordsFromImportRow(row)) {
+          if (rec.codigo) rawStockRecs.push({ ...rec, lineIdx });
+        }
+      });
+      const aggregatedStock = aggregateStockRecordsByCodigo(rawStockRecs);
+
+      console.log(
+        `📊 Importação iniciada: ${data.length} linhas Excel → ${aggregatedStock.length} artigos únicos (cabeçalho linha ${headerRowIndex + 1})`
+      );
+
       importStatus[importId].status = 'importando';
-      importStatus[importId].total = data.length;
+      importStatus[importId].total = aggregatedStock.length;
       let processados = 0;
       const BATCH_SIZE = 50;
-      // Coletar todos os códigos do arquivo
-      const codigosAtivos = new Set(data.map(row => row['Artigo']?.toString().trim()).filter(Boolean));
-      const codigosAtivosArr = Array.from(codigosAtivos);
+      const codigosAtivosArr = aggregatedStock.map((r) => r.codigo);
       await pool.query(
         'UPDATE itens SET ativo = (codigo IS NOT NULL AND codigo = ANY($1::text[]))',
         [codigosAtivosArr]
       );
 
-      for (let batchStart = 0; batchStart < data.length; batchStart += BATCH_SIZE) {
-        const batch = data.slice(batchStart, batchStart + BATCH_SIZE);
-        const valid = [];
-        for (let i = 0; i < batch.length; i++) {
-          const idx = batchStart + i;
-          const row = batch[i];
-          const codigo = row['Artigo']?.toString().trim();
-          const descricao = row['Descrição']?.toString().trim();
-          const nome = descricao;
-          const quantidade = Number(row['TOTAL']) || 0;
-          const ordem_importacao = idx;
-          if (!codigo || !nome) {
-            importStatus[importId].erros.push({
-              codigo: codigo || 'N/A',
-              descricao: nome || 'N/A',
-              motivo: 'Artigo não cadastrado',
-              linha: idx + 8
-            });
-            continue;
-          }
-          const armazens = {};
-          Object.keys(row).forEach((col) => {
-            if (col.startsWith('WH')) {
-              armazens[col] = Number(row[col]) || 0;
-            }
-          });
-          valid.push({ idx, codigo, nome, descricao, quantidade, ordem_importacao, armazens });
-        }
+      for (let batchStart = 0; batchStart < aggregatedStock.length; batchStart += BATCH_SIZE) {
+        const batch = aggregatedStock.slice(batchStart, batchStart + BATCH_SIZE);
+        const valid = batch.map((rec) => ({
+          idx: rec.idx,
+          codigo: rec.codigo,
+          nome: rec.nome,
+          descricao: rec.descricao || rec.nome,
+          quantidade: rec.quantidade,
+          ordem_importacao: rec.ordem_importacao,
+          armazens: rec.armazens,
+        }));
 
         processados += batch.length;
         importStatus[importId].processados = processados;
@@ -223,12 +660,13 @@ app.post('/api/importar-excel', authenticateToken, excelUpload.single('arquivo')
 
             if (toInsert.length > 0) {
               await pool.query(
-                `INSERT INTO itens_nao_cadastrados (codigo, descricao, armazens)
-                 SELECT * FROM unnest($1::text[], $2::text[], $3::text[]) AS t(codigo, descricao, armazens)`,
+                `INSERT INTO itens_nao_cadastrados (codigo, descricao, armazens, data_importacao)
+                 SELECT t.codigo, t.descricao, t.armazens::jsonb, CURRENT_TIMESTAMP
+                 FROM unnest($1::text[], $2::text[], $3::text[]) AS t(codigo, descricao, armazens)`,
                 [
                   toInsert.map((x) => x.codigo),
                   toInsert.map((x) => x.nome),
-                  toInsert.map((x) => JSON.stringify(x.armazens))
+                  toInsert.map((x) => JSON.stringify(x.armazens)),
                 ]
               );
             }
@@ -236,14 +674,14 @@ app.post('/api/importar-excel', authenticateToken, excelUpload.single('arquivo')
               await pool.query(
                 `UPDATE itens_nao_cadastrados n SET
                    descricao = d.descricao,
-                   armazens = d.armazens,
+                   armazens = d.armazens::jsonb,
                    data_importacao = CURRENT_TIMESTAMP
                  FROM unnest($1::text[], $2::text[], $3::text[]) AS d(codigo, descricao, armazens)
                  WHERE n.codigo = d.codigo`,
                 [
                   toUpdate.map((x) => x.codigo),
                   toUpdate.map((x) => x.nome),
-                  toUpdate.map((x) => JSON.stringify(x.armazens))
+                  toUpdate.map((x) => JSON.stringify(x.armazens)),
                 ]
               );
             }
@@ -273,23 +711,30 @@ app.post('/api/importar-excel', authenticateToken, excelUpload.single('arquivo')
                 found.map((x) => x.codigo),
                 found.map((x) => x.nome),
                 found.map((x) => x.descricao),
-                found.map((x) => x.quantidade),
+                found.map((x) => Math.round(Number(x.quantidade)) || 0),
                 found.map((x) => x.ordem_importacao)
               ]
             );
 
-            const itemIds = found.map((x) => codigoToId.get(x.codigo));
-            await pool.query('DELETE FROM armazens_item WHERE item_id = ANY($1::int[])', [itemIds]);
+            const itemIdsComWh = found
+              .filter((x) => Object.keys(x.armazens || {}).length > 0)
+              .map((x) => codigoToId.get(x.codigo));
+            if (itemIdsComWh.length > 0) {
+              await pool.query('DELETE FROM armazens_item WHERE item_id = ANY($1::int[])', [
+                itemIdsComWh,
+              ]);
+            }
 
             const iIds = [];
             const armNomes = [];
             const armQtds = [];
             for (const f of found) {
+              if (Object.keys(f.armazens || {}).length === 0) continue;
               const iid = codigoToId.get(f.codigo);
               for (const [armazem, qtd] of Object.entries(f.armazens)) {
                 iIds.push(iid);
                 armNomes.push(armazem);
-                armQtds.push(qtd);
+                armQtds.push(Math.round(Number(qtd)) || 0);
               }
             }
             if (iIds.length > 0) {
@@ -881,8 +1326,10 @@ app.get('/api/verify-token', authenticateToken, async (req, res) => {
 // Listar todos os itens (público) COM paginação
 app.get('/api/itens', async (req, res) => {
   const incluirInativos = req.query.incluirInativos === 'true';
-  const page = parseInt(req.query.page) || 1;
-  const limit = parseInt(req.query.limit) || 10;
+  const page = parseInt(req.query.page, 10) || 1;
+  let limit = parseInt(req.query.limit, 10);
+  if (!Number.isFinite(limit) || limit < 1) limit = 10;
+  if (limit > 500) limit = 500;
   const offset = (page - 1) * limit;
   const searchTerm = req.query.search || '';
   
@@ -911,7 +1358,9 @@ app.get('/api/itens', async (req, res) => {
   
   // Condição de pesquisa
   if (searchTerm.trim()) {
-    whereConditions.push(`(LOWER(i.codigo) LIKE LOWER($${paramIndex}) OR LOWER(i.nome) LIKE LOWER($${paramIndex}))`);
+    whereConditions.push(
+      `(LOWER(COALESCE(i.codigo,'')) LIKE LOWER($${paramIndex}) OR LOWER(COALESCE(i.nome,'')) LIKE LOWER($${paramIndex}) OR LOWER(COALESCE(i.descricao,'')) LIKE LOWER($${paramIndex}))`
+    );
     params.push(`%${searchTerm.trim()}%`);
     paramIndex++;
   }
@@ -2636,7 +3085,13 @@ app.patch('/api/usuarios/:id', authenticateToken, async (req, res) => {
     if (error.code === '42703') {
       return res.status(400).json({
         error: 'Coluna em falta na base de dados.',
-        detalhes: 'Execute: npm run db:migrate:usuarios-dados-pessoais'
+        detalhes: error.message,
+        hint:
+          'Confirme que correu o migrate na mesma base que a API (server/.env → DATABASE_URL). ' +
+          'updated_at/created_at em usuarios: npm run db:migrate:usuarios-timestamps. ' +
+          'sobrenome/telemovel: npm run db:migrate:usuarios-dados-pessoais. ' +
+          'requisicoes_armazem_origem_id: npm run db:migrate:usuarios-req-armazem. ' +
+          'numero_colaborador: ver migrações / init-db.'
       });
     }
     res.status(500).json({ error: 'Erro ao atualizar utilizador.', details: error.message });
@@ -3550,20 +4005,45 @@ app.post('/api/itens-nao-cadastrados', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Dados inválidos.' });
     }
 
-    // Salvar no banco de dados
-    await pool.query('DELETE FROM itens_nao_cadastrados');
-    
+    let n = 0;
     for (const item of itens) {
+      if (!item || item.codigo == null || String(item.codigo).trim() === '') continue;
+      const codigo = String(item.codigo).trim();
       await pool.query(
-        'INSERT INTO itens_nao_cadastrados (codigo, descricao, armazens, data_importacao) VALUES ($1, $2, $3, $4)',
-        [item.codigo, item.descricao, JSON.stringify(item.armazens || {}), new Date()]
+        `INSERT INTO itens_nao_cadastrados (codigo, descricao, armazens, data_importacao)
+         VALUES ($1, $2, $3::jsonb, $4)
+         ON CONFLICT (codigo) DO UPDATE SET
+           descricao = EXCLUDED.descricao,
+           armazens = EXCLUDED.armazens,
+           data_importacao = EXCLUDED.data_importacao`,
+        [
+          codigo,
+          item.descricao != null ? String(item.descricao) : '',
+          JSON.stringify(item.armazens && typeof item.armazens === 'object' ? item.armazens : {}),
+          new Date(),
+        ]
       );
+      n += 1;
     }
 
-    res.json({ message: 'Itens não cadastrados salvos com sucesso', total: itens.length });
+    res.json({ message: 'Itens não cadastrados salvos com sucesso', total: n });
   } catch (error) {
     console.error('Erro ao salvar itens não cadastrados:', error);
     res.status(500).json({ error: 'Erro ao salvar itens não cadastrados' });
+  }
+});
+
+// Cadastrar em lote: cria `itens` + `armazens_item` a partir do stock nacional em `itens_nao_cadastrados`
+app.post('/api/itens-nao-cadastrados/cadastrar-todos', authenticateToken, async (req, res) => {
+  try {
+    if (!req.user || (req.user.role !== 'admin' && req.user.role !== 'controller')) {
+      return res.status(403).json({ error: 'Acesso negado.' });
+    }
+    const result = await cadastrarTodosItensNaoCadastrados(pool);
+    res.json(result);
+  } catch (error) {
+    console.error('Erro ao cadastrar todos os itens não cadastrados:', error);
+    res.status(500).json({ error: error.message || 'Erro ao cadastrar itens' });
   }
 });
 
