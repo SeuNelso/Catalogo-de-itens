@@ -4,16 +4,7 @@ import { useConfirm } from '../contexts/ConfirmContext';
 import { useNavigate, Link } from 'react-router-dom';
 import { FaSearch, FaUser, FaPlus, FaPen, FaTimes } from 'react-icons/fa';
 import { getRequisicoesArmazemOrigemIds } from '../utils/requisicoesArmazemOrigem';
-
-const roles = [
-  { value: 'admin', label: 'Administrador' },
-  { value: 'controller', label: 'Controller' },
-  { value: 'backoffice_operations', label: 'BACKOFFICE OPERATIONS' },
-  { value: 'backoffice_armazem', label: 'BACKOFFICE ARMAZEM' },
-  { value: 'operador', label: 'OPERADOR' },
-  { value: 'basico', label: 'Básico' },
-  { value: 'usuario', label: 'Usuário' }
-];
+import { ROLE_OPTIONS } from '../utils/roles';
 
 function normalizeRow(u) {
   const ids = getRequisicoesArmazemOrigemIds(u);
@@ -587,7 +578,7 @@ const AdminUsuarios = () => {
                   <p className="text-sm text-gray-600 mb-4">
                     Perfil atribuído:{' '}
                     <span className="font-medium text-gray-800">
-                      {roles.find((r) => r.value === draft.role)?.label || draft.role}
+                      {ROLE_OPTIONS.find((r) => r.value === draft.role)?.label || draft.role}
                     </span>
                     {' '}(apenas um administrador pode alterar)
                   </p>
@@ -635,7 +626,7 @@ const AdminUsuarios = () => {
                         !isEditing ? 'bg-gray-50 cursor-default text-gray-800' : 'bg-white'
                       }`}
                     >
-                      {roles.map((r) => (
+                      {ROLE_OPTIONS.map((r) => (
                         <option key={r.value} value={r.value}>{r.label}</option>
                       ))}
                     </select>

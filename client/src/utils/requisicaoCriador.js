@@ -29,10 +29,20 @@ export function isRequisicaoDoUtilizadorAtual(req, user) {
   return Number(req.usuario_id) === Number(user.id);
 }
 
-/** Outro utilizador já iniciou a separação (primeiro item preparado) — admin/controller ignoram. */
+/** Edição de cabeçalho/itens (ecrã Editar) só enquanto a requisição está pendente. */
+export function requisicaoPermiteEdicaoFormulario(status) {
+  return String(status || '') === 'pendente';
+}
+
+/**
+ * Reserva só enquanto a requisição está em separação ativa (`EM SEPARACAO`).
+ * Depois de `separado` ou estados seguintes, `separador_usuario_id` serve só para exibir quem separou.
+ * Admin/backoffice armazém/supervisor armazém podem intervir mesmo em `EM SEPARACAO`.
+ */
 export function preparacaoReservadaOutroUtilizador(req, user) {
   if (!req || !user) return false;
+  if (String(req.status || '') !== 'EM SEPARACAO') return false;
   if (req.separador_usuario_id == null || req.separador_usuario_id === '') return false;
-  if (['admin', 'controller'].includes(user.role)) return false;
+  if (['admin', 'backoffice_armazem', 'supervisor_armazem'].includes(user.role)) return false;
   return Number(req.separador_usuario_id) !== Number(user.id);
 }

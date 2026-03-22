@@ -17,14 +17,14 @@ const ImportarRequisicao = () => {
 
   const armazensLista = useMemo(() => {
     const allowed = getRequisicoesArmazemOrigemIds(user);
-    if (allowed.length === 0 || user?.role === 'admin' || user?.role === 'controller') return armazens;
+    if (allowed.length === 0 || user?.role === 'admin') return armazens;
     const set = new Set(allowed);
     return armazens.filter((a) => set.has(a.id));
   }, [armazens, user]);
 
   useEffect(() => {
     const allowed = getRequisicoesArmazemOrigemIds(user);
-    if (allowed.length !== 1 || user?.role === 'admin' || user?.role === 'controller') return;
+    if (allowed.length !== 1 || user?.role === 'admin') return;
     setArmazemOrigemId(String(allowed[0]));
   }, [user]);
 
@@ -155,8 +155,7 @@ const ImportarRequisicao = () => {
               disabled={
                 armazensLista.length === 1 &&
                 getRequisicoesArmazemOrigemIds(user).length >= 1 &&
-                user?.role !== 'admin' &&
-                user?.role !== 'controller'
+                user?.role !== 'admin'
               }
               className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0915FF] focus:border-transparent text-sm"
             >

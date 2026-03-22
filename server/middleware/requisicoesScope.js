@@ -1,8 +1,29 @@
 const { pool } = require('../db/pool');
+const { isAdmin } = require('../utils/roles');
 
-/** Quem ignora o filtro de armazém nas requisições */
+/** Quem ignora o filtro de armazém nas requisições (apenas admin). */
 function roleComAcessoTotalRequisicoes(role) {
-  return role === 'admin' || role === 'controller';
+  return isAdmin(role);
+}
+
+/** Perfis sem módulo de requisições (API 403 em /api/requisicoes). */
+function perfilSemAcessoModuloRequisicoes(role) {
+  return role === 'basico' || role === 'controller';
+}
+
+function requisicaoPerfilNegadoMiddleware(req, res, next) {
+  try {
+    const role = req.user && req.user.role;
+    if (perfilSemAcessoModuloRequisicoes(role)) {
+      return res.status(403).json({
+        error: 'Este perfil não tem acesso a requisições.',
+        code: 'REQUISICOES_PERFIL_NEGADO',
+      });
+    }
+    next();
+  } catch (e) {
+    next(e);
+  }
 }
 
 /** Cache apenas quando a coluna existe (evita ficar preso a "false" após migração sem reinício). */
@@ -50,7 +71,7 @@ async function usuarioRequisicaoArmazemJunctionTableExists() {
   return false;
 }
 
-/** Lista de armazéns de origem permitidos para requisições. Vazio = sem filtro extra. */
+/** Lista de armazéns de origem permitidos para requisições (por utilizador). */
 async function fetchRequisicoesArmazemIdsForUser(userId) {
   if (!userId) return [];
   if (await usuarioRequisicaoArmazemJunctionTableExists()) {
@@ -71,7 +92,7 @@ async function fetchRequisicoesArmazemIdsForUser(userId) {
   return [];
 }
 
-/** Scope após requisicaoScopeMiddleware: requisicaoArmazemOrigemIds = array; vazio ⇒ sem filtro */
+/** Scope após requisicaoScopeMiddleware: requisicaoArmazemOrigemIds = ids permitidos (vazio para não admin ⇒ sem acesso a requisições). */
 async function requisicaoScopeMiddleware(req, res, next) {
   try {
     req.requisicaoArmazemOrigemIds = [];
@@ -90,11 +111,20 @@ function requisicaoArmazemOrigemAcessoPermitido(req, armazemOrigemId) {
   if (!req.user) return false;
   if (roleComAcessoTotalRequisicoes(req.user.role)) return true;
   const allowed = req.requisicaoArmazemOrigemIds;
-  if (!allowed || allowed.length === 0) return true;
+  /** Sem armazéns atribuídos ⇒ não acede a requisições (não é “ver tudo”). */
+  if (!allowed || allowed.length === 0) return false;
   const sid =
     armazemOrigemId != null && armazemOrigemId !== '' ? parseInt(armazemOrigemId, 10) : NaN;
   if (Number.isNaN(sid)) return false;
   return allowed.includes(sid);
+}
+
+/** Utilizadores com escopo por armazém (não admin) sem nenhum armazém de origem atribuído. */
+function usuarioEscopadoSemArmazensAtribuidos(req) {
+  if (!req.user) return false;
+  if (roleComAcessoTotalRequisicoes(req.user.role)) return false;
+  const allowed = req.requisicaoArmazemOrigemIds;
+  return !allowed || allowed.length === 0;
 }
 
 /** Valida scope para exportação multi; lanha se algum id fora dos armazéns permitidos. */
@@ -103,7 +133,11 @@ async function assertIdsRequisicoesPermitidas(req, idsRaw) {
   if (idsClean.length === 0) return;
   if (roleComAcessoTotalRequisicoes(req.user.role)) return;
   const allowed = req.requisicaoArmazemOrigemIds;
-  if (!allowed || allowed.length === 0) return;
+  if (!allowed || allowed.length === 0) {
+    const e = new Error('Nenhum armazém de origem atribuído ao seu utilizador.');
+    e.statusCode = 403;
+    throw e;
+  }
   const bad = await pool.query(
     `SELECT id FROM requisicoes WHERE id = ANY($1::int[])
      AND (armazem_origem_id IS NULL OR NOT (armazem_origem_id = ANY($2::int[])))
@@ -118,12 +152,14 @@ async function assertIdsRequisicoesPermitidas(req, idsRaw) {
 }
 
 function createRequisicaoAuth(authenticateToken) {
-  return [authenticateToken, requisicaoScopeMiddleware];
+  return [authenticateToken, requisicaoPerfilNegadoMiddleware, requisicaoScopeMiddleware];
 }
 
 module.exports = {
   requisicaoScopeMiddleware,
+  requisicaoPerfilNegadoMiddleware,
   requisicaoArmazemOrigemAcessoPermitido,
+  usuarioEscopadoSemArmazensAtribuidos,
   assertIdsRequisicoesPermitidas,
   createRequisicaoAuth,
   /** Usado no login / verify-token para incluir armazéns de origem no JWT e no utilizador. */

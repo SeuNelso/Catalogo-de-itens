@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { ChevronDown, Settings, Database, Users, User, FileText, Download, Plus, Trash2, Image, RefreshCw, Menu, X, AlertTriangle, Package, ShoppingCart, Archive } from 'react-feather';
+import { podeAcederRequisicoes } from '../utils/roles';
 
 const Navbar = () => {
   const { isAuthenticated, logout, user } = useAuth();
@@ -18,8 +19,8 @@ const Navbar = () => {
 
   const isAdmin = user && user.role === 'admin';
   const isController = user && (user.role === 'admin' || user.role === 'controller');
-  const canSeeRequisicoes = user && ['admin', 'controller', 'operador', 'backoffice_operations', 'backoffice_armazem'].includes(user.role);
-  const isBackofficeArmazem = user && user.role === 'backoffice_armazem';
+  const canSeeRequisicoes = user && podeAcederRequisicoes(user.role);
+  const isArmazemLogistica = user && ['backoffice_armazem', 'supervisor_armazem'].includes(user.role);
   const showGerirMenu = isAdmin;
   /** Conta autenticada que não é admin: acede a /admin-usuarios só para o próprio perfil */
   const showMeuPerfil = isAuthenticated && !isAdmin;
@@ -236,7 +237,7 @@ const Navbar = () => {
                       </div>
                     </>
                   )}
-                  {isBackofficeArmazem && (
+                  {isArmazemLogistica && (
                     <div className="mb-3">
                       <div className="text-xs text-white/70 font-medium px-3 py-1 uppercase tracking-wider">Armazém</div>
                       <div className="flex flex-col gap-1">
@@ -562,7 +563,7 @@ const Navbar = () => {
                       </div>
                     </>
                   )}
-                  {isBackofficeArmazem && (
+                  {isArmazemLogistica && (
                     <div>
                       <div className="text-xs text-white/70 font-medium px-4 sm:px-5 py-2 uppercase tracking-wider">Armazém</div>
                       <div className="flex flex-col">

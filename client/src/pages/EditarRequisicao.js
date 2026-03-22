@@ -4,7 +4,11 @@ import { useAuth } from '../contexts/AuthContext';
 import Toast from '../components/Toast';
 import { FaArrowLeft, FaSave, FaPlus, FaTrash } from 'react-icons/fa';
 import axios from 'axios';
-import { formatCriadorRequisicao, isRequisicaoDoUtilizadorAtual } from '../utils/requisicaoCriador';
+import {
+  formatCriadorRequisicao,
+  isRequisicaoDoUtilizadorAtual,
+  requisicaoPermiteEdicaoFormulario
+} from '../utils/requisicaoCriador';
 
 function itemTextoSecundario(item) {
   if (!item) return '';
@@ -39,7 +43,7 @@ const EditarRequisicao = () => {
   const refListaItens = useRef(null);
   const navigate = useNavigate();
   const { user } = useAuth();
-  const canEdit = user && ['admin', 'controller', 'backoffice_operations', 'backoffice_armazem'].includes(user.role);
+  const canEdit = user && ['admin', 'backoffice_operations', 'backoffice_armazem', 'supervisor_armazem'].includes(user.role);
 
   useEffect(() => {
     fetchRequisicao();
@@ -116,6 +120,15 @@ const EditarRequisicao = () => {
 
       if (response.data) {
         const req = response.data;
+        if (!requisicaoPermiteEdicaoFormulario(req.status)) {
+          setToast({
+            type: 'error',
+            message:
+              'Esta requisição já não está pendente; não pode ser editada após o início da separação.',
+          });
+          navigate('/requisicoes');
+          return;
+        }
         setFormData({
           armazem_origem_id: req.armazem_origem_id || '',
           armazem_id: req.armazem_id,

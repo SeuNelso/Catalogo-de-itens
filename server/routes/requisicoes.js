@@ -13,14 +13,43 @@ const SQL_CRIADOR_NOME = `COALESCE(
   '—'
 )`;
 
+const { isAdmin, isOperador } = require('../utils/roles');
+const {
+  usuarioEscopadoSemArmazensAtribuidos,
+  requisicaoPerfilNegadoMiddleware,
+} = require('../middleware/requisicoesScope');
+
 const SQL_CRIADOR_COM_EMAIL = `${SQL_CRIADOR_NOME} AS usuario_nome,
         u.email AS usuario_email,
         u.numero_colaborador AS criador_numero_colaborador,
         u.username AS criador_username`;
 
-/** Admin/controller podem intervir na separação atribuída a outro utilizador. */
+/** Admin e perfis de armazém podem intervir apesar de outro utilizador ser o separador (ex.: operador separou, armazém gera TRFL). */
 function ignoraBloqueioSeparador(role) {
-  return role === 'admin' || role === 'controller';
+  return (
+    isAdmin(role) ||
+    role === 'backoffice_armazem' ||
+    role === 'supervisor_armazem'
+  );
+}
+
+/** Admin pode corrigir preparação de linhas quando a requisição já está separada ou em expedição (antes de entrega). */
+function adminPodeCorrigirPreparacaoItemSeparada(status, role) {
+  if (!isAdmin(role)) return false;
+  const st = String(status || '');
+  return st === 'separado' || st === 'EM EXPEDICAO';
+}
+
+/** Operador: só separação e entrega; bloqueia TRFL/TRA/Reporte/Clog, criar/editar/apagar req., finalizar, marcar em expedição. */
+function denyOperador(req, res, next) {
+  if (req.user && isOperador(req.user.role)) {
+    return res.status(403).json({
+      error:
+        'Operadores só podem consultar e separar requisições dos seus armazéns e marcar entrega; não podem executar esta operação.',
+      code: 'OPERADOR_RESTRITO',
+    });
+  }
+  next();
 }
 
 const SQL_SEPARADOR_NOME = `COALESCE(
@@ -50,14 +79,16 @@ function createRequisicoesRouter(deps) {
   function respostaBloqueioSeparador(res) {
     return res.status(403).json({
       error:
-        'Esta requisição está atribuída a outro utilizador para separação. Só esse utilizador ou administrador/controller pode continuar.',
+        'Esta requisição está atribuída a outro utilizador para separação. Só esse utilizador, ou administrador/controller/backoffice armazém, pode continuar.',
       code: 'SEPARACAO_BLOQUEADA',
     });
   }
 
+  /** Bloqueio só em separação ativa; após `separado` (ou outro estado), `separador_usuario_id` é só histórico. */
   function separadorImpedeAcao(row, req) {
     if (!row || row.separador_usuario_id == null) return false;
     if (ignoraBloqueioSeparador(req.user && req.user.role)) return false;
+    if (String(row.status || '') !== 'EM SEPARACAO') return false;
     return Number(row.separador_usuario_id) !== Number(req.user && req.user.id);
   }
 
@@ -68,6 +99,9 @@ function createRequisicoesRouter(deps) {
 // Listar todas as requisições (com informações dos itens)
 router.get('/', ...requisicaoAuth, async (req, res) => {
   try {
+    if (usuarioEscopadoSemArmazensAtribuidos(req)) {
+      return res.json([]);
+    }
     const { status, armazem_id, item_id } = req.query;
     let itemIdParsed = null;
     if (item_id != null && String(item_id).trim() !== '') {
@@ -234,7 +268,7 @@ router.get('/', ...requisicaoAuth, async (req, res) => {
 });
 
 // Exportar requisição no formato exigido pelo sistema da empresa (uma folha, colunas fixas)
-router.get('/:id/export-excel', ...requisicaoAuth, async (req, res) => {
+router.get('/:id/export-excel', ...requisicaoAuth, denyOperador, async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -602,7 +636,7 @@ function formatDateBR(dateObj) {
 }
 
 // TRFL — Só quando armazém de origem é geral (central). Destino = localização de expedição do armazém de origem.
-router.get('/:id/export-trfl', ...requisicaoAuth, async (req, res) => {
+router.get('/:id/export-trfl', ...requisicaoAuth, denyOperador, async (req, res) => {
   try {
     const { id } = req.params;
     const requisicao = await getRequisicaoComItens(id);
@@ -707,7 +741,7 @@ router.get('/:id/export-trfl', ...requisicaoAuth, async (req, res) => {
 });
 
 // TRFL combinado — várias requisições em um único ficheiro
-router.post('/export-trfl-multi', ...requisicaoAuth, async (req, res) => {
+router.post('/export-trfl-multi', ...requisicaoAuth, denyOperador, async (req, res) => {
   try {
     const { ids } = req.body || {};
     if (!Array.isArray(ids) || ids.length === 0) {
@@ -820,7 +854,7 @@ router.post('/export-trfl-multi', ...requisicaoAuth, async (req, res) => {
 });
 
 // TRA — Transferência: origem = mesmo destino da TRFL (armazém origem + expedição) → destino (Vxxx). Alinhado à TRFL.
-router.get('/:id/export-tra', ...requisicaoAuth, async (req, res) => {
+router.get('/:id/export-tra', ...requisicaoAuth, denyOperador, async (req, res) => {
   try {
     const { id } = req.params;
     const requisicao = await getRequisicaoComItens(id);
@@ -971,7 +1005,7 @@ router.get('/:id/export-tra', ...requisicaoAuth, async (req, res) => {
 });
 
 // TRA combinado — várias requisições em um único ficheiro
-router.post('/export-tra-multi', ...requisicaoAuth, async (req, res) => {
+router.post('/export-tra-multi', ...requisicaoAuth, denyOperador, async (req, res) => {
   try {
     const { ids } = req.body || {};
     if (!Array.isArray(ids) || ids.length === 0) {
@@ -1437,7 +1471,7 @@ async function buildClogRowsFromRequisicao(requisicao, dateStr) {
   return { rows, eligible: true };
 }
 
-router.get('/:id/export-clog', ...requisicaoAuth, async (req, res) => {
+router.get('/:id/export-clog', ...requisicaoAuth, denyOperador, async (req, res) => {
   try {
     const { id } = req.params;
     const requisicao = await getRequisicaoComItens(id, false);
@@ -1462,7 +1496,7 @@ router.get('/:id/export-clog', ...requisicaoAuth, async (req, res) => {
   }
 });
 
-router.post('/export-clog-multi', ...requisicaoAuth, async (req, res) => {
+router.post('/export-clog-multi', ...requisicaoAuth, denyOperador, async (req, res) => {
   try {
     const { ids } = req.body || {};
     if (!Array.isArray(ids) || ids.length === 0) {
@@ -1491,7 +1525,7 @@ router.post('/export-clog-multi', ...requisicaoAuth, async (req, res) => {
   }
 });
 
-router.get('/:id/clog-dados', ...requisicaoAuth, async (req, res) => {
+router.get('/:id/clog-dados', ...requisicaoAuth, denyOperador, async (req, res) => {
   try {
     const { id } = req.params;
     const requisicao = await getRequisicaoComItens(id, false);
@@ -1517,7 +1551,7 @@ router.get('/:id/clog-dados', ...requisicaoAuth, async (req, res) => {
   }
 });
 
-router.post('/clog-dados-multi', ...requisicaoAuth, async (req, res) => {
+router.post('/clog-dados-multi', ...requisicaoAuth, denyOperador, async (req, res) => {
   try {
     const { ids } = req.body || {};
     if (!Array.isArray(ids) || ids.length === 0) {
@@ -1548,7 +1582,7 @@ router.post('/clog-dados-multi', ...requisicaoAuth, async (req, res) => {
 });
 
 // Ficheiro de Reporte (template): disponível após gerar TRA
-router.get('/:id/export-reporte', ...requisicaoAuth, async (req, res) => {
+router.get('/:id/export-reporte', ...requisicaoAuth, denyOperador, async (req, res) => {
   try {
     const { id } = req.params;
     const requisicao = await getRequisicaoComItens(id);
@@ -1635,7 +1669,7 @@ router.get('/:id/export-reporte', ...requisicaoAuth, async (req, res) => {
 });
 
 // Retorna os dados do ficheiro de reporte (para copiar a tabela sem baixar o XLSX)
-router.get('/:id/reporte-dados', ...requisicaoAuth, async (req, res) => {
+router.get('/:id/reporte-dados', ...requisicaoAuth, denyOperador, async (req, res) => {
   try {
     const { id } = req.params;
     const requisicao = await getRequisicaoComItens(id);
@@ -1722,7 +1756,7 @@ router.get('/:id/reporte-dados', ...requisicaoAuth, async (req, res) => {
 });
 
 // Dados do ficheiro de reporte (multi)
-router.post('/reporte-dados-multi', ...requisicaoAuth, async (req, res) => {
+router.post('/reporte-dados-multi', ...requisicaoAuth, denyOperador, async (req, res) => {
   try {
     const { ids } = req.body || {};
     if (!Array.isArray(ids) || ids.length === 0) {
@@ -1838,7 +1872,7 @@ router.post('/reporte-dados-multi', ...requisicaoAuth, async (req, res) => {
 });
 
 // Ficheiro de Reporte combinado
-router.post('/export-reporte-multi', ...requisicaoAuth, async (req, res) => {
+router.post('/export-reporte-multi', ...requisicaoAuth, denyOperador, async (req, res) => {
   try {
     const { ids } = req.body || {};
     if (!Array.isArray(ids) || ids.length === 0) {
@@ -2034,10 +2068,18 @@ router.get('/:id', ...requisicaoAuth, async (req, res) => {
 });
 
 // Criar nova requisição (com múltiplos itens)
-router.post('/', ...requisicaoAuth, async (req, res) => {
+router.post('/', ...requisicaoAuth, denyOperador, async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+
+    if (usuarioEscopadoSemArmazensAtribuidos(req)) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({
+        error:
+          'Não tem armazéns de origem atribuídos. Um administrador deve associar pelo menos um armazém central ao seu utilizador.',
+      });
+    }
 
     const { armazem_origem_id, armazem_id, itens, observacoes } = req.body;
 
@@ -2182,8 +2224,21 @@ router.post('/', ...requisicaoAuth, async (req, res) => {
 });
 
 // Importar requisição a partir de ficheiro Excel (modelo TRFL/TRA interno)
-router.post('/importar-excel', authenticateToken, requisicaoScopeMiddleware, excelUploadRequisicoes.single('arquivo'), async (req, res) => {
+router.post(
+  '/importar-excel',
+  authenticateToken,
+  requisicaoPerfilNegadoMiddleware,
+  denyOperador,
+  requisicaoScopeMiddleware,
+  excelUploadRequisicoes.single('arquivo'),
+  async (req, res) => {
   try {
+    if (usuarioEscopadoSemArmazensAtribuidos(req)) {
+      return res.status(403).json({
+        error:
+          'Não tem armazéns de origem atribuídos. Um administrador deve associar pelo menos um armazém central ao seu utilizador.',
+      });
+    }
     if (!req.file) {
       return res.status(400).json({ error: 'Arquivo Excel (.xlsx) é obrigatório.' });
     }
@@ -2348,7 +2403,7 @@ router.post('/importar-excel', authenticateToken, requisicaoScopeMiddleware, exc
 });
 
 // Atualizar requisição
-router.put('/:id', ...requisicaoAuth, async (req, res) => {
+router.put('/:id', ...requisicaoAuth, denyOperador, async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -2365,6 +2420,16 @@ router.put('/:id', ...requisicaoAuth, async (req, res) => {
     if (!requisicaoArmazemOrigemAcessoPermitido(req, checkReq.rows[0].armazem_origem_id)) {
       await client.query('ROLLBACK');
       return res.status(403).json({ error: 'Sem acesso a esta requisição.' });
+    }
+
+    const statusAtual = String(checkReq.rows[0].status || '');
+    if (statusAtual !== 'pendente') {
+      await client.query('ROLLBACK');
+      return res.status(400).json({
+        error:
+          'Só é possível editar requisições pendentes. Após o início da separação, a requisição não pode ser alterada.',
+        code: 'REQUISICAO_NAO_EDITAVEL',
+      });
     }
 
     // Validações
@@ -2557,26 +2622,26 @@ router.patch('/:id/atender-item', ...requisicaoAuth, async (req, res) => {
       await client.query('ROLLBACK');
       return res.status(403).json({ error: 'Sem acesso a esta requisição.' });
     }
-    if (['EM EXPEDICAO', 'Entregue'].includes(check.rows[0].status)) {
-      await client.query('ROLLBACK');
-      return res.status(400).json({ error: 'Requisição já em expedição ou entregue; não é possível alterar a preparação.' });
-    }
-    if (check.rows[0].status === 'cancelada') {
+    const stReq = String(check.rows[0].status || '');
+    if (stReq === 'cancelada') {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: 'Requisição cancelada' });
     }
-
-    const sepId = check.rows[0].separador_usuario_id;
-    if (
-      sepId != null
-      && Number(sepId) !== Number(req.user.id)
-      && !ignoraBloqueioSeparador(req.user.role)
-    ) {
+    const podeAlterarPreparacao =
+      ['pendente', 'EM SEPARACAO'].includes(stReq) ||
+      adminPodeCorrigirPreparacaoItemSeparada(stReq, req.user && req.user.role);
+    if (!podeAlterarPreparacao) {
       await client.query('ROLLBACK');
-      return res.status(403).json({
-        error: 'Esta requisição está atribuída a outro utilizador para separação. Só esse utilizador ou administrador/controller pode continuar.',
-        code: 'SEPARACAO_BLOQUEADA'
+      return res.status(400).json({
+        error:
+          'Não é possível alterar a preparação após a requisição estar separada ou em fase posterior (expedição, entrega, etc.). Administradores podem corrigir linhas só em Separadas ou Em expedição.',
+        code: 'PREPARACAO_ENCERRADA',
       });
+    }
+
+    if (separadorImpedeAcao(check.rows[0], req)) {
+      await client.query('ROLLBACK');
+      return respostaBloqueioSeparador(res);
     }
 
     const itemCheck = await client.query(
@@ -2714,6 +2779,102 @@ router.patch('/:id/atender-item', ...requisicaoAuth, async (req, res) => {
     res.status(500).json({ error: 'Erro ao preparar item', details: error.message });
   } finally {
     client.release();
+  }
+});
+
+// Remover linha de requisição (só admin; só em Separadas ou Em expedição; tem de existir mais do que uma linha)
+router.delete('/:id/requisicao-itens/:requisicaoItemId', ...requisicaoAuth, async (req, res) => {
+  try {
+    if (!isAdmin(req.user.role)) {
+      return res.status(403).json({
+        error: 'Apenas administradores podem remover itens de uma requisição já separada.',
+        code: 'APENAS_ADMIN',
+      });
+    }
+    const requisicaoId = parseInt(req.params.id, 10);
+    const requisicaoItemId = parseInt(req.params.requisicaoItemId, 10);
+    if (!Number.isFinite(requisicaoId) || !Number.isFinite(requisicaoItemId)) {
+      return res.status(400).json({ error: 'ID inválido' });
+    }
+
+    const check = await pool.query(
+      'SELECT id, status, armazem_origem_id FROM requisicoes WHERE id = $1',
+      [requisicaoId]
+    );
+    if (check.rows.length === 0) {
+      return res.status(404).json({ error: 'Requisição não encontrada' });
+    }
+    if (!requisicaoArmazemOrigemAcessoPermitido(req, check.rows[0].armazem_origem_id)) {
+      return res.status(403).json({ error: 'Sem acesso a esta requisição.' });
+    }
+    const st = String(check.rows[0].status || '');
+    if (!adminPodeCorrigirPreparacaoItemSeparada(st, req.user.role)) {
+      return res.status(400).json({
+        error:
+          'Só é possível remover linhas quando a requisição está em Separadas ou Em expedição (e apenas por administrador).',
+        code: 'REMOCAO_LINHA_INVALIDA',
+      });
+    }
+
+    const linha = await pool.query(
+      'SELECT id FROM requisicoes_itens WHERE id = $1 AND requisicao_id = $2',
+      [requisicaoItemId, requisicaoId]
+    );
+    if (linha.rows.length === 0) {
+      return res.status(404).json({ error: 'Linha não encontrada nesta requisição' });
+    }
+
+    const cnt = await pool.query(
+      'SELECT COUNT(*)::int AS c FROM requisicoes_itens WHERE requisicao_id = $1',
+      [requisicaoId]
+    );
+    if ((cnt.rows[0]?.c || 0) <= 1) {
+      return res.status(400).json({
+        error: 'Não é possível remover o único item da requisição. Cancele ou edite a requisição por outro meio.',
+      });
+    }
+
+    try {
+      await pool.query('DELETE FROM requisicoes_itens_bobinas WHERE requisicao_item_id = $1', [requisicaoItemId]);
+    } catch (e) {
+      if (e.code !== '42P01') throw e;
+    }
+    await pool.query('DELETE FROM requisicoes_itens WHERE id = $1 AND requisicao_id = $2', [requisicaoItemId, requisicaoId]);
+
+    const fullReq = await pool.query(
+      `
+      SELECT r.*,
+        (COALESCE(a.codigo, '') || CASE WHEN a.codigo IS NOT NULL AND a.codigo <> '' THEN ' - ' ELSE '' END || a.descricao) as armazem_descricao,
+        (COALESCE(ao.codigo, '') || CASE WHEN ao.codigo IS NOT NULL AND ao.codigo <> '' THEN ' - ' ELSE '' END || ao.descricao) as armazem_origem_descricao,
+        ${SQL_CRIADOR_NOME} AS usuario_nome
+      FROM requisicoes r
+      INNER JOIN armazens a ON r.armazem_id = a.id
+      LEFT JOIN armazens ao ON r.armazem_origem_id = ao.id
+      LEFT JOIN usuarios u ON r.usuario_id = u.id
+      WHERE r.id = $1
+    `,
+      [requisicaoId]
+    );
+    const requisicao = fullReq.rows[0];
+    const itensResult = await pool.query(
+      `
+      SELECT ri.*, i.codigo as item_codigo, i.descricao as item_descricao, i.tipocontrolo
+      FROM requisicoes_itens ri
+      INNER JOIN itens i ON ri.item_id = i.id
+      WHERE ri.requisicao_id = $1
+      ORDER BY ri.id
+    `,
+      [requisicaoId]
+    );
+    requisicao.itens = (itensResult.rows || []).map((it) => ({
+      ...it,
+      preparacao_confirmada: it.preparacao_confirmada === true,
+    }));
+
+    res.json(requisicao);
+  } catch (error) {
+    console.error('Erro ao remover linha da requisição:', error);
+    res.status(500).json({ error: 'Erro ao remover linha', details: error.message });
   }
 });
 
@@ -2903,7 +3064,7 @@ router.patch('/:id/confirmar-separacao', ...requisicaoAuth, async (req, res) => 
 });
 
 // Marcar como EM EXPEDICAO (após baixar o ficheiro TRFL)
-router.patch('/:id/marcar-em-expedicao', ...requisicaoAuth, async (req, res) => {
+router.patch('/:id/marcar-em-expedicao', ...requisicaoAuth, denyOperador, async (req, res) => {
   try {
     const { id } = req.params;
     const check = await pool.query(
@@ -2976,7 +3137,7 @@ router.patch('/:id/marcar-entregue', ...requisicaoAuth, async (req, res) => {
 });
 
 // Marcar como FINALIZADO (após baixar a TRA e concluir o processo)
-router.patch('/:id/finalizar', ...requisicaoAuth, async (req, res) => {
+router.patch('/:id/finalizar', ...requisicaoAuth, denyOperador, async (req, res) => {
   try {
     const { id } = req.params;
     const check = await pool.query(
@@ -3004,7 +3165,7 @@ router.patch('/:id/finalizar', ...requisicaoAuth, async (req, res) => {
 });
 
 // Deletar requisição
-router.delete('/:id', ...requisicaoAuth, async (req, res) => {
+router.delete('/:id', ...requisicaoAuth, denyOperador, async (req, res) => {
   try {
     const { id } = req.params;
     const userRole = req.user?.role || '';

@@ -58,7 +58,7 @@ const CriarRequisicao = () => {
 
   useEffect(() => {
     const allowed = getRequisicoesArmazemOrigemIds(user);
-    if (allowed.length !== 1 || user?.role === 'admin' || user?.role === 'controller') return;
+    if (allowed.length !== 1 || user?.role === 'admin') return;
     setFormData((prev) => {
       if (prev.armazem_origem_id) return prev;
       return { ...prev, armazem_origem_id: String(allowed[0]) };
@@ -238,11 +238,14 @@ const CriarRequisicao = () => {
   const armazensListaOrigem = useMemo(() => {
     const centrais = (armazens || []).filter((a) => (a.tipo || '').toLowerCase() === 'central');
     const allowed = getRequisicoesArmazemOrigemIds(user);
-    if (allowed.length > 0 && user?.role !== 'admin' && user?.role !== 'controller') {
+    if (user?.role === 'admin') {
+      return centrais;
+    }
+    if (allowed.length > 0) {
       const set = new Set(allowed);
       return centrais.filter((a) => set.has(a.id));
     }
-    return centrais;
+    return [];
   }, [armazens, user]);
 
   const armazensOrigemFiltrados = filterArmazens(armazensListaOrigem, buscaArmazemOrigem);
@@ -250,6 +253,10 @@ const CriarRequisicao = () => {
 
   const armazemOrigemSelecionado = armazens.find(a => a.id === parseInt(formData.armazem_origem_id, 10));
   const armazemDestinoSelecionado = armazens.find(a => a.id === parseInt(formData.armazem_id, 10));
+
+  const semArmazemOrigemAtribuido = Boolean(
+    user && user.role !== 'admin' && getRequisicoesArmazemOrigemIds(user).length === 0
+  );
 
   useEffect(() => {
     const onClose = (e) => {
@@ -262,7 +269,16 @@ const CriarRequisicao = () => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    
+
+    if (semArmazemOrigemAtribuido) {
+      setToast({
+        type: 'error',
+        message:
+          'Não tem armazéns de origem atribuídos. Um administrador deve associar pelo menos um armazém central ao seu utilizador.'
+      });
+      return;
+    }
+
     if (!formData.armazem_id) {
       setToast({ type: 'error', message: 'Selecione o armazém destino' });
       return;
@@ -328,6 +344,12 @@ const CriarRequisicao = () => {
           <h1 className="text-2xl sm:text-3xl font-bold text-gray-800 mb-2">Nova Requisição</h1>
           <p className="text-gray-600">Etapa 1: Defina origem, itens, quantidades e destino. A localização será preenchida na preparação.</p>
         </div>
+
+        {semArmazemOrigemAtribuido && (
+          <div className="mb-6 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
+            Não tem armazéns de origem atribuídos. Peça a um administrador que associe pelo menos um armazém central ao seu utilizador antes de criar requisições.
+          </div>
+        )}
 
         {/* Form */}
         <div className="bg-white rounded-lg shadow-sm p-6">
@@ -636,7 +658,7 @@ const CriarRequisicao = () => {
               </button>
               <button
                 type="submit"
-                disabled={loading || itensRequisicao.length === 0}
+                disabled={loading || itensRequisicao.length === 0 || semArmazemOrigemAtribuido}
                 className="flex-1 px-6 py-3 bg-[#0915FF] text-white rounded-lg hover:bg-[#070FCC] transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
               >
                 {loading ? (

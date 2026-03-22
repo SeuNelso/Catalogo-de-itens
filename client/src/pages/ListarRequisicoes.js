@@ -11,6 +11,8 @@ import {
   preparacaoReservadaOutroUtilizador
 } from '../utils/requisicaoCriador';
 import { desenharPaginaNotaEntregaDigi } from '../utils/notaEntregaPdf';
+import { operadorPodeDocsELogisticaAposSeparacao, isAdmin } from '../utils/roles';
+import { getRequisicoesArmazemOrigemIds } from '../utils/requisicoesArmazemOrigem';
 
 const ListarRequisicoes = () => {
   const [requisicoes, setRequisicoes] = useState([]);
@@ -43,9 +45,18 @@ const ListarRequisicoes = () => {
   const location = useLocation();
   const { user } = useAuth();
   const confirm = useConfirm();
-  const canCreateOrEdit = user && ['admin', 'controller', 'backoffice_operations', 'backoffice_armazem'].includes(user.role);
-  const canDelete = user && ['admin', 'controller', 'backoffice_armazem'].includes(user.role);
-  const canPrepare = user && ['admin', 'controller', 'operador', 'backoffice_armazem'].includes(user.role);
+  const canCreateOrEdit = user && ['admin', 'backoffice_operations', 'backoffice_armazem', 'supervisor_armazem'].includes(user.role);
+  const canDelete = user && ['admin', 'backoffice_armazem', 'supervisor_armazem'].includes(user.role);
+  const canPrepare = user && ['admin', 'operador', 'backoffice_armazem', 'supervisor_armazem'].includes(user.role);
+  /** TRFL, TRA, Reporte, Clog, Finalizar — operador não */
+  const canDocsELogisticaPosSeparacao =
+    Boolean(canPrepare && operadorPodeDocsELogisticaAposSeparacao(user?.role));
+
+  const acessoTotalRequisicoes = isAdmin(user?.role);
+  const semArmazemOrigemAtribuido = Boolean(
+    user && !acessoTotalRequisicoes && getRequisicoesArmazemOrigemIds(user).length === 0
+  );
+  const podeCriarOuImportarRequisicao = canCreateOrEdit && !semArmazemOrigemAtribuido;
 
   useEffect(() => {
     fetchRequisicoes();
@@ -1151,6 +1162,11 @@ const ListarRequisicoes = () => {
   return (
     <div className="min-h-screen bg-[#F7F8FA] p-4 sm:p-6 lg:p-8">
       <div className="max-w-7xl mx-auto">
+        {semArmazemOrigemAtribuido && (
+          <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
+            <strong>Sem armazéns atribuídos.</strong> Não pode ver nem trabalhar com requisições até um administrador associar pelo menos um armazém central de origem ao seu utilizador.
+          </div>
+        )}
         {/* Header */}
         <div className="mb-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
           <div>
@@ -1161,7 +1177,7 @@ const ListarRequisicoes = () => {
                 : `Lista de requisições${filtros.status ? ` (${getStatusLabel(filtros.status)})` : ''}.`}
             </p>
           </div>
-          {canCreateOrEdit && (
+          {podeCriarOuImportarRequisicao && (
             <div className="flex flex-wrap gap-2 justify-end">
               {selectionMode && selectedIds.length > 0 && (
                 <>
@@ -1281,7 +1297,7 @@ const ListarRequisicoes = () => {
         {requisicoesOrdenadas.length === 0 ? (
           <div className="bg-white rounded-lg shadow-sm p-8 text-center">
             <p className="text-gray-500 text-lg">Nenhuma requisição encontrada</p>
-            {canCreateOrEdit && (
+            {podeCriarOuImportarRequisicao && (
               <Link
                 to="/requisicoes/criar"
                 className="mt-4 inline-block text-[#0915FF] hover:underline"
@@ -1410,7 +1426,7 @@ const ListarRequisicoes = () => {
                       </div>
                     </div>
                   <div className="flex gap-2 mt-4 sm:mt-0 flex-wrap" onClick={(e) => e.stopPropagation()}>
-                    {canPrepare && (req.status === 'separado' && req.separacao_confirmada) ? (
+                    {canDocsELogisticaPosSeparacao && (req.status === 'separado' && req.separacao_confirmada) ? (
                       <button
                         type="button"
                         disabled={prepBloqueio}
@@ -1440,7 +1456,7 @@ const ListarRequisicoes = () => {
                         ENTREGAR
                       </button>
                     )}
-                    {canPrepare && (req.status === 'Entregue' && !req.tra_gerada_em) && (
+                    {canDocsELogisticaPosSeparacao && (req.status === 'Entregue' && !req.tra_gerada_em) && (
                       <button
                         type="button"
                         disabled={prepBloqueio}
@@ -1453,7 +1469,7 @@ const ListarRequisicoes = () => {
                         GERAR TRA
                       </button>
                     )}
-                    {canPrepare && req.status === 'Entregue' && req.tra_gerada_em && (
+                    {canDocsELogisticaPosSeparacao && req.status === 'Entregue' && req.tra_gerada_em && (
                       <button
                         type="button"
                         disabled={prepBloqueio}
@@ -1501,7 +1517,7 @@ const ListarRequisicoes = () => {
                         <FaBoxOpen /> {req.status === 'EM SEPARACAO' ? 'Continuar preparação' : 'Preparar'}
                       </button>
                     )}
-                    {req.status === 'pendente' && canCreateOrEdit && (
+                    {req.status === 'pendente' && podeCriarOuImportarRequisicao && (
                       <button
                         onClick={() => navigate(`/requisicoes/editar/${req.id}`)}
                         className="px-3 py-2 text-[#0915FF] hover:bg-[#0915FF] hover:text-white rounded-lg transition-colors"
@@ -1561,7 +1577,7 @@ const ListarRequisicoes = () => {
             >
               Abrir
             </button>
-            {canCreateOrEdit && (
+            {podeCriarOuImportarRequisicao && (
               <button
                 className="block w-full text-left px-4 py-2 hover:bg-gray-100"
                 onClick={() => {
@@ -1575,7 +1591,7 @@ const ListarRequisicoes = () => {
                 Selecionar / multi-seleção
               </button>
             )}
-            {canCreateOrEdit && contextMenu.req.status === 'pendente' && (
+            {podeCriarOuImportarRequisicao && contextMenu.req.status === 'pendente' && (
               <button
                 className="block w-full text-left px-4 py-2 hover:bg-gray-100"
                 onClick={() => {
@@ -1612,7 +1628,7 @@ const ListarRequisicoes = () => {
 
               return (
                 <>
-                  {(canGerarTRFL || canBaixarTRFL) && (
+                  {(canDocsELogisticaPosSeparacao && (canGerarTRFL || canBaixarTRFL)) && (
                     <button
                       type="button"
                       disabled={ctxTrflGerarBloqueado}
@@ -1651,7 +1667,7 @@ const ListarRequisicoes = () => {
                     </button>
                   )}
 
-                  {(canGerarTRA || canBaixarTRA) && (
+                  {(canDocsELogisticaPosSeparacao && (canGerarTRA || canBaixarTRA)) && (
                     <button
                       type="button"
                       disabled={ctxTraGerarBloqueado}
@@ -1672,7 +1688,7 @@ const ListarRequisicoes = () => {
                     </button>
                   )}
 
-                  {canGerarReporte && (
+                  {canDocsELogisticaPosSeparacao && canGerarReporte && (
                     <button
                       className="block w-full text-left px-4 py-2 hover:bg-gray-100"
                       onClick={() => {
@@ -1685,7 +1701,7 @@ const ListarRequisicoes = () => {
                     </button>
                   )}
 
-                  {canGerarClog && (
+                  {canDocsELogisticaPosSeparacao && canGerarClog && (
                     <button
                       className="block w-full text-left px-4 py-2 hover:bg-gray-100"
                       onClick={() => {
@@ -1711,7 +1727,7 @@ const ListarRequisicoes = () => {
                     </button>
                   )}
 
-                  {canFinalizar && (
+                  {canDocsELogisticaPosSeparacao && canFinalizar && (
                     <button
                       type="button"
                       disabled={ctxFinalizarBloqueado}

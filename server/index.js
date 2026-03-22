@@ -29,6 +29,7 @@ const { downloadFile } = require('./utils/downloadFile');
 const { buildItensListOrderByClause } = require('./utils/sqlSafe');
 const { createS3Client } = require('./utils/s3Client');
 const { nomeCompletoUsuario } = require('./utils/usuarioNome');
+const { ROLES_VALIDOS } = require('./utils/roles');
 const { createArmazemViatura } = require('./utils/createArmazemViatura');
 const { cadastrarTodosItensNaoCadastrados } = require('./utils/itensNaoCadastradosCadastroLote');
 const { SETORES_VALIDOS } = require('./config/constants');
@@ -1746,6 +1747,10 @@ app.post('/api/itens', authenticateToken, upload.fields([
   { name: 'imagens', maxCount: 10 },
   { name: 'imagemCompleta', maxCount: 1 }
 ]), async (req, res) => {
+  if (!req.user || (req.user.role !== 'admin' && req.user.role !== 'controller')) {
+    return res.status(403).json({ error: 'Apenas administradores ou controllers podem criar itens.' });
+  }
+
   const {
     nome,
     descricao,
@@ -3015,7 +3020,7 @@ app.patch('/api/usuarios/:id', authenticateToken, async (req, res) => {
         ? String(senhaBody).trim()
         : null;
 
-  const rolesValidos = ['admin', 'controller', 'basico', 'usuario', 'backoffice_operations', 'backoffice_armazem', 'operador'];
+  const rolesValidos = ROLES_VALIDOS;
   const updates = [];
   const params = [];
   let pi = 1;
@@ -4769,7 +4774,15 @@ app.get('/api/armazens', authenticateToken, async (req, res) => {
       }
     }
 
-    const armazens = result.rows;
+    let armazens = result.rows;
+    if (req.user && req.user.role === 'supervisor_armazem') {
+      const allowed = await fetchRequisicoesArmazemIdsForUser(req.user.id);
+      if (!allowed.length) {
+        return res.json([]);
+      }
+      const allowSet = new Set(allowed);
+      armazens = armazens.filter((a) => allowSet.has(a.id));
+    }
     try {
       const ids = armazens.map((a) => a.id).filter((id) => id != null);
       const byArm = new Map();
@@ -4856,6 +4869,13 @@ app.get('/api/armazens/:id', authenticateToken, async (req, res) => {
     }
 
     const armazem = result.rows[0];
+    if (req.user && req.user.role === 'supervisor_armazem') {
+      const allowed = await fetchRequisicoesArmazemIdsForUser(req.user.id);
+      const idNum = parseInt(id, 10);
+      if (!allowed.includes(idNum)) {
+        return res.status(403).json({ error: 'Acesso negado a este armazém' });
+      }
+    }
     armazem.tipo = armazem.tipo || 'viatura';
     try {
       try {
@@ -5092,14 +5112,43 @@ app.post('/api/armazens/import-viatura', authenticateToken, async (req, res) => 
   }
 });
 
-// Atualizar armazém (apenas admin)
+// Atualizar armazém (admin / backoffice: completo; supervisor: só localizações nos armazéns atribuídos)
 app.put('/api/armazens/:id', authenticateToken, async (req, res) => {
   try {
-    if (req.user.role !== 'admin' && req.user.role !== 'backoffice_armazem') {
-      return res.status(403).json({ error: 'Apenas administradores ou backoffice armazém podem atualizar armazéns' });
+    const role = req.user.role;
+    const isFullArmazem = role === 'admin' || role === 'backoffice_armazem';
+    const isSupervisor = role === 'supervisor_armazem';
+    if (!isFullArmazem && !isSupervisor) {
+      return res.status(403).json({ error: 'Sem permissão para atualizar armazéns' });
     }
 
     const { id } = req.params;
+    const idNum = parseInt(id, 10);
+    if (Number.isNaN(idNum)) {
+      return res.status(400).json({ error: 'ID de armazém inválido' });
+    }
+
+    if (isSupervisor) {
+      const allowed = await fetchRequisicoesArmazemIdsForUser(req.user.id);
+      if (!allowed.includes(idNum)) {
+        return res.status(403).json({ error: 'Acesso negado a este armazém' });
+      }
+      const body = req.body || {};
+      if (
+        body.codigo !== undefined ||
+        body.descricao !== undefined ||
+        body.ativo !== undefined ||
+        body.tipo !== undefined
+      ) {
+        return res.status(403).json({
+          error: 'Supervisor só pode alterar localizações dos armazéns atribuídos'
+        });
+      }
+      if (!Array.isArray(body.localizacoes)) {
+        return res.status(400).json({ error: 'Envie a lista de localizações (localizacoes)' });
+      }
+    }
+
     const { codigo, descricao, localizacao, localizacoes, ativo, tipo } = req.body;
 
     const updates = [];
@@ -5260,11 +5309,51 @@ app.delete('/api/armazens/:id', authenticateToken, async (req, res) => {
     }
 
     const { id } = req.params;
-    await pool.query('DELETE FROM armazens WHERE id = $1', [id]);
+    const idNum = parseInt(id, 10);
+    if (Number.isNaN(idNum)) {
+      return res.status(400).json({ error: 'ID de armazém inválido' });
+    }
 
-    console.log(`✅ Armazém deletado: ID ${id}`);
+    let reqDestino = 0;
+    let reqOrigem = 0;
+    try {
+      const chk = await pool.query(
+        `SELECT
+          (SELECT COUNT(*)::int FROM requisicoes WHERE armazem_id = $1) AS req_destino,
+          (SELECT COUNT(*)::int FROM requisicoes WHERE armazem_origem_id = $1) AS req_origem`,
+        [idNum]
+      );
+      reqDestino = chk.rows[0]?.req_destino ?? 0;
+      reqOrigem = chk.rows[0]?.req_origem ?? 0;
+    } catch (chkErr) {
+      if (chkErr.code !== '42P01') throw chkErr;
+    }
+
+    if (reqDestino > 0) {
+      return res.status(409).json({
+        error: 'Não é possível eliminar este armazém.',
+        details:
+          `Existem ${reqDestino} requisição(ões) em que este armazém é o destino (viatura). ` +
+          'Altere o armazém de destino nessas requisições ou aguarde que deixem de o usar antes de eliminar.',
+        code: 'ARMAZEM_REQUISICOES_DESTINO',
+        counts: { requisicoes_destino: reqDestino, requisicoes_origem: reqOrigem }
+      });
+    }
+
+    await pool.query('DELETE FROM armazens WHERE id = $1', [idNum]);
+
+    console.log(`✅ Armazém deletado: ID ${idNum}`);
     res.json({ message: 'Armazém deletado com sucesso' });
   } catch (error) {
+    if (error.code === '23503') {
+      return res.status(409).json({
+        error: 'Não é possível eliminar este armazém.',
+        details:
+          'Ainda existem registos que referenciam este armazém (integridade na base de dados). ' +
+          'Verifique requisições, utilizadores ou outros vínculos.',
+        hint: error.detail || error.message
+      });
+    }
     console.error('Erro ao deletar armazém:', error);
     res.status(500).json({ error: 'Erro ao deletar armazém', details: error.message });
   }

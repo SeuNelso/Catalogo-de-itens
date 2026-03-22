@@ -3,7 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useConfirm } from '../contexts/ConfirmContext';
 import Toast from '../components/Toast';
-import { FaArrowLeft, FaCheck, FaBox, FaMapMarkerAlt, FaArrowRight, FaEdit, FaQrcode } from 'react-icons/fa';
+import { FaArrowLeft, FaCheck, FaBox, FaMapMarkerAlt, FaArrowRight, FaEdit, FaQrcode, FaTrash } from 'react-icons/fa';
 import axios from 'axios';
 import QrScannerModal from '../components/QrScannerModal';
 import jsPDF from 'jspdf';
@@ -14,6 +14,7 @@ import {
 } from '../utils/requisicaoCriador';
 import { desenharPaginaNotaEntregaDigi } from '../utils/notaEntregaPdf';
 import { quantidadeStockNacionalNoArmazem } from '../utils/stockNacionalArmazem';
+import { operadorPodeDocsELogisticaAposSeparacao, isAdmin } from '../utils/roles';
 
 function labelArmazem(armazem) {
   if (!armazem) return '';
@@ -65,7 +66,8 @@ const PrepararRequisicao = () => {
   const navigate = useNavigate();
   const { user } = useAuth();
   const confirm = useConfirm();
-  const canPrepare = user && ['admin', 'controller', 'operador', 'backoffice_armazem'].includes(user.role);
+  const canPrepare = user && ['admin', 'operador', 'backoffice_armazem', 'supervisor_armazem'].includes(user.role);
+  const podeDocsPosSeparacao = operadorPodeDocsELogisticaAposSeparacao(user?.role);
 
   useEffect(() => {
     fetchRequisicao();
@@ -134,7 +136,48 @@ const PrepararRequisicao = () => {
     }
   };
 
+  const handleRemoverLinhaRequisicao = async (item) => {
+    if (!user || !isAdmin(user.role)) return;
+    const n = requisicao?.itens?.length || 0;
+    if (n <= 1) {
+      setToast({ type: 'error', message: 'Não é possível remover o único item da requisição.' });
+      return;
+    }
+    const ok = await confirm({
+      title: 'Remover linha',
+      message: `Remover o artigo ${item.item_codigo || item.item_id} desta requisição? Esta ação não pode ser desfeita.`,
+      variant: 'danger',
+      confirmLabel: 'Remover',
+    });
+    if (!ok) return;
+    try {
+      const token = localStorage.getItem('token');
+      const { data } = await axios.delete(`/api/requisicoes/${id}/requisicao-itens/${item.id}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setRequisicao(data);
+      if (itemPreparando?.id === item.id) {
+        setItemPreparando(null);
+      }
+      setToast({ type: 'success', message: 'Linha removida.' });
+    } catch (err) {
+      const msg = err.response?.data?.error || err.message || 'Erro ao remover';
+      setToast({ type: 'error', message: msg });
+    }
+  };
+
   const abrirPrepararItem = (item) => {
+    const st = requisicao?.status;
+    const adminPodeCorrigir =
+      user && isAdmin(user.role) && (st === 'separado' || st === 'EM EXPEDICAO');
+    if (st && st !== 'pendente' && st !== 'EM SEPARACAO' && !adminPodeCorrigir) {
+      setToast({
+        type: 'error',
+        message:
+          'Após a requisição avançar, só um administrador pode alterar a preparação (em Separadas ou Em expedição).',
+      });
+      return;
+    }
     setItemPreparando(item);
     const locOrigem = item.localizacao_origem || '';
     const isOrigemCustom = locOrigem && locsOrigem.length > 0 && !locsOrigem.includes(locOrigem);
@@ -582,13 +625,21 @@ const PrepararRequisicao = () => {
   const isPendente = requisicao.status === 'pendente';
   const isEmSeparacao = requisicao.status === 'EM SEPARACAO';
   const isSeparado = requisicao.status === 'separado';
-  const podeEditarItensPreparacao = isPendente || isEmSeparacao || isSeparado;
+  const isEmExpedicao = requisicao.status === 'EM EXPEDICAO';
+  /** Pendente/EM SEPARACAO: todos com canPrepare; Separadas/Em expedição: só admin (API igual). */
+  const podeEditarItensPreparacao =
+    isPendente ||
+    isEmSeparacao ||
+    (user && isAdmin(user.role) && (isSeparado || isEmExpedicao));
+  const podeAdminRemoverLinha =
+    user && isAdmin(user.role) && (isSeparado || isEmExpedicao) && (requisicao.itens?.length || 0) > 1;
   const fasePreparacaoAberta = isPendente || isEmSeparacao;
   const locsOrigem = armazemOrigem?.localizacoes?.map(l => l.localizacao).filter(Boolean) || [];
   const todosPreparados = requisicao.itens?.every(it => it.preparacao_confirmada === true) ?? false;
   const itensPorConfirmar = requisicao.itens?.filter(it => it.preparacao_confirmada !== true) ?? [];
   const preparacaoBloqueadaOutrem = preparacaoReservadaOutroUtilizador(requisicao, user);
   const podeAgirSeparacao = canPrepare && !preparacaoBloqueadaOutrem;
+  const podeTrflTraReporte = podeAgirSeparacao && podeDocsPosSeparacao;
 
   return (
     <div className="min-h-screen bg-[#F7F8FA] p-4 sm:p-6 lg:p-8">
@@ -597,9 +648,9 @@ const PrepararRequisicao = () => {
           <div className="mb-4 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-amber-900 text-sm">
             <strong>Separação em curso por outro utilizador.</strong>{' '}
             {requisicao.separador_nome && requisicao.separador_nome !== '—' ? (
-              <>Atribuída a <strong>{requisicao.separador_nome}</strong>. Só esse utilizador ou um administrador/controller pode preparar ou avançar esta requisição.</>
+              <>Atribuída a <strong>{requisicao.separador_nome}</strong>. Só esse utilizador, ou administrador/backoffice armazém/supervisor armazém, pode preparar ou avançar esta requisição.</>
             ) : (
-              <>Só o utilizador que iniciou a preparação ou um administrador/controller pode continuar.</>
+              <>Só o utilizador que iniciou a preparação, ou administrador/backoffice armazém/supervisor armazém, pode continuar.</>
             )}
           </div>
         )}
@@ -611,7 +662,7 @@ const PrepararRequisicao = () => {
             <FaArrowLeft /> Voltar
           </button>
           <div className="flex gap-2 flex-wrap">
-            {(requisicao.status === 'separado' && requisicao.separacao_confirmada) && podeAgirSeparacao && (
+            {(requisicao.status === 'separado' && requisicao.separacao_confirmada) && podeTrflTraReporte && (
               <button
                 onClick={handleExportTRFL}
                 className="px-3 py-2 text-blue-700 hover:bg-blue-50 rounded-lg border border-blue-300 transition-colors"
@@ -629,7 +680,7 @@ const PrepararRequisicao = () => {
                 ENTREGAR
               </button>
             )}
-            {requisicao.status === 'Entregue' && !requisicao.tra_gerada_em && podeAgirSeparacao && (
+            {requisicao.status === 'Entregue' && !requisicao.tra_gerada_em && podeTrflTraReporte && (
               <button
                 onClick={handleExportTRA}
                 className="px-3 py-2 text-indigo-700 hover:bg-indigo-50 rounded-lg border border-indigo-300 transition-colors"
@@ -638,7 +689,7 @@ const PrepararRequisicao = () => {
                 GERAR TRA
               </button>
             )}
-            {((requisicao.status === 'Entregue' && requisicao.tra_gerada_em) || requisicao.status === 'FINALIZADO') && podeAgirSeparacao && (
+            {((requisicao.status === 'Entregue' && requisicao.tra_gerada_em) || requisicao.status === 'FINALIZADO') && podeTrflTraReporte && (
               <button
                 onClick={handleExportReporte}
                 className="px-3 py-2 text-slate-700 hover:bg-slate-100 rounded-lg border border-slate-300 transition-colors"
@@ -731,7 +782,7 @@ const PrepararRequisicao = () => {
 
               return (
                 <div
-                  key={item.item_id || idx}
+                  key={item.id ?? item.item_id ?? idx}
                   className={`p-4 rounded-lg border-2 transition-colors ${
                     preparado ? 'bg-green-50 border-green-200' :
                     isPreparando ? 'bg-blue-50 border-[#0915FF]' :
@@ -772,26 +823,39 @@ const PrepararRequisicao = () => {
                         </div>
                       )}
                     </div>
-                    {podeAgirSeparacao && !item.preparacao_confirmada && podeEditarItensPreparacao && (
-                      <button
-                        type="button"
-                        onClick={() => abrirPrepararItem(item)}
-                        disabled={!!itemPreparando}
-                        className="px-4 py-2 bg-[#0915FF] text-white rounded-lg hover:bg-[#070FCC] disabled:opacity-50 transition-colors flex items-center gap-2"
-                      >
-                        <FaBox /> Preparar item
-                      </button>
-                    )}
-                    {podeAgirSeparacao && item.preparacao_confirmada && podeEditarItensPreparacao && (
-                      <button
-                        type="button"
-                        onClick={() => abrirPrepararItem(item)}
-                        disabled={!!itemPreparando}
-                        className="px-4 py-2 border border-[#0915FF] text-[#0915FF] rounded-lg hover:bg-[#0915FF] hover:text-white disabled:opacity-50 transition-colors flex items-center gap-2"
-                      >
-                        <FaEdit /> Editar preparação
-                      </button>
-                    )}
+                    <div className="flex flex-col sm:flex-row gap-2 flex-shrink-0">
+                      {podeAgirSeparacao && !item.preparacao_confirmada && podeEditarItensPreparacao && (
+                        <button
+                          type="button"
+                          onClick={() => abrirPrepararItem(item)}
+                          disabled={!!itemPreparando}
+                          className="px-4 py-2 bg-[#0915FF] text-white rounded-lg hover:bg-[#070FCC] disabled:opacity-50 transition-colors flex items-center gap-2"
+                        >
+                          <FaBox /> Preparar item
+                        </button>
+                      )}
+                      {podeAgirSeparacao && item.preparacao_confirmada && podeEditarItensPreparacao && (
+                        <button
+                          type="button"
+                          onClick={() => abrirPrepararItem(item)}
+                          disabled={!!itemPreparando}
+                          className="px-4 py-2 border border-[#0915FF] text-[#0915FF] rounded-lg hover:bg-[#0915FF] hover:text-white disabled:opacity-50 transition-colors flex items-center gap-2"
+                        >
+                          <FaEdit /> Editar preparação
+                        </button>
+                      )}
+                      {podeAdminRemoverLinha && (
+                        <button
+                          type="button"
+                          onClick={() => handleRemoverLinhaRequisicao(item)}
+                          disabled={!!itemPreparando}
+                          className="px-4 py-2 border border-red-300 text-red-700 rounded-lg hover:bg-red-50 disabled:opacity-50 transition-colors flex items-center gap-2"
+                          title="Remover esta linha (apenas administrador)"
+                        >
+                          <FaTrash /> Remover linha
+                        </button>
+                      )}
+                    </div>
                   </div>
 
                   {isPreparando && (

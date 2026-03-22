@@ -19,7 +19,7 @@ async function run() {
     client = await pool.connect();
     const sql = fs.readFileSync(path.join(__dirname, 'migrate-usuarios-roles-novos.sql'), 'utf8');
     await client.query(sql);
-    console.log('Roles atualizados. O admin pode agora atribuir BACKOFFICE OPERATIONS, BACKOFFICE ARMAZEM e OPERADOR.');
+    console.log('Roles atualizados. Inclui supervisor_armazem, BACKOFFICE OPERATIONS, BACKOFFICE ARMAZEM e OPERADOR.');
   } catch (e) {
     console.error('Erro:', e.message);
     process.exit(1);

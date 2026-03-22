@@ -17,6 +17,6 @@ END $$;
 ALTER TABLE usuarios ADD CONSTRAINT usuarios_role_check CHECK (
   role IN (
     'admin', 'controller', 'usuario', 'basico',
-    'backoffice_operations', 'backoffice_armazem', 'operador'
+    'backoffice_operations', 'backoffice_armazem', 'supervisor_armazem', 'operador'
   )
 );

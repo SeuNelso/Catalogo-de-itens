@@ -32,6 +32,7 @@ import EditarRequisicao from './pages/EditarRequisicao';
 import PrepararRequisicao from './pages/PrepararRequisicao';
 import Armazens from './pages/Armazens';
 import './App.css';
+import { ROLES_COM_ACESSO_REQUISICOES } from './utils/roles';
 
 function RouteTracker() {
   const location = useLocation();
@@ -155,7 +156,7 @@ function App() {
                 <Route 
                   path="/itens-nao-cadastrados" 
                   element={
-                    <ProtectedRoute allowedRoles={['admin', 'controller', 'backoffice_armazem']}>
+                    <ProtectedRoute allowedRoles={['admin', 'controller', 'backoffice_armazem', 'supervisor_armazem']}>
                       <ItensNaoCadastrados />
                     </ProtectedRoute>
                   } 
@@ -180,7 +181,7 @@ function App() {
                 <Route 
                   path="/requisicoes" 
                   element={
-                    <ProtectedRoute>
+                    <ProtectedRoute allowedRoles={[...ROLES_COM_ACESSO_REQUISICOES]}>
                       <ListarRequisicoes />
                     </ProtectedRoute>
                   } 
@@ -188,7 +189,7 @@ function App() {
                 <Route 
                   path="/requisicoes/criar" 
                   element={
-                    <ProtectedRoute allowedRoles={['admin', 'controller', 'backoffice_operations', 'backoffice_armazem']}>
+                    <ProtectedRoute allowedRoles={['admin', 'backoffice_operations', 'backoffice_armazem', 'supervisor_armazem']}>
                       <CriarRequisicao />
                     </ProtectedRoute>
                   } 
@@ -196,7 +197,7 @@ function App() {
                 <Route 
                   path="/requisicoes/importar" 
                   element={
-                    <ProtectedRoute allowedRoles={['admin', 'controller', 'backoffice_operations', 'backoffice_armazem']}>
+                    <ProtectedRoute allowedRoles={['admin', 'backoffice_operations', 'backoffice_armazem', 'supervisor_armazem']}>
                       <ImportarRequisicao />
                     </ProtectedRoute>
                   } 
@@ -204,7 +205,7 @@ function App() {
                 <Route 
                   path="/requisicoes/editar/:id" 
                   element={
-                    <ProtectedRoute allowedRoles={['admin', 'controller', 'backoffice_operations', 'backoffice_armazem']}>
+                    <ProtectedRoute allowedRoles={['admin', 'backoffice_operations', 'backoffice_armazem', 'supervisor_armazem']}>
                       <EditarRequisicao />
                     </ProtectedRoute>
                   } 
@@ -212,7 +213,7 @@ function App() {
                 <Route 
                   path="/requisicoes/preparar/:id" 
                   element={
-                    <ProtectedRoute allowedRoles={['admin', 'controller', 'operador', 'backoffice_armazem']}>
+                    <ProtectedRoute allowedRoles={['admin', 'operador', 'backoffice_armazem', 'supervisor_armazem']}>
                       <PrepararRequisicao />
                     </ProtectedRoute>
                   } 
@@ -220,7 +221,7 @@ function App() {
                 <Route 
                   path="/armazens" 
                   element={
-                    <ProtectedRoute allowedRoles={['admin']}>
+                    <ProtectedRoute allowedRoles={['admin', 'backoffice_armazem', 'supervisor_armazem']}>
                       <Armazens />
                     </ProtectedRoute>
                   } 

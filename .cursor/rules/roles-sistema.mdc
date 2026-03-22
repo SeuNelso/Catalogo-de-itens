@@ -1,0 +1,120 @@
+---
+description: Perfis (roles) do Catálogo — definição e função no sistema
+globs: server/**/*.js,client/src/**/*.js
+alwaysApply: false
+---
+
+# Perfis do sistema
+
+- Valores em `usuarios.role` (minúsculas). Constraint: `server/migrate-usuarios-roles-novos.sql`.
+- Código: `server/utils/roles.js`, `client/src/utils/roles.js` (`ROLE_OPTIONS` na UI).
+
+Cada secção abaixo descreve **um** role: preenche **Função no sistema** à medida que definires a política de negócio.
+
+---
+
+## ADMIN (`admin`)
+
+**Nome na UI:** Administrador (ADMIN)
+
+**Função no sistema:**
+
+- Acesso total: gestão de utilizadores e roles, importações sensíveis, limpezas, exclusões administrativas, e todas as operações que a aplicação restringe só a administrador.
+- Onde há bypass de limites (ex.: filtro de armazém em requisições), `admin` segue as regras do código (`isAdmin` / `role === 'admin'`).
+
+---
+
+## CONTROLLER (`controller`)
+
+**Nome na UI:** Controller
+
+**Função no sistema:**
+
+- **Requisições:** **sem acesso** ao módulo (`/api/requisicoes` e rotas `/requisicoes/*` na UI). Continua a poder usar outras áreas onde a aplicação permitir (ex.: importações de catálogo com `admin` em várias rotas).
+
+---
+
+## BACKOFFICE OPERATIONS (`backoffice_operations`)
+
+**Nome na UI:** BACKOFFICE OPERATIONS
+
+**Função no sistema:**
+
+- *(a preencher)*
+
+---
+
+## BACKOFFICE ARMAZÉM (`backoffice_armazem`)
+
+**Nome na UI:** BACKOFFICE ARMAZEM
+
+**Função no sistema:**
+
+- **Tudo o que o OPERADOR faz:** consulta ao catálogo sem escrita de itens; separação e preparação; entrega com documento de PDF; âmbito de requisições pelos armazéns de origem do cadastro (`requisicaoScopeMiddleware`).
+- **Requisições (em plus):** **criar**, **editar** e **excluir** requisições (inclui rotas e ecrãs já permitidos a este perfil); importação de requisições por Excel quando aplicável.
+- **Documentos e relatórios:** **TRFL** e **TRA** (incl. combinados); **Reporte** e **Clog**; **marcar em expedição** e **finalizar** — o perfil **não** é operador, logo não cai em `denyOperador` e usa as mesmas ações de logística que o admin nestas rotas.
+- **Catálogo:** escrita de itens continua **apenas** admin/controller (como o operador); gestão de **armazéns** (CRUD) pode ser feita por este perfil onde a API já o permite (`/api/armazens` com admin ou backoffice armazém).
+
+---
+
+## SUPERVISOR ARMAZÉM (`supervisor_armazem`)
+
+**Nome na UI:** Supervisor armazém
+
+**Função no sistema:**
+
+- **Como o OPERADOR e o BACKOFFICE ARMAZÉM:** mesmas permissões de requisições (criar, editar, eliminar, preparar, documentos/TRFL/TRA/etc. conforme `denyOperador` e `ignoraBloqueioSeparador`), âmbito por armazéns de origem no cadastro (`usuario_requisicoes_armazens`).
+- **Armazéns:** vê só os armazéns atribuídos; **não** cria nem elimina armazéns nem importa viaturas em lote; **pode** alterar **apenas localizações** (`armazens_localizacoes`) via `PUT /api/armazens/:id` com corpo `{ localizacoes: [...] }` nesses armazéns.
+
+---
+
+## OPERADOR (`operador`)
+
+**Nome na UI:** OPERADOR
+
+**Função no sistema:**
+
+- **Catálogo:** consulta (listagem, detalhe); **não** cria, edita nem elimina itens (API e UI alinhadas a admin/controller para escrita).
+- **Requisições:** **não** cria, edita nem elimina requisições; **não** importa requisições por Excel.
+- **Separação:** é o perfil de **separar** a requisição (preparar itens, confirmar separação, concluir separação). Enquanto a requisição está **`EM SEPARACAO`**, outro utilizador (exceto admin/backoffice armazém/supervisor armazém) não pode tomar a preparação. Após passar a **`separado`** ou estados seguintes, já não há bloqueio por separador; `separador_usuario_id` mantém-se só para indicar quem separou.
+- **Após a separação:** **não** gera TRFL nem TRA, **não** gera Reporte nem Clog, **não** marca em expedição (fluxo ligado à TRFL). **Pode** marcar **Entregue** e usar o documento de entrega (PDF gerado no cliente ao entregar); **não** **finaliza** a requisição.
+- **Âmbito:** só vê e age em requisições cujo **armazém de origem** está nos armazéns definidos no cadastro do utilizador (`usuario_requisicoes_armazens` / coluna de origem), como os restantes perfis não privilegiados — ver `requisicaoScopeMiddleware`. **Sem nenhum armazém atribuído** ⇒ não lista nem altera requisições (o **admin** ignora o filtro; `basico` e `controller` não usam o módulo).
+
+Helpers: `isOperador` / `operadorPodeDocsELogisticaAposSeparacao` em `client/src/utils/roles.js`; na API, middleware `denyOperador` em `server/routes/requisicoes.js` para rotas que o operador não pode usar.
+
+---
+
+## BÁSICO (`basico`)
+
+**Nome na UI:** Básico
+
+**Função no sistema:**
+
+- **Requisições:** **sem acesso** ao módulo (`requisicaoPerfilNegadoMiddleware` / rotas protegidas na UI).
+
+---
+
+## USUÁRIO (`usuario`)
+
+**Nome na UI:** Usuário
+
+**Função no sistema:**
+
+- *(a preencher)*
+
+---
+
+## Requisições — edição após separação
+
+- **Formulário “Editar requisição”** (destino, lista de itens, etc.): só enquanto o status é **`pendente`**. Depois do início da separação (`EM SEPARACAO` em diante), a API rejeita **PUT** e a página de edição redireciona.
+- **Preparar itens** (`atender-item`): em **`pendente`** ou **`EM SEPARACAO`** para todos os perfis autorizados; em **`separado`** ou **`EM EXPEDICAO`**, **só `admin`** pode corrigir a preparação de linhas (`PATCH atender-item`).
+- **Remover linha** de uma requisição já separada: **`DELETE /api/requisicoes/:id/requisicao-itens/:requisicaoItemId`**, só **`admin`**, só em **Separadas** ou **Em expedição**, e com **mais de uma linha** na requisição.
+
+---
+
+## Ao alterar ou acrescentar perfis
+
+1. Migração SQL (`CHECK` em `usuarios.role`), se o valor for novo.
+2. `ROLES` e `ROLES_VALIDOS` em `server/utils/roles.js` e `client/src/utils/roles.js`.
+3. `ROLE_OPTIONS` no client (dropdown em utilizadores).
+4. Rotas API e páginas React que verificam `user.role`.
