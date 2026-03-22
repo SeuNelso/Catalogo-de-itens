@@ -65,13 +65,13 @@ const Armazens = () => {
   const [formData, setFormData] = useState({
     codigo: '',
     descricao: '',
-    tipo: 'viatura', // 'central' | 'viatura'
+    tipo: 'viatura', // 'central' | 'viatura' | 'apeado' | 'epi'
     localizacoes: []  // central: [{ localizacao, tipo_localizacao }]; viatura: preenchido com 2 (normal, FERR)
   });
   const [submitting, setSubmitting] = useState(false);
   const [loadingEdit, setLoadingEdit] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
-  const [tipoFiltro, setTipoFiltro] = useState('todos'); // todos | central | viatura
+  const [tipoFiltro, setTipoFiltro] = useState('todos'); // todos | central | viatura | apeado | epi
   const [centralBulkText, setCentralBulkText] = useState('');
   const [importingLocFile, setImportingLocFile] = useState(false);
   const [importingViaturaFile, setImportingViaturaFile] = useState(false);
@@ -393,6 +393,8 @@ const Armazens = () => {
           { localizacao: String(l0).trim(), tipo_localizacao: 'normal' },
           { localizacao: String(l1).trim(), tipo_localizacao: 'FERR' }
         ];
+      } else if (formData.tipo === 'apeado' || formData.tipo === 'epi') {
+        payloadLocs = [{ localizacao: formData.codigo.trim().toUpperCase(), tipo_localizacao: 'normal' }];
       } else {
         payloadLocs = locsCentrais;
         const hasRecebimento = payloadLocs.some((l) => l.tipo_localizacao === 'recebimento');
@@ -444,16 +446,20 @@ const Armazens = () => {
       return;
     }
     const locsCentrais = parseCentralBulkText(centralBulkText);
+    const codigoU = formData.codigo.trim().toUpperCase();
     const payload = {
       codigo: formData.codigo.trim(),
       descricao: formData.descricao.trim(),
       tipo: formData.tipo,
-      localizacoes: formData.tipo === 'viatura'
-        ? [
-            { localizacao: formData.codigo.trim().toUpperCase(), tipo_localizacao: 'normal' },
-            { localizacao: formData.codigo.trim().toUpperCase() + '.FERR', tipo_localizacao: 'FERR' }
-          ]
-        : locsCentrais
+      localizacoes:
+        formData.tipo === 'viatura'
+          ? [
+              { localizacao: codigoU, tipo_localizacao: 'normal' },
+              { localizacao: codigoU + '.FERR', tipo_localizacao: 'FERR' }
+            ]
+          : formData.tipo === 'apeado' || formData.tipo === 'epi'
+            ? [{ localizacao: codigoU, tipo_localizacao: 'normal' }]
+            : locsCentrais
     };
     if (formData.tipo === 'central') {
       const hasRecebimento = payload.localizacoes.some(l => l.tipo_localizacao === 'recebimento');
@@ -545,14 +551,33 @@ const Armazens = () => {
         return { localizacao: locStr, tipo_localizacao: tipoLoc };
       }).filter(l => l.localizacao !== '');
       if (data.localizacao && !locs.length) locs.push({ localizacao: String(data.localizacao).trim(), tipo_localizacao: 'normal' });
-      const tipoFromApi = (data.tipo === 'central' || data.tipo === 'viatura') ? data.tipo : null;
+      const tipoFromApi =
+        data.tipo === 'central' || data.tipo === 'viatura' || data.tipo === 'apeado' || data.tipo === 'epi'
+          ? data.tipo
+          : null;
       const hasRecebimentoOuExpedicao = locs.some(l => l.tipo_localizacao === 'recebimento' || l.tipo_localizacao === 'expedicao');
-      const tipo = tipoFromApi ?? (locs.length > 2 || hasRecebimentoOuExpedicao ? 'central' : 'viatura');
+      const tipo =
+        tipoFromApi ??
+        (locs.length > 2 || hasRecebimentoOuExpedicao
+          ? 'central'
+          : locs.length === 2
+            ? 'viatura'
+            : locs.length === 1
+              ? 'apeado'
+              : 'viatura');
+      const locsForForm =
+        tipo === 'central'
+          ? locs.length > 0
+            ? locs
+            : [{ localizacao: '', tipo_localizacao: 'normal' }]
+          : tipo === 'apeado' || tipo === 'epi'
+            ? [{ localizacao: (data.codigo || locs[0]?.localizacao || '').toString().trim(), tipo_localizacao: 'normal' }]
+            : locs;
       setFormData({
         codigo: data.codigo || '',
         descricao: data.descricao || '',
         tipo,
-        localizacoes: tipo === 'central' ? (locs.length > 0 ? locs : [{ localizacao: '', tipo_localizacao: 'normal' }]) : locs
+        localizacoes: locsForForm
       });
       if (tipo === 'central') {
         setCentralBulkText(buildCentralBulkText(locs));
@@ -717,6 +742,14 @@ const Armazens = () => {
     () => (armazens || []).filter((a) => a.tipo === 'viatura').length,
     [armazens]
   );
+  const totalApeado = useMemo(
+    () => (armazens || []).filter((a) => a.tipo === 'apeado').length,
+    [armazens]
+  );
+  const totalEpi = useMemo(
+    () => (armazens || []).filter((a) => a.tipo === 'epi').length,
+    [armazens]
+  );
 
   const listaTotalPages = Math.max(1, Math.ceil(armazensFiltrados.length / LIST_PAGE_SIZE));
   const listaPage = Math.min(listPage, listaTotalPages);
@@ -824,7 +857,7 @@ const Armazens = () => {
                 <label className="block text-sm font-medium text-gray-700 mb-2">
                   Tipo de armazém <span className="text-red-500">*</span>
                 </label>
-                <div className="flex gap-4">
+                <div className="flex flex-wrap gap-x-4 gap-y-2">
                   <label className={`flex items-center gap-2 ${bloquearCabecalhoArmazem ? 'cursor-not-allowed opacity-80' : 'cursor-pointer'}`}>
                     <input
                       type="radio"
@@ -853,9 +886,33 @@ const Armazens = () => {
                     />
                     <span>Central</span>
                   </label>
+                  <label className={`flex items-center gap-2 ${bloquearCabecalhoArmazem ? 'cursor-not-allowed opacity-80' : 'cursor-pointer'}`}>
+                    <input
+                      type="radio"
+                      name="tipo"
+                      value="apeado"
+                      checked={formData.tipo === 'apeado'}
+                      onChange={() => setFormData(prev => ({ ...prev, tipo: 'apeado', localizacoes: [] }))}
+                      className="text-[#0915FF]"
+                      disabled={bloquearCabecalhoArmazem}
+                    />
+                    <span>APEADO</span>
+                  </label>
+                  <label className={`flex items-center gap-2 ${bloquearCabecalhoArmazem ? 'cursor-not-allowed opacity-80' : 'cursor-pointer'}`}>
+                    <input
+                      type="radio"
+                      name="tipo"
+                      value="epi"
+                      checked={formData.tipo === 'epi'}
+                      onChange={() => setFormData(prev => ({ ...prev, tipo: 'epi', localizacoes: [] }))}
+                      className="text-[#0915FF]"
+                      disabled={bloquearCabecalhoArmazem}
+                    />
+                    <span>EPI</span>
+                  </label>
                 </div>
                 <p className="mt-1 text-xs text-gray-500">
-                  Viatura: 2 localizações (uma .FERR). Central: várias localizações, com Recebimento e Expedição.
+                  Viatura: 2 localizações (uma .FERR). Central: várias localizações, com Recebimento e Expedição. APEADO e EPI: uma única localização, igual ao código do armazém.
                 </p>
               </div>
               <div>
@@ -870,9 +927,17 @@ const Armazens = () => {
                   required
                   readOnly={bloquearCabecalhoArmazem}
                   className={`w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0915FF] focus:border-transparent ${bloquearCabecalhoArmazem ? 'bg-gray-50 cursor-default' : ''}`}
-                  placeholder={formData.tipo === 'viatura' ? 'Ex: V848' : 'Ex: E'}
+                  placeholder={
+                    formData.tipo === 'viatura'
+                      ? 'Ex: V848'
+                      : formData.tipo === 'central'
+                        ? 'Ex: E'
+                        : 'Ex: APE1'
+                  }
                 />
-                <p className="mt-1 text-xs text-gray-500">Código do armazém (ex: V848 para viatura, E para central)</p>
+                <p className="mt-1 text-xs text-gray-500">
+                  Código do armazém (ex: V848 para viatura, E para central; APEADO/EPI usam o mesmo valor como localização)
+                </p>
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -931,6 +996,23 @@ const Armazens = () => {
                       </div>
                     </div>
                   )}
+                </div>
+              )}
+              {(formData.tipo === 'apeado' || formData.tipo === 'epi') && (
+                <div className="rounded-lg bg-gray-50 border border-gray-200 p-4">
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Localização ({formData.tipo === 'apeado' ? 'APEADO' : 'EPI'})
+                  </label>
+                  <p className="text-xs text-gray-500 mb-2">
+                    Uma única localização, sempre igual ao código do armazém (em maiúsculas).
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm text-gray-600 w-32">Localização:</span>
+                    <span className="font-mono bg-white px-2 py-1 rounded border border-gray-200">
+                      {formData.codigo ? formData.codigo.trim().toUpperCase() : '—'}
+                    </span>
+                    <span className="text-xs text-gray-500">(normal)</span>
+                  </div>
                 </div>
               )}
               {formData.tipo === 'central' && (
@@ -1154,6 +1236,30 @@ const Armazens = () => {
             <div className="text-sm font-semibold opacity-90">Viaturas</div>
             <div className="mt-2 text-3xl font-bold">{totalViaturas}</div>
           </button>
+          <button
+            type="button"
+            onClick={() => setTipoFiltro('apeado')}
+            className={`text-left rounded-xl border p-5 shadow-sm transition-all ${
+              tipoFiltro === 'apeado'
+                ? 'bg-emerald-50 border-emerald-300 text-emerald-900'
+                : 'bg-white border-gray-200 text-gray-800 hover:shadow-md'
+            }`}
+          >
+            <div className="text-sm font-semibold opacity-90">APEADO</div>
+            <div className="mt-2 text-3xl font-bold">{totalApeado}</div>
+          </button>
+          <button
+            type="button"
+            onClick={() => setTipoFiltro('epi')}
+            className={`text-left rounded-xl border p-5 shadow-sm transition-all ${
+              tipoFiltro === 'epi'
+                ? 'bg-violet-50 border-violet-300 text-violet-900'
+                : 'bg-white border-gray-200 text-gray-800 hover:shadow-md'
+            }`}
+          >
+            <div className="text-sm font-semibold opacity-90">EPI</div>
+            <div className="mt-2 text-3xl font-bold">{totalEpi}</div>
+          </button>
         </div>
 
         <div className="bg-white rounded-lg shadow-sm overflow-hidden">
@@ -1227,9 +1333,28 @@ const Armazens = () => {
                             <span className="font-medium text-gray-900 truncate" title={titulo}>
                               {titulo}
                             </span>
-                            {(armazem.tipo === 'central' || armazem.tipo === 'viatura') && (
-                              <span className={`shrink-0 px-1.5 py-0 text-[10px] uppercase tracking-wide rounded ${armazem.tipo === 'central' ? 'bg-blue-100 text-blue-800' : 'bg-amber-100 text-amber-800'}`}>
-                                {armazem.tipo === 'central' ? 'Central' : 'Viatura'}
+                            {(armazem.tipo === 'central' ||
+                              armazem.tipo === 'viatura' ||
+                              armazem.tipo === 'apeado' ||
+                              armazem.tipo === 'epi') && (
+                              <span
+                                className={`shrink-0 px-1.5 py-0 text-[10px] uppercase tracking-wide rounded ${
+                                  armazem.tipo === 'central'
+                                    ? 'bg-blue-100 text-blue-800'
+                                    : armazem.tipo === 'viatura'
+                                      ? 'bg-amber-100 text-amber-800'
+                                      : armazem.tipo === 'apeado'
+                                        ? 'bg-emerald-100 text-emerald-800'
+                                        : 'bg-violet-100 text-violet-800'
+                                }`}
+                              >
+                                {armazem.tipo === 'central'
+                                  ? 'Central'
+                                  : armazem.tipo === 'viatura'
+                                    ? 'Viatura'
+                                    : armazem.tipo === 'apeado'
+                                      ? 'APEADO'
+                                      : 'EPI'}
                               </span>
                             )}
                             {armazem.ativo === false && (

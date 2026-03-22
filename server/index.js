@@ -4920,7 +4920,11 @@ app.post('/api/armazens', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Descrição é obrigatória (ex: BBCH06)' });
     }
 
-    const tipoArmazem = (tipo === 'central' || tipo === 'viatura') ? tipo : 'viatura';
+    const tipoRaw = (tipo != null) ? String(tipo).trim().toLowerCase() : '';
+    const tipoArmazem =
+      tipoRaw === 'central' || tipoRaw === 'viatura' || tipoRaw === 'apeado' || tipoRaw === 'epi'
+        ? tipoRaw
+        : 'viatura';
     const codigoNorm = codigo.toString().trim().toUpperCase();
     const descricaoTrim = (descricao || '').trim();
 
@@ -4956,6 +4960,9 @@ app.post('/api/armazens', authenticateToken, async (req, res) => {
       if (!hasRecebimento || !hasExpedicao) {
         return res.status(400).json({ error: 'Armazém central deve ter pelo menos uma localização de Recebimento e uma ou mais de Expedição.' });
       }
+    }
+    if (tipoArmazem === 'apeado' || tipoArmazem === 'epi') {
+      locsWithTipo = [{ localizacao: codigoNorm, tipo_localizacao: 'normal' }];
     }
 
     let result;
@@ -5187,10 +5194,14 @@ app.put('/api/armazens/:id', authenticateToken, async (req, res) => {
       params.push(ativo);
     }
 
-    if (tipo !== undefined && (tipo === 'central' || tipo === 'viatura')) {
+    const tipoNormPut = tipo != null ? String(tipo).trim().toLowerCase() : undefined;
+    if (
+      tipoNormPut !== undefined &&
+      (tipoNormPut === 'central' || tipoNormPut === 'viatura' || tipoNormPut === 'apeado' || tipoNormPut === 'epi')
+    ) {
       try {
         updates.push(`tipo = $${paramCount++}`);
-        params.push(tipo);
+        params.push(tipoNormPut);
       } catch (_) {}
     }
 
@@ -5199,20 +5210,12 @@ app.put('/api/armazens/:id', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Nenhum campo para atualizar' });
     }
 
-    let tipoAtual = tipo;
-    if (temLocalizacoesParaAtualizar && tipoAtual === undefined) {
-      const arm = await pool.query('SELECT codigo, tipo FROM armazens WHERE id = $1', [id]);
-      tipoAtual = arm.rows[0]?.tipo || 'viatura';
+    let tipoParaValidacao = tipoNormPut;
+    if (temLocalizacoesParaAtualizar && tipoParaValidacao === undefined) {
+      const arm = await pool.query('SELECT tipo FROM armazens WHERE id = $1', [id]);
+      tipoParaValidacao = arm.rows[0]?.tipo || 'viatura';
     }
-    if (temLocalizacoesParaAtualizar && tipoAtual === 'viatura' && locsWithTipo.length !== 2) {
-      const arm = await pool.query('SELECT codigo FROM armazens WHERE id = $1', [id]);
-      const codigoAtual = arm.rows[0]?.codigo || 'V';
-      locsWithTipo = [
-        { localizacao: codigoAtual, tipo_localizacao: 'normal' },
-        { localizacao: codigoAtual + '.FERR', tipo_localizacao: 'FERR' }
-      ];
-    }
-    if (temLocalizacoesParaAtualizar && tipoAtual === 'central') {
+    if (temLocalizacoesParaAtualizar && tipoParaValidacao === 'central') {
       const hasRecebimento = locsWithTipo.some(l => l.tipo_localizacao === 'recebimento');
       const hasExpedicao = locsWithTipo.some(l => l.tipo_localizacao === 'expedicao');
       if (!hasRecebimento || !hasExpedicao) {
@@ -5236,6 +5239,23 @@ app.put('/api/armazens/:id', authenticateToken, async (req, res) => {
           cleanParams.push(id);
           if (cleanUpdates.length > 0) await pool.query(`UPDATE armazens SET ${cleanUpdates.join(', ')}, updated_at = CURRENT_TIMESTAMP WHERE id = $${cleanParams.length}`, cleanParams);
         } else throw updE;
+      }
+    }
+
+    if (temLocalizacoesParaAtualizar) {
+      const snap = await pool.query('SELECT codigo, tipo FROM armazens WHERE id = $1', [id]);
+      if (snap.rows.length === 0) {
+        return res.status(404).json({ error: 'Armazém não encontrado' });
+      }
+      const tipoEff = snap.rows[0]?.tipo || 'viatura';
+      const codigoEff = (snap.rows[0]?.codigo || '').toString().trim().toUpperCase();
+      if (tipoEff === 'apeado' || tipoEff === 'epi') {
+        locsWithTipo = [{ localizacao: codigoEff, tipo_localizacao: 'normal' }];
+      } else if (tipoEff === 'viatura' && locsWithTipo.length !== 2) {
+        locsWithTipo = [
+          { localizacao: codigoEff, tipo_localizacao: 'normal' },
+          { localizacao: codigoEff + '.FERR', tipo_localizacao: 'FERR' }
+        ];
       }
     }
 
