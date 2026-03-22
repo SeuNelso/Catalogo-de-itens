@@ -4888,13 +4888,8 @@ app.get('/api/armazens/:id', authenticateToken, async (req, res) => {
     }
 
     const armazem = result.rows[0];
-    if (req.user && req.user.role === 'supervisor_armazem') {
-      const allowed = await fetchRequisicoesArmazemIdsForUser(req.user.id);
-      const idNum = parseInt(id, 10);
-      if (!allowed.includes(idNum)) {
-        return res.status(403).json({ error: 'Acesso negado a este armazém' });
-      }
-    }
+    // Não replicar aqui o filtro de supervisor de GET /api/armazens (lista): ao preparar requisições é
+    // necessário ler armazém destino (viatura, EPI, etc.) por ID mesmo quando só centrais estão atribuídos ao utilizador.
     armazem.tipo = armazem.tipo || 'viatura';
     try {
       try {
