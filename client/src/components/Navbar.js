@@ -21,7 +21,8 @@ const Navbar = () => {
   const isController = user && (user.role === 'admin' || user.role === 'controller');
   const canSeeRequisicoes = user && podeAcederRequisicoes(user.role);
   const isArmazemLogistica = user && ['backoffice_armazem', 'supervisor_armazem'].includes(user.role);
-  const showGerirMenu = isAdmin;
+  /** Admin: menu completo; backoffice/supervisor armazém: secção Armazém (links não ficam só dentro do bloco admin) */
+  const showGerirMenu = isAdmin || isArmazemLogistica;
   /** Conta autenticada que não é admin: acede a /admin-usuarios só para o próprio perfil */
   const showMeuPerfil = isAuthenticated && !isAdmin;
 

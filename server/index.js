@@ -3183,6 +3183,15 @@ app.patch('/api/usuarios/:id', authenticateToken, async (req, res) => {
           'numero_colaborador: ver migrações / init-db.'
       });
     }
+    if (error.code === '23514' && String(error.message || '').includes('usuarios_role_check')) {
+      return res.status(500).json({
+        error: 'Erro ao atualizar utilizador.',
+        details: error.message,
+        hint:
+          'O CHECK na coluna role não inclui este perfil. Na mesma DATABASE_URL da API, execute: ' +
+          'npm run db:usuarios-roles (ou aplique server/migrate-usuarios-roles-novos.sql no Postgres).'
+      });
+    }
     res.status(500).json({ error: 'Erro ao atualizar utilizador.', details: error.message });
   }
 });

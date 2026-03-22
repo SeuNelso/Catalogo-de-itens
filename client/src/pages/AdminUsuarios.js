@@ -4,7 +4,7 @@ import { useConfirm } from '../contexts/ConfirmContext';
 import { useNavigate, Link } from 'react-router-dom';
 import { FaSearch, FaUser, FaPlus, FaPen, FaTimes } from 'react-icons/fa';
 import { getRequisicoesArmazemOrigemIds } from '../utils/requisicoesArmazemOrigem';
-import { ROLE_OPTIONS } from '../utils/roles';
+import { ROLE_OPTIONS, roleLabel } from '../utils/roles';
 
 function normalizeRow(u) {
   const ids = getRequisicoesArmazemOrigemIds(u);
@@ -405,8 +405,11 @@ const AdminUsuarios = () => {
                             </div>
                             <div className="text-xs text-gray-500 truncate">{u.email || u.username || `ID ${u.id}`}</div>
                             <div className="mt-1 flex flex-wrap gap-1">
-                              <span className="text-[10px] uppercase px-1.5 py-0.5 rounded bg-gray-100 text-gray-700">
-                                {u.role}
+                              <span
+                                className="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-700 max-w-[14rem] truncate"
+                                title={u.role ? `role na base: ${u.role}` : undefined}
+                              >
+                                {roleLabel(u.role)}
                               </span>
                               {nArm > 0 && (
                                 <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-800">

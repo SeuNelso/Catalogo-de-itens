@@ -60,3 +60,10 @@ export const ROLE_OPTIONS = [
   { value: ROLES.BASICO, label: 'Básico' },
   { value: ROLES.USUARIO, label: 'Usuário' },
 ];
+
+/** Rótulo na UI; na base `usuarios.role` guarda o código (ex.: supervisor_armazem). */
+export function roleLabel(role) {
+  if (role == null || role === '') return '—';
+  const o = ROLE_OPTIONS.find((r) => r.value === role);
+  return o ? o.label : String(role);
+}
