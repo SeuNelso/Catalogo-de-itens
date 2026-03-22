@@ -1,4 +1,4 @@
-/** Ids de armazéns centrais com acesso a requisições (escopo). Compatível com token antigo (só *_id). */
+/** Ids de armazéns de origem (central, viatura, APEADO, EPI) com acesso a requisições (escopo). Compatível com token antigo (só *_id). */
 export function getRequisicoesArmazemOrigemIds(user) {
   if (!user) return [];
   let ids = user.requisicoes_armazem_origem_ids;

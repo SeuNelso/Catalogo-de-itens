@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { getRequisicoesArmazemOrigemIds } from '../utils/requisicoesArmazemOrigem';
+import { filtrarArmazensOrigemRequisicao } from '../utils/armazensRequisicaoOrigem';
 import { quantidadeStockNacionalNoArmazem } from '../utils/stockNacionalArmazem';
 import Toast from '../components/Toast';
 import { FaArrowLeft, FaSave, FaPlus, FaTrash, FaChevronDown } from 'react-icons/fa';
@@ -161,7 +162,7 @@ const CriarRequisicao = () => {
   const fetchArmazens = async () => {
     try {
       const token = localStorage.getItem('token');
-      const response = await axios.get('/api/armazens?ativo=true', {
+      const response = await axios.get('/api/armazens?ativo=true&destino_requisicao=1', {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       if (response.data) {
@@ -236,20 +237,25 @@ const CriarRequisicao = () => {
   };
 
   const armazensListaOrigem = useMemo(() => {
-    const centrais = (armazens || []).filter((a) => (a.tipo || '').toLowerCase() === 'central');
+    const origem = filtrarArmazensOrigemRequisicao(armazens || []);
     const allowed = getRequisicoesArmazemOrigemIds(user);
     if (user?.role === 'admin') {
-      return centrais;
+      return origem;
     }
     if (allowed.length > 0) {
       const set = new Set(allowed);
-      return centrais.filter((a) => set.has(a.id));
+      return origem.filter((a) => set.has(a.id));
     }
     return [];
   }, [armazens, user]);
 
   const armazensOrigemFiltrados = filterArmazens(armazensListaOrigem, buscaArmazemOrigem);
-  const armazensDestinoFiltrados = filterArmazens(armazens, buscaArmazemDestino);
+  /** Destino: mesmos tipos que origem (central, viatura, APEADO, EPI); lista completa na API com destino_requisicao=1 */
+  const armazensListaDestino = useMemo(
+    () => filtrarArmazensOrigemRequisicao(armazens || []),
+    [armazens]
+  );
+  const armazensDestinoFiltrados = filterArmazens(armazensListaDestino, buscaArmazemDestino);
 
   const armazemOrigemSelecionado = armazens.find(a => a.id === parseInt(formData.armazem_origem_id, 10));
   const armazemDestinoSelecionado = armazens.find(a => a.id === parseInt(formData.armazem_id, 10));
@@ -274,7 +280,7 @@ const CriarRequisicao = () => {
       setToast({
         type: 'error',
         message:
-          'Não tem armazéns de origem atribuídos. Um administrador deve associar pelo menos um armazém central ao seu utilizador.'
+          'Não tem armazéns de origem atribuídos. Um administrador deve associar pelo menos um armazém (central, viatura, APEADO ou EPI) ao seu utilizador.'
       });
       return;
     }
@@ -347,7 +353,7 @@ const CriarRequisicao = () => {
 
         {semArmazemOrigemAtribuido && (
           <div className="mb-6 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
-            Não tem armazéns de origem atribuídos. Peça a um administrador que associe pelo menos um armazém central ao seu utilizador antes de criar requisições.
+            Não tem armazéns de origem atribuídos. Peça a um administrador que associe pelo menos um armazém central, viatura, APEADO ou EPI ao seu utilizador antes de criar requisições.
           </div>
         )}
 

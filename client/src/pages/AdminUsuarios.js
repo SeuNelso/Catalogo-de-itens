@@ -5,6 +5,7 @@ import { useNavigate, Link } from 'react-router-dom';
 import { FaSearch, FaUser, FaPlus, FaPen, FaTimes } from 'react-icons/fa';
 import { getRequisicoesArmazemOrigemIds } from '../utils/requisicoesArmazemOrigem';
 import { ROLE_OPTIONS, roleLabel } from '../utils/roles';
+import { filtrarArmazensCentrais } from '../utils/armazensRequisicaoOrigem';
 
 function normalizeRow(u) {
   const ids = getRequisicoesArmazemOrigemIds(u);
@@ -74,7 +75,7 @@ const AdminUsuarios = () => {
         });
         if (!res.ok) return;
         const data = await res.json();
-        const list = Array.isArray(data) ? data.filter((a) => (a.tipo || '').toLowerCase() === 'central') : [];
+        const list = Array.isArray(data) ? filtrarArmazensCentrais(data) : [];
         setArmazensCentrais(list);
       } catch (_) {}
     })();
@@ -439,7 +440,7 @@ const AdminUsuarios = () => {
                 <FaUser className="mx-auto text-4xl text-gray-300 mb-4" />
                 <p className="text-lg font-medium text-gray-700">Selecione um utilizador</p>
                 <p className="text-sm mt-2 max-w-md mx-auto">
-                  Clique num nome na lista à esquerda para ver e alterar o perfil e os armazéns centrais das requisições.
+                  Clique num nome na lista à esquerda para ver e alterar o perfil e os armazéns centrais de origem das requisições.
                 </p>
               </div>
             ) : (
@@ -639,14 +640,14 @@ const AdminUsuarios = () => {
                 {isAdmin && (
                   <div className="mb-6">
                     <label className="block text-sm font-medium text-gray-700 mb-2">
-                      Requisições — armazéns centrais
+                      Requisições — armazéns de origem
                     </label>
                     <p className="text-xs text-gray-500 mb-3">
-                      Utilizadores que não são admin/controller só veem requisições cuja origem está na lista. Vazio = sem filtro extra.
+                      Utilizadores que não são admin/controller só veem requisições cuja origem (armazém central) está nesta lista. Vazio = sem filtro extra.
                     </p>
                     <div className="rounded-lg border border-gray-200 bg-gray-50/80 max-h-56 overflow-y-auto p-3 space-y-2">
                       {armazensCentrais.length === 0 ? (
-                        <p className="text-sm text-gray-400">Nenhum armazém central disponível</p>
+                        <p className="text-sm text-gray-400">Nenhum armazém central ativo. Crie ou ative armazéns com tipo «central».</p>
                       ) : (
                         armazensCentrais.map((a) => (
                           <label

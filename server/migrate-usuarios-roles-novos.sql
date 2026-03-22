@@ -37,4 +37,4 @@ ALTER TABLE public.usuarios ADD CONSTRAINT usuarios_role_check CHECK (
   )
 );
 
-COMMENT ON COLUMN public.usuarios.role IS 'Código do perfil (ex.: supervisor_armazem); ver ROLE_OPTIONS no client.';
+COMMENT ON COLUMN public.usuarios.role IS 'Código do perfil (ex.: supervisor_armazem). Ver ROLE_OPTIONS no client.';

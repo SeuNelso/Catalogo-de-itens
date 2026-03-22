@@ -14,6 +14,7 @@ const SQL_CRIADOR_NOME = `COALESCE(
 )`;
 
 const { isAdmin, isOperador } = require('../utils/roles');
+const { isTipoArmazemOrigemRequisicao } = require('../utils/armazensRequisicaoOrigem');
 const {
   usuarioEscopadoSemArmazensAtribuidos,
   requisicaoPerfilNegadoMiddleware,
@@ -2077,7 +2078,7 @@ router.post('/', ...requisicaoAuth, denyOperador, async (req, res) => {
       await client.query('ROLLBACK');
       return res.status(403).json({
         error:
-          'Não tem armazéns de origem atribuídos. Um administrador deve associar pelo menos um armazém central ao seu utilizador.',
+          'Não tem armazéns de origem atribuídos. Um administrador deve associar pelo menos um armazém de origem (central, viatura, APEADO ou EPI) ao seu utilizador.',
       });
     }
 
@@ -2100,10 +2101,16 @@ router.post('/', ...requisicaoAuth, denyOperador, async (req, res) => {
 
     // Verificar armazém origem (se informado)
     if (armazem_origem_id) {
-      const origCheck = await client.query('SELECT id FROM armazens WHERE id = $1 AND ativo = true', [armazem_origem_id]);
+      const origCheck = await client.query('SELECT id, tipo FROM armazens WHERE id = $1 AND ativo = true', [armazem_origem_id]);
       if (origCheck.rows.length === 0) {
         await client.query('ROLLBACK');
         return res.status(404).json({ error: 'Armazém origem não encontrado ou inativo' });
+      }
+      if (!isTipoArmazemOrigemRequisicao(origCheck.rows[0].tipo)) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({
+          error: 'Armazém de origem não é um tipo válido (central, viatura, APEADO ou EPI).',
+        });
       }
     }
 
@@ -2111,7 +2118,9 @@ router.post('/', ...requisicaoAuth, denyOperador, async (req, res) => {
       const orig = armazem_origem_id ? parseInt(armazem_origem_id, 10) : null;
       if (orig == null || !req.requisicaoArmazemOrigemIds.includes(orig)) {
         await client.query('ROLLBACK');
-        return res.status(403).json({ error: 'Só pode criar requisições com origem num dos armazéns centrais atribuídos ao seu utilizador.' });
+        return res.status(403).json({
+          error: 'Só pode criar requisições com origem num dos armazéns de origem atribuídos ao seu utilizador.',
+        });
       }
     }
 
@@ -2236,7 +2245,7 @@ router.post(
     if (usuarioEscopadoSemArmazensAtribuidos(req)) {
       return res.status(403).json({
         error:
-          'Não tem armazéns de origem atribuídos. Um administrador deve associar pelo menos um armazém central ao seu utilizador.',
+          'Não tem armazéns de origem atribuídos. Um administrador deve associar pelo menos um armazém de origem (central, viatura, APEADO ou EPI) ao seu utilizador.',
       });
     }
     if (!req.file) {
@@ -2245,16 +2254,17 @@ router.post(
 
     const { armazem_origem_id } = req.body;
 
-    // Armazém origem é obrigatório e deve ser armazém central
+    // Armazém origem é obrigatório (central, viatura, APEADO ou EPI)
     if (!armazem_origem_id) {
       return res.status(400).json({ error: 'Armazém origem é obrigatório.' });
     }
-    const ao = await pool.query(
-      "SELECT id FROM armazens WHERE id = $1 AND ativo = true AND LOWER(tipo) = 'central'",
-      [parseInt(armazem_origem_id, 10)]
-    );
-    if (ao.rows.length === 0) {
-      return res.status(400).json({ error: 'Armazém origem não encontrado, inativo ou não é um armazém central.' });
+    const ao = await pool.query('SELECT id, tipo FROM armazens WHERE id = $1 AND ativo = true', [
+      parseInt(armazem_origem_id, 10),
+    ]);
+    if (ao.rows.length === 0 || !isTipoArmazemOrigemRequisicao(ao.rows[0].tipo)) {
+      return res.status(400).json({
+        error: 'Armazém origem não encontrado, inativo ou tipo inválido (use central, viatura, APEADO ou EPI).',
+      });
     }
     const armazemOrigemId = ao.rows[0].id;
 
@@ -2263,7 +2273,9 @@ router.post(
       req.requisicaoArmazemOrigemIds.length > 0 &&
       !req.requisicaoArmazemOrigemIds.includes(armazemOrigemId)
     ) {
-      return res.status(403).json({ error: 'Só pode importar requisições para um dos armazéns centrais atribuídos ao seu utilizador.' });
+      return res.status(403).json({
+        error: 'Só pode importar requisições para um dos armazéns de origem atribuídos ao seu utilizador.',
+      });
     }
 
     const workbook = XLSX.readFile(req.file.path);
@@ -2454,10 +2466,16 @@ router.put('/:id', ...requisicaoAuth, denyOperador, async (req, res) => {
         }
       }
       if (armazem_origem_id) {
-        const origCheck = await client.query('SELECT id FROM armazens WHERE id = $1 AND ativo = true', [armazem_origem_id]);
+        const origCheck = await client.query('SELECT id, tipo FROM armazens WHERE id = $1 AND ativo = true', [armazem_origem_id]);
         if (origCheck.rows.length === 0) {
           await client.query('ROLLBACK');
           return res.status(404).json({ error: 'Armazém origem não encontrado ou inativo' });
+        }
+        if (!isTipoArmazemOrigemRequisicao(origCheck.rows[0].tipo)) {
+          await client.query('ROLLBACK');
+          return res.status(400).json({
+            error: 'Armazém de origem: use central, viatura, APEADO ou EPI.',
+          });
         }
       }
       updates.push(`armazem_origem_id = $${paramCount++}`);

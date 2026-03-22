@@ -4,6 +4,7 @@ import { Upload, FileText } from 'react-feather';
 import Toast from '../components/Toast';
 import { useAuth } from '../contexts/AuthContext';
 import { getRequisicoesArmazemOrigemIds } from '../utils/requisicoesArmazemOrigem';
+import { filtrarArmazensOrigemRequisicao } from '../utils/armazensRequisicaoOrigem';
 
 const ImportarRequisicao = () => {
   const [file, setFile] = useState(null);
@@ -43,8 +44,7 @@ const ImportarRequisicao = () => {
         });
         if (res.ok) {
           const data = await res.json();
-          // apenas armazéns centrais
-          setArmazens(data.filter(a => (a.tipo || '').toLowerCase() === 'central'));
+          setArmazens(filtrarArmazensOrigemRequisicao(data));
         }
       } catch (err) {
         console.error('Erro ao carregar armazéns:', err);
@@ -65,7 +65,7 @@ const ImportarRequisicao = () => {
       return;
     }
     if (!armazemOrigemId) {
-      setToast({ type: 'error', message: 'Selecione o armazém origem (apenas armazéns centrais).' });
+      setToast({ type: 'error', message: 'Selecione o armazém de origem (central, viatura, APEADO ou EPI).' });
       return;
     }
     setLoading(true);
@@ -147,7 +147,7 @@ const ImportarRequisicao = () => {
 
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
-              Armazém Origem (apenas centrais) *
+              Armazém de origem (central, viatura, APEADO ou EPI) *
             </label>
             <select
               value={armazemOrigemId}

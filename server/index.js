@@ -30,6 +30,7 @@ const { buildItensListOrderByClause } = require('./utils/sqlSafe');
 const { createS3Client } = require('./utils/s3Client');
 const { nomeCompletoUsuario } = require('./utils/usuarioNome');
 const { ROLES_VALIDOS } = require('./utils/roles');
+const { tiposArmazemOrigemRequisicaoSqlArray } = require('./utils/armazensRequisicaoOrigem');
 const { createArmazemViatura } = require('./utils/createArmazemViatura');
 const { cadastrarTodosItensNaoCadastrados } = require('./utils/itensNaoCadastradosCadastroLote');
 const { SETORES_VALIDOS } = require('./config/constants');
@@ -3114,11 +3115,12 @@ app.patch('/api/usuarios/:id', authenticateToken, async (req, res) => {
   }
 
   if (isAdmin && role !== undefined && role !== null) {
-    if (!rolesValidos.includes(role)) {
+    const roleNorm = String(role).trim().toLowerCase();
+    if (!rolesValidos.includes(roleNorm)) {
       return res.status(400).json({ error: 'Role inválido.' });
     }
     updates.push(`role = $${pi++}`);
-    params.push(role);
+    params.push(roleNorm);
   }
 
   if (isAdmin && idsPayload !== undefined) {
@@ -3126,13 +3128,16 @@ app.patch('/api/usuarios/:id', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'requisicoes_armazem_origem_ids deve ser um array de ids.' });
     }
     const armIdsNorm = [...new Set(idsPayload.map((x) => parseInt(x, 10)).filter(Boolean))];
+    const tiposOrigem = tiposArmazemOrigemRequisicaoSqlArray();
     for (const aid of armIdsNorm) {
       const ch = await pool.query(
-        "SELECT id FROM armazens WHERE id = $1 AND ativo = true AND LOWER(COALESCE(tipo,'')) = 'central'",
-        [aid]
+        `SELECT id FROM armazens WHERE id = $1 AND ativo = true AND LOWER(TRIM(COALESCE(tipo, ''))) = ANY($2::text[])`,
+        [aid, tiposOrigem]
       );
       if (ch.rows.length === 0) {
-        return res.status(400).json({ error: `Armazém central inválido ou inativo (id ${aid}).` });
+        return res.status(400).json({
+          error: `Armazém de origem inválido ou inativo (id ${aid}). Tipos permitidos: central, viatura, APEADO, EPI.`
+        });
       }
     }
     if (hasJunc) {
@@ -3188,8 +3193,9 @@ app.patch('/api/usuarios/:id', authenticateToken, async (req, res) => {
         error: 'Erro ao atualizar utilizador.',
         details: error.message,
         hint:
-          'O CHECK na coluna role não inclui este perfil. Na mesma DATABASE_URL da API, execute: ' +
-          'npm run db:usuarios-roles (ou aplique server/migrate-usuarios-roles-novos.sql no Postgres).'
+          'O CHECK na coluna role não inclui este perfil. Na mesma base que a API, execute: npm run db:usuarios-roles ' +
+          '(cada instrução SQL em separado). No Railway use a URL **direta** do Postgres (porta 5432), não a do pooler (6543). ' +
+          'Ou cole server/migrate-usuarios-roles-novos.sql no Query do Postgres.'
       });
     }
     res.status(500).json({ error: 'Erro ao atualizar utilizador.', details: error.message });
@@ -4759,9 +4765,13 @@ app.get('/api/download-template-unidades', authenticateToken, (req, res) => {
 // ============================================
 
 // Listar todos os armazéns (com localizações quando a tabela existir)
+// Query `destino_requisicao=1`: não aplica o filtro de supervisor — necessário para escolher
+// armazém destino (viatura, EPI, APEADO, etc.) ao criar/editar requisição; a origem continua validada no POST.
 app.get('/api/armazens', authenticateToken, async (req, res) => {
   try {
-    const { ativo } = req.query;
+    const { ativo, destino_requisicao } = req.query;
+    const listagemParaDestinoRequisicao =
+      String(destino_requisicao || '') === '1' || String(destino_requisicao || '').toLowerCase() === 'true';
     let query = 'SELECT * FROM armazens WHERE 1=1';
     const params = [];
 
@@ -4784,7 +4794,7 @@ app.get('/api/armazens', authenticateToken, async (req, res) => {
     }
 
     let armazens = result.rows;
-    if (req.user && req.user.role === 'supervisor_armazem') {
+    if (req.user && req.user.role === 'supervisor_armazem' && !listagemParaDestinoRequisicao) {
       const allowed = await fetchRequisicoesArmazemIdsForUser(req.user.id);
       if (!allowed.length) {
         return res.json([]);
@@ -4916,8 +4926,8 @@ app.get('/api/armazens/:id', authenticateToken, async (req, res) => {
 // Criar novo armazém (apenas admin)
 app.post('/api/armazens', authenticateToken, async (req, res) => {
   try {
-    if (req.user.role !== 'admin' && req.user.role !== 'backoffice_armazem') {
-      return res.status(403).json({ error: 'Apenas administradores ou backoffice armazém podem criar armazéns' });
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Apenas administradores podem criar armazéns' });
     }
 
     const { codigo, descricao, localizacao, localizacoes, tipo } = req.body;
@@ -5061,8 +5071,8 @@ app.post('/api/armazens', authenticateToken, async (req, res) => {
 // Importar armazéns viatura em lote (código + descrição → 2 localizações automáticas)
 app.post('/api/armazens/import-viatura', authenticateToken, async (req, res) => {
   try {
-    if (req.user.role !== 'admin' && req.user.role !== 'backoffice_armazem') {
-      return res.status(403).json({ error: 'Apenas administradores ou backoffice armazém podem importar armazéns' });
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Apenas administradores podem importar armazéns' });
     }
 
     const rows = req.body?.rows;
@@ -5128,41 +5138,17 @@ app.post('/api/armazens/import-viatura', authenticateToken, async (req, res) => 
   }
 });
 
-// Atualizar armazém (admin / backoffice: completo; supervisor: só localizações nos armazéns atribuídos)
+// Atualizar armazém (apenas admin)
 app.put('/api/armazens/:id', authenticateToken, async (req, res) => {
   try {
-    const role = req.user.role;
-    const isFullArmazem = role === 'admin' || role === 'backoffice_armazem';
-    const isSupervisor = role === 'supervisor_armazem';
-    if (!isFullArmazem && !isSupervisor) {
-      return res.status(403).json({ error: 'Sem permissão para atualizar armazéns' });
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Apenas administradores podem atualizar armazéns' });
     }
 
     const { id } = req.params;
     const idNum = parseInt(id, 10);
     if (Number.isNaN(idNum)) {
       return res.status(400).json({ error: 'ID de armazém inválido' });
-    }
-
-    if (isSupervisor) {
-      const allowed = await fetchRequisicoesArmazemIdsForUser(req.user.id);
-      if (!allowed.includes(idNum)) {
-        return res.status(403).json({ error: 'Acesso negado a este armazém' });
-      }
-      const body = req.body || {};
-      if (
-        body.codigo !== undefined ||
-        body.descricao !== undefined ||
-        body.ativo !== undefined ||
-        body.tipo !== undefined
-      ) {
-        return res.status(403).json({
-          error: 'Supervisor só pode alterar localizações dos armazéns atribuídos'
-        });
-      }
-      if (!Array.isArray(body.localizacoes)) {
-        return res.status(400).json({ error: 'Envie a lista de localizações (localizacoes)' });
-      }
     }
 
     const { codigo, descricao, localizacao, localizacoes, ativo, tipo } = req.body;
@@ -5333,8 +5319,8 @@ app.put('/api/armazens/:id', authenticateToken, async (req, res) => {
 // Deletar armazém (apenas admin)
 app.delete('/api/armazens/:id', authenticateToken, async (req, res) => {
   try {
-    if (req.user.role !== 'admin' && req.user.role !== 'backoffice_armazem') {
-      return res.status(403).json({ error: 'Apenas administradores ou backoffice armazém podem deletar armazéns' });
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Apenas administradores podem eliminar armazéns' });
     }
 
     const { id } = req.params;

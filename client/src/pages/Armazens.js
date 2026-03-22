@@ -83,14 +83,9 @@ const Armazens = () => {
   const [listPage, setListPage] = useState(1);
   const { user } = useAuth();
   const confirm = useConfirm();
-  const canAccessArmazens =
-    user && [ROLES.ADMIN, ROLES.BACKOFFICE_ARMAZEM, ROLES.SUPERVISOR_ARMAZEM].includes(user.role);
-  const canManageArmazemCompleto = user && [ROLES.ADMIN, ROLES.BACKOFFICE_ARMAZEM].includes(user.role);
-  const showFormularioArmazem =
-    canAccessArmazens &&
-    mostrarForm &&
-    (canManageArmazemCompleto || (user?.role === ROLES.SUPERVISOR_ARMAZEM && editandoId));
-  const bloquearCabecalhoArmazem = user?.role === ROLES.SUPERVISOR_ARMAZEM && Boolean(editandoId);
+  /** Criar/editar/importar/eliminar: só administrador; restantes perfis com rota a /armazéns: só consulta */
+  const isAdminArmazens = user?.role === ROLES.ADMIN;
+  const showFormularioArmazem = isAdminArmazens && mostrarForm;
 
   const parseCentralBulkText = (text) => {
     const lines = String(text || '')
@@ -370,72 +365,8 @@ const Armazens = () => {
     }
   };
 
-  const setViaturaLoc = (idx, value) => {
-    setFormData((prev) => {
-      const locs = [...(prev.localizacoes || [])];
-      if (!locs[0]) locs[0] = { localizacao: '', tipo_localizacao: 'normal' };
-      if (!locs[1]) locs[1] = { localizacao: '', tipo_localizacao: 'FERR' };
-      locs[idx] = { ...locs[idx], localizacao: value };
-      return { ...prev, localizacoes: locs };
-    });
-  };
-
   const handleSubmit = async (e) => {
     e.preventDefault();
-
-    if (user?.role === ROLES.SUPERVISOR_ARMAZEM && editandoId) {
-      const locsCentrais = parseCentralBulkText(centralBulkText);
-      let payloadLocs;
-      if (formData.tipo === 'viatura') {
-        const l0 = formData.localizacoes?.[0]?.localizacao ?? formData.codigo.trim().toUpperCase();
-        const l1 = formData.localizacoes?.[1]?.localizacao ?? `${formData.codigo.trim().toUpperCase()}.FERR`;
-        payloadLocs = [
-          { localizacao: String(l0).trim(), tipo_localizacao: 'normal' },
-          { localizacao: String(l1).trim(), tipo_localizacao: 'FERR' }
-        ];
-      } else if (formData.tipo === 'apeado' || formData.tipo === 'epi') {
-        payloadLocs = [{ localizacao: formData.codigo.trim().toUpperCase(), tipo_localizacao: 'normal' }];
-      } else {
-        payloadLocs = locsCentrais;
-        const hasRecebimento = payloadLocs.some((l) => l.tipo_localizacao === 'recebimento');
-        const hasExpedicao = payloadLocs.some((l) => l.tipo_localizacao === 'expedicao');
-        if (!hasRecebimento || !hasExpedicao) {
-          setToast({
-            type: 'error',
-            message: 'Armazém central deve ter pelo menos uma localização de Recebimento e uma ou mais de Expedição.'
-          });
-          return;
-        }
-      }
-      try {
-        setSubmitting(true);
-        const token = localStorage.getItem('token');
-        await axios.put(
-          `/api/armazens/${editandoId}`,
-          { localizacoes: payloadLocs },
-          {
-            headers: {
-              Authorization: `Bearer ${token}`,
-              'Content-Type': 'application/json'
-            }
-          }
-        );
-        setToast({ type: 'success', message: 'Localizações atualizadas com sucesso!' });
-        setFormData({ codigo: '', descricao: '', tipo: 'viatura', localizacoes: [] });
-        setCentralBulkText('');
-        setEditandoId(null);
-        setMostrarForm(false);
-        fetchArmazens();
-      } catch (error) {
-        const data = error.response?.data;
-        let msg = data?.error || 'Erro ao guardar localizações';
-        if (data?.details) msg += ': ' + data.details;
-        setToast({ type: 'error', message: msg });
-      } finally {
-        setSubmitting(false);
-      }
-      return;
-    }
 
     if (!formData.codigo.trim()) {
       setToast({ type: 'error', message: 'O código é obrigatório (ex: V848 ou E)' });
@@ -784,9 +715,13 @@ const Armazens = () => {
         <div className="mb-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
           <div>
             <h1 className="text-2xl sm:text-3xl font-bold text-gray-800 mb-2">Armazéns</h1>
-            <p className="text-gray-600">Cadastre e gerencie os armazéns de destino das requisições</p>
+            <p className="text-gray-600">
+              {isAdminArmazens
+                ? 'Cadastre e gerencie os armazéns de destino das requisições'
+                : 'Consulta dos armazéns. Criar, editar ou eliminar: apenas administradores.'}
+            </p>
           </div>
-          {canManageArmazemCompleto && (
+          {isAdminArmazens && (
             <button
               type="button"
               onClick={() => {
@@ -801,7 +736,7 @@ const Armazens = () => {
           )}
         </div>
 
-        {canManageArmazemCompleto && (
+        {isAdminArmazens && (
           <div className="bg-white rounded-lg border border-gray-200 p-4 mb-6">
             <h2 className="text-sm font-semibold text-gray-800 mb-1">Importar viaturas (ficheiro)</h2>
             <p className="text-xs text-gray-500 mb-3">
@@ -846,11 +781,7 @@ const Armazens = () => {
             ) : (
             <>
             <h2 className="text-lg font-semibold text-gray-800 mb-4">
-              {user?.role === ROLES.SUPERVISOR_ARMAZEM && editandoId
-                ? 'Editar localizações'
-                : editandoId
-                  ? 'Editar Armazém'
-                  : 'Criar Armazém'}
+              {editandoId ? 'Editar Armazém' : 'Criar Armazém'}
             </h2>
             <form onSubmit={handleSubmit} className="space-y-4">
               <div>
@@ -858,7 +789,7 @@ const Armazens = () => {
                   Tipo de armazém <span className="text-red-500">*</span>
                 </label>
                 <div className="flex flex-wrap gap-x-4 gap-y-2">
-                  <label className={`flex items-center gap-2 ${bloquearCabecalhoArmazem ? 'cursor-not-allowed opacity-80' : 'cursor-pointer'}`}>
+                  <label className="flex items-center gap-2 cursor-pointer">
                     <input
                       type="radio"
                       name="tipo"
@@ -866,11 +797,10 @@ const Armazens = () => {
                       checked={formData.tipo === 'viatura'}
                       onChange={() => setFormData(prev => ({ ...prev, tipo: 'viatura', localizacoes: [] }))}
                       className="text-[#0915FF]"
-                      disabled={bloquearCabecalhoArmazem}
                     />
                     <span>Viatura</span>
                   </label>
-                  <label className={`flex items-center gap-2 ${bloquearCabecalhoArmazem ? 'cursor-not-allowed opacity-80' : 'cursor-pointer'}`}>
+                  <label className="flex items-center gap-2 cursor-pointer">
                     <input
                       type="radio"
                       name="tipo"
@@ -882,11 +812,10 @@ const Armazens = () => {
                         localizacoes: prev.localizacoes.length ? prev.localizacoes : [{ localizacao: '', tipo_localizacao: 'normal' }]
                       }))}
                       className="text-[#0915FF]"
-                      disabled={bloquearCabecalhoArmazem}
                     />
                     <span>Central</span>
                   </label>
-                  <label className={`flex items-center gap-2 ${bloquearCabecalhoArmazem ? 'cursor-not-allowed opacity-80' : 'cursor-pointer'}`}>
+                  <label className="flex items-center gap-2 cursor-pointer">
                     <input
                       type="radio"
                       name="tipo"
@@ -894,11 +823,10 @@ const Armazens = () => {
                       checked={formData.tipo === 'apeado'}
                       onChange={() => setFormData(prev => ({ ...prev, tipo: 'apeado', localizacoes: [] }))}
                       className="text-[#0915FF]"
-                      disabled={bloquearCabecalhoArmazem}
                     />
                     <span>APEADO</span>
                   </label>
-                  <label className={`flex items-center gap-2 ${bloquearCabecalhoArmazem ? 'cursor-not-allowed opacity-80' : 'cursor-pointer'}`}>
+                  <label className="flex items-center gap-2 cursor-pointer">
                     <input
                       type="radio"
                       name="tipo"
@@ -906,7 +834,6 @@ const Armazens = () => {
                       checked={formData.tipo === 'epi'}
                       onChange={() => setFormData(prev => ({ ...prev, tipo: 'epi', localizacoes: [] }))}
                       className="text-[#0915FF]"
-                      disabled={bloquearCabecalhoArmazem}
                     />
                     <span>EPI</span>
                   </label>
@@ -925,8 +852,7 @@ const Armazens = () => {
                   value={formData.codigo}
                   onChange={handleChange}
                   required
-                  readOnly={bloquearCabecalhoArmazem}
-                  className={`w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0915FF] focus:border-transparent ${bloquearCabecalhoArmazem ? 'bg-gray-50 cursor-default' : ''}`}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0915FF] focus:border-transparent"
                   placeholder={
                     formData.tipo === 'viatura'
                       ? 'Ex: V848'
@@ -949,8 +875,7 @@ const Armazens = () => {
                   value={formData.descricao}
                   onChange={handleChange}
                   required
-                  readOnly={bloquearCabecalhoArmazem}
-                  className={`w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0915FF] focus:border-transparent ${bloquearCabecalhoArmazem ? 'bg-gray-50 cursor-default' : ''}`}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0915FF] focus:border-transparent"
                   placeholder="Ex: BBCH06"
                 />
                 <p className="mt-1 text-xs text-gray-500">Exibido como &quot;código - descrição&quot;</p>
@@ -961,41 +886,18 @@ const Armazens = () => {
                     Localizações (viatura)
                   </label>
                   <p className="text-xs text-gray-500 mb-2">A viatura tem sempre 2 localizações: uma base e uma .FERR</p>
-                  {bloquearCabecalhoArmazem ? (
-                    <div className="space-y-3">
-                      <div>
-                        <span className="text-sm text-gray-600 block mb-1">Localização 1 (normal)</span>
-                        <input
-                          type="text"
-                          value={formData.localizacoes?.[0]?.localizacao ?? ''}
-                          onChange={(e) => setViaturaLoc(0, e.target.value)}
-                          className="w-full font-mono px-3 py-2 border border-gray-300 rounded-lg bg-white focus:ring-2 focus:ring-[#0915FF]"
-                        />
-                      </div>
-                      <div>
-                        <span className="text-sm text-gray-600 block mb-1">Localização 2 (FERR)</span>
-                        <input
-                          type="text"
-                          value={formData.localizacoes?.[1]?.localizacao ?? ''}
-                          onChange={(e) => setViaturaLoc(1, e.target.value)}
-                          className="w-full font-mono px-3 py-2 border border-gray-300 rounded-lg bg-white focus:ring-2 focus:ring-[#0915FF]"
-                        />
-                      </div>
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm text-gray-600 w-32">Localização 1:</span>
+                      <span className="font-mono bg-white px-2 py-1 rounded border border-gray-200">{formData.codigo ? formData.codigo.trim().toUpperCase() : '—'}</span>
+                      <span className="text-xs text-gray-500">(normal)</span>
                     </div>
-                  ) : (
-                    <div className="space-y-2">
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm text-gray-600 w-32">Localização 1:</span>
-                        <span className="font-mono bg-white px-2 py-1 rounded border border-gray-200">{formData.codigo ? formData.codigo.trim().toUpperCase() : '—'}</span>
-                        <span className="text-xs text-gray-500">(normal)</span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm text-gray-600 w-32">Localização 2:</span>
-                        <span className="font-mono bg-white px-2 py-1 rounded border border-gray-200">{formData.codigo ? formData.codigo.trim().toUpperCase() + '.FERR' : '—'}</span>
-                        <span className="text-xs text-gray-500">(.FERR)</span>
-                      </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm text-gray-600 w-32">Localização 2:</span>
+                      <span className="font-mono bg-white px-2 py-1 rounded border border-gray-200">{formData.codigo ? formData.codigo.trim().toUpperCase() + '.FERR' : '—'}</span>
+                      <span className="text-xs text-gray-500">(.FERR)</span>
                     </div>
-                  )}
+                  </div>
                 </div>
               )}
               {(formData.tipo === 'apeado' || formData.tipo === 'epi') && (
@@ -1025,7 +927,7 @@ const Armazens = () => {
                   </p>
                   <div className="space-y-2">
                     <div className="flex flex-wrap items-center gap-2">
-                      {canManageArmazemCompleto && (
+                      {isAdminArmazens && (
                         <label className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-gray-300 bg-white hover:bg-gray-50 cursor-pointer text-sm">
                           <span>{importingLocFile ? 'Importando...' : 'Importar ficheiro (CSV/XLSX)'}</span>
                           <input
@@ -1041,7 +943,7 @@ const Armazens = () => {
                           />
                         </label>
                       )}
-                      {canManageArmazemCompleto && (
+                      {isAdminArmazens && (
                       <button
                         type="button"
                         onClick={handleDownloadCentralTemplate}
@@ -1177,11 +1079,7 @@ const Armazens = () => {
                   ) : (
                     <>
                       <FaWarehouse />
-                      {editandoId
-                        ? user?.role === ROLES.SUPERVISOR_ARMAZEM
-                          ? 'Guardar localizações'
-                          : 'Salvar'
-                        : 'Criar Armazém'}
+                      {editandoId ? 'Salvar' : 'Criar Armazém'}
                     </>
                   )}
                 </button>
@@ -1298,7 +1196,7 @@ const Armazens = () => {
             <div className="p-8 text-center text-gray-500">
               <FaWarehouse className="mx-auto text-4xl text-gray-300 mb-4" />
               <p className="text-lg">Nenhum armazém encontrado</p>
-              {canManageArmazemCompleto && (
+              {isAdminArmazens && (
                 <button
                   type="button"
                   onClick={() => setMostrarForm(true)}
@@ -1368,7 +1266,7 @@ const Armazens = () => {
                             ) : null}
                           </p>
                         </div>
-                        {canAccessArmazens && (
+                        {isAdminArmazens && (
                           <div className="flex shrink-0 gap-0.5" onClick={(e) => e.stopPropagation()}>
                             <button
                               type="button"
@@ -1378,16 +1276,14 @@ const Armazens = () => {
                             >
                               <FaEdit className="text-sm" />
                             </button>
-                            {canManageArmazemCompleto && (
-                              <button
-                                type="button"
-                                onClick={() => handleDelete(armazem.id)}
-                                className="p-1.5 text-red-600 hover:bg-red-50 rounded-md transition-colors"
-                                title="Excluir"
-                              >
-                                <FaTrash className="text-sm" />
-                              </button>
-                            )}
+                            <button
+                              type="button"
+                              onClick={() => handleDelete(armazem.id)}
+                              className="p-1.5 text-red-600 hover:bg-red-50 rounded-md transition-colors"
+                              title="Excluir"
+                            >
+                              <FaTrash className="text-sm" />
+                            </button>
                           </div>
                         )}
                       </div>

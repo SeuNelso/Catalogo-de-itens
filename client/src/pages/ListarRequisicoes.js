@@ -1164,7 +1164,7 @@ const ListarRequisicoes = () => {
       <div className="max-w-7xl mx-auto">
         {semArmazemOrigemAtribuido && (
           <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
-            <strong>Sem armazéns atribuídos.</strong> Não pode ver nem trabalhar com requisições até um administrador associar pelo menos um armazém central de origem ao seu utilizador.
+            <strong>Sem armazéns atribuídos.</strong> Não pode ver nem trabalhar com requisições até um administrador associar pelo menos um armazém de origem (central, viatura, APEADO ou EPI) ao seu utilizador.
           </div>
         )}
         {/* Header */}

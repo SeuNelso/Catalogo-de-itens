@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import Toast from '../components/Toast';
@@ -9,6 +9,8 @@ import {
   isRequisicaoDoUtilizadorAtual,
   requisicaoPermiteEdicaoFormulario
 } from '../utils/requisicaoCriador';
+import { getRequisicoesArmazemOrigemIds } from '../utils/requisicoesArmazemOrigem';
+import { filtrarArmazensOrigemRequisicao } from '../utils/armazensRequisicaoOrigem';
 
 function itemTextoSecundario(item) {
   if (!item) return '';
@@ -44,6 +46,24 @@ const EditarRequisicao = () => {
   const navigate = useNavigate();
   const { user } = useAuth();
   const canEdit = user && ['admin', 'backoffice_operations', 'backoffice_armazem', 'supervisor_armazem'].includes(user.role);
+
+  const armazensListaOrigem = useMemo(() => {
+    const origem = filtrarArmazensOrigemRequisicao(armazens || []);
+    const allowed = getRequisicoesArmazemOrigemIds(user);
+    if (user?.role === 'admin') {
+      return origem;
+    }
+    if (allowed.length > 0) {
+      const set = new Set(allowed);
+      return origem.filter((a) => set.has(a.id));
+    }
+    return [];
+  }, [armazens, user]);
+
+  const armazensListaDestino = useMemo(
+    () => filtrarArmazensOrigemRequisicao(armazens || []),
+    [armazens]
+  );
 
   useEffect(() => {
     fetchRequisicao();
@@ -158,7 +178,7 @@ const EditarRequisicao = () => {
   const fetchArmazens = async () => {
     try {
       const token = localStorage.getItem('token');
-      const response = await axios.get('/api/armazens?ativo=true', {
+      const response = await axios.get('/api/armazens?ativo=true&destino_requisicao=1', {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       if (response.data) {
@@ -318,7 +338,7 @@ const EditarRequisicao = () => {
                 className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0915FF] focus:border-transparent"
               >
                 <option value="">Selecione o armazém de origem</option>
-                {armazens.map((armazem) => (
+                {armazensListaOrigem.map((armazem) => (
                   <option key={armazem.id} value={armazem.id}>
                     {armazem.codigo ? `${armazem.codigo} - ${armazem.descricao}` : armazem.descricao}
                   </option>
@@ -339,7 +359,7 @@ const EditarRequisicao = () => {
                 className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0915FF] focus:border-transparent"
               >
                 <option value="">Selecione o armazém destino</option>
-                {armazens.map((armazem) => (
+                {armazensListaDestino.map((armazem) => (
                   <option key={armazem.id} value={armazem.id}>
                     {armazem.codigo ? `${armazem.codigo} - ${armazem.descricao}` : armazem.descricao}
                   </option>
