@@ -144,13 +144,13 @@ function App() {
                     </ProtectedRoute>
                   } 
                 />
-                <Route 
-                  path="/admin-usuarios" 
+                <Route
+                  path="/admin-usuarios"
                   element={
-                    <ProtectedRoute allowedRoles={['admin']}>
+                    <ProtectedRoute>
                       <AdminUsuarios />
                     </ProtectedRoute>
-                  } 
+                  }
                 />
                 <Route 
                   path="/itens-nao-cadastrados" 

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useConfirm } from '../contexts/ConfirmContext';
@@ -13,6 +13,25 @@ import {
   preparacaoReservadaOutroUtilizador
 } from '../utils/requisicaoCriador';
 import { desenharPaginaNotaEntregaDigi } from '../utils/notaEntregaPdf';
+import { quantidadeStockNacionalNoArmazem } from '../utils/stockNacionalArmazem';
+
+function labelArmazem(armazem) {
+  if (!armazem) return '';
+  return armazem.codigo ? `${armazem.codigo} - ${armazem.descricao}` : (armazem.descricao || '');
+}
+
+const MAX_BOBINAS_LOTE = 500;
+
+/** Itens LOTE: uma linha (lote + metros) por bobina; alinha ao nº em «quantidade preparada». */
+function resizeBobinasArray(prevBobinas, n) {
+  const prev = Array.isArray(prevBobinas) ? [...prevBobinas] : [];
+  const capped = Math.max(0, Math.min(MAX_BOBINAS_LOTE, Math.floor(Number(n)) || 0));
+  const empty = () => ({ lote: '', serialnumber: '', metros: '' });
+  if (capped === 0) return [];
+  if (prev.length === capped) return prev;
+  if (prev.length > capped) return prev.slice(0, capped);
+  return [...prev, ...Array(capped - prev.length).fill(null).map(() => empty())];
+}
 
 const PrepararRequisicao = () => {
   const { id } = useParams();
@@ -41,6 +60,8 @@ const PrepararRequisicao = () => {
     bobinas: [] // apenas para itens controlados por lote
   });
   const [showQrScanner, setShowQrScanner] = useState(false);
+  const [stockNacionalPrep, setStockNacionalPrep] = useState({ loading: false, valor: null });
+  const abortStockPrepRef = useRef(null);
   const navigate = useNavigate();
   const { user } = useAuth();
   const confirm = useConfirm();
@@ -50,6 +71,36 @@ const PrepararRequisicao = () => {
     fetchRequisicao();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
+
+  useEffect(() => {
+    if (!itemPreparando?.item_id || !armazemOrigem) {
+      setStockNacionalPrep({ loading: false, valor: null });
+      return;
+    }
+    if (abortStockPrepRef.current) abortStockPrepRef.current.abort();
+    const ac = new AbortController();
+    abortStockPrepRef.current = ac;
+    setStockNacionalPrep((s) => ({ ...s, loading: true }));
+    const token = localStorage.getItem('token');
+    (async () => {
+      try {
+        const { data } = await axios.get(`/api/itens/${itemPreparando.item_id}`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+          signal: ac.signal
+        });
+        if (abortStockPrepRef.current !== ac) return;
+        const q = quantidadeStockNacionalNoArmazem(data.armazens || [], armazemOrigem);
+        setStockNacionalPrep({ loading: false, valor: q });
+      } catch (err) {
+        if (axios.isCancel?.(err) || err.code === 'ERR_CANCELED' || err.name === 'CanceledError') return;
+        if (abortStockPrepRef.current !== ac) return;
+        setStockNacionalPrep({ loading: false, valor: null });
+      }
+    })();
+    return () => {
+      ac.abort();
+    };
+  }, [itemPreparando?.item_id, armazemOrigem]);
 
   const fetchRequisicao = async (silent = false) => {
     try {
@@ -90,6 +141,11 @@ const PrepararRequisicao = () => {
     const qtdPreparada = item.quantidade_preparada !== undefined && item.quantidade_preparada !== null
       ? item.quantidade_preparada
       : item.quantidade;
+    const isLote = (item.tipocontrolo || '').toUpperCase() === 'LOTE';
+    const nBobinas = Math.max(0, Math.min(MAX_BOBINAS_LOTE, Math.floor(Number(qtdPreparada)) || 0));
+    const bobinasInicial = isLote
+      ? resizeBobinasArray(item.bobinas || [], nBobinas)
+      : (item.bobinas || []);
     setFormItem({
       quantidade_preparada: qtdPreparada,
       localizacao_origem: isOrigemCustom ? '_custom_' : locOrigem,
@@ -98,7 +154,7 @@ const PrepararRequisicao = () => {
       localizacao_destino_custom: '',
       lote: item.lote || '',
       serialnumber: item.serialnumber || '',
-      bobinas: item.bobinas || []
+      bobinas: bobinasInicial
     });
   };
 
@@ -374,6 +430,18 @@ const PrepararRequisicao = () => {
   const fecharPrepararItem = () => {
     setItemPreparando(null);
     setFormItem({ quantidade_preparada: '', localizacao_origem: '', localizacao_origem_custom: '', localizacao_destino: '', localizacao_destino_custom: '', lote: '', serialnumber: '', bobinas: [] });
+  };
+
+  const handleQuantidadePreparadaChange = (e) => {
+    const val = e.target.value;
+    setFormItem((prev) => {
+      const next = { ...prev, quantidade_preparada: val };
+      if ((itemPreparando?.tipocontrolo || '').toUpperCase() === 'LOTE') {
+        const n = Math.max(0, Math.min(MAX_BOBINAS_LOTE, Math.floor(Number(val)) || 0));
+        next.bobinas = resizeBobinasArray(prev.bobinas, n);
+      }
+      return next;
+    });
   };
 
   const handleCompletarSeparacao = async () => {
@@ -728,41 +796,55 @@ const PrepararRequisicao = () => {
 
                   {isPreparando && (
                     <form onSubmit={handlePrepararItem} className="mt-4 pt-4 border-t border-gray-200 space-y-4">
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">Quantidade preparada</label>
-                        <input
-                          type="number"
-                          min="0"
-                          value={formItem.quantidade_preparada}
-                          onChange={(e) => setFormItem(prev => ({ ...prev, quantidade_preparada: e.target.value }))}
-                          className="w-full sm:w-32 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0915FF]"
-                          required
-                        />
-                        <p className="text-xs text-gray-500 mt-1">
-                          Requisitada: {item.quantidade}. Pode ser diferente (para mais ou para menos); o sistema irá pedir confirmação.
-                          Use 0 se não tiver o item.
-                        </p>
+                      <div className="flex flex-col lg:flex-row gap-4 lg:items-start lg:gap-6">
+                        <div className="flex-1 min-w-0">
+                          <label className="block text-sm font-medium text-gray-700 mb-1">Quantidade preparada</label>
+                          <input
+                            type="number"
+                            min="0"
+                            step={(item.tipocontrolo || '').toUpperCase() === 'LOTE' ? 1 : 'any'}
+                            value={formItem.quantidade_preparada}
+                            onChange={handleQuantidadePreparadaChange}
+                            className="w-full sm:w-32 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0915FF]"
+                            required
+                          />
+                          <p className="text-xs text-gray-500 mt-1">
+                            {(item.tipocontrolo || '').toUpperCase() === 'LOTE' ? (
+                              <>
+                                Requisitada: {item.quantidade} bobina(s). Este número define quantas bobinas vai separar — aparecem
+                                automaticamente os campos de lote e metragem por bobina. Use 0 se não tiver o item.
+                              </>
+                            ) : (
+                              <>
+                                Requisitada: {item.quantidade}. Pode ser diferente (para mais ou para menos); o sistema irá pedir confirmação.
+                                Use 0 se não tiver o item.
+                              </>
+                            )}
+                          </p>
+                        </div>
+                        {armazemOrigem && (
+                          <div className="shrink-0 w-full sm:max-w-[220px] rounded-lg bg-gray-50 px-3 py-2.5 lg:self-start">
+                            <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-600 text-center sm:text-left">
+                              Stock nacional · armazém origem
+                            </div>
+                            <div
+                              className="text-xs text-gray-600 mt-0.5 truncate text-center sm:text-left"
+                              title={labelArmazem(armazemOrigem)}
+                            >
+                              {labelArmazem(armazemOrigem)}
+                            </div>
+                            <div className="mt-2 text-2xl font-bold tabular-nums text-gray-900 min-h-[2rem] flex items-center justify-center sm:justify-start">
+                              {stockNacionalPrep.loading ? '…' : stockNacionalPrep.valor != null ? stockNacionalPrep.valor : '—'}
+                            </div>
+                          </div>
+                        )}
                       </div>
                       {(item.tipocontrolo || '').toUpperCase() === 'LOTE' && (
                         <div className="space-y-3">
-                          <div className="flex items-center justify-between">
-                            <span className="text-sm font-medium text-gray-700">Bobinas preparadas</span>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setFormItem(prev => ({
-                                  ...prev,
-                                  bobinas: [...(prev.bobinas || []), { lote: '', serialnumber: '', metros: '' }]
-                                }))
-                              }
-                              className="px-3 py-1 text-xs rounded bg-[#0915FF] text-white hover:bg-[#070FCC]"
-                            >
-                              Adicionar bobina
-                            </button>
-                          </div>
+                          <span className="text-sm font-medium text-gray-700">Bobinas preparadas</span>
                           {(formItem.bobinas || []).length === 0 && (
                             <p className="text-xs text-gray-500">
-                              Adicione uma linha por bobina (lote + metros) preparada.
+                              Indique acima a quantidade preparada (número de bobinas) para mostrar os campos de lote e metragem.
                             </p>
                           )}
                           <div className="space-y-2">
@@ -817,10 +899,14 @@ const PrepararRequisicao = () => {
                                   <button
                                     type="button"
                                     onClick={() =>
-                                      setFormItem(prev => ({
-                                        ...prev,
-                                        bobinas: prev.bobinas.filter((_, i) => i !== idxBob)
-                                      }))
+                                      setFormItem((prev) => {
+                                        const bobinas = (prev.bobinas || []).filter((_, i) => i !== idxBob);
+                                        return {
+                                          ...prev,
+                                          bobinas,
+                                          quantidade_preparada: String(bobinas.length)
+                                        };
+                                      })
                                     }
                                     className="px-2 py-1 text-xs border border-red-300 text-red-600 rounded hover:bg-red-50"
                                   >

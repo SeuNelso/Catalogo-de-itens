@@ -113,34 +113,44 @@ const ImportarDadosItens = () => {
       // Importar xlsx dinamicamente
       const XLSX = await import('xlsx');
       
-      // Dados de exemplo
+      // Um cabeçalho por conceito: Código (obr.) + opcionais; tipo de controlo e unidade de armazenamento sem duplicados
       const templateData = [
         {
+          'Código': '3000003',
+          'Unidade de armazenamento': 'UN',
+          'Família': 'Equipamentos',
+          'Subfamília': 'Tecnológico',
+          'Setores': 'MOVEL',
+          'tipo de controlo': 'L'
+        },
+        {
           'Código': '3000001',
+          'Unidade de armazenamento': 'Caixa',
           'Família': 'Equipamentos',
           'Subfamília': 'Informático',
-          'Setor': 'TI',
+          'Setores': 'TI',
+          'tipo de controlo': 'S',
           'Comprimento': '10.5',
           'Largura': '5.2',
           'Altura': '2.1',
           'Unidade': 'cm',
           'Peso': '500',
           'Unidade Peso': 'g',
-          'Unidade Armazenamento': 'Caixa',
           'Observações': ''
         },
         {
           'Código': '3000002',
+          'Unidade de armazenamento': 'Pacote',
           'Família': 'Consumível',
           'Subfamília': 'Acessórios',
-          'Setor': 'Administração',
+          'Setores': 'Administração',
+          'tipo de controlo': 'qtd',
           'Comprimento': '15.0',
           'Largura': '8.0',
           'Altura': '3.0',
           'Unidade': 'cm',
           'Peso': '250',
           'Unidade Peso': 'g',
-          'Unidade Armazenamento': 'Pacote',
           'Observações': 'Item de exemplo'
         }
       ];
@@ -197,6 +207,13 @@ const ImportarDadosItens = () => {
               <h3 className="text-[#1f2937] font-semibold m-0 mb-1 text-[13px] sm:text-[15px]">Instruções de Importação</h3>
               <ul className="text-[#6b7280] m-0 pl-4 leading-tight text-[12px] sm:text-[13px]">
                 <li>O arquivo deve conter uma coluna <strong>"Código"</strong> para identificar os itens</li>
+                <li>
+                  Coluna opcional <strong>tipo de controlo</strong> (uma só): <strong>S</strong> ou <strong>S/N</strong> → série;{' '}
+                  <strong>L</strong> ou <strong>LOTE</strong> → lote; <strong>qtd</strong> ou <strong>Quantidade</strong> → quantidade
+                </li>
+                <li>
+                  Coluna opcional <strong>Unidade de armazenamento</strong> (uma só). Setor: use <strong>Setores</strong> ou <strong>Setor</strong>
+                </li>
                 <li>Os itens que não existirem no sistema serão ignorados</li>
                 <li>Campos vazios não serão alterados nos itens existentes</li>
                 <li>Formatos suportados: .xlsx, .xls e .csv</li>

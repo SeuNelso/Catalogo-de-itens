@@ -69,6 +69,11 @@ function createRequisicoesRouter(deps) {
 router.get('/', ...requisicaoAuth, async (req, res) => {
   try {
     const { status, armazem_id, item_id } = req.query;
+    let itemIdParsed = null;
+    if (item_id != null && String(item_id).trim() !== '') {
+      const iid = parseInt(String(item_id), 10);
+      if (Number.isFinite(iid)) itemIdParsed = iid;
+    }
     const minhas =
       req.query.minhas === '1' ||
       req.query.minhas === 'true' ||
@@ -93,12 +98,15 @@ router.get('/', ...requisicaoAuth, async (req, res) => {
 
     if (status) {
       query += ` AND r.status = $${paramCount++}`;
-      params.push(status);
+      params.push(String(status));
     }
 
-    if (armazem_id) {
-      query += ` AND r.armazem_id = $${paramCount++}`;
-      params.push(armazem_id);
+    if (armazem_id != null && String(armazem_id).trim() !== '') {
+      const aid = parseInt(String(armazem_id), 10);
+      if (Number.isFinite(aid)) {
+        query += ` AND r.armazem_id = $${paramCount++}`;
+        params.push(aid);
+      }
     }
 
     if (req.requisicaoArmazemOrigemIds && req.requisicaoArmazemOrigemIds.length > 0) {
@@ -143,11 +151,14 @@ router.get('/', ...requisicaoAuth, async (req, res) => {
         let pc = 1;
         if (status) {
           fallbackQuery += ` AND r.status = $${pc++}`;
-          fbParams.push(status);
+          fbParams.push(String(status));
         }
-        if (armazem_id) {
-          fallbackQuery += ` AND r.armazem_id = $${pc++}`;
-          fbParams.push(armazem_id);
+        if (armazem_id != null && String(armazem_id).trim() !== '') {
+          const aid = parseInt(String(armazem_id), 10);
+          if (Number.isFinite(aid)) {
+            fallbackQuery += ` AND r.armazem_id = $${pc++}`;
+            fbParams.push(aid);
+          }
         }
         if (req.requisicaoArmazemOrigemIds && req.requisicaoArmazemOrigemIds.length > 0) {
           fallbackQuery += ` AND r.armazem_origem_id = ANY($${pc++}::int[])`;
@@ -187,9 +198,9 @@ router.get('/', ...requisicaoAuth, async (req, res) => {
         WHERE ri.requisicao_id = ANY($1::int[])
       `;
       const itensParams = [reqIds];
-      if (item_id) {
+      if (itemIdParsed != null) {
         itensQuery += ' AND ri.item_id = $2';
-        itensParams.push(item_id);
+        itensParams.push(itemIdParsed);
       }
       itensQuery += ' ORDER BY ri.requisicao_id, ri.id';
 
@@ -207,9 +218,8 @@ router.get('/', ...requisicaoAuth, async (req, res) => {
     }
 
     // Filtrar requisições que não têm o item_id especificado (se filtro aplicado)
-    const filteredRequisicoes = item_id 
-      ? requisicoes.filter(r => r.itens && r.itens.length > 0)
-      : requisicoes;
+    const filteredRequisicoes =
+      itemIdParsed != null ? requisicoes.filter((r) => r.itens && r.itens.length > 0) : requisicoes;
 
     res.json(filteredRequisicoes);
   } catch (error) {

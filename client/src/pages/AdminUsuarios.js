@@ -48,6 +48,7 @@ function buildDraftFromUser(u) {
 
 const AdminUsuarios = () => {
   const { user, isAuthenticated } = useAuth();
+  const isAdmin = user && user.role === 'admin';
   const confirm = useConfirm();
   const navigate = useNavigate();
   const [usuarios, setUsuarios] = useState([]);
@@ -65,8 +66,8 @@ const AdminUsuarios = () => {
   const [successMsg, setSuccessMsg] = useState('');
 
   useEffect(() => {
-    if (!isAuthenticated || user.role !== 'admin') {
-      navigate('/');
+    if (!isAuthenticated) {
+      navigate('/login');
       return;
     }
     fetchUsuarios();
@@ -74,7 +75,7 @@ const AdminUsuarios = () => {
   }, [isAuthenticated, user]);
 
   useEffect(() => {
-    if (!isAuthenticated || user.role !== 'admin') return;
+    if (!isAuthenticated || !isAdmin) return;
     (async () => {
       try {
         const res = await fetch('/api/armazens?ativo=true', {
@@ -86,7 +87,7 @@ const AdminUsuarios = () => {
         setArmazensCentrais(list);
       } catch (_) {}
     })();
-  }, [isAuthenticated, user]);
+  }, [isAuthenticated, isAdmin]);
 
   const fetchUsuarios = async () => {
     setLoading(true);
@@ -102,16 +103,23 @@ const AdminUsuarios = () => {
       const data = await res.json();
       const rows = Array.isArray(data) ? data.map(normalizeRow) : [];
       setUsuarios(rows);
-      setSelectedId((prev) => {
-        if (prev == null) return prev;
-        return rows.some((r) => r.id === prev) ? prev : null;
-      });
-      setDraft((d) => {
-        if (!d) return d;
-        const u = rows.find((r) => r.id === d.id);
-        if (!u) return null;
-        return buildDraftFromUser(u);
-      });
+      if (rows.length === 1 && user && user.role !== 'admin') {
+        const u = rows[0];
+        setSelectedId(u.id);
+        setDraft(buildDraftFromUser(u));
+        setIsEditing(false);
+      } else {
+        setSelectedId((prev) => {
+          if (prev == null) return null;
+          return rows.some((r) => r.id === prev) ? prev : null;
+        });
+        setDraft((d) => {
+          if (!d) return d;
+          const u = rows.find((r) => r.id === d.id);
+          if (!u) return null;
+          return buildDraftFromUser(u);
+        });
+      }
     } catch (err) {
       setError(err.message || 'Erro ao buscar usuários');
     } finally {
@@ -203,11 +211,12 @@ const AdminUsuarios = () => {
     setError('');
     setSuccessMsg('');
     try {
-      /** Campos alterados + role/ids (evita revalidar username/número iguais e reduz conflitos) */
-      const body = {
-        role: draft.role,
-        requisicoes_armazem_origem_ids: draft.requisicoes_armazem_origem_ids || []
-      };
+      /** Campos alterados + role/ids (só admin pode enviar role e armazéns de requisições) */
+      const body = {};
+      if (isAdmin) {
+        body.role = draft.role;
+        body.requisicoes_armazem_origem_ids = draft.requisicoes_armazem_origem_ids || [];
+      }
       if (!trimEq(draft.nome, selectedFromList.nome)) body.nome = draft.nome.trim();
       if (!trimEq(draft.sobrenome, selectedFromList.sobrenome)) {
         body.sobrenome = draft.sobrenome?.trim() || '';
@@ -255,7 +264,7 @@ const AdminUsuarios = () => {
   };
 
   const handleDelete = async () => {
-    if (!selectedFromList) return;
+    if (!isAdmin || !selectedFromList) return;
     const ok = await confirm({
       title: 'Tem a certeza?',
       message: `Vai excluir permanentemente o utilizador "${nomeExibicao(selectedFromList)}" (ID ${selectedFromList.id}). Esta ação não pode ser desfeita. Deseja continuar?`,
@@ -306,10 +315,18 @@ const AdminUsuarios = () => {
       String(draft.email || '').trim() !== String(selectedFromList.email || '').trim() ||
       String(draft.username || '').trim() !== String(selectedFromList.username || '').trim() ||
       String(draft.numero_colaborador || '').trim() !== String(selectedFromList.numero_colaborador || '').trim() ||
-      draft.role !== selectedFromList.role ||
-      JSON.stringify([...(draft.requisicoes_armazem_origem_ids || [])].sort()) !==
-        JSON.stringify([...(selectedFromList.requisicoes_armazem_origem_ids || [])].sort()) ||
-      Boolean(draft.nova_senha?.trim()));
+      Boolean(draft.nova_senha?.trim()) ||
+      (isAdmin &&
+        (draft.role !== selectedFromList.role ||
+          JSON.stringify([...(draft.requisicoes_armazem_origem_ids || [])].sort()) !==
+            JSON.stringify([...(selectedFromList.requisicoes_armazem_origem_ids || [])].sort()))));
+
+  /** Lista só para admin ou quando há mais do que um registo (caso raro) */
+  const showUserList = isAdmin || usuarios.length > 1;
+  const pageTitle = isAdmin ? 'Utilizadores' : 'Meu perfil';
+  const pageSubtitle = isAdmin
+    ? 'Selecione um utilizador na lista para alterar perfil e armazéns de requisições'
+    : 'Consulte e edite os seus dados de perfil.';
 
   if (loading) {
     return (
@@ -327,16 +344,18 @@ const AdminUsuarios = () => {
       <div className="max-w-7xl mx-auto">
         <div className="mb-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
           <div>
-            <h1 className="text-2xl sm:text-3xl font-bold text-gray-800 mb-2">Utilizadores</h1>
-            <p className="text-gray-600">Selecione um utilizador na lista para alterar perfil e armazéns de requisições</p>
+            <h1 className="text-2xl sm:text-3xl font-bold text-gray-800 mb-2">{pageTitle}</h1>
+            <p className="text-gray-600">{pageSubtitle}</p>
           </div>
-          <Link
-            to="/cadastro"
-            className="inline-flex items-center justify-center gap-2 px-4 py-2 bg-[#0915FF] text-white rounded-lg hover:bg-[#070FCC] transition-colors font-semibold"
-          >
-            <FaPlus />
-            Criar utilizador
-          </Link>
+          {isAdmin && (
+            <Link
+              to="/cadastro"
+              className="inline-flex items-center justify-center gap-2 px-4 py-2 bg-[#0915FF] text-white rounded-lg hover:bg-[#070FCC] transition-colors font-semibold"
+            >
+              <FaPlus />
+              Criar utilizador
+            </Link>
+          )}
         </div>
 
         {error && (
@@ -350,8 +369,9 @@ const AdminUsuarios = () => {
           </div>
         )}
 
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 lg:gap-6 items-start">
-          {/* Lista — mesmo espírito que “Lista de localizações” */}
+        <div className={`grid grid-cols-1 gap-4 lg:gap-6 items-start ${showUserList ? 'lg:grid-cols-12' : ''}`}>
+          {/* Lista — admin ou vários registos */}
+          {showUserList && (
           <div className="lg:col-span-5 xl:col-span-4 bg-white rounded-lg shadow-sm overflow-hidden border border-gray-100">
             <div className="p-4 border-b border-gray-100 bg-gray-50">
               <div className="relative">
@@ -412,9 +432,14 @@ const AdminUsuarios = () => {
               )}
             </div>
           </div>
+          )}
 
           {/* Painel de edição — alinhado ao painel direito das localizações */}
-          <div className="lg:col-span-7 xl:col-span-8 bg-white rounded-lg shadow-sm border border-gray-100 overflow-hidden">
+          <div
+            className={`bg-white rounded-lg shadow-sm border border-gray-100 overflow-hidden ${
+              showUserList ? 'lg:col-span-7 xl:col-span-8' : 'lg:col-span-12'
+            }`}
+          >
             {!selectedFromList || !draft || draft.id !== selectedFromList.id ? (
               <div className="p-10 text-center text-gray-500">
                 <FaUser className="mx-auto text-4xl text-gray-300 mb-4" />
@@ -468,15 +493,17 @@ const AdminUsuarios = () => {
                         Editar
                       </button>
                     )}
-                    <button
-                      type="button"
-                      onClick={handleDelete}
-                      disabled={deletingId === selectedFromList.id || isEditing}
-                      className="px-4 py-2 rounded-lg border border-red-300 text-red-600 hover:bg-red-50 text-sm font-medium disabled:opacity-50"
-                      title={isEditing ? 'Guarde ou cancele a edição antes de excluir' : undefined}
-                    >
-                      {deletingId === selectedFromList.id ? 'A excluir…' : 'Excluir utilizador'}
-                    </button>
+                    {isAdmin && (
+                      <button
+                        type="button"
+                        onClick={handleDelete}
+                        disabled={deletingId === selectedFromList.id || isEditing}
+                        className="px-4 py-2 rounded-lg border border-red-300 text-red-600 hover:bg-red-50 text-sm font-medium disabled:opacity-50"
+                        title={isEditing ? 'Guarde ou cancele a edição antes de excluir' : undefined}
+                      >
+                        {deletingId === selectedFromList.id ? 'A excluir…' : 'Excluir utilizador'}
+                      </button>
+                    )}
                   </div>
                 </div>
 
@@ -556,10 +583,24 @@ const AdminUsuarios = () => {
                   </div>
                 </div>
 
+                {!isAdmin && selectedFromList && (
+                  <p className="text-sm text-gray-600 mb-4">
+                    Perfil atribuído:{' '}
+                    <span className="font-medium text-gray-800">
+                      {roles.find((r) => r.value === draft.role)?.label || draft.role}
+                    </span>
+                    {' '}(apenas um administrador pode alterar)
+                  </p>
+                )}
+
                 {isEditing && (
                   <div className="mb-6 rounded-lg border border-amber-200 bg-amber-50/80 p-4">
                     <label className="block text-sm font-medium text-gray-800 mb-2">Nova palavra-passe (opcional)</label>
-                    <p className="text-xs text-gray-600 mb-3">Só preencha se quiser redefinir a palavra-passe deste utilizador.</p>
+                    <p className="text-xs text-gray-600 mb-3">
+                      {isAdmin
+                        ? 'Só preencha se quiser redefinir a palavra-passe deste utilizador.'
+                        : 'Só preencha se quiser alterar a sua palavra-passe.'}
+                    </p>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       <input
                         type="password"
@@ -583,51 +624,55 @@ const AdminUsuarios = () => {
                   </div>
                 )}
 
-                <div className="mb-6">
-                  <label className="block text-sm font-medium text-gray-700 mb-2">Perfil (role)</label>
-                  <select
-                    value={draft.role}
-                    onChange={(e) => setDraft((d) => (d ? { ...d, role: e.target.value } : d))}
-                    disabled={!isEditing || savingId === draft.id}
-                    className={`w-full max-w-md px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0915FF] ${
-                      !isEditing ? 'bg-gray-50 cursor-default text-gray-800' : 'bg-white'
-                    }`}
-                  >
-                    {roles.map((r) => (
-                      <option key={r.value} value={r.value}>{r.label}</option>
-                    ))}
-                  </select>
-                </div>
-
-                <div className="mb-6">
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Requisições — armazéns centrais
-                  </label>
-                  <p className="text-xs text-gray-500 mb-3">
-                    Utilizadores que não são admin/controller só veem requisições cuja origem está na lista. Vazio = sem filtro extra.
-                  </p>
-                  <div className="rounded-lg border border-gray-200 bg-gray-50/80 max-h-56 overflow-y-auto p-3 space-y-2">
-                    {armazensCentrais.length === 0 ? (
-                      <p className="text-sm text-gray-400">Nenhum armazém central disponível</p>
-                    ) : (
-                      armazensCentrais.map((a) => (
-                        <label
-                          key={a.id}
-                          className="flex items-center gap-3 text-sm cursor-pointer py-1.5 px-2 rounded hover:bg-white/80"
-                        >
-                          <input
-                            type="checkbox"
-                            className="rounded border-gray-300 text-[#0915FF] focus:ring-[#0915FF]"
-                            checked={(draft.requisicoes_armazem_origem_ids || []).includes(a.id)}
-                            onChange={() => toggleArmazemOrigem(a.id)}
-                            disabled={!isEditing || savingId === draft.id}
-                          />
-                          <span>{a.codigo ? `${a.codigo} — ${a.descricao}` : a.descricao}</span>
-                        </label>
-                      ))
-                    )}
+                {isAdmin && (
+                  <div className="mb-6">
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Perfil (role)</label>
+                    <select
+                      value={draft.role}
+                      onChange={(e) => setDraft((d) => (d ? { ...d, role: e.target.value } : d))}
+                      disabled={!isEditing || savingId === draft.id}
+                      className={`w-full max-w-md px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0915FF] ${
+                        !isEditing ? 'bg-gray-50 cursor-default text-gray-800' : 'bg-white'
+                      }`}
+                    >
+                      {roles.map((r) => (
+                        <option key={r.value} value={r.value}>{r.label}</option>
+                      ))}
+                    </select>
                   </div>
-                </div>
+                )}
+
+                {isAdmin && (
+                  <div className="mb-6">
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Requisições — armazéns centrais
+                    </label>
+                    <p className="text-xs text-gray-500 mb-3">
+                      Utilizadores que não são admin/controller só veem requisições cuja origem está na lista. Vazio = sem filtro extra.
+                    </p>
+                    <div className="rounded-lg border border-gray-200 bg-gray-50/80 max-h-56 overflow-y-auto p-3 space-y-2">
+                      {armazensCentrais.length === 0 ? (
+                        <p className="text-sm text-gray-400">Nenhum armazém central disponível</p>
+                      ) : (
+                        armazensCentrais.map((a) => (
+                          <label
+                            key={a.id}
+                            className="flex items-center gap-3 text-sm cursor-pointer py-1.5 px-2 rounded hover:bg-white/80"
+                          >
+                            <input
+                              type="checkbox"
+                              className="rounded border-gray-300 text-[#0915FF] focus:ring-[#0915FF]"
+                              checked={(draft.requisicoes_armazem_origem_ids || []).includes(a.id)}
+                              onChange={() => toggleArmazemOrigem(a.id)}
+                              disabled={!isEditing || savingId === draft.id}
+                            />
+                            <span>{a.codigo ? `${a.codigo} — ${a.descricao}` : a.descricao}</span>
+                          </label>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                )}
 
                 {isEditing && (
                   <div className="flex flex-wrap gap-3">

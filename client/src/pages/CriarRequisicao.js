@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { getRequisicoesArmazemOrigemIds } from '../utils/requisicoesArmazemOrigem';
+import { quantidadeStockNacionalNoArmazem } from '../utils/stockNacionalArmazem';
 import Toast from '../components/Toast';
 import { FaArrowLeft, FaSave, FaPlus, FaTrash, FaChevronDown } from 'react-icons/fa';
 import axios from 'axios';
@@ -40,8 +41,15 @@ const CriarRequisicao = () => {
   const debounceBuscaRef = useRef(null);
   const skipBuscaRef = useRef(false);
   const abortBuscaRef = useRef(null);
+  const abortStockRef = useRef(null);
   const navigate = useNavigate();
   const { user } = useAuth();
+  /** Stock nacional (armazens_item) no armazém de origem para o item em seleção */
+  const [stockOrigem, setStockOrigem] = useState({
+    loading: false,
+    valor: null,
+    erro: false
+  });
 
   useEffect(() => {
     fetchArmazens();
@@ -115,6 +123,40 @@ const CriarRequisicao = () => {
       el?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
     }
   }, [selectedItemIndex, mostrarListaItens]);
+
+  useEffect(() => {
+    if (!itemSelecionado?.id || !formData.armazem_origem_id) {
+      setStockOrigem({ loading: false, valor: null, erro: false });
+      return;
+    }
+    const arm = armazens.find((a) => a.id === parseInt(formData.armazem_origem_id, 10));
+    if (!arm) {
+      setStockOrigem({ loading: false, valor: null, erro: false });
+      return;
+    }
+    if (abortStockRef.current) abortStockRef.current.abort();
+    const ac = new AbortController();
+    abortStockRef.current = ac;
+    setStockOrigem((s) => ({ ...s, loading: true, erro: false }));
+    (async () => {
+      try {
+        const { data } = await axios.get(`/api/itens/${itemSelecionado.id}`, {
+          signal: ac.signal
+        });
+        if (abortStockRef.current !== ac) return;
+        const rows = data.armazens || [];
+        const q = quantidadeStockNacionalNoArmazem(rows, arm);
+        setStockOrigem({ loading: false, valor: q, erro: false });
+      } catch (err) {
+        if (axios.isCancel?.(err) || err.code === 'ERR_CANCELED' || err.name === 'CanceledError') return;
+        if (abortStockRef.current !== ac) return;
+        setStockOrigem({ loading: false, valor: null, erro: true });
+      }
+    })();
+    return () => {
+      ac.abort();
+    };
+  }, [itemSelecionado?.id, formData.armazem_origem_id, armazens]);
 
   const fetchArmazens = async () => {
     try {
@@ -394,8 +436,9 @@ const CriarRequisicao = () => {
               
               {/* Busca e Seleção de Item */}
               <div className="mb-4 p-4 bg-gray-50 rounded-lg">
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <div className="md:col-span-2">
+                {/* Linha 1: busca + qtd | Linha 2: stock + botão (o botão não desce quando o stock aparece) */}
+                <div className="grid grid-cols-1 md:grid-cols-12 gap-4">
+                  <div className="md:col-span-7 lg:col-span-8">
                     <label className="block text-sm font-medium text-gray-700 mb-2">
                       Buscar Item
                     </label>
@@ -469,7 +512,7 @@ const CriarRequisicao = () => {
                       )}
                     </div>
                   </div>
-                  <div>
+                  <div className="md:col-span-5 lg:col-span-4">
                     <label className="block text-sm font-medium text-gray-700 mb-2">
                       Quantidade
                     </label>
@@ -489,14 +532,49 @@ const CriarRequisicao = () => {
                       className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0915FF] focus:border-transparent"
                     />
                   </div>
+
+                  <div className="md:col-span-7 lg:col-span-8 min-h-0">
+                    {(formData.armazem_origem_id || itemSelecionado) && (
+                      <div className="md:pr-2 rounded-lg bg-gray-50 px-3 py-2.5">
+                        <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-600">
+                          Stock nacional · armazém origem
+                        </div>
+                        <div
+                          className="text-xs text-gray-600 mt-0.5 truncate"
+                          title={
+                            armazemOrigemSelecionado
+                              ? getArmazemLabel(armazemOrigemSelecionado)
+                              : 'Armazém de origem'
+                          }
+                        >
+                          {armazemOrigemSelecionado
+                            ? getArmazemLabel(armazemOrigemSelecionado)
+                            : 'Selecione o armazém de origem'}
+                        </div>
+                        <div className="mt-2 text-2xl font-bold tabular-nums text-gray-900 min-h-[2rem] flex items-center">
+                          {!formData.armazem_origem_id || !itemSelecionado
+                            ? '—'
+                            : stockOrigem.loading
+                              ? '…'
+                              : stockOrigem.erro
+                                ? '—'
+                                : stockOrigem.valor != null
+                                  ? stockOrigem.valor
+                                  : '—'}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                  <div className="md:col-span-5 lg:col-span-4 flex items-start md:justify-end">
+                    <button
+                      type="button"
+                      onClick={handleAddItem}
+                      className="w-full sm:w-auto min-w-[11rem] px-4 py-2 bg-[#0915FF] text-white rounded-lg hover:bg-[#070FCC] transition-colors flex items-center justify-center gap-2 shrink-0"
+                    >
+                      <FaPlus /> Adicionar Item
+                    </button>
+                  </div>
                 </div>
-                <button
-                  type="button"
-                  onClick={handleAddItem}
-                  className="mt-4 w-full md:w-auto px-4 py-2 bg-[#0915FF] text-white rounded-lg hover:bg-[#070FCC] transition-colors flex items-center justify-center gap-2"
-                >
-                  <FaPlus /> Adicionar Item
-                </button>
               </div>
 
               {/* Lista de Itens Adicionados */}

@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { ChevronDown, Settings, Database, Users, FileText, Download, Plus, Trash2, Image, RefreshCw, Menu, X, AlertTriangle, Package, ShoppingCart, Archive } from 'react-feather';
+import { ChevronDown, Settings, Database, Users, User, FileText, Download, Plus, Trash2, Image, RefreshCw, Menu, X, AlertTriangle, Package, ShoppingCart, Archive } from 'react-feather';
 
 const Navbar = () => {
   const { isAuthenticated, logout, user } = useAuth();
@@ -21,6 +21,8 @@ const Navbar = () => {
   const canSeeRequisicoes = user && ['admin', 'controller', 'operador', 'backoffice_operations', 'backoffice_armazem'].includes(user.role);
   const isBackofficeArmazem = user && user.role === 'backoffice_armazem';
   const showGerirMenu = isAdmin;
+  /** Conta autenticada que não é admin: acede a /admin-usuarios só para o próprio perfil */
+  const showMeuPerfil = isAuthenticated && !isAdmin;
 
   // Fechar menu mobile ao navegar
   const handleNavigation = () => {
@@ -167,6 +169,18 @@ const Navbar = () => {
                 <div className="relative font-medium text-sm lg:text-base uppercase tracking-wider text-white cursor-pointer flex items-center px-2 lg:px-3 xl:px-4 h-12 min-w-12 lg:min-w-14 xl:min-w-16 rounded-lg transition-all duration-200 hover:bg-white/10 hover:text-yellow-400">
                   <Link to="/requisicoes" className="text-inherit no-underline px-0.5 font-semibold w-full h-full flex items-center justify-center">
                     Requisições
+                  </Link>
+                </div>
+              )}
+              {showMeuPerfil && (
+                <div className="relative font-medium text-sm lg:text-base uppercase tracking-wider text-white cursor-pointer flex items-center px-2 lg:px-3 xl:px-4 h-12 min-w-12 lg:min-w-14 xl:min-w-16 rounded-lg transition-all duration-200 hover:bg-white/10 hover:text-yellow-400">
+                  <Link
+                    to="/admin-usuarios"
+                    className="text-inherit no-underline px-0.5 font-semibold w-full h-full flex items-center justify-center gap-1.5"
+                  >
+                    <User size={14} className="lg:w-4 lg:h-4 shrink-0" />
+                    <span className="hidden lg:inline">Meu perfil</span>
+                    <span className="lg:hidden">Perfil</span>
                   </Link>
                 </div>
               )}
@@ -483,6 +497,18 @@ const Navbar = () => {
                   <Link to="/requisicoes" onClick={(e) => handleMobileNavigation('/requisicoes', e)} className="text-white no-underline font-semibold w-full h-full flex items-center justify-center">
                     <ShoppingCart size={16} className="inline mr-2 sm:mr-3" />
                     Requisições
+                  </Link>
+                </div>
+              )}
+              {showMeuPerfil && (
+                <div className="w-[85vw] sm:w-[90vw] py-3 sm:py-4.5 px-0 h-auto rounded-xl text-center text-base sm:text-lg font-semibold bg-white/8 m-0 mb-1 sm:mb-0.5 transition-all duration-200">
+                  <Link
+                    to="/admin-usuarios"
+                    onClick={(e) => handleMobileNavigation('/admin-usuarios', e)}
+                    className="text-white no-underline font-semibold w-full h-full flex items-center justify-center"
+                  >
+                    <User size={16} className="inline mr-2 sm:mr-3" />
+                    Meu perfil
                   </Link>
                 </div>
               )}

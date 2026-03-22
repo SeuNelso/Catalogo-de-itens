@@ -26,8 +26,10 @@ const { v4: uuidv4 } = require('uuid');
 const { uploadToS3 } = require('./s3Upload');
 const { convertGoogleSheetsUrlToExport } = require('./utils/googleSheets');
 const { downloadFile } = require('./utils/downloadFile');
+const { buildItensListOrderByClause } = require('./utils/sqlSafe');
 const { createS3Client } = require('./utils/s3Client');
 const { nomeCompletoUsuario } = require('./utils/usuarioNome');
+const { createArmazemViatura } = require('./utils/createArmazemViatura');
 const { cadastrarTodosItensNaoCadastrados } = require('./utils/itensNaoCadastradosCadastroLote');
 const { SETORES_VALIDOS } = require('./config/constants');
 const { JWT_SECRET, PORT } = require('./config/secrets');
@@ -1028,6 +1030,102 @@ app.get('/api/download-template', authenticateToken, (req, res) => {
   }
 });
 
+/** Importar dados dos itens: atalhos S / L / qtd → valores em `itens.tipocontrolo`. */
+function normalizeTipoControloImportValor(raw) {
+  if (raw == null) return { ok: false, value: null };
+  const s = String(raw).trim();
+  if (!s) return { ok: false, value: null };
+  const u = s.toUpperCase();
+  const compact = u.replace(/\s+/g, '');
+  if (compact === 'S' || compact === 'S/N' || compact === 'SN') return { ok: true, value: 'S/N' };
+  if (compact === 'L' || u === 'LOTE') return { ok: true, value: 'LOTE' };
+  if (compact === 'QTD' || u === 'QUANTIDADE' || u === 'QUANTITY') return { ok: true, value: 'Quantidade' };
+  if (s === 'S/N' || s === 'LOTE' || s === 'Quantidade') return { ok: true, value: s };
+  return { ok: false, value: null };
+}
+
+/** Template: uma coluna "tipo de controlo". Outros nomes = compatibilidade (1.ª célula não vazia). */
+const TIPO_CONTROLE_IMPORT_ALIASES = [
+  'tipo de controlo',
+  'Tipo Controle',
+  'Tipo de Controlo',
+  'Tipo de controlo',
+  'Tipo controlo',
+  'tipocontrolo'
+];
+
+/** Remove BOM e espaços dos cabeçalhos do Excel/CSV para bater com aliases. */
+function normalizeImportDadosItensRowKeys(row) {
+  if (!row || typeof row !== 'object') return row;
+  const out = {};
+  for (const [k, v] of Object.entries(row)) {
+    const nk = String(k).replace(/^\ufeff/, '').trim();
+    out[nk] = v;
+  }
+  return out;
+}
+
+function normalizeImportHeaderKey(k) {
+  return String(k || '')
+    .replace(/^\ufeff/, '')
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** 1.ª célula não vazia pela ordem dos aliases; depois match por cabeçalho normalizado (maiúsculas/acentos). */
+function pickImportCellFlexible(row, aliases) {
+  if (!row || !aliases || !aliases.length) return '';
+  for (const key of aliases) {
+    const v = row[key];
+    if (v != null && String(v).trim() !== '') return String(v).trim();
+  }
+  const normToOriginal = {};
+  for (const key of Object.keys(row)) {
+    normToOriginal[normalizeImportHeaderKey(key)] = key;
+  }
+  for (const a of aliases) {
+    const orig = normToOriginal[normalizeImportHeaderKey(a)];
+    if (orig == null) continue;
+    const v = row[orig];
+    if (v != null && String(v).trim() !== '') return String(v).trim();
+  }
+  return '';
+}
+
+function pickTipoControleCell(row) {
+  return pickImportCellFlexible(row, TIPO_CONTROLE_IMPORT_ALIASES);
+}
+
+/** Campos opcionais na importação de dados (vários cabeçalhos aceites por campo). */
+const IMPORT_DADOS_ITENS_CAMPOS = [
+  { field: 'familia', aliases: ['Família', 'Familia'] },
+  { field: 'subfamilia', aliases: ['Subfamília', 'Subfamilia'] },
+  { field: 'setor', aliases: ['Setor', 'Setores'] },
+  { field: 'comprimento', aliases: ['Comprimento'] },
+  { field: 'largura', aliases: ['Largura'] },
+  { field: 'altura', aliases: ['Altura'] },
+  { field: 'unidade', aliases: ['Unidade'] },
+  { field: 'peso', aliases: ['Peso'] },
+  { field: 'unidadePeso', aliases: ['Unidade Peso', 'Unidade peso'] },
+  {
+    field: 'unidadearmazenamento',
+    // Template: coluna única "Unidade de armazenamento". "Unidade Armazenamento" = alias compatibilidade.
+    aliases: [
+      'Unidade de armazenamento',
+      'Unidade de Armazenamento',
+      'Unidade Armazenamento',
+      'Unidade armazenamento'
+    ]
+  },
+  { field: 'observacoes', aliases: ['Observações', 'Observacoes'] }
+];
+
+const IMPORT_DADOS_CODIGO_ALIASES = ['Código', 'Codigo', 'CODIGO', 'codigo'];
+
 // --- Importação de dados dos itens existentes ---
 const dadosItensUpload = multer({ dest: 'uploads/' });
 app.post('/api/importar-dados-itens', authenticateToken, dadosItensUpload.single('arquivo'), async (req, res) => {
@@ -1062,7 +1160,8 @@ app.post('/api/importar-dados-itens', authenticateToken, dadosItensUpload.single
       const workbook = XLSX.readFile(req.file.path);
       const sheetName = workbook.SheetNames[0];
       const sheet = workbook.Sheets[sheetName];
-      const data = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+      const rawRows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+      const data = rawRows.map(normalizeImportDadosItensRowKeys);
 
       importStatus[importId].status = 'importando';
       importStatus[importId].total = data.length;
@@ -1070,24 +1169,15 @@ app.post('/api/importar-dados-itens', authenticateToken, dadosItensUpload.single
       let atualizados = 0;
       let ignorados = 0;
 
-      const mapeamentoCampos = {
-        Família: 'familia',
-        'Subfamília': 'subfamilia',
-        Setor: 'setor',
-        Comprimento: 'comprimento',
-        Largura: 'largura',
-        Altura: 'altura',
-        Unidade: 'unidade',
-        Peso: 'peso',
-        'Unidade Peso': 'unidadePeso',
-        'Unidade Armazenamento': 'unidadearmazenamento',
-        'Observações': 'observacoes'
-      };
+      const colunasPermitidasImportDados = new Set([
+        ...IMPORT_DADOS_ITENS_CAMPOS.map((c) => c.field),
+        'tipocontrolo'
+      ]);
 
       const codigosTodos = [
         ...new Set(
           data
-            .map((row) => row['Código']?.toString().trim())
+            .map((row) => pickImportCellFlexible(row, IMPORT_DADOS_CODIGO_ALIASES))
             .filter(Boolean)
         )
       ];
@@ -1101,7 +1191,7 @@ app.post('/api/importar-dados-itens', authenticateToken, dadosItensUpload.single
 
       for (const row of data) {
         try {
-          const codigo = row['Código']?.toString().trim();
+          const codigo = pickImportCellFlexible(row, IMPORT_DADOS_CODIGO_ALIASES);
           if (!codigo) {
             importStatus[importId].erros.push({
               linha: processados + 2,
@@ -1126,18 +1216,29 @@ app.post('/api/importar-dados-itens', authenticateToken, dadosItensUpload.single
           }
 
           const updateData = {};
-          Object.entries(mapeamentoCampos).forEach(([nomeColuna, campoBanco]) => {
-            const valor = row[nomeColuna];
-            if (valor && valor.toString().trim() !== '') {
-              updateData[campoBanco] = valor.toString().trim();
-            }
-          });
+          for (const { field, aliases } of IMPORT_DADOS_ITENS_CAMPOS) {
+            const valor = pickImportCellFlexible(row, aliases);
+            if (valor) updateData[field] = valor;
+          }
 
-          if (Object.keys(updateData).length > 0) {
-            const setClause = Object.keys(updateData)
-              .map((key, index) => `${key} = $${index + 2}`)
-              .join(', ');
-            const values = Object.values(updateData);
+          const tipoRaw = pickTipoControleCell(row);
+          if (tipoRaw) {
+            const { ok, value } = normalizeTipoControloImportValor(tipoRaw);
+            if (ok) {
+              updateData.tipocontrolo = value;
+            } else {
+              importStatus[importId].erros.push({
+                codigo,
+                linha: processados + 2,
+                motivo: `Tipo Controle inválido: "${tipoRaw}". Use S ou S/N (série), L ou LOTE (lote), qtd ou Quantidade.`
+              });
+            }
+          }
+
+          const keysSeguras = Object.keys(updateData).filter((k) => colunasPermitidasImportDados.has(k));
+          if (keysSeguras.length > 0) {
+            const setClause = keysSeguras.map((key, index) => `${key} = $${index + 2}`).join(', ');
+            const values = keysSeguras.map((k) => updateData[k]);
 
             await pool.query(`UPDATE itens SET ${setClause} WHERE id = $1`, [itemId, ...values]);
             atualizados++;
@@ -1151,7 +1252,7 @@ app.post('/api/importar-dados-itens', authenticateToken, dadosItensUpload.single
           importStatus[importId].ignorados = ignorados;
         } catch (err) {
           importStatus[importId].erros.push({
-            codigo: row['Código'] || 'N/A',
+            codigo: pickImportCellFlexible(row, IMPORT_DADOS_CODIGO_ALIASES) || 'N/A',
             linha: processados + 2,
             motivo: 'Erro ao processar linha',
             erro: err.message
@@ -1403,15 +1504,21 @@ app.get('/api/itens', async (req, res) => {
   }
   
   if (quantidadeMin.trim()) {
-    whereConditions.push(`i.quantidade >= $${paramIndex}`);
-    params.push(parseInt(quantidadeMin.trim()));
-    paramIndex++;
+    const qmin = parseInt(quantidadeMin.trim(), 10);
+    if (Number.isFinite(qmin)) {
+      whereConditions.push(`i.quantidade >= $${paramIndex}`);
+      params.push(qmin);
+      paramIndex++;
+    }
   }
-  
+
   if (quantidadeMax.trim()) {
-    whereConditions.push(`i.quantidade <= $${paramIndex}`);
-    params.push(parseInt(quantidadeMax.trim()));
-    paramIndex++;
+    const qmax = parseInt(quantidadeMax.trim(), 10);
+    if (Number.isFinite(qmax)) {
+      whereConditions.push(`i.quantidade <= $${paramIndex}`);
+      params.push(qmax);
+      paramIndex++;
+    }
   }
   
   if (unidadeArmazenamento.trim()) {
@@ -1427,7 +1534,10 @@ app.get('/api/itens', async (req, res) => {
   }
   
   const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(' AND ')}` : '';
-  
+
+  /** ORDER BY só com identificadores vindos de whitelist (sqlSafe) — nunca interpolar req.query.sortBy diretamente */
+  const orderByClause = buildItensListOrderByClause(sortBy, sortOrder);
+
   // Query para contar total de itens
   const countQuery = `
     SELECT COUNT(DISTINCT i.id) as total
@@ -1435,23 +1545,6 @@ app.get('/api/itens', async (req, res) => {
     LEFT JOIN itens_setores is2 ON i.id = is2.item_id
     ${whereClause}
   `;
-  
-  // Construir cláusula ORDER BY
-  let orderByClause = '';
-  if (sortBy && ['codigo', 'nome', 'quantidade', 'familia', 'subfamilia', 'categoria'].includes(sortBy)) {
-    const direction = sortOrder === 'desc' ? 'DESC' : 'ASC';
-    orderByClause = `ORDER BY i.${sortBy} ${direction}`;
-  } else if (sortBy === 'setor') {
-    const direction = sortOrder === 'desc' ? 'DESC' : 'ASC';
-    orderByClause = `ORDER BY STRING_AGG(DISTINCT is2.setor, ', ') ${direction}`;
-  } else {
-    // Ordenação padrão
-    orderByClause = `ORDER BY 
-      (i.codigo ~ '^[0-9]') DESC, -- Prioriza códigos que começam com número
-      i.codigo ASC,
-      i.ordem_importacao ASC, 
-      i.data_cadastro DESC`;
-  }
 
   // Query principal com paginação
   const query = `
@@ -2652,8 +2745,12 @@ app.post('/api/usuarios', authenticateToken, async (req, res) => {
   }
 });
 
-// Cadastro de novo usuário (admin na UI; só nome e nº colaborador obrigatórios)
-app.post('/api/cadastrar-usuario', async (req, res) => {
+// Cadastro de novo usuário (apenas admin; nome, nº colaborador e palavra-passe obrigatórios)
+// Armazéns de requisições não são definidos aqui — só em PATCH /api/usuarios/:id por admin
+app.post('/api/cadastrar-usuario', authenticateToken, async (req, res) => {
+  if (!req.user || req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Apenas administradores podem criar utilizadores.' });
+  }
   const {
     nome: nomeRaw,
     sobrenome: sobrenomeRaw,
@@ -2661,9 +2758,7 @@ app.post('/api/cadastrar-usuario', async (req, res) => {
     email: emailRaw,
     username: usernameRaw,
     numero_colaborador: numColRaw,
-    senha: senhaRaw,
-    requisicoes_armazem_origem_id,
-    requisicoes_armazem_origem_ids
+    senha: senhaRaw
   } = req.body;
 
   const nome = String(nomeRaw || '').trim();
@@ -2672,11 +2767,14 @@ app.post('/api/cadastrar-usuario', async (req, res) => {
   const email = String(emailRaw || '').trim() || null;
   let username = String(usernameRaw || '').trim() || null;
   const numero_colaborador = String(numColRaw || '').trim();
-  let senha = senhaRaw != null ? String(senhaRaw) : '';
-  const senhaFoiDefinida = String(senha).trim().length > 0;
+  let senha = senhaRaw != null ? String(senhaRaw).trim() : '';
 
   if (!nome || !numero_colaborador) {
     return res.status(400).json({ error: 'Nome e número de colaborador são obrigatórios.' });
+  }
+
+  if (!senha) {
+    return res.status(400).json({ error: 'Palavra-passe é obrigatória.' });
   }
 
   if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
@@ -2687,26 +2785,8 @@ app.post('/api/cadastrar-usuario', async (req, res) => {
     username = numero_colaborador;
   }
 
-  if (!String(senha).trim()) {
-    senha = numero_colaborador;
-  }
-
   try {
-    let armIds = Array.isArray(requisicoes_armazem_origem_ids) ? requisicoes_armazem_origem_ids : null;
-    if (armIds == null && requisicoes_armazem_origem_id != null && requisicoes_armazem_origem_id !== '') {
-      armIds = [requisicoes_armazem_origem_id];
-    }
-    if (armIds == null) armIds = [];
-    const armIdsNorm = [...new Set(armIds.map((x) => parseInt(x, 10)).filter(Boolean))];
-    for (const aid of armIdsNorm) {
-      const ch = await pool.query(
-        "SELECT id FROM armazens WHERE id = $1 AND ativo = true AND LOWER(COALESCE(tipo,'')) = 'central'",
-        [aid]
-      );
-      if (ch.rows.length === 0) {
-        return res.status(400).json({ error: `Armazém central inválido ou inativo (id ${aid}).` });
-      }
-    }
+    const armIdsNorm = [];
 
     const existe = await pool.query('SELECT id FROM usuarios WHERE TRIM(numero_colaborador::text) = TRIM($1)', [numero_colaborador]);
     if (existe.rows.length > 0) {
@@ -2809,22 +2889,18 @@ app.post('/api/cadastrar-usuario', async (req, res) => {
       }
     }
 
-    res.status(201).json({
-      message: 'Usuário cadastrado com sucesso!',
-      aviso: !senhaFoiDefinida
-        ? 'Palavra-passe inicial igual ao número de colaborador — recomende alteração no primeiro acesso.'
-        : undefined
-    });
+    res.status(201).json({ message: 'Usuário cadastrado com sucesso!' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Listar todos os usuários (apenas admin/controller)
+// Listar utilizadores: admin vê todos; outros utilizadores autenticados só a si próprios
 app.get('/api/usuarios', authenticateToken, async (req, res) => {
-  if (!req.user || (req.user.role !== 'admin' && req.user.role !== 'controller')) {
-    return res.status(403).json({ error: 'Apenas administradores ou controllers podem acessar esta rota.' });
+  if (!req.user) {
+    return res.status(401).json({ error: 'Não autenticado.' });
   }
+  const isAdmin = req.user.role === 'admin';
   try {
     const hasJunc = await usuarioRequisicaoArmazemJunctionTableExists();
     const hasCol = await usuariosTemColunaRequisicoesArmazemOrigem();
@@ -2845,6 +2921,7 @@ app.get('/api/usuarios', authenticateToken, async (req, res) => {
           '[]'::json
         ) AS requisicoes_armazens_origem
       FROM usuarios u
+      WHERE ($1::int IS NULL OR u.id = $1)
       ORDER BY u.id DESC
     `;
     } else if (hasCol) {
@@ -2859,6 +2936,7 @@ app.get('/api/usuarios', authenticateToken, async (req, res) => {
           ELSE '[]'::json END AS requisicoes_armazens_origem
       FROM usuarios u
       LEFT JOIN armazens a ON a.id = u.requisicoes_armazem_origem_id
+      WHERE ($1::int IS NULL OR u.id = $1)
       ORDER BY u.id DESC
     `;
     } else {
@@ -2870,15 +2948,17 @@ app.get('/api/usuarios', authenticateToken, async (req, res) => {
         '[]'::json AS requisicoes_armazem_origem_ids,
         '[]'::json AS requisicoes_armazens_origem
       FROM usuarios u
+      WHERE ($1::int IS NULL OR u.id = $1)
       ORDER BY u.id DESC
     `;
     }
+    const scopeParam = isAdmin ? null : Number(req.user.id);
     let result;
     try {
-      result = await pool.query(sql);
+      result = await pool.query(sql, [scopeParam]);
     } catch (listErr) {
       if (listErr.code !== '42703') throw listErr;
-      result = await pool.query(sql.replace(/u\.sobrenome, u\.telemovel, /g, ''));
+      result = await pool.query(sql.replace(/u\.sobrenome, u\.telemovel, /g, ''), [scopeParam]);
     }
     const rows = result.rows.map((row) => {
       let ids = row.requisicoes_armazem_origem_ids;
@@ -2899,15 +2979,19 @@ app.get('/api/usuarios', authenticateToken, async (req, res) => {
   }
 });
 
-// Atualizar utilizador: dados pessoais (só admin), role e armazéns (admin/controller)
+// Atualizar utilizador: admin altera qualquer perfil, role e armazéns; outros só o próprio perfil (sem role/armazéns)
 app.patch('/api/usuarios/:id', authenticateToken, async (req, res) => {
-  if (!req.user || (req.user.role !== 'admin' && req.user.role !== 'controller')) {
-    return res.status(403).json({ error: 'Apenas administradores ou controllers podem acessar esta rota.' });
+  if (!req.user) {
+    return res.status(401).json({ error: 'Não autenticado.' });
   }
   const isAdmin = req.user.role === 'admin';
   const id = parseInt(req.params.id, 10);
   if (!id) {
     return res.status(400).json({ error: 'ID inválido.' });
+  }
+  const isSelf = Number(req.user.id) === id;
+  if (!isAdmin && !isSelf) {
+    return res.status(403).json({ error: 'Apenas o administrador pode alterar outros utilizadores.' });
   }
 
   const {
@@ -2945,14 +3029,14 @@ app.patch('/api/usuarios/:id', authenticateToken, async (req, res) => {
     else idsPayload = [requisicoes_armazem_origem_id];
   }
 
-  if (idsPayload !== undefined && !hasJunc && !hasCol) {
+  if (isAdmin && idsPayload !== undefined && !hasJunc && !hasCol) {
     return res.status(400).json({
       error: 'Não é possível guardar armazéns sem migração da base de dados.',
       detalhes: 'npm run db:migrate:usuarios-req-armazem ou npm run db:migrate:usuarios-req-armazem-multi'
     });
   }
 
-  if (isAdmin) {
+  if (isAdmin || isSelf) {
     if (nome !== undefined) {
       const n = String(nome || '').trim();
       if (!n) {
@@ -3024,7 +3108,7 @@ app.patch('/api/usuarios/:id', authenticateToken, async (req, res) => {
     }
   }
 
-  if (role !== undefined && role !== null) {
+  if (isAdmin && role !== undefined && role !== null) {
     if (!rolesValidos.includes(role)) {
       return res.status(400).json({ error: 'Role inválido.' });
     }
@@ -3032,7 +3116,7 @@ app.patch('/api/usuarios/:id', authenticateToken, async (req, res) => {
     params.push(role);
   }
 
-  if (idsPayload !== undefined) {
+  if (isAdmin && idsPayload !== undefined) {
     if (!Array.isArray(idsPayload)) {
       return res.status(400).json({ error: 'requisicoes_armazem_origem_ids deve ser um array de ids.' });
     }
@@ -3069,9 +3153,9 @@ app.patch('/api/usuarios/:id', authenticateToken, async (req, res) => {
     }
   }
 
-  if (updates.length === 0 && idsPayload === undefined) {
+  if (updates.length === 0 && (idsPayload === undefined || !isAdmin)) {
     return res.status(400).json({
-      error: 'Nada a atualizar. Envie dados do perfil (admin), role, armazéns de requisições ou nova palavra-passe.'
+      error: 'Nada a atualizar. Envie dados do perfil, nova palavra-passe, ou (admin) role/armazéns.'
     });
   }
 
@@ -4270,8 +4354,24 @@ app.post('/api/importar-setores', authenticateToken, excelSetoresUpload.single('
 
     for (let i = 0; i < dados.length; i++) {
       const linha = dados[i];
-      const codigo = linha.Artigo || linha.codigo || linha.CODIGO || linha.artigo;
-      const setoresString = linha.SETOR || linha.setor || linha.Setor || '';
+      const codigoRaw =
+        linha.Artigo ||
+        linha.artigo ||
+        linha.Código ||
+        linha.Codigo ||
+        linha.codigo ||
+        linha.CODIGO ||
+        linha.CODIGO_ITEM ||
+        linha['Código'] ||
+        linha['Codigo'];
+      const codigo = codigoRaw != null && String(codigoRaw).trim() !== '' ? String(codigoRaw).trim() : '';
+      const setoresString =
+        linha.SETOR ||
+        linha.setor ||
+        linha.Setor ||
+        linha.Setores ||
+        linha['SETOR'] ||
+        '';
 
       // Mostrar progresso a cada 50 itens
       if ((i + 1) % 50 === 0) {
@@ -4285,7 +4385,8 @@ app.post('/api/importar-setores', authenticateToken, excelSetoresUpload.single('
           linha: i + 1,
           codigo: 'N/A',
           setores: setoresString,
-          erro: 'Código do item não encontrado'
+          erro:
+            'Célula de código vazia ou cabeçalho não reconhecido (use coluna Artigo ou Código)'
         });
         continue;
       }
@@ -4670,23 +4771,60 @@ app.get('/api/armazens', authenticateToken, async (req, res) => {
 
     const armazens = result.rows;
     try {
-      for (const a of armazens) {
-        a.tipo = a.tipo || 'viatura';
+      const ids = armazens.map((a) => a.id).filter((id) => id != null);
+      const byArm = new Map();
+      if (ids.length > 0) {
+        let locRows;
         try {
           const locResult = await pool.query(
-            'SELECT id, localizacao, tipo_localizacao FROM armazens_localizacoes WHERE armazem_id = $1 ORDER BY id',
-            [a.id]
+            `SELECT armazem_id, id, localizacao, tipo_localizacao
+             FROM armazens_localizacoes
+             WHERE armazem_id = ANY($1::int[])
+             ORDER BY armazem_id, id`,
+            [ids]
           );
-          a.localizacoes = (locResult.rows || []).map(r => ({ id: r.id, localizacao: r.localizacao, tipo_localizacao: r.tipo_localizacao || 'normal' }));
+          locRows = locResult.rows || [];
         } catch (locE) {
           if (locE.code === '42703') {
-            const locResult = await pool.query('SELECT id, localizacao FROM armazens_localizacoes WHERE armazem_id = $1 ORDER BY id', [a.id]);
-            a.localizacoes = (locResult.rows || []).map(r => ({ ...r, tipo_localizacao: (r.localizacao || '').toUpperCase().includes('.FERR') ? 'FERR' : 'normal' }));
-          } else throw locE;
+            const locResult = await pool.query(
+              `SELECT armazem_id, id, localizacao
+               FROM armazens_localizacoes
+               WHERE armazem_id = ANY($1::int[])
+               ORDER BY armazem_id, id`,
+              [ids]
+            );
+            locRows = (locResult.rows || []).map((r) => ({
+              ...r,
+              tipo_localizacao: (r.localizacao || '').toUpperCase().includes('.FERR') ? 'FERR' : 'normal'
+            }));
+          } else {
+            throw locE;
+          }
         }
-        if (a.localizacoes.length === 0 && a.localizacao) {
-          a.localizacoes = [{ id: null, localizacao: a.localizacao, tipo_localizacao: (a.localizacao || '').toString().toUpperCase().includes('.FERR') ? 'FERR' : 'normal' }];
+        for (const r of locRows) {
+          const aid = r.armazem_id;
+          const tipoLoc = r.tipo_localizacao || 'normal';
+          if (!byArm.has(aid)) byArm.set(aid, []);
+          byArm.get(aid).push({
+            id: r.id,
+            localizacao: r.localizacao,
+            tipo_localizacao: tipoLoc
+          });
         }
+      }
+      for (const a of armazens) {
+        a.tipo = a.tipo || 'viatura';
+        let locs = byArm.get(a.id) || [];
+        if (locs.length === 0 && a.localizacao) {
+          locs = [
+            {
+              id: null,
+              localizacao: a.localizacao,
+              tipo_localizacao: (a.localizacao || '').toString().toUpperCase().includes('.FERR') ? 'FERR' : 'normal'
+            }
+          ];
+        }
+        a.localizacoes = locs;
       }
     } catch (e) {
       if (e.code !== '42P01') throw e;
@@ -4881,6 +5019,76 @@ app.post('/api/armazens', authenticateToken, async (req, res) => {
       error: 'Erro ao criar armazém',
       details: error.message || String(error)
     });
+  }
+});
+
+// Importar armazéns viatura em lote (código + descrição → 2 localizações automáticas)
+app.post('/api/armazens/import-viatura', authenticateToken, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin' && req.user.role !== 'backoffice_armazem') {
+      return res.status(403).json({ error: 'Apenas administradores ou backoffice armazém podem importar armazéns' });
+    }
+
+    const rows = req.body?.rows;
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return res.status(400).json({ error: 'Envie um array rows com objetos { codigo, descricao }.' });
+    }
+    if (rows.length > 2000) {
+      return res.status(400).json({ error: 'Máximo 2000 linhas por importação.' });
+    }
+
+    const seen = new Set();
+    const created = [];
+    const skipped = [];
+    const errors = [];
+
+    for (let i = 0; i < rows.length; i++) {
+      const raw = rows[i];
+      const codigo = String(raw?.codigo ?? '').trim().toUpperCase();
+      const descricao = String(raw?.descricao ?? '').trim();
+
+      if (!codigo) {
+        errors.push({ line: i + 1, codigo: raw?.codigo ?? '', reason: 'Código em falta' });
+        continue;
+      }
+      if (!descricao) {
+        errors.push({ line: i + 1, codigo, reason: 'Descrição em falta' });
+        continue;
+      }
+      if (seen.has(codigo)) {
+        skipped.push({ codigo, reason: 'Duplicado no ficheiro' });
+        continue;
+      }
+      seen.add(codigo);
+
+      try {
+        const out = await createArmazemViatura(pool, codigo, descricao);
+        created.push({ id: out.id, codigo: out.codigo });
+      } catch (e) {
+        if (e.code === 'VALIDATION') {
+          errors.push({ line: i + 1, codigo, reason: e.message });
+        } else if (e.code === '23505') {
+          skipped.push({ codigo, reason: 'Já existe na base' });
+        } else if (e.code === 'NO_LOC_TABLE') {
+          return res.status(503).json({
+            error: 'Tabela armazens_localizacoes não existe. Execute a migração SQL de armazéns.',
+            details: e.message
+          });
+        } else if (e.code === '42P01') {
+          return res.status(503).json({
+            error: 'Tabela "armazens" não existe. Execute o script SQL de criação.',
+            details: e.message
+          });
+        } else {
+          errors.push({ line: i + 1, codigo, reason: e.message || String(e) });
+        }
+      }
+    }
+
+    res.json({ created, skipped, errors });
+  } catch (error) {
+    console.error('Erro ao importar viaturas:', error);
+    res.status(500).json({ error: 'Erro ao importar viaturas', details: error.message });
   }
 });
 
