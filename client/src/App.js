@@ -27,6 +27,7 @@ import ImportarSetores from './pages/ImportarSetores';
 import ImportarUnidades from './pages/ImportarUnidades';
 import ImportarRequisicao from './pages/ImportarRequisicao';
 import ListarRequisicoes from './pages/ListarRequisicoes';
+import ListarDevolucoes from './pages/ListarDevolucoes';
 import CriarRequisicao from './pages/CriarRequisicao';
 import EditarRequisicao from './pages/EditarRequisicao';
 import PrepararRequisicao from './pages/PrepararRequisicao';
@@ -185,6 +186,14 @@ function App() {
                       <ListarRequisicoes />
                     </ProtectedRoute>
                   } 
+                />
+                <Route
+                  path="/devolucoes"
+                  element={
+                    <ProtectedRoute allowedRoles={[...ROLES_COM_ACESSO_REQUISICOES]}>
+                      <ListarDevolucoes />
+                    </ProtectedRoute>
+                  }
                 />
                 <Route 
                   path="/requisicoes/criar" 

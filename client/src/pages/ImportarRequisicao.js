@@ -85,10 +85,18 @@ const ImportarRequisicao = () => {
         setLoading(false);
         return;
       }
-      setToast({ type: 'success', message: 'Requisição importada com sucesso!' });
       const reqId = data.requisicao_id;
+      const devId = data.devolucao_id;
+      setToast({
+        type: 'success',
+        message: devId
+          ? 'Requisição e devolução importadas com sucesso!'
+          : 'Requisição importada com sucesso!'
+      });
       setTimeout(() => {
-        if (reqId) navigate(`/requisicoes/preparar/${reqId}`);
+        // Se existir devolução, é ela que normalmente deve ser preparada em seguida.
+        if (devId) navigate(`/requisicoes/preparar/${devId}`);
+        else if (reqId) navigate(`/requisicoes/preparar/${reqId}`);
         else navigate('/requisicoes');
       }, 1200);
     } catch (err) {

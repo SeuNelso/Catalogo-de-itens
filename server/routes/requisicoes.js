@@ -103,7 +103,7 @@ router.get('/', ...requisicaoAuth, async (req, res) => {
     if (usuarioEscopadoSemArmazensAtribuidos(req)) {
       return res.json([]);
     }
-    const { status, armazem_id, item_id } = req.query;
+    const { status, armazem_id, item_id, devolucoes } = req.query;
     let itemIdParsed = null;
     if (item_id != null && String(item_id).trim() !== '') {
       const iid = parseInt(String(item_id), 10);
@@ -113,6 +113,10 @@ router.get('/', ...requisicaoAuth, async (req, res) => {
       req.query.minhas === '1' ||
       req.query.minhas === 'true' ||
       String(req.query.minhas || '').toLowerCase() === 'sim';
+
+    const devolucoesViaturaCentral = ['1', 'true', 'yes', 'sim'].includes(
+      String(devolucoes || '').toLowerCase()
+    );
 
     // Buscar requisições (armazem destino + armazem origem)
     let query = `
@@ -134,6 +138,17 @@ router.get('/', ...requisicaoAuth, async (req, res) => {
     if (status) {
       query += ` AND r.status = $${paramCount++}`;
       params.push(String(status));
+    }
+
+    if (devolucoesViaturaCentral) {
+      // Devolução: origem = viatura e destino = central
+      query += ` AND ao.tipo = $${paramCount++} AND a.tipo = $${paramCount++}`;
+      params.push('viatura', 'central');
+    } else {
+      // Página "Requisições": excluir devoluções (origem viatura -> destino central).
+      // Assim a devolução aparece apenas em `/devolucoes`.
+      query += ` AND NOT (ao.tipo = $${paramCount++} AND a.tipo = $${paramCount++})`;
+      params.push('viatura', 'central');
     }
 
     if (armazem_id != null && String(armazem_id).trim() !== '') {
@@ -175,9 +190,11 @@ router.get('/', ...requisicaoAuth, async (req, res) => {
         let fallbackQuery = `
           SELECT r.*,
             (COALESCE(a.codigo, '') || CASE WHEN a.codigo IS NOT NULL AND a.codigo <> '' THEN ' - ' ELSE '' END || a.descricao) as armazem_descricao,
+            (COALESCE(ao.codigo, '') || CASE WHEN ao.codigo IS NOT NULL AND ao.codigo <> '' THEN ' - ' ELSE '' END || ao.descricao) as armazem_origem_descricao,
             ${SQL_LISTA_CRIADOR_E_SEPARADOR}
           FROM requisicoes r
           INNER JOIN armazens a ON r.armazem_id = a.id
+          LEFT JOIN armazens ao ON r.armazem_origem_id = ao.id
           LEFT JOIN usuarios u ON r.usuario_id = u.id
           LEFT JOIN usuarios su ON r.separador_usuario_id = su.id
           WHERE 1=1
@@ -187,6 +204,14 @@ router.get('/', ...requisicaoAuth, async (req, res) => {
         if (status) {
           fallbackQuery += ` AND r.status = $${pc++}`;
           fbParams.push(String(status));
+        }
+
+        if (devolucoesViaturaCentral) {
+          fallbackQuery += ` AND ao.tipo = $${pc++} AND a.tipo = $${pc++}`;
+          fbParams.push('viatura', 'central');
+        } else {
+          fallbackQuery += ` AND NOT (ao.tipo = $${pc++} AND a.tipo = $${pc++})`;
+          fbParams.push('viatura', 'central');
         }
         if (armazem_id != null && String(armazem_id).trim() !== '') {
           const aid = parseInt(String(armazem_id), 10);
@@ -377,6 +402,26 @@ router.get('/:id/export-excel', ...requisicaoAuth, denyOperador, async (req, res
 
 // Fallback localização expedição (quando armazém central não tem expedição configurada)
 const LOCALIZACAO_EXPEDICAO_FALLBACK = 'EXPEDICAO.E';
+const LOCALIZACAO_RECEBIMENTO_FALLBACK = 'RECEBIMENTO.E';
+
+/** Devolução: origem viatura → destino armazém central (entrada em recebimento + movimento interno). */
+function isFluxoDevolucaoViaturaCentral(origemTipo, destTipo) {
+  return (
+    String(origemTipo || '').toLowerCase() === 'viatura' &&
+    String(destTipo || '').toLowerCase() === 'central'
+  );
+}
+
+async function localizacaoArmazemPorTipo(poolConn, armazemId, tipoLoc) {
+  if (!armazemId) return null;
+  const r = await poolConn.query(
+    `SELECT localizacao FROM armazens_localizacoes
+     WHERE armazem_id = $1 AND LOWER(COALESCE(tipo_localizacao, '')) = $2
+     ORDER BY id LIMIT 1`,
+    [armazemId, String(tipoLoc || '').toLowerCase()]
+  );
+  return r.rows[0]?.localizacao || null;
+}
 
 // Helper: gera buffer Excel com as colunas padrão (Date, OriginWarehouse, ... Batch)
 function buildExcelTransferencia(rows, res, filename) {
@@ -593,7 +638,9 @@ async function getRequisicaoComItens(id, includeItens = true) {
     SELECT r.*,
       a.codigo as armazem_destino_codigo,
       a.descricao as armazem_destino_descricao,
-      ao.codigo as armazem_origem_codigo
+      a.tipo as armazem_destino_tipo,
+      ao.codigo as armazem_origem_codigo,
+      ao.tipo as armazem_origem_tipo
     FROM requisicoes r
     INNER JOIN armazens a ON r.armazem_id = a.id
     LEFT JOIN armazens ao ON r.armazem_origem_id = ao.id
@@ -606,7 +653,11 @@ async function getRequisicaoComItens(id, includeItens = true) {
     return requisicao;
   }
   const itensResult = await pool.query(`
-    SELECT ri.*, i.codigo as item_codigo, i.descricao as item_descricao, i.tipocontrolo
+    SELECT ri.*, i.codigo as item_codigo, i.descricao as item_descricao, i.tipocontrolo,
+      EXISTS (
+        SELECT 1 FROM itens_setores is2
+        WHERE is2.item_id = i.id AND UPPER(TRIM(is2.setor)) = 'FERRAMENTA'
+      ) AS is_ferramenta
     FROM requisicoes_itens ri
     INNER JOIN itens i ON ri.item_id = i.id
     WHERE ri.requisicao_id = $1
@@ -627,7 +678,10 @@ function podeExportarReporteOuClog(requisicao) {
   const st = requisicao?.status;
   if (!['Entregue', 'FINALIZADO'].includes(st)) return false;
   if (st === 'FINALIZADO') return true;
-  return !!requisicao?.tra_gerada_em;
+  if (requisicao?.tra_gerada_em) return true;
+  // Devolução (viatura→central): entrada registada com DEV (`devolucao_tra_gerada_em`), sem TRA clássica.
+  if (requisicao?.devolucao_tra_gerada_em) return true;
+  return false;
 }
 
 function formatDateBR(dateObj) {
@@ -648,7 +702,7 @@ router.get('/:id/export-trfl', ...requisicaoAuth, denyOperador, async (req, res)
     if (!requisicao.separacao_confirmada) {
       return res.status(400).json({ error: 'TRFL só está disponível após confirmar a separação da requisição.' });
     }
-    if (!['separado', 'EM EXPEDICAO', 'Entregue', 'FINALIZADO'].includes(requisicao.status)) {
+    if (!['separado', 'EM EXPEDICAO', 'APEADOS', 'Entregue', 'FINALIZADO'].includes(requisicao.status)) {
       return res.status(400).json({ error: 'TRFL só está disponível após confirmar a separação (status Separado). Conclua a preparação primeiro.' });
     }
 
@@ -661,8 +715,207 @@ router.get('/:id/export-trfl', ...requisicaoAuth, denyOperador, async (req, res)
     }
     const ao = armazemOrigem.rows[0];
     const tipoOrigem = (ao.tipo || '').toLowerCase();
-    if (tipoOrigem !== 'central') {
-      return res.status(400).json({ error: 'TRFL só é gerado quando o armazém de origem é um armazém geral (central). Esta requisição tem origem em armazém viatura.' });
+
+    let tipoDestino = '';
+    if (requisicao.armazem_id) {
+      const armDest = await pool.query('SELECT id, codigo, tipo FROM armazens WHERE id = $1', [requisicao.armazem_id]);
+      if (armDest.rows.length > 0) {
+        tipoDestino = String(armDest.rows[0].tipo || '').toLowerCase();
+      }
+    }
+    const fluxoDevolucao = isFluxoDevolucaoViaturaCentral(tipoOrigem, tipoDestino);
+
+    if (!fluxoDevolucao && tipoOrigem !== 'central') {
+      return res.status(400).json({ error: 'TRFL só é gerado quando o armazém de origem é um armazém geral (central). Esta requisição tem origem em armazém viatura (use primeiro a TRA de devolução, depois esta TRFL).' });
+    }
+
+    // Devolução: movimento interno no central (recebimento → zona final FERR / normal).
+    if (fluxoDevolucao) {
+      if (!requisicao.armazem_id) {
+        return res.status(400).json({ error: 'Requisição sem armazém de destino.' });
+      }
+      let docRow;
+      try {
+        docRow = await pool.query(
+          'SELECT devolucao_tra_gerada_em, devolucao_trfl_gerada_em FROM requisicoes WHERE id = $1',
+          [id]
+        );
+      } catch (docErr) {
+        if (docErr.code === '42703') {
+          return res.status(503).json({
+            error: 'Colunas de documentos de devolução em falta.',
+            details: 'Execute: npm run db:migrate:requisicoes-devolucao-docs'
+          });
+        }
+        throw docErr;
+      }
+      const traDev = docRow.rows[0]?.devolucao_tra_gerada_em;
+      if (!traDev) {
+        return res.status(400).json({
+          error: 'Gere primeiro a TRA de devolução (entrada no armazém destino na localização de recebimento).'
+        });
+      }
+
+      const armDestRow = await pool.query('SELECT id, codigo FROM armazens WHERE id = $1', [requisicao.armazem_id]);
+      if (armDestRow.rows.length === 0) {
+        return res.status(400).json({ error: 'Armazém de destino não encontrado.' });
+      }
+      const ad = armDestRow.rows[0];
+      let locRec = await localizacaoArmazemPorTipo(pool, ad.id, 'recebimento');
+      if (!locRec) locRec = LOCALIZACAO_RECEBIMENTO_FALLBACK;
+
+      let locDestRows = [];
+      try {
+        const locResult = await pool.query(
+          'SELECT localizacao FROM armazens_localizacoes WHERE armazem_id = $1 ORDER BY id',
+          [ad.id]
+        );
+        locDestRows = locResult.rows || [];
+      } catch (_) {
+        locDestRows = [];
+      }
+      const { localizacaoFERR, localizacaoNormal } = computeDestLocFerrNormal(ad.codigo || '', locDestRows);
+      const codigoCentral = ad.codigo || 'E';
+
+      let bobinas = [];
+      try {
+        const bobinasResult = await pool.query(`
+          SELECT b.*, ri.item_id, i.codigo as item_codigo
+          FROM requisicoes_itens_bobinas b
+          INNER JOIN requisicoes_itens ri ON b.requisicao_item_id = ri.id
+          INNER JOIN itens i ON ri.item_id = i.id
+          WHERE ri.requisicao_id = $1
+          ORDER BY ri.id, b.id
+        `, [id]);
+        bobinas = bobinasResult.rows;
+      } catch (_) {
+        bobinas = [];
+      }
+
+      let itensComFerramenta = [];
+      try {
+        const itensResult = await pool.query(`
+          SELECT ri.*, i.codigo as item_codigo, i.tipocontrolo,
+            EXISTS (
+              SELECT 1 FROM itens_setores is2
+              WHERE is2.item_id = i.id AND UPPER(TRIM(is2.setor)) = 'FERRAMENTA'
+            ) as is_ferramenta
+          FROM requisicoes_itens ri
+          INNER JOIN itens i ON ri.item_id = i.id
+          WHERE ri.requisicao_id = $1
+          ORDER BY ri.id
+        `, [id]);
+        itensComFerramenta = itensResult.rows;
+      } catch (_) {
+        itensComFerramenta = (requisicao.itens || []).map((ri) => ({ ...ri, is_ferramenta: false }));
+      }
+
+      const dataFormat = new Date(requisicao.created_at);
+      const dateStr = `${String(dataFormat.getDate()).padStart(2, '0')}/${String(dataFormat.getMonth() + 1).padStart(2, '0')}/${dataFormat.getFullYear()}`;
+      const rows = [];
+      const apeadosQtyByItemId = new Map(
+        (itensComFerramenta || []).map((it) => [
+          Number(it.item_id),
+          Math.max(0, parseInt(it.quantidade_apeados ?? 0, 10) || 0),
+        ])
+      );
+      const apeadosCountByItemId = new Map();
+
+      for (const b of bobinas) {
+        const ri = itensComFerramenta.find((it) => it.item_id === b.item_id) || {};
+        const itemId = Number(b.item_id);
+        const apeadosQty = apeadosQtyByItemId.get(itemId) ?? 0;
+        const prevCount = apeadosCountByItemId.get(itemId) ?? 0;
+        const nextCount = prevCount + 1;
+        apeadosCountByItemId.set(itemId, nextCount);
+
+        const destLoc = nextCount <= apeadosQty ? localizacaoFERR : localizacaoNormal;
+        rows.push({
+          Date: dateStr,
+          OriginWarehouse: codigoCentral,
+          OriginLocation: locRec,
+          Article: String(b.item_codigo || ''),
+          Quatity: Number(b.metros) || 0,
+          SerialNumber1: b.serialnumber || '', SerialNumber2: '', MacAddress: '', CentroCusto: '',
+          DestinationWarehouse: codigoCentral,
+          DestinationLocation: destLoc,
+          ProjectCode: '',
+          Batch: b.lote || ''
+        });
+      }
+
+      for (const ri of itensComFerramenta) {
+        const tipoControlo = (ri.tipocontrolo || '').toUpperCase();
+        const temBobinas = bobinas.some((b) => b.item_id === ri.item_id);
+        if (tipoControlo === 'LOTE' && temBobinas) continue;
+
+        const qty = parseInt(ri.quantidade_preparada ?? ri.quantidade, 10) || 0;
+        if (qty <= 0) continue;
+        const apeadosQty = Math.max(0, Math.min(qty, parseInt(ri.quantidade_apeados ?? 0, 10) || 0));
+        const normalQty = Math.max(0, qty - apeadosQty);
+
+        const serials = String(ri.serialnumber || '')
+          .split(/\r?\n|;|\|/)
+          .map((s) => String(s || '').trim())
+          .filter(Boolean);
+
+        if (apeadosQty > 0) {
+          const serialApeados = serials.slice(0, apeadosQty).join('\n');
+          rows.push({
+            Date: dateStr,
+            OriginWarehouse: codigoCentral,
+            OriginLocation: locRec,
+            Article: String(ri.item_codigo || ''),
+            Quatity: apeadosQty,
+            SerialNumber1: serialApeados || '', SerialNumber2: '', MacAddress: '', CentroCusto: '',
+            DestinationWarehouse: codigoCentral,
+            DestinationLocation: localizacaoFERR,
+            ProjectCode: '',
+            Batch: ri.lote || ''
+          });
+        }
+
+        if (normalQty > 0) {
+          const serialNormal = serials.slice(apeadosQty).join('\n');
+          rows.push({
+            Date: dateStr,
+            OriginWarehouse: codigoCentral,
+            OriginLocation: locRec,
+            Article: String(ri.item_codigo || ''),
+            Quatity: normalQty,
+            SerialNumber1: serialNormal || '', SerialNumber2: '', MacAddress: '', CentroCusto: '',
+            DestinationWarehouse: codigoCentral,
+            DestinationLocation: localizacaoNormal,
+            ProjectCode: '',
+            Batch: ri.lote || ''
+          });
+        }
+      }
+
+      try {
+        await pool.query(
+          `UPDATE requisicoes
+           SET devolucao_trfl_gerada_em = COALESCE(devolucao_trfl_gerada_em, CURRENT_TIMESTAMP),
+               tra_gerada_em = COALESCE(tra_gerada_em, CURRENT_TIMESTAMP),
+               status = CASE
+                 WHEN status IN ('EM EXPEDICAO') THEN 'APEADOS'
+                 ELSE status
+               END
+           WHERE id = $1`,
+          [id]
+        );
+      } catch (upErr) {
+        if (upErr.code === '42703') {
+          return res.status(503).json({
+            error: 'Colunas de documentos de devolução em falta.',
+            details: 'Execute: npm run db:migrate:requisicoes-devolucao-docs'
+          });
+        }
+        throw upErr;
+      }
+
+      buildExcelTransferencia(rows, res, `TRFL_requisicao_${id}_devolucao_${new Date().toISOString().slice(0, 10)}.xlsx`);
+      return;
     }
 
     let localizacaoExpedicao = LOCALIZACAO_EXPEDICAO_FALLBACK;
@@ -764,7 +1017,7 @@ router.post('/export-trfl-multi', ...requisicaoAuth, denyOperador, async (req, r
       const requisicao = await getRequisicaoComItens(id);
       if (!requisicao) continue;
       if (!requisicao.separacao_confirmada) continue;
-      if (!['separado', 'EM EXPEDICAO', 'Entregue'].includes(requisicao.status)) continue;
+      if (!['separado', 'EM EXPEDICAO', 'APEADOS', 'Entregue'].includes(requisicao.status)) continue;
       if (!requisicao.armazem_origem_id) continue;
 
       const armazemOrigem = await pool.query('SELECT id, codigo, tipo FROM armazens WHERE id = $1', [requisicao.armazem_origem_id]);
@@ -866,7 +1119,139 @@ router.get('/:id/export-tra', ...requisicaoAuth, denyOperador, async (req, res) 
     if (!requisicao.separacao_confirmada) {
       return res.status(400).json({ error: 'TRA só está disponível após confirmar a separação da requisição.' });
     }
-    if (!['EM EXPEDICAO', 'Entregue', 'FINALIZADO'].includes(requisicao.status)) {
+
+    let tipoOrigemArm = '';
+    let tipoDestArm = '';
+    if (requisicao.armazem_origem_id) {
+      const trO = await pool.query('SELECT tipo FROM armazens WHERE id = $1', [requisicao.armazem_origem_id]);
+      tipoOrigemArm = trO.rows[0]?.tipo || '';
+    }
+    if (requisicao.armazem_id) {
+      const trD = await pool.query('SELECT tipo FROM armazens WHERE id = $1', [requisicao.armazem_id]);
+      tipoDestArm = trD.rows[0]?.tipo || '';
+    }
+    const fluxoDevolucaoTra = isFluxoDevolucaoViaturaCentral(tipoOrigemArm, tipoDestArm);
+
+    if (fluxoDevolucaoTra) {
+      if (!['separado', 'EM EXPEDICAO', 'APEADOS', 'Entregue', 'FINALIZADO'].includes(requisicao.status)) {
+        return res.status(400).json({
+          error: 'TRA de devolução só após confirmar a separação (status Separado ou fase seguinte).'
+        });
+      }
+      if (!requisicao.armazem_id) {
+        return res.status(400).json({ error: 'Requisição sem armazém de destino.' });
+      }
+
+      let locRec = LOCALIZACAO_RECEBIMENTO_FALLBACK;
+      const locRecQ = await localizacaoArmazemPorTipo(pool, requisicao.armazem_id, 'recebimento');
+      if (locRecQ) locRec = locRecQ;
+
+      const codigoViatura = requisicao.armazem_origem_codigo || 'E';
+      const codigoCentral = requisicao.armazem_destino_codigo || '';
+
+      let itensComFerramenta = [];
+      try {
+        const itensResult = await pool.query(`
+          SELECT ri.*, i.codigo as item_codigo, i.tipocontrolo,
+            EXISTS (
+              SELECT 1 FROM itens_setores is2
+              WHERE is2.item_id = i.id AND UPPER(TRIM(is2.setor)) = 'FERRAMENTA'
+            ) as is_ferramenta
+          FROM requisicoes_itens ri
+          INNER JOIN itens i ON ri.item_id = i.id
+          WHERE ri.requisicao_id = $1
+          ORDER BY ri.id
+        `, [id]);
+        itensComFerramenta = itensResult.rows;
+      } catch (_) {
+        itensComFerramenta = (requisicao.itens || []).map((ri) => ({ ...ri, is_ferramenta: false }));
+      }
+
+      let bobinas = [];
+      try {
+        const bobinasResult = await pool.query(`
+          SELECT b.*, ri.item_id, i.codigo as item_codigo
+          FROM requisicoes_itens_bobinas b
+          INNER JOIN requisicoes_itens ri ON b.requisicao_item_id = ri.id
+          INNER JOIN itens i ON ri.item_id = i.id
+          WHERE ri.requisicao_id = $1
+        `, [id]);
+        bobinas = bobinasResult.rows;
+      } catch (_) {
+        bobinas = [];
+      }
+
+      const dataFormat = new Date(requisicao.created_at);
+      const dateStr = `${String(dataFormat.getDate()).padStart(2, '0')}/${String(dataFormat.getMonth() + 1).padStart(2, '0')}/${dataFormat.getFullYear()}`;
+      const rows = [];
+
+      for (const b of bobinas) {
+        const riMeta = itensComFerramenta.find((it) => it.item_id === b.item_id) || {};
+        rows.push({
+          Date: dateStr,
+          OriginWarehouse: codigoViatura,
+          OriginLocation: riMeta.localizacao_origem || '',
+          Article: String(b.item_codigo || ''),
+          Quatity: Number(b.metros) || 0,
+          SerialNumber1: b.serialnumber || '', SerialNumber2: '', MacAddress: '', CentroCusto: '',
+          DestinationWarehouse: codigoCentral,
+          DestinationLocation: locRec,
+          ProjectCode: '',
+          Batch: b.lote || ''
+        });
+      }
+
+      for (const ri of itensComFerramenta) {
+        const tipoControlo = (ri.tipocontrolo || '').toUpperCase();
+        const temBobinas = bobinas.some((b) => b.item_id === ri.item_id);
+        if (tipoControlo === 'LOTE' && temBobinas) continue;
+
+        const qtyBase = ri.quantidade_preparada !== null && ri.quantidade_preparada !== undefined
+          ? ri.quantidade_preparada
+          : ri.quantidade;
+        const qty = parseInt(qtyBase, 10) || 0;
+        if (qty <= 0) continue;
+
+        rows.push({
+          Date: dateStr,
+          OriginWarehouse: codigoViatura,
+          OriginLocation: ri.localizacao_origem || '',
+          Article: String(ri.item_codigo || ''),
+          Quatity: qty,
+          SerialNumber1: ri.serialnumber || '', SerialNumber2: '', MacAddress: '', CentroCusto: '',
+          DestinationWarehouse: codigoCentral,
+          DestinationLocation: locRec,
+          ProjectCode: '',
+          Batch: ri.lote || ''
+        });
+      }
+
+      try {
+        await pool.query(
+          `UPDATE requisicoes
+           SET devolucao_tra_gerada_em = COALESCE(devolucao_tra_gerada_em, CURRENT_TIMESTAMP),
+               status = CASE
+                 WHEN status = 'EM EXPEDICAO' THEN 'APEADOS'
+                 ELSE status
+               END
+           WHERE id = $1`,
+          [id]
+        );
+      } catch (e) {
+        if (e.code === '42703') {
+          return res.status(503).json({
+            error: 'Colunas de documentos de devolução em falta.',
+            details: 'Execute: npm run db:migrate:requisicoes-devolucao-docs'
+          });
+        }
+        throw e;
+      }
+
+      buildExcelTransferencia(rows, res, `DEV_requisicao_${id}_devolucao_${new Date().toISOString().slice(0, 10)}.xlsx`);
+      return;
+    }
+
+    if (!['EM EXPEDICAO', 'APEADOS', 'Entregue', 'FINALIZADO'].includes(requisicao.status)) {
       return res.status(400).json({ error: 'TRA só está disponível após concluir a TRFL (requisição deve estar Em expedição). Baixe o ficheiro TRFL primeiro.' });
     }
 
@@ -1002,6 +1387,362 @@ router.get('/:id/export-tra', ...requisicaoAuth, denyOperador, async (req, res) 
   } catch (error) {
     console.error('Erro ao exportar TRA:', error);
     res.status(500).json({ error: 'Erro ao exportar TRA', details: error.message });
+  }
+});
+
+// TRA de APEADOS (devolução): central recebimento -> armazém APEADO recebimento
+// Usa quantidades marcadas como APEADOS em requisicoes_itens.quantidade_apeados.
+router.get('/:id/export-tra-apeados', ...requisicaoAuth, denyOperador, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const destinoApeadoIdRaw = req.query.destino_apeado_id;
+    const destinoApeadoId = parseInt(String(destinoApeadoIdRaw || ''), 10);
+    if (!Number.isFinite(destinoApeadoId)) {
+      return res.status(400).json({ error: 'Informe destino_apeado_id válido.' });
+    }
+
+    const requisicao = await getRequisicaoComItens(id);
+    if (!requisicao) return res.status(404).json({ error: 'Requisição não encontrada' });
+    if (!requisicaoArmazemOrigemAcessoPermitido(req, requisicao.armazem_origem_id)) {
+      return res.status(403).json({ error: 'Sem acesso a esta requisição.' });
+    }
+
+    // APEADOS deve existir no ciclo; vamos exigir a fase APEADOS.
+    if (requisicao.status !== 'APEADOS') {
+      return res.status(400).json({ error: 'TRA de APEADOS só está disponível quando a devolução estiver em APEADOS.' });
+    }
+
+    if (!requisicao.devolucao_tra_gerada_em) {
+      return res.status(400).json({ error: 'Gere primeiro a TRA de devolução.' });
+    }
+
+    const apeadosItens = (requisicao.itens || []).filter((it) => {
+      const q = parseInt(it.quantidade_apeados ?? 0, 10) || 0;
+      return q > 0;
+    });
+
+    if (apeadosItens.length === 0) {
+      return res.status(400).json({ error: 'Nenhum item marcado como APEADOS (quantidade_apeados > 0).' });
+    }
+
+    const apeadoArm = await pool.query('SELECT id, codigo, tipo FROM armazens WHERE id = $1', [destinoApeadoId]);
+    if (apeadoArm.rows.length === 0) return res.status(400).json({ error: 'Armazém APEADO destino não encontrado.' });
+    const apeadoArmRow = apeadoArm.rows[0];
+    const apeadoTipo = String(apeadoArmRow.tipo || '').toLowerCase();
+    if (apeadoTipo !== 'apeado') {
+      return res.status(400).json({ error: 'Destino deve ser um armazém do tipo APEADO.' });
+    }
+
+    // Localização de origem: recebimento do armazém central que recebeu o artigo.
+    const centralId = requisicao.armazem_id;
+    if (!centralId) return res.status(400).json({ error: 'Requisição sem armazém central (destino da devolução).' });
+
+    let locRecCentral = await localizacaoArmazemPorTipo(pool, centralId, 'recebimento');
+    if (!locRecCentral) locRecCentral = LOCALIZACAO_RECEBIMENTO_FALLBACK;
+
+    // Localização destino: recebimento do armazém APEADO (fallback para código do armazém).
+    let locRecApeado = await localizacaoArmazemPorTipo(pool, destinoApeadoId, 'recebimento');
+    if (!locRecApeado) locRecApeado = String(apeadoArmRow.codigo || '');
+    if (!locRecApeado) return res.status(400).json({ error: 'Localização de recebimento do armazém APEADO não encontrada.' });
+
+    const codigoCentral = String(requisicao.armazem_destino_codigo || '').trim() || (await pool.query('SELECT codigo FROM armazens WHERE id=$1', [centralId])).rows[0]?.codigo || 'E';
+    const codigoApeado = String(apeadoArmRow.codigo || '').trim();
+
+    const dataFormat = new Date(requisicao.created_at);
+    const dateStr = `${String(dataFormat.getDate()).padStart(2, '0')}/${String(dataFormat.getMonth() + 1).padStart(2, '0')}/${dataFormat.getFullYear()}`;
+
+    // Bobinas (para itens controlados por LOTE)
+    const bobinasResult = await pool.query(`
+      SELECT
+        b.*,
+        ri.id AS requisicao_item_id,
+        i.codigo AS item_codigo,
+        i.tipocontrolo AS tipocontrolo
+      FROM requisicoes_itens_bobinas b
+      INNER JOIN requisicoes_itens ri ON b.requisicao_item_id = ri.id
+      INNER JOIN itens i ON ri.item_id = i.id
+      WHERE ri.requisicao_id = $1
+      ORDER BY ri.id, b.id
+    `, [id]);
+
+    const bobinasByRequisicaoItemId = new Map();
+    for (const b of bobinasResult.rows || []) {
+      const rid = Number(b.requisicao_item_id);
+      if (!Number.isFinite(rid)) continue;
+      if (!bobinasByRequisicaoItemId.has(rid)) bobinasByRequisicaoItemId.set(rid, []);
+      bobinasByRequisicaoItemId.get(rid).push(b);
+    }
+
+    const rows = [];
+    for (const it of apeadosItens) {
+      const apeadosQty = parseInt(it.quantidade_apeados ?? 0, 10) || 0;
+      if (apeadosQty <= 0) continue;
+
+      const tipoControlo = String(it.tipocontrolo || '').toUpperCase();
+
+      if (tipoControlo === 'LOTE') {
+        const bobinas = bobinasByRequisicaoItemId.get(Number(it.id)) || [];
+        const selecionadas = bobinas.slice(0, apeadosQty);
+        for (const b of selecionadas) {
+          rows.push({
+            Date: dateStr,
+            OriginWarehouse: codigoCentral,
+            OriginLocation: locRecCentral,
+            Article: String(it.item_codigo || b.item_codigo || ''),
+            Quatity: Number(b.metros) || 0,
+            SerialNumber1: b.serialnumber || '', SerialNumber2: '', MacAddress: '', CentroCusto: '',
+            DestinationWarehouse: codigoApeado,
+            DestinationLocation: locRecApeado,
+            ProjectCode: '',
+            Batch: b.lote || ''
+          });
+        }
+      } else if (tipoControlo === 'S/N') {
+        const serials = String(it.serialnumber || '')
+          .split(/\r?\n|;|\|/)
+          .map((s) => String(s || '').trim())
+          .filter(Boolean);
+        const apeadosSerials = serials.slice(0, apeadosQty);
+        rows.push({
+          Date: dateStr,
+          OriginWarehouse: codigoCentral,
+          OriginLocation: locRecCentral,
+          Article: String(it.item_codigo || ''),
+          Quatity: apeadosQty,
+          SerialNumber1: apeadosSerials.join('\n'), SerialNumber2: '', MacAddress: '', CentroCusto: '',
+          DestinationWarehouse: codigoApeado,
+          DestinationLocation: locRecApeado,
+          ProjectCode: '',
+          Batch: it.lote || ''
+        });
+      } else {
+        rows.push({
+          Date: dateStr,
+          OriginWarehouse: codigoCentral,
+          OriginLocation: locRecCentral,
+          Article: String(it.item_codigo || ''),
+          Quatity: apeadosQty,
+          SerialNumber1: it.serialnumber || '', SerialNumber2: '', MacAddress: '', CentroCusto: '',
+          DestinationWarehouse: codigoApeado,
+          DestinationLocation: locRecApeado,
+          ProjectCode: '',
+          Batch: it.lote || ''
+        });
+      }
+    }
+
+    if (rows.length === 0) {
+      return res.status(400).json({ error: 'Não foi possível gerar linhas para APEADOS (verifique quantidade_apeados e preparação).' });
+    }
+
+    try {
+      await pool.query(
+        `UPDATE requisicoes
+         SET devolucao_tra_apeados_gerada_em = COALESCE(devolucao_tra_apeados_gerada_em, CURRENT_TIMESTAMP),
+             tra_gerada_em = COALESCE(tra_gerada_em, CURRENT_TIMESTAMP)
+         WHERE id = $1`,
+        [id]
+      );
+    } catch (e) {
+      if (e.code === '42703') {
+        return res.status(503).json({
+          error: 'Colunas de documentos pendentes em falta.',
+          details: 'Execute: npm run db:migrate:requisicoes-devolucao-transferencias-pendentes'
+        });
+      }
+      throw e;
+    }
+
+    buildExcelTransferencia(rows, res, `TRA_apeados_devolucao_${id}_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  } catch (error) {
+    console.error('Erro ao exportar TRA de APEADOS:', error);
+    res.status(500).json({ error: 'Erro ao exportar TRA de APEADOS', details: error.message });
+  }
+});
+
+// TRFL pendente de armazenagem (devolução): central recebimento -> localização escolhida no mesmo central
+// Usa somente o saldo remanescente: quantidade_preparada - quantidade_apeados.
+router.get('/:id/export-trfl-pendente-armazenagem', ...requisicaoAuth, denyOperador, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const localizacaoDestinoRaw = String(req.query.localizacao_destino || '').trim();
+    let itemLocalizacoes = {};
+    try {
+      const raw = String(req.query.item_localizacoes || '').trim();
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          itemLocalizacoes = parsed;
+        } else {
+          return res.status(400).json({ error: 'item_localizacoes inválido (use objeto JSON por item).' });
+        }
+      }
+    } catch (_) {
+      return res.status(400).json({ error: 'item_localizacoes inválido (JSON malformado).' });
+    }
+
+    const requisicao = await getRequisicaoComItens(id);
+    if (!requisicao) return res.status(404).json({ error: 'Requisição não encontrada' });
+    if (!requisicaoArmazemOrigemAcessoPermitido(req, requisicao.armazem_origem_id)) {
+      return res.status(403).json({ error: 'Sem acesso a esta requisição.' });
+    }
+
+    const fluxoDevolucao = isFluxoDevolucaoViaturaCentral(requisicao.armazem_origem_tipo, requisicao.armazem_destino_tipo);
+    if (!fluxoDevolucao) {
+      return res.status(400).json({ error: 'TRFL pendente de armazenagem é apenas para devoluções viatura -> central.' });
+    }
+    if (requisicao.status !== 'APEADOS') {
+      return res.status(400).json({ error: 'TRFL pendente de armazenagem só está disponível em APEADOS.' });
+    }
+    if (!requisicao.devolucao_tra_gerada_em) {
+      return res.status(400).json({ error: 'Gere primeiro o DEV da devolução.' });
+    }
+
+    const centralId = requisicao.armazem_id;
+    if (!centralId) return res.status(400).json({ error: 'Requisição sem armazém central de destino.' });
+
+    const destLocRows = await pool.query(
+      `SELECT localizacao
+         FROM armazens_localizacoes
+        WHERE armazem_id = $1`,
+      [centralId]
+    );
+    const locDestinoSet = new Set(
+      (destLocRows.rows || [])
+        .map((r) => String(r.localizacao || '').trim().toUpperCase())
+        .filter(Boolean)
+    );
+    const localizacaoDefault = localizacaoDestinoRaw || null;
+    if (!localizacaoDefault && Object.keys(itemLocalizacoes).length === 0) {
+      return res.status(400).json({ error: 'Informe localizacao_destino ou item_localizacoes.' });
+    }
+    if (localizacaoDefault && !locDestinoSet.has(localizacaoDefault.toUpperCase())) {
+      return res.status(400).json({ error: 'A localização de destino não pertence ao armazém central desta devolução.' });
+    }
+
+    let locRecCentral = await localizacaoArmazemPorTipo(pool, centralId, 'recebimento');
+    if (!locRecCentral) locRecCentral = LOCALIZACAO_RECEBIMENTO_FALLBACK;
+
+    const codigoCentral = String(requisicao.armazem_destino_codigo || '').trim() || 'E';
+    const dataFormat = new Date(requisicao.created_at);
+    const dateStr = `${String(dataFormat.getDate()).padStart(2, '0')}/${String(dataFormat.getMonth() + 1).padStart(2, '0')}/${dataFormat.getFullYear()}`;
+
+    const bobinasResult = await pool.query(`
+      SELECT
+        b.*,
+        ri.id AS requisicao_item_id,
+        i.codigo AS item_codigo
+      FROM requisicoes_itens_bobinas b
+      INNER JOIN requisicoes_itens ri ON b.requisicao_item_id = ri.id
+      INNER JOIN itens i ON ri.item_id = i.id
+      WHERE ri.requisicao_id = $1
+      ORDER BY ri.id, b.id
+    `, [id]);
+    const bobinasByRequisicaoItemId = new Map();
+    for (const b of bobinasResult.rows || []) {
+      const rid = Number(b.requisicao_item_id);
+      if (!Number.isFinite(rid)) continue;
+      if (!bobinasByRequisicaoItemId.has(rid)) bobinasByRequisicaoItemId.set(rid, []);
+      bobinasByRequisicaoItemId.get(rid).push(b);
+    }
+
+    const rows = [];
+    for (const it of (requisicao.itens || [])) {
+      const totalQty = parseInt(it.quantidade_preparada ?? it.quantidade, 10) || 0;
+      const apeadosQty = parseInt(it.quantidade_apeados ?? 0, 10) || 0;
+      const remQty = Math.max(0, totalQty - apeadosQty);
+      if (remQty <= 0) continue;
+      const keyA = String(it.id);
+      const keyB = String(it.item_id);
+      const locByItem = String(itemLocalizacoes[keyA] || itemLocalizacoes[keyB] || '').trim();
+      const localizacaoDestino = locByItem || localizacaoDefault;
+      if (!localizacaoDestino) {
+        return res.status(400).json({ error: `Falta localização de destino para o item ${it.item_codigo || it.item_id}.` });
+      }
+      if (!locDestinoSet.has(localizacaoDestino.toUpperCase())) {
+        return res.status(400).json({
+          error: `A localização "${localizacaoDestino}" não pertence ao armazém central desta devolução.`
+        });
+      }
+
+      const tipoControlo = String(it.tipocontrolo || '').toUpperCase();
+
+      if (tipoControlo === 'LOTE') {
+        const bobinas = bobinasByRequisicaoItemId.get(Number(it.id)) || [];
+        const selecionadas = bobinas.slice(apeadosQty, apeadosQty + remQty);
+        for (const b of selecionadas) {
+          rows.push({
+            Date: dateStr,
+            OriginWarehouse: codigoCentral,
+            OriginLocation: locRecCentral,
+            Article: String(it.item_codigo || b.item_codigo || ''),
+            Quatity: Number(b.metros) || 0,
+            SerialNumber1: b.serialnumber || '', SerialNumber2: '', MacAddress: '', CentroCusto: '',
+            DestinationWarehouse: codigoCentral,
+            DestinationLocation: localizacaoDestino,
+            ProjectCode: '',
+            Batch: b.lote || ''
+          });
+        }
+      } else if (tipoControlo === 'S/N') {
+        const serials = String(it.serialnumber || '')
+          .split(/\r?\n|;|\|/)
+          .map((s) => String(s || '').trim())
+          .filter(Boolean);
+        const remSerials = serials.slice(apeadosQty, apeadosQty + remQty);
+        rows.push({
+          Date: dateStr,
+          OriginWarehouse: codigoCentral,
+          OriginLocation: locRecCentral,
+          Article: String(it.item_codigo || ''),
+          Quatity: remQty,
+          SerialNumber1: remSerials.join('\n'), SerialNumber2: '', MacAddress: '', CentroCusto: '',
+          DestinationWarehouse: codigoCentral,
+          DestinationLocation: localizacaoDestino,
+          ProjectCode: '',
+          Batch: it.lote || ''
+        });
+      } else {
+        rows.push({
+          Date: dateStr,
+          OriginWarehouse: codigoCentral,
+          OriginLocation: locRecCentral,
+          Article: String(it.item_codigo || ''),
+          Quatity: remQty,
+          SerialNumber1: it.serialnumber || '', SerialNumber2: '', MacAddress: '', CentroCusto: '',
+          DestinationWarehouse: codigoCentral,
+          DestinationLocation: localizacaoDestino,
+          ProjectCode: '',
+          Batch: it.lote || ''
+        });
+      }
+    }
+
+    if (rows.length === 0) {
+      return res.status(400).json({ error: 'Nenhum saldo pendente de armazenagem para exportar TRFL.' });
+    }
+
+    try {
+      await pool.query(
+        `UPDATE requisicoes
+         SET devolucao_trfl_pendente_gerada_em = COALESCE(devolucao_trfl_pendente_gerada_em, CURRENT_TIMESTAMP)
+         WHERE id = $1`,
+        [id]
+      );
+    } catch (e) {
+      if (e.code === '42703') {
+        return res.status(503).json({
+          error: 'Colunas de documentos pendentes em falta.',
+          details: 'Execute: npm run db:migrate:requisicoes-devolucao-transferencias-pendentes'
+        });
+      }
+      throw e;
+    }
+
+    buildExcelTransferencia(rows, res, `TRFL_pendente_armazenagem_devolucao_${id}_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  } catch (error) {
+    console.error('Erro ao exportar TRFL pendente de armazenagem:', error);
+    res.status(500).json({ error: 'Erro ao exportar TRFL pendente de armazenagem', details: error.message });
   }
 });
 
@@ -1184,6 +1925,14 @@ function computeDestLocFerrNormal(codigoDestino, locResultRows) {
   return { localizacaoFERR, localizacaoNormal };
 }
 
+function clogLocInicial(isDevolucao, localizacaoOrigemTRA, rowMeta) {
+  if (isDevolucao) {
+    const loc = String(rowMeta?.localizacao_origem || '').trim();
+    if (loc) return loc;
+  }
+  return localizacaoOrigemTRA;
+}
+
 function clogRowsFromItemData(
   dateStr,
   codigoDestino,
@@ -1192,29 +1941,35 @@ function clogRowsFromItemData(
   localizacaoFERR,
   localizacaoNormal,
   itensComFerramenta,
-  bobinas
+  bobinas,
+  opts = {}
 ) {
+  const isDevolucao = Boolean(opts?.isDevolucao);
+  const tipoMovimento = isDevolucao ? 'Devolucao de carrinha' : 'Saida de Armazem';
+  const qtySign = isDevolucao ? 1 : -1;
+  const devolucaoDestinoLoc = String(opts?.devolucaoDestinoLoc || '').trim();
+  const newLocDevolucao = devolucaoDestinoLoc || LOCALIZACAO_RECEBIMENTO_FALLBACK;
   const rows = [];
   const itemByItemId = new Map(itensComFerramenta.map((it) => [it.item_id, it]));
   const itemIdsComBobina = new Set(bobinas.map((b) => b.item_id));
 
   for (const b of bobinas) {
     const itemMeta = itemByItemId.get(b.item_id) || {};
-    const qty = -Number(b.metros) || 0;
+    const qty = qtySign * (Number(b.metros) || 0);
     if (qty === 0) continue;
 
     rows.push({
-      'Tipo de Movimento': 'Saida de Armazem',
+      'Tipo de Movimento': tipoMovimento,
       'Dt_Recepção': dateStr,
       'REF.': String(b.item_codigo || ''),
       DESCRIPTION: String(b.item_descricao || ''),
       QTY: qty,
-      Loc_Inicial: localizacaoOrigemTRA,
+      Loc_Inicial: clogLocInicial(isDevolucao, localizacaoOrigemTRA, itemMeta),
       'S/N': b.serialnumber || '',
       Lote: b.lote || '',
       'Novo Armazém': codigoDestino,
       'TRA / DEV': '',
-      'New Localização': itemMeta.is_ferramenta ? localizacaoFERR : localizacaoNormal,
+      'New Localização': isDevolucao ? newLocDevolucao : (itemMeta.is_ferramenta ? localizacaoFERR : localizacaoNormal),
       DEP: '',
       Observações: colaboradorObs
     });
@@ -1227,21 +1982,21 @@ function clogRowsFromItemData(
     const qtyBase = ri.quantidade_preparada !== null && ri.quantidade_preparada !== undefined
       ? ri.quantidade_preparada
       : ri.quantidade;
-    const qty = -Number(qtyBase) || 0;
+    const qty = qtySign * (Number(qtyBase) || 0);
     if (qty === 0) continue;
 
     rows.push({
-      'Tipo de Movimento': 'Saida de Armazem',
+      'Tipo de Movimento': tipoMovimento,
       'Dt_Recepção': dateStr,
       'REF.': String(ri.item_codigo || ''),
       DESCRIPTION: String(ri.item_descricao || ''),
       QTY: qty,
-      Loc_Inicial: localizacaoOrigemTRA,
+      Loc_Inicial: clogLocInicial(isDevolucao, localizacaoOrigemTRA, ri),
       'S/N': ri.serialnumber || '',
       Lote: ri.lote || '',
       'Novo Armazém': codigoDestino,
       'TRA / DEV': '',
-      'New Localização': ri.is_ferramenta ? localizacaoFERR : localizacaoNormal,
+      'New Localização': isDevolucao ? newLocDevolucao : (ri.is_ferramenta ? localizacaoFERR : localizacaoNormal),
       DEP: '',
       Observações: colaboradorObs
     });
@@ -1259,7 +2014,9 @@ async function buildClogRowsForRequisicaoIds(idsClean, dateStr) {
     SELECT r.*,
       a.codigo as armazem_destino_codigo,
       a.descricao as armazem_destino_descricao,
-      ao.codigo as armazem_origem_codigo
+      a.tipo as armazem_destino_tipo,
+      ao.codigo as armazem_origem_codigo,
+      ao.tipo as armazem_origem_tipo
     FROM requisicoes r
     INNER JOIN armazens a ON r.armazem_id = a.id
     LEFT JOIN armazens ao ON r.armazem_origem_id = ao.id
@@ -1278,15 +2035,19 @@ async function buildClogRowsForRequisicaoIds(idsClean, dateStr) {
   );
   const armById = new Map(armRes.rows.map((a) => [a.id, a]));
 
-  const central = candidatas.filter((r) => {
+  const elegiveis = candidatas.filter((r) => {
     const a = armById.get(r.armazem_origem_id);
-    return a && String(a.tipo || '').toLowerCase() === 'central';
+    if (!a) return false;
+    const tipoO = String(a.tipo || '').toLowerCase();
+    const tipoD = String(r.armazem_destino_tipo || '').toLowerCase();
+    if (tipoO === 'central') return true;
+    return isFluxoDevolucaoViaturaCentral(tipoO, tipoD);
   });
-  if (central.length === 0) return [];
+  if (elegiveis.length === 0) return [];
 
-  const requisicaoIdsCentral = [...new Set(central.map((r) => r.id))];
-  const origemIdsCentral = [...new Set(central.map((r) => r.armazem_origem_id))];
-  const destArmIds = [...new Set(central.map((r) => r.armazem_id))];
+  const requisicaoIdsCentral = [...new Set(elegiveis.map((r) => r.id))];
+  const origemIdsCentral = [...new Set(elegiveis.map((r) => r.armazem_origem_id))];
+  const destArmIds = [...new Set(elegiveis.map((r) => r.armazem_id))];
 
   const [expRes, allLocsRes, itensRes, bobRes] = await Promise.all([
     pool.query(
@@ -1298,7 +2059,7 @@ async function buildClogRowsForRequisicaoIds(idsClean, dateStr) {
       [origemIdsCentral]
     ),
     pool.query(
-      `SELECT armazem_id, localizacao, id
+      `SELECT armazem_id, localizacao, id, tipo_localizacao
        FROM armazens_localizacoes
        WHERE armazem_id = ANY($1::int[])
        ORDER BY armazem_id, id`,
@@ -1333,9 +2094,17 @@ async function buildClogRowsForRequisicaoIds(idsClean, dateStr) {
 
   const expByArm = new Map(expRes.rows.map((row) => [row.armazem_id, row.localizacao]));
   const locsByDestArm = new Map();
+  const recByDestArm = new Map();
   for (const row of allLocsRes.rows) {
     if (!locsByDestArm.has(row.armazem_id)) locsByDestArm.set(row.armazem_id, []);
     locsByDestArm.get(row.armazem_id).push(row);
+    if (
+      !recByDestArm.has(row.armazem_id) &&
+      String(row.tipo_localizacao || '').toLowerCase() === 'recebimento' &&
+      String(row.localizacao || '').trim()
+    ) {
+      recByDestArm.set(row.armazem_id, String(row.localizacao).trim());
+    }
   }
 
   const itensByReq = new Map();
@@ -1349,11 +2118,11 @@ async function buildClogRowsForRequisicaoIds(idsClean, dateStr) {
     bobByReq.get(row.requisicao_id).push(row);
   }
 
-  const centralEligibleById = new Map(central.map((r) => [r.id, r]));
+  const elegiveisById = new Map(elegiveis.map((r) => [r.id, r]));
   const allRows = [];
 
   for (const id of idsClean) {
-    const r = centralEligibleById.get(id);
+    const r = elegiveisById.get(id);
     if (!r) continue;
     const codigoDestino = r.armazem_destino_codigo || '';
     const localizacaoOrigemTRA = expByArm.get(r.armazem_origem_id) || LOCALIZACAO_EXPEDICAO_FALLBACK;
@@ -1361,6 +2130,10 @@ async function buildClogRowsForRequisicaoIds(idsClean, dateStr) {
     const { localizacaoFERR, localizacaoNormal } = computeDestLocFerrNormal(codigoDestino, locRows);
     const itens = itensByReq.get(id) || [];
     const bobinas = bobByReq.get(id) || [];
+    const isDevolucao = isFluxoDevolucaoViaturaCentral(
+      r.armazem_origem_tipo,
+      r.armazem_destino_tipo
+    );
     const rows = clogRowsFromItemData(
       dateStr,
       codigoDestino,
@@ -1369,7 +2142,11 @@ async function buildClogRowsForRequisicaoIds(idsClean, dateStr) {
       localizacaoFERR,
       localizacaoNormal,
       itens,
-      bobinas
+      bobinas,
+      {
+        isDevolucao,
+        devolucaoDestinoLoc: recByDestArm.get(r.armazem_id) || LOCALIZACAO_RECEBIMENTO_FALLBACK
+      }
     );
     allRows.push(...rows);
   }
@@ -1385,8 +2162,14 @@ async function buildClogRowsFromRequisicao(requisicao, dateStr) {
     return { rows: [], eligible: false, reason: 'Armazém de origem não encontrado.' };
   }
   const tipoOrigem = (armazemOrigem.rows[0].tipo || '').toLowerCase();
-  if (tipoOrigem !== 'central') {
-    return { rows: [], eligible: false, reason: 'Clog só é gerado quando a origem é armazém central.' };
+  const tipoDestino = String(requisicao.armazem_destino_tipo || '').toLowerCase();
+  const fluxoDevolucao = isFluxoDevolucaoViaturaCentral(tipoOrigem, tipoDestino);
+  if (tipoOrigem !== 'central' && !fluxoDevolucao) {
+    return {
+      rows: [],
+      eligible: false,
+      reason: 'Clog só é gerado com origem armazém central ou com devolução viatura → central.',
+    };
   }
 
   const codigoDestino = requisicao.armazem_destino_codigo || '';
@@ -1418,6 +2201,12 @@ async function buildClogRowsFromRequisicao(requisicao, dateStr) {
     locResultRows = [];
   }
   const { localizacaoFERR, localizacaoNormal } = computeDestLocFerrNormal(codigoDestino, locResultRows);
+  let localizacaoRecebimentoDestino = null;
+  try {
+    localizacaoRecebimentoDestino = await localizacaoArmazemPorTipo(pool, armazemDestinoId, 'recebimento');
+  } catch (_) {
+    localizacaoRecebimentoDestino = null;
+  }
 
   let itensComFerramenta = [];
   try {
@@ -1458,6 +2247,7 @@ async function buildClogRowsFromRequisicao(requisicao, dateStr) {
   }
 
   const colaboradorObs = requisicao.observacoes || '';
+
   const rows = clogRowsFromItemData(
     dateStr,
     codigoDestino,
@@ -1466,7 +2256,11 @@ async function buildClogRowsFromRequisicao(requisicao, dateStr) {
     localizacaoFERR,
     localizacaoNormal,
     itensComFerramenta,
-    bobinas
+    bobinas,
+    {
+      isDevolucao: fluxoDevolucao,
+      devolucaoDestinoLoc: localizacaoRecebimentoDestino || LOCALIZACAO_RECEBIMENTO_FALLBACK
+    }
   );
 
   return { rows, eligible: true };
@@ -1516,7 +2310,10 @@ router.post('/export-clog-multi', ...requisicaoAuth, denyOperador, async (req, r
     const allRows = await buildClogRowsForRequisicaoIds(idsClean, dateStr);
 
     if (allRows.length === 0) {
-      return res.status(400).json({ error: 'Nenhuma requisição elegível para gerar Clog (origem central; TRA em Entregue ou requisição finalizada).' });
+      return res.status(400).json({
+        error:
+          'Nenhuma requisição elegível para gerar Clog (origem central ou devolução viatura→central; TRA/DEV em Entregue ou requisição finalizada).',
+      });
     }
 
     await buildExcelClog(allRows, res, `CLOG_multi_${new Date().toISOString().slice(0, 10)}.xlsx`);
@@ -1544,8 +2341,9 @@ router.get('/:id/clog-dados', ...requisicaoAuth, denyOperador, async (req, res) 
       return res.status(400).json({ error: reason || 'Nenhuma linha elegível para Clog.' });
     }
 
+    const rowsModal = (rows || []).map((r) => ({ ...r, Observações: '' }));
     const columns = ['Tipo de Movimento', 'Dt_Recepção', 'REF.', 'DESCRIPTION', 'QTY', 'Loc_Inicial', 'S/N', 'Lote', 'Novo Armazém', 'TRA / DEV', 'New Localização', 'DEP', 'Observações'];
-    res.json({ columns, rows });
+    res.json({ columns, rows: rowsModal });
   } catch (error) {
     console.error('Erro ao obter dados do Clog:', error);
     res.status(500).json({ error: 'Erro ao obter dados do Clog', details: error.message });
@@ -1571,11 +2369,15 @@ router.post('/clog-dados-multi', ...requisicaoAuth, denyOperador, async (req, re
     const allRows = await buildClogRowsForRequisicaoIds(idsClean, dateStr);
 
     if (allRows.length === 0) {
-      return res.status(400).json({ error: 'Nenhuma requisição elegível para Clog (origem central; TRA em Entregue ou requisição finalizada).' });
+      return res.status(400).json({
+        error:
+          'Nenhuma requisição elegível para Clog (origem central ou devolução viatura→central; TRA/DEV em Entregue ou requisição finalizada).',
+      });
     }
 
+    const rowsModal = (allRows || []).map((r) => ({ ...r, Observações: '' }));
     const columns = ['Tipo de Movimento', 'Dt_Recepção', 'REF.', 'DESCRIPTION', 'QTY', 'Loc_Inicial', 'S/N', 'Lote', 'Novo Armazém', 'TRA / DEV', 'New Localização', 'DEP', 'Observações'];
-    res.json({ columns, rows: allRows });
+    res.json({ columns, rows: rowsModal });
   } catch (error) {
     console.error('Erro ao obter dados do Clog multi:', error);
     res.status(500).json({ error: 'Erro ao obter dados do Clog multi', details: error.message });
@@ -1607,6 +2409,13 @@ router.get('/:id/export-reporte', ...requisicaoAuth, denyOperador, async (req, r
         localizacaoOrigemTRA = locExp.rows[0].localizacao;
       }
     }
+    const isDevolucaoViaturaCentral = isFluxoDevolucaoViaturaCentral(
+      requisicao.armazem_origem_tipo,
+      requisicao.armazem_destino_tipo
+    );
+    const origemReporte = isDevolucaoViaturaCentral
+      ? (requisicao.armazem_origem_codigo || localizacaoOrigemTRA)
+      : localizacaoOrigemTRA;
 
     let bobinas = [];
     try {
@@ -1630,7 +2439,7 @@ router.get('/:id/export-reporte', ...requisicaoAuth, denyOperador, async (req, r
         Artigo: String(b.item_codigo || ''),
         'Descrição': String(b.item_descricao || ''),
         Quantidade: Number(b.metros) || 0,
-        ORIGEM: localizacaoOrigemTRA,
+        ORIGEM: origemReporte,
         'S/N': b.serialnumber || '',
         LOTE: b.lote || '',
         DESTINO: codigoDestino,
@@ -1649,7 +2458,7 @@ router.get('/:id/export-reporte', ...requisicaoAuth, denyOperador, async (req, r
         Artigo: String(ri.item_codigo || ''),
         'Descrição': String(ri.item_descricao || ''),
         Quantidade: qty,
-        ORIGEM: localizacaoOrigemTRA,
+        ORIGEM: origemReporte,
         'S/N': ri.serialnumber || '',
         LOTE: ri.lote || '',
         DESTINO: codigoDestino,
@@ -1697,6 +2506,13 @@ router.get('/:id/reporte-dados', ...requisicaoAuth, denyOperador, async (req, re
         localizacaoOrigemTRA = locExp.rows[0].localizacao;
       }
     }
+    const isDevolucaoViaturaCentral = isFluxoDevolucaoViaturaCentral(
+      requisicao.armazem_origem_tipo,
+      requisicao.armazem_destino_tipo
+    );
+    const origemReporte = isDevolucaoViaturaCentral
+      ? (requisicao.armazem_origem_codigo || localizacaoOrigemTRA)
+      : localizacaoOrigemTRA;
 
     let bobinas = [];
     try {
@@ -1718,7 +2534,7 @@ router.get('/:id/reporte-dados', ...requisicaoAuth, denyOperador, async (req, re
         Artigo: String(b.item_codigo || ''),
         'Descrição': String(b.item_descricao || ''),
         Quantidade: Number(b.metros) || 0,
-        ORIGEM: localizacaoOrigemTRA,
+        ORIGEM: origemReporte,
         'S/N': b.serialnumber || '',
         LOTE: b.lote || '',
         DESTINO: codigoDestino,
@@ -1738,7 +2554,7 @@ router.get('/:id/reporte-dados', ...requisicaoAuth, denyOperador, async (req, re
         Artigo: String(ri.item_codigo || ''),
         'Descrição': String(ri.item_descricao || ''),
         Quantidade: qty,
-        ORIGEM: localizacaoOrigemTRA,
+        ORIGEM: origemReporte,
         'S/N': ri.serialnumber || '',
         LOTE: ri.lote || '',
         DESTINO: codigoDestino,
@@ -1809,6 +2625,13 @@ router.post('/reporte-dados-multi', ...requisicaoAuth, denyOperador, async (req,
           localizacaoOrigemTRA = locExp.rows[0].localizacao;
         }
       }
+      const isDevolucaoViaturaCentral = isFluxoDevolucaoViaturaCentral(
+        requisicao.armazem_origem_tipo,
+        requisicao.armazem_destino_tipo
+      );
+      const origemReporte = isDevolucaoViaturaCentral
+        ? (requisicao.armazem_origem_codigo || localizacaoOrigemTRA)
+        : localizacaoOrigemTRA;
 
       let bobinas = [];
       try {
@@ -1829,7 +2652,7 @@ router.post('/reporte-dados-multi', ...requisicaoAuth, denyOperador, async (req,
           Artigo: String(b.item_codigo || ''),
           'Descrição': String(b.item_descricao || ''),
           Quantidade: Number(b.metros) || 0,
-          ORIGEM: localizacaoOrigemTRA,
+          ORIGEM: origemReporte,
           'S/N': b.serialnumber || '',
           LOTE: b.lote || '',
           DESTINO: codigoDestino,
@@ -1849,7 +2672,7 @@ router.post('/reporte-dados-multi', ...requisicaoAuth, denyOperador, async (req,
           Artigo: String(ri.item_codigo || ''),
           'Descrição': String(ri.item_descricao || ''),
           Quantidade: qty,
-          ORIGEM: localizacaoOrigemTRA,
+          ORIGEM: origemReporte,
           'S/N': ri.serialnumber || '',
           LOTE: ri.lote || '',
           DESTINO: codigoDestino,
@@ -1911,6 +2734,13 @@ router.post('/export-reporte-multi', ...requisicaoAuth, denyOperador, async (req
           localizacaoOrigemTRA = locExp.rows[0].localizacao;
         }
       }
+      const isDevolucaoViaturaCentral = isFluxoDevolucaoViaturaCentral(
+        requisicao.armazem_origem_tipo,
+        requisicao.armazem_destino_tipo
+      );
+      const origemReporte = isDevolucaoViaturaCentral
+        ? (requisicao.armazem_origem_codigo || localizacaoOrigemTRA)
+        : localizacaoOrigemTRA;
 
       let bobinas = [];
       try {
@@ -1931,7 +2761,7 @@ router.post('/export-reporte-multi', ...requisicaoAuth, denyOperador, async (req
           Artigo: String(b.item_codigo || ''),
           'Descrição': String(b.item_descricao || ''),
           Quantidade: Number(b.metros) || 0,
-          ORIGEM: localizacaoOrigemTRA,
+          ORIGEM: origemReporte,
           'S/N': b.serialnumber || '',
           LOTE: b.lote || '',
           DESTINO: codigoDestino,
@@ -1949,7 +2779,7 @@ router.post('/export-reporte-multi', ...requisicaoAuth, denyOperador, async (req
           Artigo: String(ri.item_codigo || ''),
           'Descrição': String(ri.item_descricao || ''),
           Quantidade: qty,
-          ORIGEM: localizacaoOrigemTRA,
+          ORIGEM: origemReporte,
           'S/N': ri.serialnumber || '',
           LOTE: ri.lote || '',
           DESTINO: codigoDestino,
@@ -1986,6 +2816,8 @@ router.get('/:id', ...requisicaoAuth, async (req, res) => {
           (COALESCE(a.codigo, '') || CASE WHEN a.codigo IS NOT NULL AND a.codigo <> '' THEN ' - ' ELSE '' END || a.descricao) as armazem_descricao,
           (COALESCE(ao.codigo, '') || CASE WHEN ao.codigo IS NOT NULL AND ao.codigo <> '' THEN ' - ' ELSE '' END || ao.descricao) as armazem_origem_descricao,
           a.localizacao as armazem_localizacao,
+          a.tipo AS armazem_destino_tipo,
+          ao.tipo AS armazem_origem_tipo,
           ${SQL_CRIADOR_COM_EMAIL},
           r.separador_usuario_id,
           ${SQL_SEPARADOR_NOME} AS separador_nome
@@ -2027,7 +2859,11 @@ router.get('/:id', ...requisicaoAuth, async (req, res) => {
     const itensResult = await pool.query(`
       SELECT ri.*, i.codigo as item_codigo, i.descricao as item_descricao,
         i.familia as item_familia, i.subfamilia as item_subfamilia,
-        i.tipocontrolo
+        i.tipocontrolo,
+        EXISTS (
+          SELECT 1 FROM itens_setores is2
+          WHERE is2.item_id = i.id AND UPPER(TRIM(is2.setor)) = 'FERRAMENTA'
+        ) AS is_ferramenta
       FROM requisicoes_itens ri
       INNER JOIN itens i ON ri.item_id = i.id
       WHERE ri.requisicao_id = $1
@@ -2279,132 +3115,287 @@ router.post(
     }
 
     const workbook = XLSX.readFile(req.file.path);
-    const sheetName = workbook.SheetNames[0];
-    const sheet = workbook.Sheets[sheetName];
-    if (!sheet) {
-      return res.status(400).json({ error: 'Ficheiro Excel sem folha válida.' });
+    const sheetName1 = workbook.SheetNames[0];
+    const sheetName2 = workbook.SheetNames[1];
+    const sheet1 = sheetName1 ? workbook.Sheets[sheetName1] : null;
+    const sheet2 = sheetName2 ? workbook.Sheets[sheetName2] : null;
+
+    if (!sheet1) {
+      return res.status(400).json({ error: 'Ficheiro Excel sem folha válida na página 1.' });
     }
 
-    // 1) Encontrar código de armazém destino (ex: V874) em qualquer célula
-    const range = XLSX.utils.decode_range(sheet['!ref']);
-    let codigoArmazemDestino = null;
-    for (let R = range.s.r; R <= range.e.r; R++) {
-      for (let C = range.s.c; C <= range.e.c; C++) {
-        const cellAddr = XLSX.utils.encode_cell({ r: R, c: C });
-        const cell = sheet[cellAddr];
-        if (!cell || cell.v == null) continue;
-        const v = String(cell.v).trim();
-        if (/^V\d+$/i.test(v)) {
-          codigoArmazemDestino = v.toUpperCase();
+    const normalizeText = (v) =>
+      String(v || '')
+        .trim()
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '');
+
+    const scanCodigoV = (sheet) => {
+      const range = XLSX.utils.decode_range(sheet['!ref']);
+      let codigoArmazemDestino = null;
+      for (let R = range.s.r; R <= range.e.r; R++) {
+        for (let C = range.s.c; C <= range.e.c; C++) {
+          const cellAddr = XLSX.utils.encode_cell({ r: R, c: C });
+          const cell = sheet[cellAddr];
+          if (!cell || cell.v == null) continue;
+          const v = String(cell.v).trim();
+          if (/^V\d+$/i.test(v)) {
+            codigoArmazemDestino = v.toUpperCase();
+          }
         }
       }
-    }
+      return codigoArmazemDestino;
+    };
 
-    if (!codigoArmazemDestino) {
-      return res.status(400).json({ error: 'Não foi possível identificar o armazém destino no Excel (código Vxxx).' });
-    }
+    const parseItensFromSheet = (sheet, { tolerarSemCabecalho }) => {
+      const range = XLSX.utils.decode_range(sheet['!ref']);
 
-    const armazemRes = await pool.query('SELECT id FROM armazens WHERE UPPER(codigo) = $1', [codigoArmazemDestino.toUpperCase()]);
-    if (armazemRes.rows.length === 0) {
-      return res.status(400).json({ error: `Armazém destino ${codigoArmazemDestino} não encontrado no sistema.` });
-    }
-    const armazemDestinoId = armazemRes.rows[0].id;
+      // Cabeçalho: Artigo | (Descrição) | Quantidade
+      let headerRowNumber = null;
+      let colArtigo = null;
+      let colQuantidade = null;
 
-    // 2) Encontrar linha de cabeçalho: Artigo | Descrição | Quantidade
-    let headerRowNumber = null;
-    let colArtigo = null;
-    let colQuantidade = null;
+      for (let R = range.s.r; R <= range.e.r; R++) {
+        let hasArtigo = false;
+        let hasQuantidade = false;
+        let hasDescricao = false;
+        let detectedColArtigo = null;
+        let detectedColQtd = null;
 
-    for (let R = range.s.r; R <= range.e.r; R++) {
-      const rowValues = [];
-      for (let C = range.s.c; C <= range.e.c; C++) {
-        const cellAddr = XLSX.utils.encode_cell({ r: R, c: C });
-        const cell = sheet[cellAddr];
-        rowValues.push(cell && cell.v != null ? String(cell.v).trim() : '');
+        for (let C = range.s.c; C <= range.e.c; C++) {
+          const cellAddr = XLSX.utils.encode_cell({ r: R, c: C });
+          const cell = sheet[cellAddr];
+          if (!cell || cell.v == null) continue;
+
+          const text = normalizeText(cell.v);
+          if (text === 'artigo') {
+            hasArtigo = true;
+            detectedColArtigo = C;
+          }
+          if (text === 'quantidade') {
+            hasQuantidade = true;
+            detectedColQtd = C;
+          }
+          if (text.includes('descr')) {
+            hasDescricao = true;
+          }
+        }
+
+        if (hasArtigo && hasQuantidade && hasDescricao) {
+          headerRowNumber = R;
+          colArtigo = detectedColArtigo;
+          colQuantidade = detectedColQtd;
+          break;
+        }
       }
-      if (rowValues.includes('Artigo') && rowValues.includes('Descrição') && rowValues.includes('Quantidade')) {
-        headerRowNumber = R;
-        rowValues.forEach((v, idx) => {
-          if (v === 'Artigo') colArtigo = idx;
-          if (v === 'Quantidade') colQuantidade = idx;
-        });
-        break;
+
+      if (headerRowNumber == null || colArtigo == null || colQuantidade == null) {
+        if (tolerarSemCabecalho) {
+          return { itens: [] };
+        }
+        throw new Error('Cabeçalho Artigo/Descrição/Quantidade não encontrado no Excel.');
       }
-    }
 
-    if (headerRowNumber == null || colArtigo == null || colQuantidade == null) {
-      return res.status(400).json({ error: 'Cabeçalho Artigo/Descrição/Quantidade não encontrado no Excel.' });
-    }
+      // Ler linhas de itens
+      const quantidadePorCodigo = new Map();
+      for (let R = headerRowNumber + 1; R <= range.e.r; R++) {
+        const cellArtigo = sheet[XLSX.utils.encode_cell({ r: R, c: colArtigo })];
+        const cellQtd = sheet[XLSX.utils.encode_cell({ r: R, c: colQuantidade })];
+        const codigo = cellArtigo && cellArtigo.v != null ? String(cellArtigo.v).trim() : '';
+        const qtdStr = cellQtd && cellQtd.v != null ? String(cellQtd.v).trim() : '';
+        if (!codigo || !qtdStr) continue;
 
-    // 3) Ler linhas de itens (sem query por linha — era o principal gargalo com muitas linhas)
-    /** última quantidade vence se o mesmo código aparecer em várias linhas (igual ao INSERT em loop com ON CONFLICT) */
-    const quantidadePorCodigo = new Map();
-    for (let R = headerRowNumber + 1; R <= range.e.r; R++) {
-      const cellArtigo = sheet[XLSX.utils.encode_cell({ r: R, c: colArtigo })];
-      const cellQtd = sheet[XLSX.utils.encode_cell({ r: R, c: colQuantidade })];
-      const codigo = cellArtigo && cellArtigo.v != null ? String(cellArtigo.v).trim() : '';
-      const qtdStr = cellQtd && cellQtd.v != null ? String(cellQtd.v).trim() : '';
-      if (!codigo || !qtdStr) continue;
+        const quantidade = parseInt(qtdStr, 10);
+        if (!quantidade || quantidade <= 0) continue;
+        quantidadePorCodigo.set(codigo, quantidade);
+      }
 
-      const quantidade = parseInt(qtdStr, 10);
-      if (!quantidade || quantidade <= 0) continue;
+      const codigosUnicos = [...quantidadePorCodigo.keys()];
+      if (codigosUnicos.length === 0) {
+        return { itens: [] };
+      }
 
-      quantidadePorCodigo.set(codigo, quantidade);
-    }
+      return { quantidadePorCodigo, codigosUnicos };
+    };
 
-    const codigosUnicos = [...quantidadePorCodigo.keys()];
-    if (codigosUnicos.length === 0) {
-      return res.status(400).json({ error: 'Nenhum item válido encontrado na planilha.' });
-    }
-
-    const itensLookup = await pool.query(
-      'SELECT id, codigo FROM itens WHERE codigo = ANY($1::text[])',
-      [codigosUnicos]
-    );
-    const idPorCodigo = new Map(itensLookup.rows.map((row) => [row.codigo, row.id]));
-
-    const itens = [];
-    for (const codigo of codigosUnicos) {
-      const itemId = idPorCodigo.get(codigo);
-      if (itemId == null) continue;
-      itens.push({ item_id: itemId, quantidade: quantidadePorCodigo.get(codigo) });
-    }
-
-    if (itens.length === 0) {
-      return res.status(400).json({ error: 'Nenhum item válido encontrado na planilha.' });
-    }
-
-    // 4) Criar requisição usando a mesma lógica da rota normal
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-
-      const reqResult = await client.query(`
-        INSERT INTO requisicoes (armazem_origem_id, armazem_id, observacoes, usuario_id, status)
-        VALUES ($1, $2, $3, $4, 'pendente')
-        RETURNING *
-      `, [armazemOrigemId || null, armazemDestinoId, 'Importada de Excel', req.user.id]);
+    const criarRequisicao = async ({
+      client,
+      itens,
+      armazemOrigemIdReq,
+      armazemDestinoId,
+      observacoes
+    }) => {
+      const reqResult = await client.query(
+        `
+          INSERT INTO requisicoes (armazem_origem_id, armazem_id, observacoes, usuario_id, status)
+          VALUES ($1, $2, $3, $4, 'pendente')
+          RETURNING id
+        `,
+        [armazemOrigemIdReq || null, armazemDestinoId, observacoes, req.user.id]
+      );
 
       const requisicaoId = reqResult.rows[0].id;
 
       const itemIds = itens.map((i) => i.item_id);
       const quantidades = itens.map((i) => i.quantidade);
       await client.query(
-        `INSERT INTO requisicoes_itens (requisicao_id, item_id, quantidade)
-         SELECT $1::int, x.item_id, x.quantidade
-         FROM unnest($2::int[], $3::int[]) AS x(item_id, quantidade)
-         ON CONFLICT (requisicao_id, item_id)
-         DO UPDATE SET quantidade = EXCLUDED.quantidade`,
+        `
+          INSERT INTO requisicoes_itens (requisicao_id, item_id, quantidade)
+          SELECT $1::int, x.item_id, x.quantidade
+          FROM unnest($2::int[], $3::int[]) AS x(item_id, quantidade)
+          ON CONFLICT (requisicao_id, item_id)
+          DO UPDATE SET quantidade = EXCLUDED.quantidade
+        `,
         [requisicaoId, itemIds, quantidades]
       );
 
-      await client.query('COMMIT');
+      return requisicaoId;
+    };
 
-      res.status(201).json({ requisicao_id: requisicaoId });
+    const parseSheetForImport = async (sheet, kind) => {
+      // Página 2 (devolução): não usamos o Vxxx para definir armazéns.
+      // A devolução herda os armazéns através da regra:
+      //   - armazem_origem (devolução) = armazem_destino (requisição página 1)
+      //   - armazem_destino (devolução) = armazem_origem (requisição, escolhido pelo utilizador)
+      if (kind === 'devolucao') {
+        const parsed = parseItensFromSheet(sheet, { tolerarSemCabecalho: true });
+        if (!parsed || Array.isArray(parsed.itens)) {
+          return { itens: Array.isArray(parsed?.itens) ? parsed.itens : [] };
+        }
+
+        const { quantidadePorCodigo, codigosUnicos } = parsed;
+        if (!codigosUnicos || codigosUnicos.length === 0) {
+          return { itens: [] };
+        }
+
+        const itensLookup = await pool.query(
+          'SELECT id, codigo FROM itens WHERE codigo = ANY($1::text[])',
+          [codigosUnicos]
+        );
+        const idPorCodigo = new Map(itensLookup.rows.map((row) => [row.codigo, row.id]));
+
+        const itens = [];
+        for (const codigo of codigosUnicos) {
+          const itemId = idPorCodigo.get(codigo);
+          if (itemId == null) continue;
+          itens.push({ item_id: itemId, quantidade: quantidadePorCodigo.get(codigo) });
+        }
+        return { itens };
+      }
+
+      // Página 1 (requisição): Vxxx no Excel determina o armazém destino.
+      const codigoArmazemDestino = scanCodigoV(sheet);
+      if (!codigoArmazemDestino) {
+        throw new Error('Não foi possível identificar o armazém destino no Excel (código Vxxx).');
+      }
+
+      const armazemRes = await pool.query(
+        'SELECT id, tipo FROM armazens WHERE UPPER(codigo) = $1',
+        [codigoArmazemDestino.toUpperCase()]
+      );
+      if (armazemRes.rows.length === 0) {
+        throw new Error(`Armazém destino ${codigoArmazemDestino} não encontrado no sistema.`);
+      }
+
+      const armazemDestinoId = armazemRes.rows[0].id;
+      const armazemDestinoTipo = armazemRes.rows[0].tipo;
+
+      const parsed = parseItensFromSheet(sheet, { tolerarSemCabecalho: false });
+      if (!parsed || !Array.isArray(parsed.itens) && !parsed.codigosUnicos) {
+        return { itens: [] };
+      }
+
+      if (parsed.itens) {
+        return { itens: [], armazemDestinoId, armazemDestinoTipo };
+      }
+
+      const { quantidadePorCodigo, codigosUnicos } = parsed;
+      if (!codigosUnicos || codigosUnicos.length === 0) {
+        return { itens: [], armazemDestinoId, armazemDestinoTipo };
+      }
+
+      const itensLookup = await pool.query(
+        'SELECT id, codigo FROM itens WHERE codigo = ANY($1::text[])',
+        [codigosUnicos]
+      );
+      const idPorCodigo = new Map(itensLookup.rows.map((row) => [row.codigo, row.id]));
+
+      const itens = [];
+      for (const codigo of codigosUnicos) {
+        const itemId = idPorCodigo.get(codigo);
+        if (itemId == null) continue;
+        itens.push({ item_id: itemId, quantidade: quantidadePorCodigo.get(codigo) });
+      }
+
+      return { itens, armazemDestinoId, armazemDestinoTipo };
+    };
+
+    let parsedReq = null;
+    try {
+      parsedReq = await parseSheetForImport(sheet1, 'requisicao');
+    } catch (e) {
+      return res.status(400).json({ error: e.message || 'Erro ao interpretar página 1 do Excel.' });
+    }
+    if (!parsedReq || !Array.isArray(parsedReq.itens) || parsedReq.itens.length === 0) {
+      return res.status(400).json({ error: 'Nenhum item válido encontrado na página 1 (requisição).' });
+    }
+
+    // Criar requisição (página 1)
+    const client = await pool.connect();
+    let requisicaoId = null;
+    let devolucaoId = null;
+    try {
+      await client.query('BEGIN');
+      requisicaoId = await criarRequisicao({
+        client,
+        itens: parsedReq.itens,
+        armazemOrigemIdReq: armazemOrigemId,
+        armazemDestinoId: parsedReq.armazemDestinoId,
+        observacoes: 'Importada de Excel (página 1)'
+      });
+
+      // Criar devolução (página 2) apenas se houver artigos listados
+      if (sheet2) {
+        const parsedDev = await parseSheetForImport(sheet2, 'devolucao');
+        const temItensDev = parsedDev?.itens && parsedDev.itens.length > 0;
+        if (temItensDev) {
+          // Regra pedida:
+          //   - devolução armazem_origem = destino da requisição (página 1)
+          //   - devolução armazem_destino = origem da requisição (selecionada no frontend)
+          const armazemOrigemDevTipo = String(parsedReq.armazemDestinoTipo || '').toLowerCase();
+          const armazemDestinoDevTipo = String(ao.rows[0]?.tipo || '').toLowerCase();
+          if (armazemOrigemDevTipo !== 'viatura') {
+            await client.query('ROLLBACK');
+            return res.status(400).json({
+              error:
+                'Página 2 tem artigos (devolução), mas a destino da requisição (página 1) não é do tipo viatura.'
+            });
+          }
+          if (armazemDestinoDevTipo !== 'central') {
+            await client.query('ROLLBACK');
+            return res.status(400).json({
+              error:
+                'Página 2 tem artigos (devolução), mas a origem selecionada na requisição não é do tipo central (destino da devolução).'
+            });
+          }
+
+          devolucaoId = await criarRequisicao({
+            client,
+            itens: parsedDev.itens,
+            armazemOrigemIdReq: parsedReq.armazemDestinoId,
+            armazemDestinoId: armazemOrigemId,
+            observacoes: 'Importada de Excel (página 2 - Devolução)'
+          });
+        }
+      }
+
+      await client.query('COMMIT');
+      res.status(201).json({ requisicao_id: requisicaoId, devolucao_id: devolucaoId || null });
     } catch (e) {
       await client.query('ROLLBACK');
-      console.error('Erro ao criar requisição via Excel:', e);
-      res.status(500).json({ error: 'Erro ao criar requisição via Excel', details: e.message });
+      console.error('Erro ao criar requisições via Excel:', e);
+      res.status(500).json({ error: 'Erro ao criar requisições via Excel', details: e.message });
     } finally {
       client.release();
     }
@@ -2445,10 +3436,10 @@ router.put('/:id', ...requisicaoAuth, denyOperador, async (req, res) => {
     }
 
     // Validações
-    if (status && !['pendente', 'EM SEPARACAO', 'separado', 'EM EXPEDICAO', 'Entregue', 'FINALIZADO', 'cancelada'].includes(status)) {
+    if (status && !['pendente', 'EM SEPARACAO', 'separado', 'EM EXPEDICAO', 'APEADOS', 'Entregue', 'FINALIZADO', 'cancelada'].includes(status)) {
       await client.query('ROLLBACK');
       return res.status(400).json({
-        error: 'Status inválido. Use: pendente, EM SEPARACAO, separado, EM EXPEDICAO, Entregue, FINALIZADO ou cancelada'
+        error: 'Status inválido. Use: pendente, EM SEPARACAO, separado, EM EXPEDICAO, APEADOS, Entregue, FINALIZADO ou cancelada'
       });
     }
 
@@ -2602,12 +3593,42 @@ router.patch('/:id/atender-item', ...requisicaoAuth, async (req, res) => {
   const client = await pool.connect();
   try {
     const { id } = req.params;
-    const { requisicao_item_id, quantidade_preparada, localizacao_origem, localizacao_destino, lote, serialnumber, bobinas } = req.body;
+    const {
+      requisicao_item_id,
+      quantidade_preparada,
+      quantidade_apeados,
+      localizacao_origem,
+      localizacao_destino,
+      lote,
+      serialnumber,
+      bobinas,
+      serials,
+    } = req.body;
 
     if (!requisicao_item_id || quantidade_preparada === undefined || quantidade_preparada < 0) {
       return res.status(400).json({ error: 'requisicao_item_id e quantidade_preparada são obrigatórios (use 0 se não tiver o item).' });
     }
     const isZero = Number(quantidade_preparada) === 0;
+    let quantidadeApeadosFinal = 0;
+    if (!isZero) {
+      const qApeadosRaw = quantidade_apeados === undefined ? 0 : Number(quantidade_apeados);
+      if (!Number.isFinite(qApeadosRaw)) {
+        return res.status(400).json({ error: 'quantidade_apeados deve ser numérico (use 0 se não tiver APEADOS).' });
+      }
+      if (!Number.isInteger(qApeadosRaw)) {
+        return res.status(400).json({ error: 'quantidade_apeados deve ser um inteiro.' });
+      }
+      if (qApeadosRaw < 0) {
+        return res.status(400).json({ error: 'quantidade_apeados não pode ser negativo.' });
+      }
+      const totalQtyInt = Number(quantidade_preparada);
+      if (qApeadosRaw > totalQtyInt) {
+        return res.status(400).json({
+          error: 'quantidade_apeados não pode ser superior à quantidade preparada.',
+        });
+      }
+      quantidadeApeadosFinal = qApeadosRaw;
+    }
     const locOrigem = typeof localizacao_origem === 'string' ? localizacao_origem.trim() : '';
     if (!isZero && !locOrigem) {
       return res.status(400).json({ error: 'Localização de saída (onde está saindo) é obrigatória quando há quantidade preparada.' });
@@ -2617,7 +3638,7 @@ router.patch('/:id/atender-item', ...requisicaoAuth, async (req, res) => {
     let check;
     try {
       check = await client.query(
-        'SELECT id, status, armazem_origem_id, separador_usuario_id FROM requisicoes WHERE id = $1 FOR UPDATE',
+        'SELECT id, status, armazem_origem_id, armazem_id, separador_usuario_id FROM requisicoes WHERE id = $1 FOR UPDATE',
         [id]
       );
     } catch (lockErr) {
@@ -2663,7 +3684,11 @@ router.patch('/:id/atender-item', ...requisicaoAuth, async (req, res) => {
     }
 
     const itemCheck = await client.query(
-      `SELECT ri.*, i.tipocontrolo 
+      `SELECT ri.*, i.tipocontrolo,
+        EXISTS (
+          SELECT 1 FROM itens_setores is2
+          WHERE is2.item_id = i.id AND UPPER(TRIM(is2.setor)) = 'FERRAMENTA'
+        ) AS is_ferramenta
        FROM requisicoes_itens ri
        INNER JOIN itens i ON ri.item_id = i.id
        WHERE ri.id = $1 AND ri.requisicao_id = $2`,
@@ -2675,8 +3700,34 @@ router.patch('/:id/atender-item', ...requisicaoAuth, async (req, res) => {
     }
     const item = itemCheck.rows[0];
 
+    if (!isZero && check.rows[0].armazem_origem_id && check.rows[0].armazem_id) {
+      const tiposR = await client.query(
+        `SELECT ao.tipo AS origem_tipo, ad.tipo AS dest_tipo, ao.codigo AS origem_codigo
+         FROM armazens ao
+         CROSS JOIN armazens ad
+         WHERE ao.id = $1 AND ad.id = $2`,
+        [check.rows[0].armazem_origem_id, check.rows[0].armazem_id]
+      );
+      const tr = tiposR.rows[0];
+      if (tr && isFluxoDevolucaoViaturaCentral(tr.origem_tipo, tr.dest_tipo)) {
+        const codV = String(tr.origem_codigo || '').trim().toUpperCase();
+        const isFerr = item.is_ferramenta === true;
+        const expected = isFerr ? `${codV}.FERR` : codV;
+        const lo = locOrigem.trim().toUpperCase();
+        if (lo !== expected) {
+          await client.query('ROLLBACK');
+          return res.status(400).json({
+            error: isFerr
+              ? `Devolução da viatura: a localização de origem deste artigo (ferramenta) deve ser ${expected}.`
+              : `Devolução da viatura: a localização de origem deste artigo deve ser ${expected} (não use ${codV}.FERR exceto para ferramentas).`
+          });
+        }
+      }
+    }
+
     // Validar Lote/Serial/Bobinas conforme tipo de controlo do item, apenas quando há saída
     const tipoControlo = (item.tipocontrolo || '').toUpperCase();
+    let serialsNormalizados = null;
     if (!isZero && tipoControlo === 'LOTE' && Array.isArray(bobinas)) {
       if (bobinas.length === 0) {
         await client.query('ROLLBACK');
@@ -2695,14 +3746,33 @@ router.patch('/:id/atender-item', ...requisicaoAuth, async (req, res) => {
         await client.query('ROLLBACK');
         return res.status(400).json({ error: `Item ${item.item_id} é controlado por LOTE. Informe o lote na preparação.` });
       }
-      if (tipoControlo === 'S/N' && (!serialnumber || String(serialnumber).trim() === '')) {
-        await client.query('ROLLBACK');
-        return res.status(400).json({ error: `Item ${item.item_id} é controlado por número de série. Informe o Serial number na preparação.` });
+      if (tipoControlo === 'S/N') {
+        if (Array.isArray(serials)) {
+          serialsNormalizados = serials.map((s) => String(s || '').trim()).filter(Boolean);
+          if (serialsNormalizados.length === 0) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({ error: `Item ${item.item_id} é controlado por número de série. Informe pelo menos um serial number.` });
+          }
+          const serialsUnicos = new Set(serialsNormalizados);
+          if (serialsUnicos.size !== serialsNormalizados.length) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({
+              error: `Item ${item.item_id} contém serial numbers duplicados. Remova os repetidos antes de confirmar.`
+            });
+          }
+        } else if (!serialnumber || String(serialnumber).trim() === '') {
+          await client.query('ROLLBACK');
+          return res.status(400).json({ error: `Item ${item.item_id} é controlado por número de série. Informe o Serial number na preparação.` });
+        }
       }
     }
 
     // Localização destino é sempre EXPEDICAO (automático) quando há saída
     const localizacaoDestinoFinal = isZero ? null : 'EXPEDICAO';
+
+    const serialnumberFinal = isZero
+      ? null
+      : (serialsNormalizados ? serialsNormalizados.join('\n') : (serialnumber || null));
 
     const updateQuery = `
       UPDATE requisicoes_itens 
@@ -2711,14 +3781,16 @@ router.patch('/:id/atender-item', ...requisicaoAuth, async (req, res) => {
           localizacao_origem = $3, 
           lote = COALESCE($4, lote),
           serialnumber = COALESCE($5, serialnumber),
+          quantidade_apeados = $6,
           preparacao_confirmada = true
-      WHERE id = $6`;
+      WHERE id = $7`;
     const params = [
       quantidade_preparada,
       localizacaoDestinoFinal,
       isZero ? null : locOrigem,
       isZero ? null : (lote || null),
-      isZero ? null : (serialnumber || null),
+      serialnumberFinal,
+      quantidadeApeadosFinal,
       requisicao_item_id
     ];
 
@@ -2915,7 +3987,7 @@ router.patch('/:id/atender', ...requisicaoAuth, async (req, res) => {
     if (separadorImpedeAcao(check.rows[0], req)) {
       return respostaBloqueioSeparador(res);
     }
-    if (['EM SEPARACAO', 'separado', 'EM EXPEDICAO', 'Entregue'].includes(check.rows[0].status)) {
+    if (['EM SEPARACAO', 'separado', 'EM EXPEDICAO', 'APEADOS', 'Entregue'].includes(check.rows[0].status)) {
       if (check.rows[0].status === 'EM SEPARACAO') {
         return res.status(400).json({
           error: 'A requisição está em separação. Use a página Preparar e «Concluir preparação da requisição» quando todos os itens estiverem confirmados.'
@@ -3136,8 +4208,8 @@ router.patch('/:id/marcar-entregue', ...requisicaoAuth, async (req, res) => {
     if (separadorImpedeAcao(check.rows[0], req)) {
       return respostaBloqueioSeparador(res);
     }
-    if (check.rows[0].status !== 'EM EXPEDICAO') {
-      return res.status(400).json({ error: 'Só pode marcar como entregue quando a requisição está em expedição.' });
+    if (!['EM EXPEDICAO', 'APEADOS'].includes(check.rows[0].status)) {
+      return res.status(400).json({ error: 'Só pode marcar como entregue quando a requisição está em expedição (EM EXPEDICAO) ou APEADOS.' });
     }
     await pool.query(
       'UPDATE requisicoes SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
@@ -3159,7 +4231,20 @@ router.patch('/:id/finalizar', ...requisicaoAuth, denyOperador, async (req, res)
   try {
     const { id } = req.params;
     const check = await pool.query(
-      'SELECT id, status, armazem_origem_id, separador_usuario_id FROM requisicoes WHERE id = $1',
+      `SELECT
+         r.id,
+         r.status,
+         r.armazem_origem_id,
+         r.separador_usuario_id,
+         r.devolucao_tra_gerada_em,
+         r.devolucao_tra_apeados_gerada_em,
+         r.devolucao_trfl_pendente_gerada_em,
+         ao.tipo AS origem_tipo,
+         ad.tipo AS destino_tipo
+       FROM requisicoes r
+       LEFT JOIN armazens ao ON ao.id = r.armazem_origem_id
+       LEFT JOIN armazens ad ON ad.id = r.armazem_id
+       WHERE r.id = $1`,
       [id]
     );
     if (check.rows.length === 0) return res.status(404).json({ error: 'Requisição não encontrada' });
@@ -3170,7 +4255,16 @@ router.patch('/:id/finalizar', ...requisicaoAuth, denyOperador, async (req, res)
       return respostaBloqueioSeparador(res);
     }
     if (check.rows[0].status === 'cancelada') return res.status(400).json({ error: 'Requisição cancelada' });
-    if (check.rows[0].status !== 'Entregue') {
+    const row = check.rows[0];
+    const fluxoDevolucao = isFluxoDevolucaoViaturaCentral(row.origem_tipo, row.destino_tipo);
+    if (fluxoDevolucao) {
+      const docsPendentesOk = Boolean(row.devolucao_tra_apeados_gerada_em) && Boolean(row.devolucao_trfl_pendente_gerada_em);
+      if (!(['EM EXPEDICAO', 'APEADOS'].includes(row.status) && row.devolucao_tra_gerada_em && docsPendentesOk)) {
+        return res.status(400).json({
+          error: 'No fluxo de devolução, só é possível finalizar após gerar DEV, TRA APEADOS e TRFL PENDENTE.'
+        });
+      }
+    } else if (row.status !== 'Entregue') {
       return res.status(400).json({ error: 'Só é possível finalizar requisições com status Entregue.' });
     }
 
@@ -3198,7 +4292,7 @@ router.delete('/:id', ...requisicaoAuth, denyOperador, async (req, res) => {
       return res.status(403).json({ error: 'Sem acesso a esta requisição.' });
     }
     const status = String(requisicao.status || '');
-    const statusRestritosAdmin = ['EM SEPARACAO', 'separado', 'EM EXPEDICAO', 'Entregue'];
+    const statusRestritosAdmin = ['EM SEPARACAO', 'separado', 'EM EXPEDICAO', 'APEADOS', 'Entregue'];
     if (statusRestritosAdmin.includes(status) && userRole !== 'admin') {
       return res.status(403).json({
         error: 'A exclusão de requisições em separação, separadas, em expedição ou entregues é permitida apenas para ADMIN.'

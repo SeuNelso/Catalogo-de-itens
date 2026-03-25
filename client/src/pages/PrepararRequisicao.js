@@ -1,18 +1,18 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useConfirm } from '../contexts/ConfirmContext';
 import Toast from '../components/Toast';
 import { FaArrowLeft, FaCheck, FaBox, FaMapMarkerAlt, FaArrowRight, FaEdit, FaQrcode, FaTrash } from 'react-icons/fa';
 import axios from 'axios';
-import QrScannerModal from '../components/QrScannerModal';
+import QrScannerModal, { Html5QrcodeSupportedFormats } from '../components/QrScannerModal';
 import jsPDF from 'jspdf';
 import {
   formatCriadorRequisicao,
   isRequisicaoDoUtilizadorAtual,
   preparacaoReservadaOutroUtilizador
 } from '../utils/requisicaoCriador';
-import { desenharPaginaNotaEntregaDigi } from '../utils/notaEntregaPdf';
+import { desenharPaginaNotaEntregaDigi, NOTA_DEVOLUCAO_PDF_OPTS } from '../utils/notaEntregaPdf';
 import { quantidadeStockNacionalNoArmazem } from '../utils/stockNacionalArmazem';
 import { operadorPodeDocsELogisticaAposSeparacao, isAdmin } from '../utils/roles';
 
@@ -23,7 +23,7 @@ function labelArmazem(armazem) {
 
 const MAX_BOBINAS_LOTE = 500;
 
-/** Itens LOTE: uma linha (lote + metros) por bobina; alinha ao nº em «quantidade preparada». */
+/** Itens LOTE/SN: uma linha por unidade; alinha ao nº em «quantidade preparada». */
 function resizeBobinasArray(prevBobinas, n) {
   const prev = Array.isArray(prevBobinas) ? [...prevBobinas] : [];
   const capped = Math.max(0, Math.min(MAX_BOBINAS_LOTE, Math.floor(Number(n)) || 0));
@@ -36,6 +36,7 @@ function resizeBobinasArray(prevBobinas, n) {
 
 const PrepararRequisicao = () => {
   const { id } = useParams();
+  const location = useLocation();
   const [requisicao, setRequisicao] = useState(null);
   const [armazemOrigem, setArmazemOrigem] = useState(null);
   const [armazemDestino, setArmazemDestino] = useState(null);
@@ -58,10 +59,21 @@ const PrepararRequisicao = () => {
     localizacao_destino_custom: '',
     lote: '',
     serialnumber: '',
-    bobinas: [] // apenas para itens controlados por lote
+    quantidade_apeados: 0,
+    bobinas: [] // itens controlados por LOTE ou S/N
   });
   const [showQrScanner, setShowQrScanner] = useState(false);
+  const [serialScannerIdx, setSerialScannerIdx] = useState(null);
+  const [serialScannerContinuous, setSerialScannerContinuous] = useState(false);
   const [stockNacionalPrep, setStockNacionalPrep] = useState({ loading: false, valor: null });
+  // No ciclo de devolução (EM EXPEDICAO = "Em processo"): ao clicar "Receber" mostramos o botão de gerar TRA.
+  const [receberAtivo, setReceberAtivo] = useState(false);
+  const RECEBER_ATIVO_IDS_KEY = 'devolucao_receber_ativo_ids_v1';
+  const EDITAR_ARTIGOS_FOCO_KEY = 'devolucao_editar_artigos_foco_v1';
+  const reqReceber = useMemo(() => {
+    const p = new URLSearchParams(location.search || '');
+    return ['1', 'true', 'yes', 'sim'].includes(String(p.get('receber') || '').toLowerCase());
+  }, [location.search]);
   const abortStockPrepRef = useRef(null);
   const navigate = useNavigate();
   const { user } = useAuth();
@@ -69,10 +81,40 @@ const PrepararRequisicao = () => {
   const canPrepare = user && ['admin', 'operador', 'backoffice_armazem', 'supervisor_armazem'].includes(user.role);
   const podeDocsPosSeparacao = operadorPodeDocsELogisticaAposSeparacao(user?.role);
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     fetchRequisicao();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
+
+  // Quando chegar com `?receber=1` (feito a partir da lista de devoluções),
+  // ativamos o passo "GERAR TRA" para o utilizador avançar no ciclo.
+  useEffect(() => {
+    // Persistência do passo "Receber -> GERAR TRA":
+    // - via ?receber=1 (caso exista)
+    // - via localStorage que a listagem usa na card
+    // Só faz sentido no ciclo de devolução e antes da TRA ser gerada.
+    // A validação "devolução" é feita no render por `isFluxoDevolucao`.
+    if (!requisicao) return;
+
+    let persistedActive = false;
+    try {
+      const raw = window.localStorage.getItem(RECEBER_ATIVO_IDS_KEY);
+      if (raw) {
+        const arr = JSON.parse(raw);
+        if (Array.isArray(arr)) {
+          persistedActive = arr.map((x) => Number(x)).filter(Number.isFinite).includes(Number(id));
+        }
+      }
+    } catch (_) {}
+
+    const shouldActivate =
+      (reqReceber || persistedActive) &&
+      requisicao.status === 'EM EXPEDICAO' &&
+      !requisicao.devolucao_tra_gerada_em;
+
+    setReceberAtivo(Boolean(shouldActivate));
+  }, [location.search, requisicao, reqReceber, id]);
 
   useEffect(() => {
     if (!itemPreparando?.item_id || !armazemOrigem) {
@@ -179,15 +221,40 @@ const PrepararRequisicao = () => {
       return;
     }
     setItemPreparando(item);
-    const locOrigem = item.localizacao_origem || '';
-    const isOrigemCustom = locOrigem && locsOrigem.length > 0 && !locsOrigem.includes(locOrigem);
+    const locs = armazemOrigem?.localizacoes?.map((l) => l.localizacao).filter(Boolean) || [];
+    let locOrigem = item.localizacao_origem || '';
+    if (
+      String(armazemOrigem?.tipo || '').toLowerCase() === 'viatura' &&
+      String(armazemDestino?.tipo || '').toLowerCase() === 'central'
+    ) {
+      const cod = String(armazemOrigem.codigo || '').trim().toUpperCase();
+      const ferr = item.is_ferramenta === true;
+      const expected = ferr ? `${cod}.FERR` : cod;
+      const existing = String(locOrigem).trim();
+      if (!existing) {
+        if (locs.includes(expected)) locOrigem = expected;
+        else if (locs.length === 1) locOrigem = locs[0];
+      }
+    }
+    const isOrigemCustom = locOrigem && locs.length > 0 && !locs.includes(locOrigem);
     const qtdPreparada = item.quantidade_preparada !== undefined && item.quantidade_preparada !== null
       ? item.quantidade_preparada
       : item.quantidade;
-    const isLote = (item.tipocontrolo || '').toUpperCase() === 'LOTE';
+    const tipoControlo = (item.tipocontrolo || '').toUpperCase();
+    const isLote = tipoControlo === 'LOTE';
+    const isSerial = tipoControlo === 'S/N';
+    const serialsExistentes = String(item.serialnumber || '')
+      .split(/\r?\n|;|\|/)
+      .map((s) => s.trim())
+      .filter(Boolean);
     const nBobinas = Math.max(0, Math.min(MAX_BOBINAS_LOTE, Math.floor(Number(qtdPreparada)) || 0));
-    const bobinasInicial = isLote
-      ? resizeBobinasArray(item.bobinas || [], nBobinas)
+    const bobinasInicial = (isLote || isSerial)
+      ? resizeBobinasArray(
+        (item.bobinas || []).length > 0
+          ? item.bobinas
+          : (isSerial ? serialsExistentes.map((s) => ({ lote: '', serialnumber: s, metros: '' })) : []),
+        nBobinas
+      )
       : (item.bobinas || []);
     setFormItem({
       quantidade_preparada: qtdPreparada,
@@ -197,9 +264,58 @@ const PrepararRequisicao = () => {
       localizacao_destino_custom: '',
       lote: item.lote || '',
       serialnumber: item.serialnumber || '',
+      quantidade_apeados: 0,
       bobinas: bobinasInicial
     });
   };
+
+  // Ação "Editar" na lista de devoluções:
+  // Quando o utilizador clica no ícone de editar ao lado de "Confirmar artigos",
+  // guardamos o ID num localStorage e abrimos automaticamente o modal "Preparar item" / "Editar preparação".
+  /* eslint-disable react-hooks/exhaustive-deps */
+  useEffect(() => {
+    if (!requisicao) return;
+    if (!armazemOrigem) return;
+
+    let focando = false;
+    let focoId = null;
+    try {
+      const raw = window.localStorage.getItem(EDITAR_ARTIGOS_FOCO_KEY);
+      if (raw) {
+        // Aceita: "123" ou JSON "123"
+        focoId = (() => {
+          try {
+            const parsed = JSON.parse(raw);
+            return Array.isArray(parsed) ? parsed[0] : parsed;
+          } catch (_) {
+            return raw;
+          }
+        })();
+      }
+    } catch (_) {}
+
+    if (focoId != null && Number(focoId) === Number(id)) {
+      focando = true;
+    }
+
+    if (!focando) return;
+
+    const itens = requisicao.itens || [];
+    const item =
+      itens.find((it) => it.preparacao_confirmada === true) ||
+      itens.find((it) => it.preparacao_confirmada !== true) ||
+      null;
+
+    if (item) {
+      // Se a ação for bloqueada por permissão/estado, a função vai mostrar toast e não altera o estado.
+      abrirPrepararItem(item);
+    }
+
+    try {
+      window.localStorage.removeItem(EDITAR_ARTIGOS_FOCO_KEY);
+    } catch (_) {}
+  }, [requisicao, armazemOrigem, id]);
+  /* eslint-enable react-hooks/exhaustive-deps */
 
   const downloadExport = async (urlPath, filename, successMsg) => {
     const token = localStorage.getItem('token');
@@ -222,11 +338,14 @@ const PrepararRequisicao = () => {
     setToast({ type: 'success', message: successMsg });
   };
 
-  const handleExportTRFL = async () => {
+  const handleExportTRFL = async (opts = {}) => {
+    const isDev = !!opts.isFluxoDevolucao;
     try {
       const ok = await confirm({
         title: 'Gerar TRFL',
-        message: 'Deseja continuar? Ao continuar, a requisição será marcada como Em expedição.',
+        message: isDev
+          ? 'Devolução: este ficheiro move o stock da localização de recebimento para a zona final no armazém central. Depois a requisição passará a APEADOS.'
+          : 'Deseja continuar? Ao continuar, a requisição será marcada como Em expedição.',
         confirmLabel: 'Continuar'
       });
       if (!ok) return;
@@ -257,20 +376,37 @@ const PrepararRequisicao = () => {
     }
   };
 
-  const handleExportTRA = async () => {
+  const handleExportTRA = async (opts = {}) => {
+    const isDev = !!opts.isFluxoDevolucao;
     try {
       const ok = await confirm({
-        title: 'Gerar TRA',
-        message: 'Deseja continuar? Após gerar a TRA, esta requisição ficará apta para FINALIZAR.',
+        title: isDev ? 'Gerar DEV' : 'Gerar TRA',
+        message: isDev
+          ? 'Devolução: este DEV regista a entrada no armazém central na localização de recebimento (origem = viatura e localização preparada).'
+          : 'Deseja continuar? Após gerar a TRA, esta requisição ficará apta para FINALIZAR.',
         confirmLabel: 'Continuar'
       });
       if (!ok) return;
 
       await downloadExport(
         `/api/requisicoes/${id}/export-tra`,
-        `TRA_requisicao_${id}_${new Date().toISOString().slice(0, 10)}.xlsx`,
-        'TRA gerada com sucesso.'
+        `${isDev ? 'DEV' : 'TRA'}_requisicao_${id}_${new Date().toISOString().slice(0, 10)}.xlsx`,
+        isDev ? 'DEV gerado com sucesso.' : 'TRA gerada com sucesso.'
       );
+
+      if (isDev) {
+        // Se a TRA for da devolução, limpamos o passo local para a UI.
+        try {
+          const raw = window.localStorage.getItem(RECEBER_ATIVO_IDS_KEY);
+          const arr = raw ? JSON.parse(raw) : [];
+          if (Array.isArray(arr)) {
+            const next = arr.map((x) => Number(x)).filter(Number.isFinite);
+            const filtered = next.filter((x) => x !== Number(id));
+            window.localStorage.setItem(RECEBER_ATIVO_IDS_KEY, JSON.stringify(filtered));
+          }
+        } catch (_) {}
+        setReceberAtivo(false);
+      }
 
       await fetchRequisicao(true);
     } catch (error) {
@@ -407,9 +543,16 @@ const PrepararRequisicao = () => {
 
   const handleEntregar = async () => {
     try {
-      if (requisicao?.status !== 'EM EXPEDICAO') {
-        setToast({ type: 'error', message: 'Só é possível entregar quando a requisição está em expedição.' });
-        return;
+      if (!isFluxoDevolucao) {
+        if (requisicao?.status !== 'EM EXPEDICAO') {
+          setToast({ type: 'error', message: 'Só é possível entregar quando a requisição está em expedição.' });
+          return;
+        }
+      } else {
+        if (!['EM EXPEDICAO', 'APEADOS'].includes(requisicao?.status)) {
+          setToast({ type: 'error', message: 'Só é possível entregar no ciclo de devolução após EM EXPEDICAO/APEADOS.' });
+          return;
+        }
       }
       const ok = await confirm({
         title: 'Entregar',
@@ -470,18 +613,62 @@ const PrepararRequisicao = () => {
     }
   };
 
+  const handleFinalizar = async () => {
+    try {
+      const ok = await confirm({
+        title: 'Finalizar',
+        message: 'Tem certeza que deseja finalizar esta devolução?',
+        confirmLabel: 'Sim, finalizar',
+        variant: 'warning'
+      });
+      if (!ok) return;
+
+      const token = localStorage.getItem('token');
+      const resp = await fetch(`/api/requisicoes/${id}/finalizar`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (!resp.ok) {
+        const data = await resp.json().catch(() => ({}));
+        throw new Error(data.error || 'Erro ao finalizar');
+      }
+      setToast({ type: 'success', message: 'Devolução finalizada.' });
+      await fetchRequisicao(true);
+    } catch (error) {
+      setToast({ type: 'error', message: error.message || 'Erro ao finalizar' });
+    }
+  };
+
   const fecharPrepararItem = () => {
     setItemPreparando(null);
-    setFormItem({ quantidade_preparada: '', localizacao_origem: '', localizacao_origem_custom: '', localizacao_destino: '', localizacao_destino_custom: '', lote: '', serialnumber: '', bobinas: [] });
+    setFormItem({
+      quantidade_preparada: '',
+      localizacao_origem: '',
+      localizacao_origem_custom: '',
+      localizacao_destino: '',
+      localizacao_destino_custom: '',
+      lote: '',
+      serialnumber: '',
+      quantidade_apeados: 0,
+      bobinas: []
+    });
   };
 
   const handleQuantidadePreparadaChange = (e) => {
     const val = e.target.value;
     setFormItem((prev) => {
       const next = { ...prev, quantidade_preparada: val };
-      if ((itemPreparando?.tipocontrolo || '').toUpperCase() === 'LOTE') {
+      const tipoControlo = (itemPreparando?.tipocontrolo || '').toUpperCase();
+      if (tipoControlo === 'LOTE' || tipoControlo === 'S/N') {
         const n = Math.max(0, Math.min(MAX_BOBINAS_LOTE, Math.floor(Number(val)) || 0));
         next.bobinas = resizeBobinasArray(prev.bobinas, n);
+      }
+      // Se a checkbox de APEADO estiver ativa, mantemos quantidade_apeados dentro do total.
+      const totalQty = Math.floor(Number(next.quantidade_preparada) || 0);
+      const prevApeados = Number(next.quantidade_apeados) || 0;
+      if (prevApeados > 0) {
+        next.quantidade_apeados = Math.min(prevApeados, totalQty);
+        if (next.quantidade_apeados <= 0) next.quantidade_apeados = 0;
       }
       return next;
     });
@@ -508,8 +695,28 @@ const PrepararRequisicao = () => {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       setRequisicao(response.data);
-      setToast({ type: 'success', message: 'Separação da requisição concluída!' });
-      setTimeout(() => navigate('/requisicoes'), 1500);
+      if (isFluxoDevolucao) {
+        // Para devoluções (viatura → central), após preparar a separação queremos avançar o ciclo
+        // para "Em processo" (status EM EXPEDICAO) automaticamente.
+        try {
+          await axios.patch(`/api/requisicoes/${id}/confirmar-separacao`, {}, {
+            headers: { 'Authorization': `Bearer ${token}` }
+          });
+          await axios.patch(`/api/requisicoes/${id}/marcar-em-expedicao`, {}, {
+            headers: { 'Authorization': `Bearer ${token}` }
+          });
+          await fetchRequisicao(true);
+          setToast({ type: 'success', message: 'Devolução em processo.' });
+        } catch (e) {
+          // Se a operação falhar (ex.: permissões), não interrompemos o fluxo principal.
+          console.error('Erro ao avançar ciclo da devolução:', e);
+          setToast({ type: 'success', message: 'Separação da devolução concluída. Pode avançar o ciclo pelos botões.' });
+        }
+        setTimeout(() => navigate('/devolucoes'), 1500);
+      } else {
+        setToast({ type: 'success', message: 'Separação da requisição concluída!' });
+        setTimeout(() => navigate('/requisicoes'), 1500);
+      }
     } catch (error) {
       const msg = error.response?.data?.error || 'Erro ao completar separação';
       setToast({ type: 'error', message: msg });
@@ -573,6 +780,30 @@ const PrepararRequisicao = () => {
         });
       }
       bobinasPayload = bobinasValidas;
+    } else if (tipoControlo === 'S/N') {
+      if (!Array.isArray(formItem.bobinas) || formItem.bobinas.length === 0) {
+        setToast({ type: 'error', message: 'Adicione pelo menos um serial number.' });
+        return;
+      }
+      const seriais = [];
+      for (const b of formItem.bobinas) {
+        const sn = (b.serialnumber || '').trim();
+        if (!sn) {
+          setToast({ type: 'error', message: 'Cada linha de S/N deve ter um serial number.' });
+          return;
+        }
+        seriais.push(sn);
+      }
+      const duplicados = seriais.filter((sn, i) => seriais.indexOf(sn) !== i);
+      if (duplicados.length > 0) {
+        const unicos = [...new Set(duplicados)];
+        setToast({
+          type: 'error',
+          message: `Existem serial numbers repetidos: ${unicos.join(', ')}`
+        });
+        return;
+      }
+      bobinasPayload = seriais.map((sn) => ({ serialnumber: sn }));
     }
 
     try {
@@ -582,11 +813,16 @@ const PrepararRequisicao = () => {
         `/api/requisicoes/${id}/atender-item`,
         {
           requisicao_item_id: itemPreparando.id,
-          quantidade_preparada: tipoControlo === 'LOTE' && bobinasPayload ? bobinasPayload.length : qtdPreparadaNumerica,
+          quantidade_preparada:
+            (tipoControlo === 'LOTE' || tipoControlo === 'S/N') && bobinasPayload
+              ? bobinasPayload.length
+              : qtdPreparadaNumerica,
+          quantidade_apeados: Math.max(0, Math.floor(Number(formItem.quantidade_apeados) || 0)),
           localizacao_origem: locOrigem,
           lote: formItem.lote || null,
           serialnumber: formItem.serialnumber || null,
-          bobinas: bobinasPayload
+          bobinas: tipoControlo === 'LOTE' ? bobinasPayload : undefined,
+          serials: tipoControlo === 'S/N' ? bobinasPayload.map((b) => b.serialnumber) : undefined
           // localizacao_destino = EXPEDICAO é definida automaticamente no servidor
         },
         {
@@ -640,6 +876,13 @@ const PrepararRequisicao = () => {
   const preparacaoBloqueadaOutrem = preparacaoReservadaOutroUtilizador(requisicao, user);
   const podeAgirSeparacao = canPrepare && !preparacaoBloqueadaOutrem;
   const podeTrflTraReporte = podeAgirSeparacao && podeDocsPosSeparacao;
+  const isFluxoDevolucao =
+    String(armazemOrigem?.tipo || requisicao.armazem_origem_tipo || '').toLowerCase() === 'viatura' &&
+    String(armazemDestino?.tipo || requisicao.armazem_destino_tipo || '').toLowerCase() === 'central';
+  const podeFinalizarTransferenciasPendentes =
+    Boolean(requisicao?.devolucao_tra_gerada_em) &&
+    Boolean(requisicao?.devolucao_tra_apeados_gerada_em) &&
+    Boolean(requisicao?.devolucao_trfl_pendente_gerada_em);
 
   return (
     <div className="min-h-screen bg-[#F7F8FA] p-4 sm:p-6 lg:p-8">
@@ -662,7 +905,16 @@ const PrepararRequisicao = () => {
             <FaArrowLeft /> Voltar
           </button>
           <div className="flex gap-2 flex-wrap">
-            {(requisicao.status === 'separado' && requisicao.separacao_confirmada) && podeTrflTraReporte && (
+            {(requisicao.status === 'separado' && requisicao.separacao_confirmada) && podeTrflTraReporte && isFluxoDevolucao && (
+              <button
+                onClick={() => handleExportTRA({ isFluxoDevolucao: true })}
+                className="px-3 py-2 text-indigo-700 hover:bg-indigo-50 rounded-lg border border-indigo-300 transition-colors"
+                title="Devolução: DEV de entrada no central (localização de recebimento)"
+              >
+                GERAR DEV (devolução)
+              </button>
+            )}
+            {(requisicao.status === 'separado' && requisicao.separacao_confirmada) && podeTrflTraReporte && !isFluxoDevolucao && (
               <button
                 onClick={handleExportTRFL}
                 className="px-3 py-2 text-blue-700 hover:bg-blue-50 rounded-lg border border-blue-300 transition-colors"
@@ -671,15 +923,111 @@ const PrepararRequisicao = () => {
                 GERAR TRFL
               </button>
             )}
-            {requisicao.status === 'EM EXPEDICAO' && podeAgirSeparacao && (
-              <button
-                onClick={handleEntregar}
-                className="px-3 py-2 bg-amber-600 text-white hover:bg-amber-700 rounded-lg transition-colors"
-                title="Alterar status para Entregue"
-              >
-                ENTREGAR
-              </button>
-            )}
+
+            {/* Fluxo devolução: EM EXPEDICAO ("Em processo") */}
+            {isFluxoDevolucao &&
+              requisicao.status === 'EM EXPEDICAO' &&
+              podeAgirSeparacao &&
+              !requisicao.devolucao_tra_gerada_em &&
+              !receberAtivo &&
+              !reqReceber && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    try {
+                      const today = new Date();
+                      const dateStr = today.toISOString().slice(0, 10);
+                      const doc = new jsPDF({ unit: 'pt', format: 'a4' });
+                      const pageHeightActual = doc.internal.pageSize.getHeight();
+                      desenharPaginaNotaEntregaDigi(doc, requisicao, {
+                        isFirstPage: true,
+                        dataRef: today,
+                        ...NOTA_DEVOLUCAO_PDF_OPTS
+                      });
+                      const sigTop = pageHeightActual - 60 - 70;
+                      const lastY = doc.lastAutoTable?.finalY || 0;
+                      if (lastY + 30 > sigTop) {
+                        doc.addPage();
+                      }
+                      const pageWidth = doc.internal.pageSize.getWidth();
+                      const leftX1 = 60;
+                      const leftX2 = pageWidth / 2 - 20;
+                      const rightX1 = pageWidth / 2 + 20;
+                      const rightX2 = pageWidth - 60;
+                      const y = doc.internal.pageSize.getHeight() - 60 - 70;
+                      doc.setFontSize(10);
+                      doc.text('Assinatura do Armazém', (leftX1 + leftX2) / 2, y, { align: 'center' });
+                      doc.line(leftX1, y + 34, leftX2, y + 34);
+                      doc.text('Nome / assinatura', (leftX1 + leftX2) / 2, y + 52, { align: 'center' });
+                      doc.text('Assinatura do Recebedor', (rightX1 + rightX2) / 2, y, { align: 'center' });
+                      doc.line(rightX1, y + 34, rightX2, y + 34);
+                      doc.text('Nome / assinatura', (rightX1 + rightX2) / 2, y + 52, { align: 'center' });
+                      doc.save(`NOTA_DEVOLUCAO_${id}_${dateStr}.pdf`);
+                      setToast({ type: 'success', message: 'Nota de devolução gerada.' });
+                    } catch (err) {
+                      setToast({ type: 'error', message: err?.message || 'Erro ao gerar nota de devolução.' });
+                    }
+                    setReceberAtivo(true);
+                  }}
+                  className="px-3 py-2 bg-amber-600 text-white hover:bg-amber-700 rounded-lg transition-colors"
+                  title="Receber a devolução (passo para gerar a TRA)"
+                >
+                  Receber
+                </button>
+              )}
+
+            {isFluxoDevolucao &&
+              requisicao.status === 'EM EXPEDICAO' &&
+              podeAgirSeparacao &&
+              !requisicao.devolucao_tra_gerada_em &&
+              (receberAtivo || reqReceber) && (
+                <button
+                  type="button"
+                  onClick={() => handleExportTRA({ isFluxoDevolucao: true })}
+                  className="px-3 py-2 text-indigo-700 hover:bg-indigo-50 rounded-lg border border-indigo-300 transition-colors"
+                  title="Devolução: gerar DEV (entrada no central em localização de recebimento)"
+                >
+                  GERAR DEV
+                </button>
+              )}
+
+            {isFluxoDevolucao &&
+              (requisicao.status === 'EM EXPEDICAO' || requisicao.status === 'APEADOS') &&
+              podeAgirSeparacao &&
+              !!requisicao.devolucao_tra_gerada_em && (
+                <button
+                  type="button"
+                  onClick={handleFinalizar}
+                  disabled={!podeFinalizarTransferenciasPendentes}
+                  className={`px-3 py-2 rounded-lg transition-colors ${
+                    podeFinalizarTransferenciasPendentes
+                      ? 'bg-slate-700 text-white hover:bg-slate-800'
+                      : 'bg-slate-300 text-slate-600 cursor-not-allowed'
+                  }`}
+                  title={
+                    podeFinalizarTransferenciasPendentes
+                      ? 'Marcar devolução como Finalizada'
+                      : 'Para finalizar, gere TRA APEADOS e TRFL PENDENTE.'
+                  }
+                >
+                  FINALIZAR
+                </button>
+              )}
+
+            {/* Requisição normal: EM EXPEDICAO */}
+            {!isFluxoDevolucao &&
+              requisicao.status === 'EM EXPEDICAO' &&
+              podeAgirSeparacao && (
+                <button
+                  type="button"
+                  onClick={handleEntregar}
+                  className="px-3 py-2 bg-amber-600 text-white hover:bg-amber-700 rounded-lg transition-colors"
+                  title="Alterar status para Entregue"
+                >
+                  ENTREGAR
+                </button>
+              )}
+
             {requisicao.status === 'Entregue' && !requisicao.tra_gerada_em && podeTrflTraReporte && (
               <button
                 onClick={handleExportTRA}
@@ -703,11 +1051,13 @@ const PrepararRequisicao = () => {
 
         <div className="mb-6">
           <h1 className="text-2xl sm:text-3xl font-bold text-gray-800 mb-2">
-            Preparar Requisição #{id}
+            {isFluxoDevolucao ? `Preparar Devolução #${id}` : `Preparar Requisição #${id}`}
           </h1>
-          <p className="text-gray-600">
-            Prepare cada item: confirme a quantidade e escolha a localização de saída. O destino é sempre <strong>EXPEDICAO</strong>.
-          </p>
+          {!isFluxoDevolucao && (
+            <p className="text-gray-600">
+              Prepare cada item: confirme a quantidade e escolha a localização de saída. O destino é sempre <strong>EXPEDICAO</strong>.
+            </p>
+          )}
         </div>
 
         <div className="bg-white rounded-lg shadow-sm p-6 mb-6">
@@ -752,6 +1102,7 @@ const PrepararRequisicao = () => {
                   requisicao.status === 'EM SEPARACAO' ? 'bg-orange-100 text-orange-900' :
                   requisicao.status === 'separado' ? 'bg-green-100 text-green-800' :
                   requisicao.status === 'EM EXPEDICAO' ? 'bg-blue-100 text-blue-800' :
+                  requisicao.status === 'APEADOS' ? 'bg-purple-100 text-purple-800' :
                   requisicao.status === 'Entregue' ? 'bg-emerald-100 text-emerald-800' :
                   requisicao.status === 'FINALIZADO' ? 'bg-slate-200 text-slate-900' :
                   requisicao.status === 'cancelada' ? 'bg-red-100 text-red-800' :
@@ -760,7 +1111,8 @@ const PrepararRequisicao = () => {
                   {requisicao.status === 'pendente' ? 'Pendente' :
                     requisicao.status === 'EM SEPARACAO' ? 'Em separação' :
                     requisicao.status === 'separado' ? 'Separadas' :
-                    requisicao.status === 'EM EXPEDICAO' ? 'Em expedição' :
+                    requisicao.status === 'EM EXPEDICAO' ? (isFluxoDevolucao ? 'Em processo' : 'Em expedição') :
+                    requisicao.status === 'APEADOS' ? 'APEADOS' :
                     requisicao.status === 'Entregue' ? 'Entregue' :
                     requisicao.status === 'FINALIZADO' ? 'Finalizado' :
                     requisicao.status === 'cancelada' ? 'Cancelada' : requisicao.status}
@@ -872,11 +1224,72 @@ const PrepararRequisicao = () => {
                             className="w-full sm:w-32 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0915FF]"
                             required
                           />
+                          {/* Devolução: quantidade parcial a considerar como APEADOS (destino FERR no TRFL) */}
+                          {isFluxoDevolucao && (
+                            <div className="mt-3">
+                              <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer select-none">
+                                <input
+                                  type="checkbox"
+                                  checked={Number(formItem.quantidade_apeados) > 0}
+                                  onChange={(e) => {
+                                    const totalQty = Math.floor(Number(formItem.quantidade_preparada) || 0);
+                                    const nextChecked = Boolean(e.target.checked);
+
+                                    if (!nextChecked) {
+                                      setFormItem((prev) => ({ ...prev, quantidade_apeados: 0 }));
+                                      return;
+                                    }
+
+                                    if (totalQty < 1) {
+                                      setToast({ type: 'error', message: 'Defina primeiro uma quantidade de devolução (mínimo 1).' });
+                                      return;
+                                    }
+
+                                    setFormItem((prev) => {
+                                      const current = Number(prev.quantidade_apeados) || 0;
+                                      const nextApeados = current > 0 ? current : 1;
+                                      return { ...prev, quantidade_apeados: Math.min(nextApeados, totalQty) };
+                                    });
+                                  }}
+                                />
+                                <span>Marcar uma parte como APEADOS</span>
+                              </label>
+
+                              {Number(formItem.quantidade_apeados) > 0 && (
+                                <div className="mt-2">
+                                  <label className="block text-xs font-medium text-gray-700 mb-1">
+                                    Quantidade APEADOS (mín. 1)
+                                  </label>
+                                  <input
+                                    type="number"
+                                    min="1"
+                                    step="1"
+                                    max={Math.floor(Number(formItem.quantidade_preparada) || 0)}
+                                    value={formItem.quantidade_apeados}
+                                    onChange={(e) => {
+                                      const totalQty = Math.floor(Number(formItem.quantidade_preparada) || 0);
+                                      const nextVal = Math.floor(Number(e.target.value) || 0);
+                                      if (totalQty < 1) return;
+                                      const clamped = Math.max(1, Math.min(nextVal, totalQty));
+                                      setFormItem((prev) => ({ ...prev, quantidade_apeados: clamped }));
+                                    }}
+                                    className="w-full sm:w-32 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0915FF]"
+                                    required
+                                  />
+                                </div>
+                              )}
+                            </div>
+                          )}
                           <p className="text-xs text-gray-500 mt-1">
                             {(item.tipocontrolo || '').toUpperCase() === 'LOTE' ? (
                               <>
                                 Requisitada: {item.quantidade} bobina(s). Este número define quantas bobinas vai separar — aparecem
                                 automaticamente os campos de lote e metragem por bobina. Use 0 se não tiver o item.
+                              </>
+                            ) : (item.tipocontrolo || '').toUpperCase() === 'S/N' ? (
+                              <>
+                                Requisitada: {item.quantidade} unidade(s). Este número define quantos campos de serial number serão exibidos.
+                                Use 0 se não tiver o item.
                               </>
                             ) : (
                               <>
@@ -983,17 +1396,140 @@ const PrepararRequisicao = () => {
                         </div>
                       )}
                       {(item.tipocontrolo || '').toUpperCase() === 'S/N' && (
-                        <div>
-                          <label className="block text-sm font-medium text-gray-700 mb-1">
-                            Serial number <span className="text-red-600">*</span>
-                          </label>
-                          <input
-                            type="text"
-                            value={formItem.serialnumber}
-                            onChange={(e) => setFormItem(prev => ({ ...prev, serialnumber: e.target.value }))}
-                            className="w-full sm:w-64 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0915FF]"
-                            placeholder="Informe o serial preparado"
-                            required
+                        <div className="space-y-3">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <span className="text-sm font-medium text-gray-700">Seriais preparados</span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const firstEmpty = (formItem.bobinas || []).findIndex((b) => !(b.serialnumber || '').trim());
+                                const startIdx = firstEmpty >= 0 ? firstEmpty : 0;
+                                if ((formItem.bobinas || []).length === 0) {
+                                  setToast({
+                                    type: 'error',
+                                    message: 'Defina primeiro a quantidade preparada para gerar as linhas de S/N.'
+                                  });
+                                  return;
+                                }
+                                setSerialScannerContinuous(true);
+                                setSerialScannerIdx(startIdx);
+                              }}
+                              className="px-2.5 py-1.5 border border-gray-300 rounded text-gray-700 hover:bg-gray-100 flex items-center gap-1 text-xs"
+                              title="Ler vários seriais em sequência"
+                            >
+                              <FaQrcode /> Scanner contínuo
+                            </button>
+                          </div>
+                          {(formItem.bobinas || []).length === 0 && (
+                            <p className="text-xs text-gray-500">
+                              Indique acima a quantidade preparada para mostrar os campos de serial number.
+                            </p>
+                          )}
+                          <div className="space-y-2">
+                            {(formItem.bobinas || []).map((b, idxBob) => (
+                              <div
+                                key={idxBob}
+                                className="grid grid-cols-1 sm:grid-cols-4 gap-2 items-end border border-gray-200 rounded-lg p-2"
+                              >
+                                <div className="sm:col-span-3">
+                                  <label className="block text-xs font-medium text-gray-700 mb-1">
+                                    Serial number {idxBob + 1}
+                                  </label>
+                                  <div className="flex gap-2">
+                                    <input
+                                      type="text"
+                                      value={b.serialnumber}
+                                      onChange={(e) => {
+                                        const val = e.target.value;
+                                        setFormItem(prev => ({
+                                          ...prev,
+                                          bobinas: prev.bobinas.map((bb, i) =>
+                                            i === idxBob ? { ...bb, serialnumber: val } : bb
+                                          )
+                                        }));
+                                      }}
+                                      className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm"
+                                      placeholder="Informe o serial"
+                                    />
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setSerialScannerContinuous(false);
+                                        setSerialScannerIdx(idxBob);
+                                      }}
+                                      className="px-2.5 py-1.5 border border-gray-300 rounded text-gray-700 hover:bg-gray-100 flex items-center gap-1 text-xs shrink-0"
+                                      title="Ler serial com câmara"
+                                    >
+                                      <FaQrcode /> Câmara
+                                    </button>
+                                  </div>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setFormItem((prev) => {
+                                        const bobinas = (prev.bobinas || []).filter((_, i) => i !== idxBob);
+                                        return {
+                                          ...prev,
+                                          bobinas,
+                                          quantidade_preparada: String(bobinas.length)
+                                        };
+                                      })
+                                    }
+                                    className="px-2 py-1 text-xs border border-red-300 text-red-600 rounded hover:bg-red-50"
+                                  >
+                                    Remover
+                                  </button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                          <QrScannerModal
+                            open={serialScannerIdx != null}
+                            onClose={() => {
+                              setSerialScannerIdx(null);
+                              setSerialScannerContinuous(false);
+                            }}
+                            onScan={(texto) => {
+                              const sn = (texto || '').trim();
+                              if (!sn || serialScannerIdx == null) return;
+                              setFormItem((prev) => ({
+                                ...prev,
+                                bobinas: (prev.bobinas || []).map((bb, i) =>
+                                  i === serialScannerIdx ? { ...bb, serialnumber: sn } : bb
+                                )
+                              }));
+                              if (serialScannerContinuous) {
+                                const total = (formItem.bobinas || []).length;
+                                const nextIdx = serialScannerIdx + 1;
+                                if (nextIdx < total) {
+                                  setSerialScannerIdx(nextIdx);
+                                  setToast({ type: 'success', message: `Serial ${serialScannerIdx + 1}/${total} lido.` });
+                                } else {
+                                  setSerialScannerIdx(null);
+                                  setSerialScannerContinuous(false);
+                                  setToast({ type: 'success', message: 'Leitura contínua concluída.' });
+                                }
+                              } else {
+                                setToast({ type: 'success', message: `Serial lido: ${sn}` });
+                              }
+                            }}
+                            title="Ler serial (código de barras / QR)"
+                            readerId="qr-reader-serial"
+                            closeOnScan={!serialScannerContinuous}
+                            formatsToSupport={[
+                              Html5QrcodeSupportedFormats.CODE_128,
+                              Html5QrcodeSupportedFormats.CODE_39,
+                              Html5QrcodeSupportedFormats.CODE_93,
+                              Html5QrcodeSupportedFormats.EAN_13,
+                              Html5QrcodeSupportedFormats.EAN_8,
+                              Html5QrcodeSupportedFormats.UPC_A,
+                              Html5QrcodeSupportedFormats.UPC_E,
+                              Html5QrcodeSupportedFormats.ITF,
+                              Html5QrcodeSupportedFormats.CODABAR,
+                              Html5QrcodeSupportedFormats.QR_CODE
+                            ]}
                           />
                         </div>
                       )}

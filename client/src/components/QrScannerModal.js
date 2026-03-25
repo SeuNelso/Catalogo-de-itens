@@ -1,24 +1,32 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Html5Qrcode } from 'html5-qrcode';
+import { Html5Qrcode, Html5QrcodeSupportedFormats } from 'html5-qrcode';
 
 /**
- * Modal que abre a câmera e lê um QR code. Ao detectar, chama onScan(texto) e fecha.
- * O conteúdo do QR deve ser o texto da localização (ex: "EXPEDIÇÃO.E").
+ * Modal que abre a câmera e lê QR code / código de barras.
+ * Ao detectar, chama onScan(texto) e fecha.
  */
-const QrScannerModal = ({ open, onClose, onScan, title = 'Ler localização por QR Code' }) => {
+const QrScannerModal = ({
+  open,
+  onClose,
+  onScan,
+  title = 'Ler localização por QR Code',
+  readerId = 'qr-reader-localizacao',
+  formatsToSupport = null,
+  closeOnScan = true
+}) => {
   const scannerRef = useRef(null);
-  const scannedRef = useRef(false);
+  const lastScanRef = useRef({ text: '', at: 0 });
   const [erro, setErro] = useState(null);
 
   useEffect(() => {
     if (!open) return;
-    scannedRef.current = false;
+    lastScanRef.current = { text: '', at: 0 };
 
     let mounted = true;
     const startScanner = async () => {
       try {
         setErro(null);
-        const html5Qr = new Html5Qrcode('qr-reader-localizacao');
+        const html5Qr = new Html5Qrcode(readerId);
         scannerRef.current = html5Qr;
 
         const cameras = await Html5Qrcode.getCameras();
@@ -34,17 +42,27 @@ const QrScannerModal = ({ open, onClose, onScan, title = 'Ler localização por 
           {
             fps: 10,
             qrbox: { width: 250, height: 250 },
-            aspectRatio: 1
+            aspectRatio: 1,
+            ...(Array.isArray(formatsToSupport) && formatsToSupport.length > 0
+              ? { formatsToSupport }
+              : {})
           },
           (decodedText) => {
-            if (!mounted || !scannerRef.current || scannedRef.current) return;
+            if (!mounted || !scannerRef.current) return;
             const text = (decodedText || '').trim();
             if (text) {
-              scannedRef.current = true;
-              scannerRef.current.stop().catch(() => {});
-              scannerRef.current = null;
-              onScan(text);
-              onClose();
+              const now = Date.now();
+              const last = lastScanRef.current;
+              if (last.text === text && now - last.at < 1200) return; // evita leituras duplicadas do mesmo frame
+              lastScanRef.current = { text, at: now };
+              if (closeOnScan) {
+                scannerRef.current.stop().catch(() => {});
+                scannerRef.current = null;
+                onScan(text);
+                onClose();
+              } else {
+                onScan(text);
+              }
             }
           },
           () => {}
@@ -64,7 +82,7 @@ const QrScannerModal = ({ open, onClose, onScan, title = 'Ler localização por 
         scannerRef.current = null;
       }
     };
-  }, [open, onScan, onClose]);
+  }, [open, onScan, onClose, readerId, formatsToSupport, closeOnScan]);
 
   if (!open) return null;
 
@@ -86,7 +104,7 @@ const QrScannerModal = ({ open, onClose, onScan, title = 'Ler localização por 
           {erro ? (
             <p className="text-red-600 text-sm">{erro}</p>
           ) : (
-            <div id="qr-reader-localizacao" className="rounded-lg overflow-hidden" />
+            <div id={readerId} className="rounded-lg overflow-hidden" />
           )}
         </div>
         <div className="p-4 border-t border-gray-200">
@@ -104,3 +122,4 @@ const QrScannerModal = ({ open, onClose, onScan, title = 'Ler localização por 
 };
 
 export default QrScannerModal;
+export { Html5QrcodeSupportedFormats };

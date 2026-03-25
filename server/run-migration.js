@@ -53,7 +53,15 @@ const migrationFile = path.join(
                     ? 'migrate-requisicoes-status-em-separacao.sql'
                   : arg === 'itens-nao-cadastrados' || arg === 'itens-nao-cadastrados-columns'
                     ? 'migrate-itens-nao-cadastrados-columns.sql'
-                    : 'migrate-requisicoes-itens-preparacao.sql'
+                    : arg === 'requisicoes-devolucao-docs' || arg === 'devolucao-docs'
+                      ? 'migrate-requisicoes-devolucao-docs.sql'
+                      : arg === 'requisicoes-devolucao-transferencias-pendentes' || arg === 'devolucao-transferencias-pendentes'
+                        ? 'migrate-requisicoes-devolucao-transferencias-pendentes.sql'
+                      : arg === 'status-apeados'
+                        ? 'migrate-requisicoes-status-apeados.sql'
+                        : arg === 'requisicoes-itens-quantidade-apeados'
+                          ? 'migrate-requisicoes-itens-quantidade-apeados.sql'
+                      : 'migrate-requisicoes-itens-preparacao.sql'
 );
 
 async function run() {

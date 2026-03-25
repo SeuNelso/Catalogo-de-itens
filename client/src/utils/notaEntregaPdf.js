@@ -7,6 +7,13 @@ import { formatSeparadorRequisicao } from './requisicaoCriador';
 /** Azul institucional (próximo do #0915FF da app) */
 export const NOTA_ENTREGA_BLUE = [9, 21, 255];
 
+/** Mesmo layout da nota de entrega; títulos para devolução (viatura → central). */
+export const NOTA_DEVOLUCAO_PDF_OPTS = Object.freeze({
+  tituloDocumento: 'NOTA DE DEVOLUÇÃO',
+  rotuloNumeroNota: 'Nº Nota de devolução:',
+  rotuloDataNota: 'Data da nota de devolução:'
+});
+
 const MARGIN = 40;
 
 function textoObservacaoItem(it) {
@@ -116,11 +123,19 @@ function drawOrigemDestino(doc, req, pageWidth, startY) {
  * @param {object} req requisição (com itens)
  * @param {object} opts
  * @param {boolean} [opts.isFirstPage=true]
- * @param {Date} [opts.dataRef] data impressa em «Data da nota de entrega»
+ * @param {Date} [opts.dataRef] data impressa na linha de data do documento
+ * @param {string} [opts.tituloDocumento='NOTA DE ENTREGA'] título central (ex.: NOTA DE DEVOLUÇÃO)
+ * @param {string} [opts.rotuloNumeroNota='Nº Nota de entrega:'] texto antes do número
+ * @param {string} [opts.rotuloDataNota='Data da nota de entrega:'] texto antes da data
  */
 export function desenharPaginaNotaEntregaDigi(doc, req, opts = {}) {
   const isFirstPage = opts.isFirstPage !== false;
   const dataRef = opts.dataRef instanceof Date ? opts.dataRef : new Date();
+  const tituloDocumento = String(opts.tituloDocumento || 'NOTA DE ENTREGA').trim() || 'NOTA DE ENTREGA';
+  const rotuloNumeroNota =
+    opts.rotuloNumeroNota != null ? String(opts.rotuloNumeroNota) : 'Nº Nota de entrega:';
+  const rotuloDataNota =
+    opts.rotuloDataNota != null ? String(opts.rotuloDataNota) : 'Data da nota de entrega:';
   const pageWidth = doc.internal.pageSize.getWidth();
 
   if (!isFirstPage) {
@@ -133,7 +148,7 @@ export function desenharPaginaNotaEntregaDigi(doc, req, opts = {}) {
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(15);
   doc.setTextColor(NOTA_ENTREGA_BLUE[0], NOTA_ENTREGA_BLUE[1], NOTA_ENTREGA_BLUE[2]);
-  doc.text('NOTA DE ENTREGA', pageWidth / 2, y, { align: 'center' });
+  doc.text(tituloDocumento, pageWidth / 2, y, { align: 'center' });
   y += 12;
   doc.setDrawColor(NOTA_ENTREGA_BLUE[0], NOTA_ENTREGA_BLUE[1], NOTA_ENTREGA_BLUE[2]);
   doc.setLineWidth(0.8);
@@ -144,13 +159,13 @@ export function desenharPaginaNotaEntregaDigi(doc, req, opts = {}) {
   doc.setFontSize(10);
   doc.setTextColor(30, 30, 30);
   const idNota = req?.id != null ? String(req.id) : '—';
-  doc.text(`Nº Nota de entrega: ${idNota}`, MARGIN, y);
+  doc.text(`${rotuloNumeroNota} ${idNota}`, MARGIN, y);
   const dataStr = dataRef.toLocaleDateString('pt-PT', {
     day: '2-digit',
     month: '2-digit',
     year: 'numeric'
   });
-  doc.text(`Data da nota de entrega: ${dataStr}`, pageWidth / 2 + 6, y);
+  doc.text(`${rotuloDataNota} ${dataStr}`, pageWidth / 2 + 6, y);
   y += 14;
   doc.text(`Separado por: ${formatSeparadorRequisicao(req)}`, MARGIN, y);
   y += 18;
