@@ -1311,10 +1311,10 @@ const ListarDevolucoes = () => {
               </button>
               <button
                 type="button"
-                onClick={() => navigate('/requisicoes/criar')}
+                onClick={() => navigate('/requisicoes/criar?devolucao=1')}
                 className="inline-flex items-center gap-2 px-4 py-2 bg-[#0915FF] text-white rounded-lg hover:bg-[#070FCC] transition-colors text-sm"
               >
-                <FaPlus /> Nova Requisição
+                <FaPlus /> Nova Devolução
               </button>
             </div>
           )}

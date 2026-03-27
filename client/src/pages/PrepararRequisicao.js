@@ -37,6 +37,9 @@ function resizeBobinasArray(prevBobinas, n) {
 const PrepararRequisicao = () => {
   const { id } = useParams();
   const location = useLocation();
+  const paramsOrigem = new URLSearchParams(location.search || '');
+  const origemPagina = String(paramsOrigem.get('origem') || '').toLowerCase();
+  const rotaRetorno = origemPagina === 'transferencias' ? '/transferencias' : '/requisicoes';
   const [requisicao, setRequisicao] = useState(null);
   const [armazemOrigem, setArmazemOrigem] = useState(null);
   const [armazemDestino, setArmazemDestino] = useState(null);
@@ -171,7 +174,7 @@ const PrepararRequisicao = () => {
     } catch (error) {
       console.error('Erro ao buscar requisição:', error);
       setToast({ type: 'error', message: 'Erro ao carregar requisição' });
-      navigate('/requisicoes');
+      navigate(rotaRetorno);
       return null;
     } finally {
       setLoading(false);
@@ -715,7 +718,7 @@ const PrepararRequisicao = () => {
         setTimeout(() => navigate('/devolucoes'), 1500);
       } else {
         setToast({ type: 'success', message: 'Separação da requisição concluída!' });
-        setTimeout(() => navigate('/requisicoes'), 1500);
+        setTimeout(() => navigate(rotaRetorno), 1500);
       }
     } catch (error) {
       const msg = error.response?.data?.error || 'Erro ao completar separação';
@@ -899,7 +902,7 @@ const PrepararRequisicao = () => {
         )}
         <div className="mb-4 flex items-center justify-between gap-4 flex-wrap">
           <button
-            onClick={() => navigate('/requisicoes')}
+            onClick={() => navigate(rotaRetorno)}
             className="flex items-center gap-2 text-gray-600 hover:text-gray-800"
           >
             <FaArrowLeft /> Voltar

@@ -50,8 +50,21 @@ const CriarRequisicao = () => {
     const p = new URLSearchParams(location.search || '');
     return ['1', 'true', 'yes', 'sim'].includes(String(p.get('transferencias') || '').toLowerCase());
   })();
+  const fluxoTransferenciaQuery = (() => {
+    const p = new URLSearchParams(location.search || '');
+    const raw = String(p.get('fluxo') || '').toLowerCase();
+    return ['centrais', 'apeados'].includes(raw) ? raw : '';
+  })();
+  const devolucaoQueryFlag = (() => {
+    const p = new URLSearchParams(location.search || '');
+    return ['1', 'true', 'yes', 'sim'].includes(String(p.get('devolucao') || '').toLowerCase());
+  })();
   const isModoTransferencia =
     location.pathname.startsWith('/transferencias') || transferenciasQueryFlag;
+  const isModoDevolucao = !isModoTransferencia && devolucaoQueryFlag;
+  const rotaVoltarTransferencias = fluxoTransferenciaQuery
+    ? `/transferencias?fluxo=${fluxoTransferenciaQuery}`
+    : '/transferencias';
   /** Stock nacional (armazens_item) no armazém de origem para o item em seleção */
   const [stockOrigem, setStockOrigem] = useState({
     loading: false,
@@ -247,6 +260,8 @@ const CriarRequisicao = () => {
     let origem = filtrarArmazensOrigemRequisicao(armazens || []);
     if (isModoTransferencia) {
       origem = origem.filter((a) => ['central', 'apeado'].includes(String(a?.tipo || '').toLowerCase()));
+    } else if (isModoDevolucao) {
+      origem = origem.filter((a) => String(a?.tipo || '').toLowerCase() === 'viatura');
     }
     const allowed = getRequisicoesArmazemOrigemIds(user);
     if (user?.role === 'admin') {
@@ -257,7 +272,7 @@ const CriarRequisicao = () => {
       return origem.filter((a) => set.has(a.id));
     }
     return [];
-  }, [armazens, user, isModoTransferencia]);
+  }, [armazens, user, isModoTransferencia, isModoDevolucao]);
 
   const armazensOrigemFiltrados = filterArmazens(armazensListaOrigem, buscaArmazemOrigem);
   /** Destino: em transferências, apenas central e APEADO. */
@@ -265,9 +280,11 @@ const CriarRequisicao = () => {
     let destino = filtrarArmazensOrigemRequisicao(armazens || []);
     if (isModoTransferencia) {
       destino = destino.filter((a) => ['central', 'apeado'].includes(String(a?.tipo || '').toLowerCase()));
+    } else if (isModoDevolucao) {
+      destino = destino.filter((a) => String(a?.tipo || '').toLowerCase() === 'central');
     }
     return destino;
-  }, [armazens, isModoTransferencia]);
+  }, [armazens, isModoTransferencia, isModoDevolucao]);
   const armazensDestinoFiltrados = filterArmazens(armazensListaDestino, buscaArmazemDestino);
 
   const armazemOrigemSelecionado = armazens.find(a => a.id === parseInt(formData.armazem_origem_id, 10));
@@ -362,13 +379,15 @@ const CriarRequisicao = () => {
           type: 'success',
           message: isTransferenciaFluxo
             ? 'Transferência criada com sucesso!'
-            : (isModoTransferencia ? 'Transferência criada com sucesso!' : 'Requisição criada com sucesso!')
+            : (isModoTransferencia ? 'Transferência criada com sucesso!' : (isModoDevolucao ? 'Devolução criada com sucesso!' : 'Requisição criada com sucesso!'))
         });
         setTimeout(() => {
           navigate(
             isTransferenciaFluxo
-              ? '/transferencias'
-              : (isModoTransferencia ? '/transferencias' : '/requisicoes')
+              ? (tipoOrigem === 'central' && tipoDestino === 'central'
+                ? '/transferencias?fluxo=centrais'
+                : '/transferencias?fluxo=apeados')
+              : (isModoTransferencia ? rotaVoltarTransferencias : (isModoDevolucao ? '/devolucoes' : '/requisicoes'))
           );
         }, 1500);
       }
@@ -392,18 +411,20 @@ const CriarRequisicao = () => {
         {/* Header */}
         <div className="mb-6">
           <button
-            onClick={() => navigate(isModoTransferencia ? '/transferencias' : '/requisicoes')}
+            onClick={() => navigate(isModoTransferencia ? rotaVoltarTransferencias : (isModoDevolucao ? '/devolucoes' : '/requisicoes'))}
             className="mb-4 flex items-center gap-2 text-gray-600 hover:text-gray-800"
           >
             <FaArrowLeft /> Voltar
           </button>
           <h1 className="text-2xl sm:text-3xl font-bold text-gray-800 mb-2">
-            {isModoTransferencia ? 'Nova Transferência' : 'Nova Requisição'}
+            {isModoTransferencia ? 'Nova Transferência' : (isModoDevolucao ? 'Nova Devolução' : 'Nova Requisição')}
           </h1>
           <p className="text-gray-600">
             {isModoTransferencia
               ? 'Etapa 1: Defina origem, itens, quantidades e destino (somente armazéns Central e APEADO).'
-              : 'Etapa 1: Defina origem, itens, quantidades e destino. A localização será preenchida na preparação.'}
+              : (isModoDevolucao
+                ? 'Etapa 1: Defina origem (viatura), itens, quantidades e destino (armazém central).'
+                : 'Etapa 1: Defina origem, itens, quantidades e destino. A localização será preenchida na preparação.')}
           </p>
         </div>
 
@@ -444,7 +465,20 @@ const CriarRequisicao = () => {
                   placeholder="Clique e escreva para pesquisar..."
                   className="w-full px-4 py-2 pr-10 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0915FF] focus:border-transparent"
                 />
-                <FaChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOpenOrigem((prev) => {
+                      const next = !prev;
+                      if (next) setBuscaArmazemOrigem('');
+                      return next;
+                    });
+                  }}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600"
+                  aria-label={openOrigem ? 'Fechar lista de armazém origem' : 'Abrir lista de armazém origem'}
+                >
+                  <FaChevronDown />
+                </button>
                 {openOrigem && (
                   <ul className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-48 overflow-auto">
                     {armazensOrigemFiltrados.length === 0 ? (
@@ -490,7 +524,20 @@ const CriarRequisicao = () => {
                   placeholder="Clique e escreva para pesquisar..."
                   className="w-full px-4 py-2 pr-10 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0915FF] focus:border-transparent"
                 />
-                <FaChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOpenDestino((prev) => {
+                      const next = !prev;
+                      if (next) setBuscaArmazemDestino('');
+                      return next;
+                    });
+                  }}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600"
+                  aria-label={openDestino ? 'Fechar lista de armazém destino' : 'Abrir lista de armazém destino'}
+                >
+                  <FaChevronDown />
+                </button>
                 {openDestino && (
                   <ul className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-48 overflow-auto">
                     {armazensDestinoFiltrados.length === 0 ? (
@@ -715,7 +762,7 @@ const CriarRequisicao = () => {
             <div className="flex flex-col sm:flex-row gap-4 pt-4 border-t border-gray-200">
               <button
                 type="button"
-                onClick={() => navigate(isModoTransferencia ? '/transferencias' : '/requisicoes')}
+                onClick={() => navigate(isModoTransferencia ? rotaVoltarTransferencias : (isModoDevolucao ? '/devolucoes' : '/requisicoes'))}
                 className="flex-1 px-6 py-3 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
               >
                 Cancelar
@@ -737,7 +784,7 @@ const CriarRequisicao = () => {
                   </>
                 ) : (
                   <>
-                    <FaSave /> {isModoTransferencia ? 'Criar Transferência' : 'Criar Requisição'}
+                    <FaSave /> {isModoTransferencia ? 'Criar Transferência' : (isModoDevolucao ? 'Criar Devolução' : 'Criar Requisição')}
                   </>
                 )}
               </button>

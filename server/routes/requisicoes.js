@@ -1329,6 +1329,14 @@ router.get('/:id/export-tra', ...requisicaoAuth, denyOperador, async (req, res) 
       // Tabela pode não existir; usar codigo e codigo.FERR
     }
 
+    // Regra de transferência para armazém central:
+    // destino deve ser sempre a localização de recebimento.
+    let localizacaoDestinoRecebimento = localizacaoNormal;
+    if (tipoDestNorm === 'central') {
+      const locRecDestino = await localizacaoArmazemPorTipo(pool, armazemDestinoId, 'recebimento');
+      if (locRecDestino) localizacaoDestinoRecebimento = locRecDestino;
+    }
+
     // Itens com flag is_ferramenta (setor FERRAMENTA em itens_setores)
     let itensComFerramenta = [];
     try {
@@ -1379,7 +1387,10 @@ router.get('/:id/export-tra', ...requisicaoAuth, denyOperador, async (req, res) 
         Quatity: Number(b.metros) || 0,
         SerialNumber1: b.serialnumber || '', SerialNumber2: '', MacAddress: '', CentroCusto: '',
         DestinationWarehouse: codigoDestino,
-        DestinationLocation: ri.is_ferramenta ? localizacaoFERR : localizacaoNormal,
+        DestinationLocation:
+          tipoDestNorm === 'central'
+            ? localizacaoDestinoRecebimento
+            : (ri.is_ferramenta ? localizacaoFERR : localizacaoNormal),
         ProjectCode: '',
         Batch: b.lote || ''
       });
@@ -1405,7 +1416,10 @@ router.get('/:id/export-tra', ...requisicaoAuth, denyOperador, async (req, res) 
         Quatity: qty,
         SerialNumber1: ri.serialnumber || '', SerialNumber2: '', MacAddress: '', CentroCusto: '',
         DestinationWarehouse: codigoDestino,
-        DestinationLocation: ri.is_ferramenta ? localizacaoFERR : localizacaoNormal,
+        DestinationLocation:
+          tipoDestNorm === 'central'
+            ? localizacaoDestinoRecebimento
+            : (ri.is_ferramenta ? localizacaoFERR : localizacaoNormal),
         ProjectCode: '',
         Batch: ri.lote || ''
       });

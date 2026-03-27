@@ -48,6 +48,15 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
   const confirm = useConfirm();
   const isModoTransferencias = modo === 'transferencias';
   const rotaBase = isModoTransferencias ? '/transferencias' : '/requisicoes';
+  const flowParam = String(new URLSearchParams(location.search || '').get('fluxo') || '').toLowerCase();
+  const hasFluxoTransferSelecionado = ['centrais', 'apeados'].includes(flowParam);
+  const createTransferLink = hasFluxoTransferSelecionado
+    ? `/transferencias/criar?transferencias=1&fluxo=${flowParam}`
+    : '/transferencias/criar?transferencias=1';
+  const rotaPrepararComOrigem = (reqId) =>
+    isModoTransferencias
+      ? `/requisicoes/preparar/${reqId}?origem=transferencias`
+      : `/requisicoes/preparar/${reqId}`;
   const canCreateOrEdit = user && ['admin', 'backoffice_operations', 'backoffice_armazem', 'supervisor_armazem'].includes(user.role);
   const canDelete = user && ['admin', 'backoffice_armazem', 'supervisor_armazem'].includes(user.role);
   const canPrepare = user && ['admin', 'operador', 'backoffice_armazem', 'supervisor_armazem'].includes(user.role);
@@ -93,6 +102,8 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
   useEffect(() => {
     const params = new URLSearchParams(location.search || '');
     const statusParam = params.get('status') || '';
+    const fluxoTransferenciaParam = String(params.get('fluxo') || '').toLowerCase();
+    const fluxoValido = ['centrais', 'apeados'].includes(fluxoTransferenciaParam);
     const temFiltroNaUrl = Boolean(statusParam);
 
     setFiltros(prev => {
@@ -102,9 +113,14 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
         status: statusParam
       };
     });
-    setShowStatusBoard(!temFiltroNaUrl);
+    // Em Transferências: sem "fluxo" selecionado, mostramos sempre a tela de seleção.
+    if (isModoTransferencias && !fluxoValido) {
+      setShowStatusBoard(true);
+    } else {
+      setShowStatusBoard(!temFiltroNaUrl);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [location.search]);
+  }, [location.search, isModoTransferencias]);
 
   useEffect(() => {
     const handleClickOutside = (event) => {
@@ -1144,20 +1160,29 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
   const requisicoesPorFluxo = (() => {
     const temMap = armazensById && Object.keys(armazensById).length > 0;
     if (!temMap) return requisicoes;
+    const flowFilter = hasFluxoTransferSelecionado ? flowParam : '';
 
-    const isFluxoTransferencia = (req) => {
+    const getFluxoTransferencia = (req) => {
       const tipoOrigem = armazensById[Number(req?.armazem_origem_id)] || '';
       const tipoDestino = armazensById[Number(req?.armazem_id)] || '';
-      return (
+      if (
         (tipoOrigem === 'central' && tipoDestino === 'apeado') ||
-        (tipoOrigem === 'apeado' && tipoDestino === 'central') ||
-        (tipoOrigem === 'central' && tipoDestino === 'central')
-      );
+        (tipoOrigem === 'apeado' && tipoDestino === 'central')
+      ) {
+        return 'apeados';
+      }
+      if (tipoOrigem === 'central' && tipoDestino === 'central') {
+        return 'centrais';
+      }
+      return '';
     };
 
     return requisicoes.filter((req) => {
-      const isTransfer = isFluxoTransferencia(req);
-      return isModoTransferencias ? isTransfer : !isTransfer;
+      const fluxoTransfer = getFluxoTransferencia(req);
+      const isTransfer = Boolean(fluxoTransfer);
+      if (!isModoTransferencias) return !isTransfer;
+      if (!flowFilter) return isTransfer;
+      return fluxoTransfer === flowFilter;
     });
   })();
 
@@ -1270,6 +1295,20 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
           </div>
           {podeCriarOuImportarRequisicao && (
             <div className="flex flex-wrap gap-2 justify-end">
+              {isModoTransferencias && showStatusBoard && hasFluxoTransferSelecionado && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigate('/transferencias');
+                    setSelectionMode(false);
+                    setSelectedIds([]);
+                    setSearchTerm('');
+                  }}
+                  className="inline-flex items-center gap-2 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors text-sm"
+                >
+                  Voltar seleção de fluxo
+                </button>
+              )}
               {selectionMode && selectedIds.length > 0 && (
                 <>
                   {selectedIds.length >= 2 && (
@@ -1307,7 +1346,7 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
                 <FaFileImport /> Importar requisição
               </button>
               <Link
-                to={isModoTransferencias ? '/transferencias/criar?transferencias=1' : '/requisicoes/criar'}
+                to={isModoTransferencias ? createTransferLink : '/requisicoes/criar'}
                 className="inline-flex items-center gap-2 px-4 py-2 bg-[#0915FF] text-white rounded-lg hover:bg-[#070FCC] transition-colors"
               >
                 <FaPlus /> {isModoTransferencias ? 'Nova Transferência' : 'Nova Requisição'}
@@ -1316,12 +1355,88 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
           )}
         </div>
 
+        {isModoTransferencias && showStatusBoard && (
+          <div className="mb-6 grid grid-cols-1 lg:grid-cols-[320px_minmax(0,1fr)] gap-4">
+            <div className="bg-white rounded-lg border border-gray-200 p-5 h-fit">
+              <div className="mb-4">
+                <h2 className="text-base font-semibold text-gray-800">Tipo de transferência</h2>
+                <p className="text-sm text-gray-600">Selecione uma opção para continuar.</p>
+              </div>
+              <div className="space-y-3">
+                <button
+                  type="button"
+                  onClick={() => navigate('/transferencias?fluxo=centrais')}
+                  className={`w-full text-left rounded-lg border px-4 py-3 transition-colors ${
+                    flowParam === 'centrais'
+                      ? 'border-[#0915FF] bg-blue-50'
+                      : 'border-gray-300 bg-white hover:border-[#0915FF] hover:bg-blue-50/40'
+                  }`}
+                >
+                  <div className="text-sm font-semibold text-gray-900">Entre armazéns centrais</div>
+                  <div className="mt-0.5 text-xs text-gray-600">Fluxo Central -> Central</div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => navigate('/transferencias?fluxo=apeados')}
+                  className={`w-full text-left rounded-lg border px-4 py-3 transition-colors ${
+                    flowParam === 'apeados'
+                      ? 'border-[#0915FF] bg-blue-50'
+                      : 'border-gray-300 bg-white hover:border-[#0915FF] hover:bg-blue-50/40'
+                  }`}
+                >
+                  <div className="text-sm font-semibold text-gray-900">Transferências para APEADOS</div>
+                  <div className="mt-0.5 text-xs text-gray-600">{'Fluxo Central <-> APEADO'}</div>
+                </button>
+              </div>
+            </div>
+
+            <div className="bg-white rounded-lg border border-gray-200 p-5">
+              {hasFluxoTransferSelecionado ? (
+                <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
+                  {statusCards.map((card) => {
+                    const qty = countsByStatus[card.key] || 0;
+                    return (
+                      <button
+                        key={card.key}
+                        type="button"
+                        onClick={() => {
+                          const params = new URLSearchParams();
+                          if (isModoTransferencias && hasFluxoTransferSelecionado) {
+                            params.set('fluxo', flowParam);
+                          }
+                          params.set('status', card.key);
+                          navigate(`${rotaBase}?${params.toString()}`);
+                          setSelectionMode(false);
+                          setSelectedIds([]);
+                        }}
+                        className={`text-left rounded-xl border p-5 shadow-sm hover:shadow-md transition-all ${card.color}`}
+                      >
+                        <div className="text-sm font-semibold opacity-90">{card.label}</div>
+                        <div className="mt-2 text-3xl font-bold">{qty}</div>
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="h-full min-h-[180px] flex items-center justify-center text-center text-gray-500">
+                  Selecione um tipo de transferência à esquerda para visualizar os cards de status.
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
         {!showStatusBoard && (
           <div className="mb-3 sm:hidden">
             <button
               type="button"
               onClick={() => {
-                navigate(rotaBase);
+                const flowParam = String(new URLSearchParams(location.search || '').get('fluxo') || '').toLowerCase();
+                if (isModoTransferencias && ['centrais', 'apeados'].includes(flowParam)) {
+                  navigate(`${rotaBase}?fluxo=${flowParam}`);
+                } else {
+                  navigate(rotaBase);
+                }
                 setSearchTerm('');
                 setSelectionMode(false);
                 setSelectedIds([]);
@@ -1333,7 +1448,7 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
           </div>
         )}
 
-        {showStatusBoard && (
+        {showStatusBoard && !isModoTransferencias && (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
             {statusCards.map((card) => {
               const qty = countsByStatus[card.key] || 0;
@@ -1343,6 +1458,9 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
                   type="button"
                   onClick={() => {
                     const params = new URLSearchParams();
+                    if (isModoTransferencias && hasFluxoTransferSelecionado) {
+                      params.set('fluxo', flowParam);
+                    }
                     params.set('status', card.key);
                     navigate(`${rotaBase}?${params.toString()}`);
                     setSelectionMode(false);
@@ -1379,7 +1497,12 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
               <button
                 type="button"
                 onClick={() => {
-                  navigate(rotaBase);
+                  const flowParam = String(new URLSearchParams(location.search || '').get('fluxo') || '').toLowerCase();
+                  if (isModoTransferencias && ['centrais', 'apeados'].includes(flowParam)) {
+                    navigate(`${rotaBase}?fluxo=${flowParam}`);
+                  } else {
+                    navigate(rotaBase);
+                  }
                   setSearchTerm('');
                   setSelectionMode(false);
                   setSelectedIds([]);
@@ -1409,7 +1532,7 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
             </p>
             {podeCriarOuImportarRequisicao && (
               <Link
-                to={isModoTransferencias ? '/transferencias/criar?transferencias=1' : '/requisicoes/criar'}
+                to={isModoTransferencias ? createTransferLink : '/requisicoes/criar'}
                 className="mt-4 inline-block text-[#0915FF] hover:underline"
               >
                 Criar primeira {isModoTransferencias ? 'transferência' : 'requisição'}
@@ -1469,7 +1592,7 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
                         message: `Esta requisição está reservada para separação (${separadorNome || 'outro operador'}).`
                       });
                     } else {
-                      navigate(`/requisicoes/preparar/${req.id}`);
+                      navigate(rotaPrepararComOrigem(req.id));
                     }
                   }}
                   className="p-6 cursor-pointer hover:bg-gray-50/50 transition-colors"
@@ -1620,7 +1743,7 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
                         <button
                         type="button"
                         disabled={prepBloqueio}
-                        onClick={() => navigate(`/requisicoes/preparar/${req.id}`)}
+                        onClick={() => navigate(rotaPrepararComOrigem(req.id))}
                         className={`px-3 py-2 bg-green-600 text-white rounded-lg transition-colors flex items-center gap-2 ${
                           prepBloqueio ? 'opacity-50 cursor-not-allowed' : 'hover:bg-green-700'
                         }`}
@@ -1687,7 +1810,7 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
                   setContextMenu(prev => ({ ...prev, visible: false }));
                   return;
                 }
-                navigate(`/requisicoes/preparar/${contextMenu.req.id}`);
+                navigate(rotaPrepararComOrigem(contextMenu.req.id));
                 setContextMenu(prev => ({ ...prev, visible: false }));
               }}
             >
