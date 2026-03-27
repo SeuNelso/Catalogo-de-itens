@@ -17,8 +17,8 @@ RUN npm ci --only=production
 # Copiar código do backend
 COPY server/ ./server/
 
-# Copiar frontend buildado para ser servido pelo Express
-COPY --from=frontend-builder /app/client/build ./server/public
+# Copiar frontend buildado para o caminho servido pelo Express (server/index.js -> ../client/build)
+COPY --from=frontend-builder /app/client/build ./client/build
 
 EXPOSE 3001
 
