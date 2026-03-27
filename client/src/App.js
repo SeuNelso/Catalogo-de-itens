@@ -195,6 +195,14 @@ function App() {
                     </ProtectedRoute>
                   }
                 />
+                <Route
+                  path="/transferencias"
+                  element={
+                    <ProtectedRoute allowedRoles={[...ROLES_COM_ACESSO_REQUISICOES]}>
+                      <ListarRequisicoes modo="transferencias" />
+                    </ProtectedRoute>
+                  }
+                />
                 <Route 
                   path="/requisicoes/criar" 
                   element={
@@ -202,6 +210,14 @@ function App() {
                       <CriarRequisicao />
                     </ProtectedRoute>
                   } 
+                />
+                <Route
+                  path="/transferencias/criar"
+                  element={
+                    <ProtectedRoute allowedRoles={['admin', 'backoffice_operations', 'backoffice_armazem', 'supervisor_armazem']}>
+                      <CriarRequisicao />
+                    </ProtectedRoute>
+                  }
                 />
                 <Route 
                   path="/requisicoes/importar" 

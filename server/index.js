@@ -46,6 +46,7 @@ const {
   usuariosTemColunaRequisicoesArmazemOrigem,
 } = require('./middleware/requisicoesScope');
 const { createRequisicoesRouter } = require('./routes/requisicoes');
+const { createIntegrationRouter } = require('./routes/integrations');
 
 const vision = require('@google-cloud/vision');
 const { detectLabelsFromS3 } = require('./rekognition');
@@ -5379,6 +5380,14 @@ app.use(
     requisicaoArmazemOrigemAcessoPermitido,
     assertIdsRequisicoesPermitidas,
     excelUploadRequisicoes,
+  })
+);
+
+app.use(
+  '/api/integrations/v1',
+  createIntegrationRouter({
+    pool,
+    authenticateToken,
   })
 );
 

@@ -14,7 +14,7 @@ import { desenharPaginaNotaEntregaDigi } from '../utils/notaEntregaPdf';
 import { operadorPodeDocsELogisticaAposSeparacao, isAdmin } from '../utils/roles';
 import { getRequisicoesArmazemOrigemIds } from '../utils/requisicoesArmazemOrigem';
 
-const ListarRequisicoes = () => {
+const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
   const [requisicoes, setRequisicoes] = useState([]);
   const [toast, setToast] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -41,10 +41,13 @@ const ListarRequisicoes = () => {
   const [reporteLoading, setReporteLoading] = useState(false);
   /** Só requisições criadas pelo utilizador atual */
   const [somenteMinhas, setSomenteMinhas] = useState(false);
+  const [armazensById, setArmazensById] = useState({});
   const navigate = useNavigate();
   const location = useLocation();
   const { user } = useAuth();
   const confirm = useConfirm();
+  const isModoTransferencias = modo === 'transferencias';
+  const rotaBase = isModoTransferencias ? '/transferencias' : '/requisicoes';
   const canCreateOrEdit = user && ['admin', 'backoffice_operations', 'backoffice_armazem', 'supervisor_armazem'].includes(user.role);
   const canDelete = user && ['admin', 'backoffice_armazem', 'supervisor_armazem'].includes(user.role);
   const canPrepare = user && ['admin', 'operador', 'backoffice_armazem', 'supervisor_armazem'].includes(user.role);
@@ -61,7 +64,31 @@ const ListarRequisicoes = () => {
   useEffect(() => {
     fetchRequisicoes();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filtros, somenteMinhas]);
+  }, [filtros, somenteMinhas, isModoTransferencias]);
+
+  // Mapeamento de tipos de armazém (central/apeado) para filtrar "Transferências"
+  // e evitar que central↔apeado apareça em "Requisições".
+  useEffect(() => {
+    const fetchArmazens = async () => {
+      try {
+        const token = localStorage.getItem('token');
+        const res = await fetch('/api/armazens?ativo=true&destino_requisicao=1', {
+          headers: { Authorization: `Bearer ${token}` },
+          cache: 'no-store'
+        });
+        if (!res.ok) return;
+        const data = await res.json().catch(() => null);
+        const mapa = (Array.isArray(data) ? data : []).reduce((acc, a) => {
+          const idNum = Number(a?.id);
+          if (!Number.isFinite(idNum)) return acc;
+          acc[idNum] = String(a?.tipo || '').trim().toLowerCase();
+          return acc;
+        }, {});
+        setArmazensById(mapa);
+      } catch (_) {}
+    };
+    fetchArmazens();
+  }, []);
 
   useEffect(() => {
     const params = new URLSearchParams(location.search || '');
@@ -118,25 +145,61 @@ const ListarRequisicoes = () => {
     try {
       setLoading(true);
       const token = localStorage.getItem('token');
-      
-      const params = new URLSearchParams();
-      if (filtros.status) params.append('status', filtros.status);
-      if (somenteMinhas) params.append('minhas', '1');
 
-      const response = await fetch(`/api/requisicoes?${params.toString()}`, {
-        headers: {
-          'Authorization': `Bearer ${token}`
+      const baseParams = new URLSearchParams();
+      if (filtros.status) baseParams.append('status', filtros.status);
+      if (somenteMinhas) baseParams.append('minhas', '1');
+
+      if (isModoTransferencias) {
+        const paramsSemFlag = new URLSearchParams(baseParams.toString());
+        const paramsComFlag = new URLSearchParams(baseParams.toString());
+        paramsComFlag.append('transferencias', '1');
+
+        const [respA, respB] = await Promise.all([
+          fetch(`/api/requisicoes?${paramsSemFlag.toString()}`, {
+            headers: { 'Authorization': `Bearer ${token}` },
+            cache: 'no-store'
+          }),
+          fetch(`/api/requisicoes?${paramsComFlag.toString()}`, {
+            headers: { 'Authorization': `Bearer ${token}` },
+            cache: 'no-store'
+          })
+        ]);
+
+        const dataA = respA.ok ? await respA.json().catch(() => []) : [];
+        const dataB = respB.ok ? await respB.json().catch(() => []) : [];
+
+        const merged = [...(Array.isArray(dataA) ? dataA : []), ...(Array.isArray(dataB) ? dataB : [])];
+        // Deduplicar por id.
+        const uniqueMap = new Map();
+        for (const r of merged) {
+          const id = Number(r?.id);
+          if (!Number.isFinite(id)) continue;
+          uniqueMap.set(id, r);
         }
-      });
+        const data = Array.from(uniqueMap.values());
 
-      if (response.ok) {
-        const data = await response.json();
-        // Evita sobrescrever estado com resposta antiga (race condition de filtros).
         if (fetchId === latestFetchIdRef.current) {
           setRequisicoes(data);
         }
         return data;
       } else {
+        const params = baseParams;
+        const response = await fetch(`/api/requisicoes?${params.toString()}`, {
+          headers: {
+            'Authorization': `Bearer ${token}`
+          },
+          cache: 'no-store'
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          if (fetchId === latestFetchIdRef.current) {
+            setRequisicoes(data);
+          }
+          return data;
+        }
+
         setToast({ type: 'error', message: 'Erro ao carregar requisições' });
         return null;
       }
@@ -1067,12 +1130,38 @@ const ListarRequisicoes = () => {
     return !precisaAdmin || user?.role === 'admin';
   };
 
+  const isFluxoCentralApeadoSemTrfl = (reqObj) => {
+    const origem = String(reqObj?.armazem_origem_tipo || '').trim().toLowerCase();
+    const destino = String(reqObj?.armazem_destino_tipo || '').trim().toLowerCase();
+    return origem === 'central' && destino === 'apeado';
+  };
+
   const normalize = (v) => String(v || '')
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase();
 
-  const filteredRequisicoes = requisicoes.filter(req => {
+  const requisicoesPorFluxo = (() => {
+    const temMap = armazensById && Object.keys(armazensById).length > 0;
+    if (!temMap) return requisicoes;
+
+    const isFluxoTransferencia = (req) => {
+      const tipoOrigem = armazensById[Number(req?.armazem_origem_id)] || '';
+      const tipoDestino = armazensById[Number(req?.armazem_id)] || '';
+      return (
+        (tipoOrigem === 'central' && tipoDestino === 'apeado') ||
+        (tipoOrigem === 'apeado' && tipoDestino === 'central') ||
+        (tipoOrigem === 'central' && tipoDestino === 'central')
+      );
+    };
+
+    return requisicoes.filter((req) => {
+      const isTransfer = isFluxoTransferencia(req);
+      return isModoTransferencias ? isTransfer : !isTransfer;
+    });
+  })();
+
+  const filteredRequisicoes = requisicoesPorFluxo.filter(req => {
     const raw = String(searchTerm || '').trim();
     if (!raw) return true;
     const searchLower = normalize(raw);
@@ -1142,7 +1231,7 @@ const ListarRequisicoes = () => {
     { key: 'FINALIZADO', label: 'Finalizadas', color: 'bg-slate-50 border-slate-300 text-slate-800' },
     { key: 'cancelada', label: 'Canceladas', color: 'bg-red-50 border-red-200 text-red-800' }
   ];
-  const countsByStatus = requisicoes.reduce((acc, r) => {
+  const countsByStatus = requisicoesPorFluxo.reduce((acc, r) => {
     const s = r.status || 'pendente';
     acc[s] = (acc[s] || 0) + 1;
     return acc;
@@ -1170,11 +1259,13 @@ const ListarRequisicoes = () => {
         {/* Header */}
         <div className="mb-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
           <div>
-            <h1 className="text-2xl sm:text-3xl font-bold text-gray-800 mb-2">Requisições</h1>
+            <h1 className="text-2xl sm:text-3xl font-bold text-gray-800 mb-2">
+              {isModoTransferencias ? 'Transferências' : 'Requisições'}
+            </h1>
             <p className="text-gray-600">
               {showStatusBoard
                 ? 'Selecione um status para abrir a lista e gerir por FIFO.'
-                : `Lista de requisições${filtros.status ? ` (${getStatusLabel(filtros.status)})` : ''}.`}
+                : `Lista de ${isModoTransferencias ? 'transferências' : 'requisições'}${filtros.status ? ` (${getStatusLabel(filtros.status)})` : ''}.`}
             </p>
           </div>
           {podeCriarOuImportarRequisicao && (
@@ -1216,14 +1307,31 @@ const ListarRequisicoes = () => {
                 <FaFileImport /> Importar requisição
               </button>
               <Link
-                to="/requisicoes/criar"
+                to={isModoTransferencias ? '/transferencias/criar?transferencias=1' : '/requisicoes/criar'}
                 className="inline-flex items-center gap-2 px-4 py-2 bg-[#0915FF] text-white rounded-lg hover:bg-[#070FCC] transition-colors"
               >
-                <FaPlus /> Nova Requisição
+                <FaPlus /> {isModoTransferencias ? 'Nova Transferência' : 'Nova Requisição'}
               </Link>
             </div>
           )}
         </div>
+
+        {!showStatusBoard && (
+          <div className="mb-3 sm:hidden">
+            <button
+              type="button"
+              onClick={() => {
+                navigate(rotaBase);
+                setSearchTerm('');
+                setSelectionMode(false);
+                setSelectedIds([]);
+              }}
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50"
+            >
+              Voltar aos status
+            </button>
+          </div>
+        )}
 
         {showStatusBoard && (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
@@ -1236,7 +1344,7 @@ const ListarRequisicoes = () => {
                   onClick={() => {
                     const params = new URLSearchParams();
                     params.set('status', card.key);
-                    navigate(`/requisicoes?${params.toString()}`);
+                    navigate(`${rotaBase}?${params.toString()}`);
                     setSelectionMode(false);
                     setSelectedIds([]);
                   }}
@@ -1271,12 +1379,12 @@ const ListarRequisicoes = () => {
               <button
                 type="button"
                 onClick={() => {
-                  navigate('/requisicoes');
+                  navigate(rotaBase);
                   setSearchTerm('');
                   setSelectionMode(false);
                   setSelectedIds([]);
                 }}
-                className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50"
+                className="hidden sm:block px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50"
               >
                 Voltar aos status
               </button>
@@ -1296,13 +1404,15 @@ const ListarRequisicoes = () => {
         {/* Lista de Requisições */}
         {requisicoesOrdenadas.length === 0 ? (
           <div className="bg-white rounded-lg shadow-sm p-8 text-center">
-            <p className="text-gray-500 text-lg">Nenhuma requisição encontrada</p>
+            <p className="text-gray-500 text-lg">
+              Nenhuma {isModoTransferencias ? 'transferência' : 'requisição'} encontrada
+            </p>
             {podeCriarOuImportarRequisicao && (
               <Link
-                to="/requisicoes/criar"
+                to={isModoTransferencias ? '/transferencias/criar?transferencias=1' : '/requisicoes/criar'}
                 className="mt-4 inline-block text-[#0915FF] hover:underline"
               >
-                Criar primeira requisição
+                Criar primeira {isModoTransferencias ? 'transferência' : 'requisição'}
               </Link>
             )}
           </div>
@@ -1426,7 +1536,9 @@ const ListarRequisicoes = () => {
                       </div>
                     </div>
                   <div className="flex gap-2 mt-4 sm:mt-0 flex-wrap" onClick={(e) => e.stopPropagation()}>
-                    {canDocsELogisticaPosSeparacao && (req.status === 'separado' && req.separacao_confirmada) ? (
+                    {canDocsELogisticaPosSeparacao &&
+                    (req.status === 'separado' && req.separacao_confirmada) &&
+                    !isFluxoCentralApeadoSemTrfl(req) ? (
                       <button
                         type="button"
                         disabled={prepBloqueio}
@@ -1456,7 +1568,9 @@ const ListarRequisicoes = () => {
                         ENTREGAR
                       </button>
                     )}
-                    {canDocsELogisticaPosSeparacao && (req.status === 'Entregue' && !req.tra_gerada_em) && (
+                    {canDocsELogisticaPosSeparacao &&
+                    (((req.status === 'Entregue' && !req.tra_gerada_em) ||
+                      (isFluxoCentralApeadoSemTrfl(req) && req.status === 'separado' && req.separacao_confirmada && !req.tra_gerada_em))) && (
                       <button
                         type="button"
                         disabled={prepBloqueio}
@@ -1469,7 +1583,9 @@ const ListarRequisicoes = () => {
                         GERAR TRA
                       </button>
                     )}
-                    {canDocsELogisticaPosSeparacao && req.status === 'Entregue' && req.tra_gerada_em && (
+                    {canDocsELogisticaPosSeparacao &&
+                    ((req.status === 'Entregue' && req.tra_gerada_em) ||
+                      (isFluxoCentralApeadoSemTrfl(req) && req.status === 'separado' && req.tra_gerada_em)) && (
                       <button
                         type="button"
                         disabled={prepBloqueio}

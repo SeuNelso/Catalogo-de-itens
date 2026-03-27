@@ -94,10 +94,8 @@ const ImportarRequisicao = () => {
           : 'Requisição importada com sucesso!'
       });
       setTimeout(() => {
-        // Se existir devolução, é ela que normalmente deve ser preparada em seguida.
-        if (devId) navigate(`/requisicoes/preparar/${devId}`);
-        else if (reqId) navigate(`/requisicoes/preparar/${reqId}`);
-        else navigate('/requisicoes');
+        // Após importar, voltar sempre ao quadro de status da tela de Requisições.
+        navigate('/requisicoes');
       }, 1200);
     } catch (err) {
       console.error('Erro ao importar requisição:', err);

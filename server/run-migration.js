@@ -61,6 +61,8 @@ const migrationFile = path.join(
                         ? 'migrate-requisicoes-status-apeados.sql'
                         : arg === 'requisicoes-itens-quantidade-apeados'
                           ? 'migrate-requisicoes-itens-quantidade-apeados.sql'
+                      : arg === 'integrations-v1' || arg === 'integracoes-v1'
+                        ? 'migrate-integrations-v1.sql'
                       : 'migrate-requisicoes-itens-preparacao.sql'
 );
 

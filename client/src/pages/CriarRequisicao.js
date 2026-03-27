@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { getRequisicoesArmazemOrigemIds } from '../utils/requisicoesArmazemOrigem';
 import { filtrarArmazensOrigemRequisicao } from '../utils/armazensRequisicaoOrigem';
@@ -44,7 +44,14 @@ const CriarRequisicao = () => {
   const abortBuscaRef = useRef(null);
   const abortStockRef = useRef(null);
   const navigate = useNavigate();
+  const location = useLocation();
   const { user } = useAuth();
+  const transferenciasQueryFlag = (() => {
+    const p = new URLSearchParams(location.search || '');
+    return ['1', 'true', 'yes', 'sim'].includes(String(p.get('transferencias') || '').toLowerCase());
+  })();
+  const isModoTransferencia =
+    location.pathname.startsWith('/transferencias') || transferenciasQueryFlag;
   /** Stock nacional (armazens_item) no armazém de origem para o item em seleção */
   const [stockOrigem, setStockOrigem] = useState({
     loading: false,
@@ -237,7 +244,10 @@ const CriarRequisicao = () => {
   };
 
   const armazensListaOrigem = useMemo(() => {
-    const origem = filtrarArmazensOrigemRequisicao(armazens || []);
+    let origem = filtrarArmazensOrigemRequisicao(armazens || []);
+    if (isModoTransferencia) {
+      origem = origem.filter((a) => ['central', 'apeado'].includes(String(a?.tipo || '').toLowerCase()));
+    }
     const allowed = getRequisicoesArmazemOrigemIds(user);
     if (user?.role === 'admin') {
       return origem;
@@ -247,18 +257,30 @@ const CriarRequisicao = () => {
       return origem.filter((a) => set.has(a.id));
     }
     return [];
-  }, [armazens, user]);
+  }, [armazens, user, isModoTransferencia]);
 
   const armazensOrigemFiltrados = filterArmazens(armazensListaOrigem, buscaArmazemOrigem);
-  /** Destino: mesmos tipos que origem (central, viatura, APEADO, EPI); lista completa na API com destino_requisicao=1 */
-  const armazensListaDestino = useMemo(
-    () => filtrarArmazensOrigemRequisicao(armazens || []),
-    [armazens]
-  );
+  /** Destino: em transferências, apenas central e APEADO. */
+  const armazensListaDestino = useMemo(() => {
+    let destino = filtrarArmazensOrigemRequisicao(armazens || []);
+    if (isModoTransferencia) {
+      destino = destino.filter((a) => ['central', 'apeado'].includes(String(a?.tipo || '').toLowerCase()));
+    }
+    return destino;
+  }, [armazens, isModoTransferencia]);
   const armazensDestinoFiltrados = filterArmazens(armazensListaDestino, buscaArmazemDestino);
 
   const armazemOrigemSelecionado = armazens.find(a => a.id === parseInt(formData.armazem_origem_id, 10));
   const armazemDestinoSelecionado = armazens.find(a => a.id === parseInt(formData.armazem_id, 10));
+
+  useEffect(() => {
+    if (formData.armazem_origem_id && !armazensListaOrigem.some((a) => String(a.id) === String(formData.armazem_origem_id))) {
+      setFormData((prev) => ({ ...prev, armazem_origem_id: '' }));
+    }
+    if (formData.armazem_id && !armazensListaDestino.some((a) => String(a.id) === String(formData.armazem_id))) {
+      setFormData((prev) => ({ ...prev, armazem_id: '' }));
+    }
+  }, [formData.armazem_origem_id, formData.armazem_id, armazensListaOrigem, armazensListaDestino]);
 
   const semArmazemOrigemAtribuido = Boolean(
     user && user.role !== 'admin' && getRequisicoesArmazemOrigemIds(user).length === 0
@@ -280,8 +302,16 @@ const CriarRequisicao = () => {
       setToast({
         type: 'error',
         message:
-          'Não tem armazéns de origem atribuídos. Um administrador deve associar pelo menos um armazém (central, viatura, APEADO ou EPI) ao seu utilizador.'
+          isModoTransferencia
+            ? 'Não tem armazéns de origem válidos para transferência. Um administrador deve associar um armazém Central ou APEADO ao seu utilizador.'
+            : 'Não tem armazéns de origem atribuídos. Um administrador deve associar pelo menos um armazém (central, viatura, APEADO ou EPI) ao seu utilizador.'
       });
+      return;
+    }
+
+    // Em Admin é possível submeter sem origem escolhida; para transferências, isso quebra o fluxo (central<->apeado).
+    if (isModoTransferencia && !formData.armazem_origem_id) {
+      setToast({ type: 'error', message: 'Selecione o armazém origem para a transferência.' });
       return;
     }
 
@@ -317,9 +347,29 @@ const CriarRequisicao = () => {
       });
 
       if (response.status === 201) {
-        setToast({ type: 'success', message: 'Requisição criada com sucesso!' });
+        // Detectar fluxo de transferência (Central <-> APEADO e Central -> Central) a partir dos IDs submetidos,
+        // evitando dependência de variáveis derivadas caso alguma esteja desatualizada.
+        const armOrig = armazens.find((a) => String(a?.id) === String(formData?.armazem_origem_id));
+        const armDest = armazens.find((a) => String(a?.id) === String(formData?.armazem_id));
+        const tipoOrigem = String(armOrig?.tipo || '').trim().toLowerCase();
+        const tipoDestino = String(armDest?.tipo || '').trim().toLowerCase();
+        const isTransferenciaFluxo =
+          (tipoOrigem === 'central' && tipoDestino === 'apeado') ||
+          (tipoOrigem === 'apeado' && tipoDestino === 'central') ||
+          (tipoOrigem === 'central' && tipoDestino === 'central');
+
+        setToast({
+          type: 'success',
+          message: isTransferenciaFluxo
+            ? 'Transferência criada com sucesso!'
+            : (isModoTransferencia ? 'Transferência criada com sucesso!' : 'Requisição criada com sucesso!')
+        });
         setTimeout(() => {
-          navigate('/requisicoes');
+          navigate(
+            isTransferenciaFluxo
+              ? '/transferencias'
+              : (isModoTransferencia ? '/transferencias' : '/requisicoes')
+          );
         }, 1500);
       }
     } catch (error) {
@@ -342,18 +392,26 @@ const CriarRequisicao = () => {
         {/* Header */}
         <div className="mb-6">
           <button
-            onClick={() => navigate('/requisicoes')}
+            onClick={() => navigate(isModoTransferencia ? '/transferencias' : '/requisicoes')}
             className="mb-4 flex items-center gap-2 text-gray-600 hover:text-gray-800"
           >
             <FaArrowLeft /> Voltar
           </button>
-          <h1 className="text-2xl sm:text-3xl font-bold text-gray-800 mb-2">Nova Requisição</h1>
-          <p className="text-gray-600">Etapa 1: Defina origem, itens, quantidades e destino. A localização será preenchida na preparação.</p>
+          <h1 className="text-2xl sm:text-3xl font-bold text-gray-800 mb-2">
+            {isModoTransferencia ? 'Nova Transferência' : 'Nova Requisição'}
+          </h1>
+          <p className="text-gray-600">
+            {isModoTransferencia
+              ? 'Etapa 1: Defina origem, itens, quantidades e destino (somente armazéns Central e APEADO).'
+              : 'Etapa 1: Defina origem, itens, quantidades e destino. A localização será preenchida na preparação.'}
+          </p>
         </div>
 
         {semArmazemOrigemAtribuido && (
           <div className="mb-6 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
-            Não tem armazéns de origem atribuídos. Peça a um administrador que associe pelo menos um armazém central, viatura, APEADO ou EPI ao seu utilizador antes de criar requisições.
+            {isModoTransferencia
+              ? 'Não tem armazéns de origem atribuídos para transferências. Peça a um administrador que associe pelo menos um armazém Central ou APEADO ao seu utilizador.'
+              : 'Não tem armazéns de origem atribuídos. Peça a um administrador que associe pelo menos um armazém central, viatura, APEADO ou EPI ao seu utilizador antes de criar requisições.'}
           </div>
         )}
 
@@ -657,14 +715,19 @@ const CriarRequisicao = () => {
             <div className="flex flex-col sm:flex-row gap-4 pt-4 border-t border-gray-200">
               <button
                 type="button"
-                onClick={() => navigate('/requisicoes')}
+                onClick={() => navigate(isModoTransferencia ? '/transferencias' : '/requisicoes')}
                 className="flex-1 px-6 py-3 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
               >
                 Cancelar
               </button>
               <button
                 type="submit"
-                disabled={loading || itensRequisicao.length === 0 || semArmazemOrigemAtribuido}
+                disabled={
+                  loading ||
+                  itensRequisicao.length === 0 ||
+                  semArmazemOrigemAtribuido ||
+                  (isModoTransferencia && !formData.armazem_origem_id)
+                }
                 className="flex-1 px-6 py-3 bg-[#0915FF] text-white rounded-lg hover:bg-[#070FCC] transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
               >
                 {loading ? (
@@ -674,7 +737,7 @@ const CriarRequisicao = () => {
                   </>
                 ) : (
                   <>
-                    <FaSave /> Criar Requisição
+                    <FaSave /> {isModoTransferencia ? 'Criar Transferência' : 'Criar Requisição'}
                   </>
                 )}
               </button>

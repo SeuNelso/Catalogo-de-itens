@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { ChevronDown, Settings, Database, Users, User, FileText, Download, Plus, Trash2, Image, RefreshCw, Menu, X, AlertTriangle, Package, ShoppingCart, Archive } from 'react-feather';
+import { ChevronDown, Settings, Database, Users, User, FileText, Download, Plus, Trash2, Image, RefreshCw, Menu, X, AlertTriangle, Package, ShoppingCart, Archive, RotateCcw, Truck } from 'react-feather';
 import { podeAcederRequisicoes } from '../utils/roles';
 
 const Navbar = () => {
@@ -9,8 +9,22 @@ const Navbar = () => {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [gerirOpen, setGerirOpen] = useState(false);
   const [dadosOpen, setDadosOpen] = useState(false);
+  const [clogOpen, setClogOpen] = useState(false);
   const [isInteracting, setIsInteracting] = useState(false);
   const navigate = useNavigate();
+  const location = useLocation();
+
+  const closeAllDropdowns = () => {
+    setGerirOpen(false);
+    setDadosOpen(false);
+    setClogOpen(false);
+  };
+
+  const toggleDropdown = (menu) => {
+    setGerirOpen((prev) => (menu === 'gerir' ? !prev : false));
+    setDadosOpen((prev) => (menu === 'dados' ? !prev : false));
+    setClogOpen((prev) => (menu === 'clog' ? !prev : false));
+  };
 
   const handleLogout = () => {
     logout();
@@ -29,6 +43,7 @@ const Navbar = () => {
   // Fechar menu mobile ao navegar
   const handleNavigation = () => {
     setMobileOpen(false);
+    closeAllDropdowns();
   };
 
   // Função específica para navegação mobile
@@ -42,8 +57,7 @@ const Navbar = () => {
     
     // Fechar menus primeiro
     setMobileOpen(false);
-    setDadosOpen(false);
-    setGerirOpen(false);
+    closeAllDropdowns();
     
     // Navegar após um pequeno delay
     setTimeout(() => {
@@ -58,19 +72,23 @@ const Navbar = () => {
     const handleClickOutside = (event) => {
       const gerirDropdown = document.querySelector('.gerir-dropdown');
       const dadosDropdown = document.querySelector('.dados-dropdown');
+      const clogDropdown = document.querySelector('.clog-dropdown');
       
-      // Verificar se o clique foi em um link ou botão dentro do dropdown
-      const isDropdownLink = event.target.closest('a') || event.target.closest('button');
-      
-      if (gerirOpen && gerirDropdown && !gerirDropdown.contains(event.target) && !isDropdownLink) {
+      if (gerirOpen && gerirDropdown && !gerirDropdown.contains(event.target)) {
         setTimeout(() => {
           setGerirOpen(false);
         }, 100);
       }
       
-      if (dadosOpen && dadosDropdown && !dadosDropdown.contains(event.target) && !isDropdownLink) {
+      if (dadosOpen && dadosDropdown && !dadosDropdown.contains(event.target)) {
         setTimeout(() => {
           setDadosOpen(false);
+        }, 100);
+      }
+
+      if (clogOpen && clogDropdown && !clogDropdown.contains(event.target)) {
+        setTimeout(() => {
+          setClogOpen(false);
         }, 100);
       }
     };
@@ -79,16 +97,18 @@ const Navbar = () => {
     return () => {
       document.removeEventListener('mousedown', handleClickOutside);
     };
-  }, [gerirOpen, dadosOpen]);
+  }, [gerirOpen, dadosOpen, clogOpen]);
 
   // Fechar dropdowns quando o mouse sai deles (com delay)
   useEffect(() => {
     let gerirTimeout;
     let dadosTimeout;
+    let clogTimeout;
 
     const handleMouseLeave = (event) => {
       const gerirDropdown = document.querySelector('.gerir-dropdown');
       const dadosDropdown = document.querySelector('.dados-dropdown');
+      const clogDropdown = document.querySelector('.clog-dropdown');
       
       // Não fechar se o usuário está interagindo
       if (isInteracting) return;
@@ -109,6 +129,14 @@ const Navbar = () => {
           }
         }, 300); // Aumentado para 300ms delay
       }
+
+      if (clogOpen && clogDropdown && !clogDropdown.contains(event.relatedTarget)) {
+        clogTimeout = setTimeout(() => {
+          if (!isInteracting) {
+            setClogOpen(false);
+          }
+        }, 300);
+      }
     };
 
     const handleMouseEnter = () => {
@@ -119,10 +147,14 @@ const Navbar = () => {
       if (dadosTimeout) {
         clearTimeout(dadosTimeout);
       }
+      if (clogTimeout) {
+        clearTimeout(clogTimeout);
+      }
     };
 
     const gerirDropdown = document.querySelector('.gerir-dropdown');
     const dadosDropdown = document.querySelector('.dados-dropdown');
+    const clogDropdown = document.querySelector('.clog-dropdown');
     
     if (gerirDropdown) {
       gerirDropdown.addEventListener('mouseleave', handleMouseLeave);
@@ -134,6 +166,11 @@ const Navbar = () => {
       dadosDropdown.addEventListener('mouseenter', handleMouseEnter);
     }
 
+    if (clogDropdown) {
+      clogDropdown.addEventListener('mouseleave', handleMouseLeave);
+      clogDropdown.addEventListener('mouseenter', handleMouseEnter);
+    }
+
     return () => {
       if (gerirDropdown) {
         gerirDropdown.removeEventListener('mouseleave', handleMouseLeave);
@@ -143,10 +180,20 @@ const Navbar = () => {
         dadosDropdown.removeEventListener('mouseleave', handleMouseLeave);
         dadosDropdown.removeEventListener('mouseenter', handleMouseEnter);
       }
+      if (clogDropdown) {
+        clogDropdown.removeEventListener('mouseleave', handleMouseLeave);
+        clogDropdown.removeEventListener('mouseenter', handleMouseEnter);
+      }
       if (gerirTimeout) clearTimeout(gerirTimeout);
       if (dadosTimeout) clearTimeout(dadosTimeout);
+      if (clogTimeout) clearTimeout(clogTimeout);
     };
-  }, [gerirOpen, dadosOpen, isInteracting]);
+  }, [gerirOpen, dadosOpen, clogOpen, isInteracting]);
+
+  // Garantir UI limpa quando a rota muda.
+  useEffect(() => {
+    closeAllDropdowns();
+  }, [location.pathname]);
 
   return (
     <header className="w-full bg-[#0915FF] text-white fixed top-0 left-0 z-50 shadow-lg h-14 flex items-center">
@@ -168,17 +215,49 @@ const Navbar = () => {
                 </Link>
               </div>
               {canSeeRequisicoes && (
-                <div className="relative font-medium text-sm lg:text-base uppercase tracking-wider text-white cursor-pointer flex items-center px-2 lg:px-3 xl:px-4 h-12 min-w-12 lg:min-w-14 xl:min-w-16 rounded-lg transition-all duration-200 hover:bg-white/10 hover:text-yellow-400">
-                  <Link to="/requisicoes" className="text-inherit no-underline px-0.5 font-semibold w-full h-full flex items-center justify-center">
-                    Requisições
-                  </Link>
-                </div>
-              )}
-              {canSeeRequisicoes && (
-                <div className="relative font-medium text-sm lg:text-base uppercase tracking-wider text-white cursor-pointer flex items-center px-2 lg:px-3 xl:px-4 h-12 min-w-12 lg:min-w-14 xl:min-w-16 rounded-lg transition-all duration-200 hover:bg-white/10 hover:text-yellow-400">
-                  <Link to="/devolucoes" className="text-inherit no-underline px-0.5 font-semibold w-full h-full flex items-center justify-center">
-                    Devoluções
-                  </Link>
+                <div
+                  className="relative inline-block clog-dropdown"
+                  onMouseEnter={() => setIsInteracting(true)}
+                  onMouseLeave={() => setIsInteracting(false)}
+                >
+                  <button
+                    className="bg-transparent border-none text-white font-semibold text-sm lg:text-base py-3 px-2 lg:px-3 xl:px-4 cursor-pointer flex items-center gap-1 lg:gap-2 transition-colors duration-200 rounded-lg hover:bg-white/10"
+                    onClick={() => toggleDropdown('clog')}
+                  >
+                    <Truck size={14} className="lg:w-4 lg:h-4" />
+                    <span>Clog</span>
+                    <ChevronDown size={14} className={`ml-1 text-white transition-transform duration-200 lg:w-4 lg:h-4 ${clogOpen ? 'rotate-180' : ''}`} />
+                  </button>
+                  {clogOpen && (
+                    <div className="absolute top-full left-0 bg-[#0915FF] border border-gray-200 rounded-lg shadow-lg min-w-48 lg:min-w-56 z-50 p-2 -mt-1 pt-2">
+                      <div className="flex flex-col gap-1">
+                        <Link
+                          to="/requisicoes"
+                          onClick={(e) => { e.preventDefault(); e.stopPropagation(); setClogOpen(false); setTimeout(() => navigate('/requisicoes'), 100); }}
+                          className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded"
+                        >
+                          <ShoppingCart size={14} className="lg:w-4 lg:h-4" />
+                          Requisições
+                        </Link>
+                        <Link
+                          to="/devolucoes"
+                          onClick={(e) => { e.preventDefault(); e.stopPropagation(); setClogOpen(false); setTimeout(() => navigate('/devolucoes'), 100); }}
+                          className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded"
+                        >
+                          <RotateCcw size={14} className="lg:w-4 lg:h-4" />
+                          Devoluções
+                        </Link>
+                        <Link
+                          to="/transferencias"
+                          onClick={(e) => { e.preventDefault(); e.stopPropagation(); setClogOpen(false); setTimeout(() => navigate('/transferencias'), 100); }}
+                          className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded"
+                        >
+                          <Truck size={14} className="lg:w-4 lg:h-4" />
+                          Transferências
+                        </Link>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
               {showMeuPerfil && (
@@ -203,7 +282,7 @@ const Navbar = () => {
             >
               <button 
                 className="bg-transparent border-none text-white font-semibold text-sm lg:text-base py-3 px-2 lg:px-3 xl:px-4 cursor-pointer flex items-center gap-1 lg:gap-2 transition-colors duration-200 rounded-lg hover:bg-white/10"
-                onClick={() => setGerirOpen(!gerirOpen)}
+                onClick={() => toggleDropdown('gerir')}
               >
                 <Settings size={14} className="lg:w-4 lg:h-4" />
                 <span className="hidden lg:inline">Gerir</span>
@@ -270,7 +349,7 @@ const Navbar = () => {
             >
               <button 
                 className="bg-transparent border-none text-white font-semibold text-sm lg:text-base py-3 px-2 lg:px-3 xl:px-4 cursor-pointer flex items-center gap-1 lg:gap-2 transition-colors duration-200 rounded-lg hover:bg-white/10"
-                onClick={() => setDadosOpen(!dadosOpen)}
+                onClick={() => toggleDropdown('dados')}
               >
                 <Database size={14} className="lg:w-4 lg:h-4" />
                 <span className="hidden lg:inline">Dados</span>
@@ -502,11 +581,35 @@ const Navbar = () => {
                 </Link>
               </div>
               {canSeeRequisicoes && (
-                <div className="w-[85vw] sm:w-[90vw] py-3 sm:py-4.5 px-0 h-auto rounded-xl text-center text-base sm:text-lg font-semibold bg-white/8 m-0 mb-1 sm:mb-0.5 transition-all duration-200">
-                  <Link to="/requisicoes" onClick={(e) => handleMobileNavigation('/requisicoes', e)} className="text-white no-underline font-semibold w-full h-full flex items-center justify-center">
-                    <ShoppingCart size={16} className="inline mr-2 sm:mr-3" />
-                    Requisições
-                  </Link>
+                <div className="relative w-full clog-dropdown">
+                  <button
+                    className="w-full justify-between py-3 sm:py-4 px-4 sm:px-5 bg-transparent border-none text-white font-semibold text-sm sm:text-base cursor-pointer flex items-center gap-2 transition-colors duration-200 rounded-lg"
+                    onClick={() => toggleDropdown('clog')}
+                  >
+                    <div className="flex items-center gap-2">
+                      <Truck size={14} className="sm:w-4 sm:h-4" />
+                      Clog
+                    </div>
+                    <ChevronDown size={14} className={`text-white transition-transform duration-200 sm:w-4 sm:h-4 ${clogOpen ? 'rotate-180' : ''}`} />
+                  </button>
+                  {clogOpen && (
+                    <div className="static shadow-none border-none bg-white/5 m-0 p-0 rounded-none">
+                      <div className="flex flex-col">
+                        <Link to="/requisicoes" onClick={(e) => handleMobileNavigation('/requisicoes', e)} className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10">
+                          <ShoppingCart size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" />
+                          Requisições
+                        </Link>
+                        <Link to="/devolucoes" onClick={(e) => handleMobileNavigation('/devolucoes', e)} className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10">
+                          <RotateCcw size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" />
+                          Devoluções
+                        </Link>
+                        <Link to="/transferencias" onClick={(e) => handleMobileNavigation('/transferencias', e)} className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10">
+                          <Truck size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" />
+                          Transferências
+                        </Link>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
               {showMeuPerfil && (
@@ -527,7 +630,7 @@ const Navbar = () => {
             <div className="relative w-full gerir-dropdown">
               <button 
                 className="w-full justify-between py-3 sm:py-4 px-4 sm:px-5 bg-transparent border-none text-white font-semibold text-sm sm:text-base cursor-pointer flex items-center gap-2 transition-colors duration-200 rounded-lg"
-                onClick={() => setGerirOpen(!gerirOpen)}
+                onClick={() => toggleDropdown('gerir')}
               >
                 <div className="flex items-center gap-2">
                   <Settings size={14} className="sm:w-4 sm:h-4" />
@@ -593,7 +696,7 @@ const Navbar = () => {
               <button 
                 className="w-full justify-between py-3 sm:py-4 px-4 sm:px-5 bg-transparent border-none text-white font-semibold text-sm sm:text-base cursor-pointer flex items-center gap-2 transition-colors duration-200 rounded-lg"
                 onClick={() => {
-                  setDadosOpen(!dadosOpen);
+                  toggleDropdown('dados');
                 }}
               >
                 <div className="flex items-center gap-2">

@@ -1,0 +1,59 @@
+{
+  "info": {
+    "name": "Catalogo Integrations v1",
+    "_postman_id": "e9ef1e80-04d7-4f15-b81d-1f6651136f78",
+    "description": "Coleção básica para API de integração v1.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "OAuth Token",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "urlencoded",
+          "urlencoded": [
+            { "key": "grant_type", "value": "client_credentials", "type": "text" },
+            { "key": "client_id", "value": "{{client_id}}", "type": "text" },
+            { "key": "client_secret", "value": "{{client_secret}}", "type": "text" },
+            { "key": "scope", "value": "transfers:read transfers:write", "type": "text" }
+          ]
+        },
+        "url": "{{base_url}}/oauth/token"
+      }
+    },
+    {
+      "name": "List Transfers",
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{access_token}}", "type": "text" }
+        ],
+        "url": "{{base_url}}/transfers"
+      }
+    },
+    {
+      "name": "Create Transfer",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{access_token}}", "type": "text" },
+          { "key": "Content-Type", "value": "application/json", "type": "text" },
+          { "key": "Idempotency-Key", "value": "transfer-demo-001", "type": "text" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"armazem_origem_id\": 1,\n  \"armazem_id\": 2,\n  \"observacoes\": \"Transferência via integração\",\n  \"itens\": [\n    { \"item_id\": 1, \"quantidade\": 3 }\n  ]\n}"
+        },
+        "url": "{{base_url}}/transfers"
+      }
+    }
+  ],
+  "variable": [
+    { "key": "base_url", "value": "http://localhost:3001/api/integrations/v1" },
+    { "key": "client_id", "value": "" },
+    { "key": "client_secret", "value": "" },
+    { "key": "access_token", "value": "" }
+  ]
+}

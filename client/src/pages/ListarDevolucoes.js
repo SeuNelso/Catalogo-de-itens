@@ -1320,6 +1320,21 @@ const ListarDevolucoes = () => {
           )}
         </div>
 
+        {!showStatusBoard && (
+          <div className="mb-3 sm:hidden">
+            <button
+              type="button"
+              onClick={() => {
+                navigate('/devolucoes');
+                setSearchTerm('');
+              }}
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50"
+            >
+              Voltar aos status
+            </button>
+          </div>
+        )}
+
         {showStatusBoard && (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
             {statusCards.map((card) => {
@@ -1392,7 +1407,7 @@ const ListarDevolucoes = () => {
                     navigate('/devolucoes');
                     setSearchTerm('');
                   }}
-                  className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50"
+                  className="hidden sm:block px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50"
                 >
                   Voltar aos status
                 </button>

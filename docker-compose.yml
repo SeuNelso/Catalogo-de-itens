@@ -1,0 +1,47 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    container_name: catalogo-backend
+    environment:
+      - NODE_ENV=production
+      - PORT=3001
+    expose:
+      - "3001"
+    restart: unless-stopped
+    networks:
+      - catalogo-network
+
+  frontend:
+    build:
+      context: ./client
+      dockerfile: Dockerfile
+    container_name: catalogo-frontend
+    expose:
+      - "3000"
+    restart: unless-stopped
+    networks:
+      - catalogo-network
+
+  nginx:
+    image: nginx:alpine
+    container_name: catalogo-nginx
+    ports:
+      - "0.0.0.0:80:80"
+      - "0.0.0.0:443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - backend
+      - frontend
+    restart: unless-stopped
+    networks:
+      - catalogo-network
+
+networks:
+  catalogo-network:
+    driver: bridge

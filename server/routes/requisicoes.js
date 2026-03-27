@@ -103,7 +103,7 @@ router.get('/', ...requisicaoAuth, async (req, res) => {
     if (usuarioEscopadoSemArmazensAtribuidos(req)) {
       return res.json([]);
     }
-    const { status, armazem_id, item_id, devolucoes } = req.query;
+    const { status, armazem_id, item_id, devolucoes, transferencias } = req.query;
     let itemIdParsed = null;
     if (item_id != null && String(item_id).trim() !== '') {
       const iid = parseInt(String(item_id), 10);
@@ -117,6 +117,9 @@ router.get('/', ...requisicaoAuth, async (req, res) => {
     const devolucoesViaturaCentral = ['1', 'true', 'yes', 'sim'].includes(
       String(devolucoes || '').toLowerCase()
     );
+    const transferenciasFluxo = ['1', 'true', 'yes', 'sim'].includes(
+      String(transferencias || '').toLowerCase()
+    );
 
     // Buscar requisições (armazem destino + armazem origem)
     let query = `
@@ -124,6 +127,8 @@ router.get('/', ...requisicaoAuth, async (req, res) => {
         r.*,
         (COALESCE(a.codigo, '') || CASE WHEN a.codigo IS NOT NULL AND a.codigo <> '' THEN ' - ' ELSE '' END || a.descricao) as armazem_descricao,
         (COALESCE(ao.codigo, '') || CASE WHEN ao.codigo IS NOT NULL AND ao.codigo <> '' THEN ' - ' ELSE '' END || ao.descricao) as armazem_origem_descricao,
+        a.tipo as armazem_destino_tipo,
+        ao.tipo as armazem_origem_tipo,
         ${SQL_LISTA_CRIADOR_E_SEPARADOR}
       FROM requisicoes r
       INNER JOIN armazens a ON r.armazem_id = a.id
@@ -140,15 +145,29 @@ router.get('/', ...requisicaoAuth, async (req, res) => {
       params.push(String(status));
     }
 
-    if (devolucoesViaturaCentral) {
+    if (transferenciasFluxo) {
+      // Página "Transferências": central <-> APEADO e central -> central.
+      query += ` AND (
+        (LOWER(TRIM(ao.tipo)) = $${paramCount++} AND LOWER(TRIM(a.tipo)) = $${paramCount++})
+        OR (LOWER(TRIM(ao.tipo)) = $${paramCount++} AND LOWER(TRIM(a.tipo)) = $${paramCount++})
+        OR (LOWER(TRIM(ao.tipo)) = $${paramCount++} AND LOWER(TRIM(a.tipo)) = $${paramCount++})
+      )`;
+      params.push('central', 'apeado', 'apeado', 'central', 'central', 'central');
+    } else if (devolucoesViaturaCentral) {
       // Devolução: origem = viatura e destino = central
-      query += ` AND ao.tipo = $${paramCount++} AND a.tipo = $${paramCount++}`;
+      query += ` AND LOWER(TRIM(ao.tipo)) = $${paramCount++} AND LOWER(TRIM(a.tipo)) = $${paramCount++}`;
       params.push('viatura', 'central');
     } else {
-      // Página "Requisições": excluir devoluções (origem viatura -> destino central).
-      // Assim a devolução aparece apenas em `/devolucoes`.
-      query += ` AND NOT (ao.tipo = $${paramCount++} AND a.tipo = $${paramCount++})`;
-      params.push('viatura', 'central');
+      // Página "Requisições": excluir fluxos dedicados de Devoluções e Transferências.
+      // Devoluções: viatura -> central
+      // Transferências: central <-> apeado e central -> central
+      query += ` AND NOT (
+        (LOWER(TRIM(ao.tipo)) = $${paramCount++} AND LOWER(TRIM(a.tipo)) = $${paramCount++})
+        OR (LOWER(TRIM(ao.tipo)) = $${paramCount++} AND LOWER(TRIM(a.tipo)) = $${paramCount++})
+        OR (LOWER(TRIM(ao.tipo)) = $${paramCount++} AND LOWER(TRIM(a.tipo)) = $${paramCount++})
+        OR (LOWER(TRIM(ao.tipo)) = $${paramCount++} AND LOWER(TRIM(a.tipo)) = $${paramCount++})
+      )`;
+      params.push('viatura', 'central', 'central', 'apeado', 'apeado', 'central', 'central', 'central');
     }
 
     if (armazem_id != null && String(armazem_id).trim() !== '') {
@@ -191,6 +210,8 @@ router.get('/', ...requisicaoAuth, async (req, res) => {
           SELECT r.*,
             (COALESCE(a.codigo, '') || CASE WHEN a.codigo IS NOT NULL AND a.codigo <> '' THEN ' - ' ELSE '' END || a.descricao) as armazem_descricao,
             (COALESCE(ao.codigo, '') || CASE WHEN ao.codigo IS NOT NULL AND ao.codigo <> '' THEN ' - ' ELSE '' END || ao.descricao) as armazem_origem_descricao,
+            a.tipo as armazem_destino_tipo,
+            ao.tipo as armazem_origem_tipo,
             ${SQL_LISTA_CRIADOR_E_SEPARADOR}
           FROM requisicoes r
           INNER JOIN armazens a ON r.armazem_id = a.id
@@ -206,12 +227,24 @@ router.get('/', ...requisicaoAuth, async (req, res) => {
           fbParams.push(String(status));
         }
 
-        if (devolucoesViaturaCentral) {
-          fallbackQuery += ` AND ao.tipo = $${pc++} AND a.tipo = $${pc++}`;
+        if (transferenciasFluxo) {
+          fallbackQuery += ` AND (
+            (LOWER(TRIM(ao.tipo)) = $${pc++} AND LOWER(TRIM(a.tipo)) = $${pc++})
+            OR (LOWER(TRIM(ao.tipo)) = $${pc++} AND LOWER(TRIM(a.tipo)) = $${pc++})
+            OR (LOWER(TRIM(ao.tipo)) = $${pc++} AND LOWER(TRIM(a.tipo)) = $${pc++})
+          )`;
+          fbParams.push('central', 'apeado', 'apeado', 'central', 'central', 'central');
+        } else if (devolucoesViaturaCentral) {
+          fallbackQuery += ` AND LOWER(TRIM(ao.tipo)) = $${pc++} AND LOWER(TRIM(a.tipo)) = $${pc++}`;
           fbParams.push('viatura', 'central');
         } else {
-          fallbackQuery += ` AND NOT (ao.tipo = $${pc++} AND a.tipo = $${pc++})`;
-          fbParams.push('viatura', 'central');
+          fallbackQuery += ` AND NOT (
+            (LOWER(TRIM(ao.tipo)) = $${pc++} AND LOWER(TRIM(a.tipo)) = $${pc++})
+            OR (LOWER(TRIM(ao.tipo)) = $${pc++} AND LOWER(TRIM(a.tipo)) = $${pc++})
+            OR (LOWER(TRIM(ao.tipo)) = $${pc++} AND LOWER(TRIM(a.tipo)) = $${pc++})
+            OR (LOWER(TRIM(ao.tipo)) = $${pc++} AND LOWER(TRIM(a.tipo)) = $${pc++})
+          )`;
+          fbParams.push('viatura', 'central', 'central', 'apeado', 'apeado', 'central', 'central', 'central');
         }
         if (armazem_id != null && String(armazem_id).trim() !== '') {
           const aid = parseInt(String(armazem_id), 10);
@@ -1130,7 +1163,10 @@ router.get('/:id/export-tra', ...requisicaoAuth, denyOperador, async (req, res) 
       const trD = await pool.query('SELECT tipo FROM armazens WHERE id = $1', [requisicao.armazem_id]);
       tipoDestArm = trD.rows[0]?.tipo || '';
     }
-    const fluxoDevolucaoTra = isFluxoDevolucaoViaturaCentral(tipoOrigemArm, tipoDestArm);
+    const tipoOrigNorm = String(tipoOrigemArm || '').trim().toLowerCase();
+    const tipoDestNorm = String(tipoDestArm || '').trim().toLowerCase();
+    const fluxoDevolucaoTra = isFluxoDevolucaoViaturaCentral(tipoOrigNorm, tipoDestNorm);
+    const fluxoCentralApeado = tipoOrigNorm === 'central' && tipoDestNorm === 'apeado';
 
     if (fluxoDevolucaoTra) {
       if (!['separado', 'EM EXPEDICAO', 'APEADOS', 'Entregue', 'FINALIZADO'].includes(requisicao.status)) {
@@ -1251,7 +1287,10 @@ router.get('/:id/export-tra', ...requisicaoAuth, denyOperador, async (req, res) 
       return;
     }
 
-    if (!['EM EXPEDICAO', 'APEADOS', 'Entregue', 'FINALIZADO'].includes(requisicao.status)) {
+    const statusAceitosTra = fluxoCentralApeado
+      ? ['separado', 'EM EXPEDICAO', 'APEADOS', 'Entregue', 'FINALIZADO']
+      : ['EM EXPEDICAO', 'APEADOS', 'Entregue', 'FINALIZADO'];
+    if (!statusAceitosTra.includes(requisicao.status)) {
       return res.status(400).json({ error: 'TRA só está disponível após concluir a TRFL (requisição deve estar Em expedição). Baixe o ficheiro TRFL primeiro.' });
     }
 
@@ -1335,7 +1374,7 @@ router.get('/:id/export-tra', ...requisicaoAuth, denyOperador, async (req, res) 
       rows.push({
         Date: dateStr,
         OriginWarehouse: codigoOrigem,
-        OriginLocation: localizacaoOrigemTRA,
+        OriginLocation: fluxoCentralApeado ? (ri.localizacao_origem || '') : localizacaoOrigemTRA,
         Article: String(b.item_codigo || ''),
         Quatity: Number(b.metros) || 0,
         SerialNumber1: b.serialnumber || '', SerialNumber2: '', MacAddress: '', CentroCusto: '',
@@ -1361,7 +1400,7 @@ router.get('/:id/export-tra', ...requisicaoAuth, denyOperador, async (req, res) 
       rows.push({
         Date: dateStr,
         OriginWarehouse: codigoOrigem,
-        OriginLocation: localizacaoOrigemTRA,
+        OriginLocation: fluxoCentralApeado ? (ri.localizacao_origem || '') : localizacaoOrigemTRA,
         Article: String(ri.item_codigo || ''),
         Quatity: qty,
         SerialNumber1: ri.serialnumber || '', SerialNumber2: '', MacAddress: '', CentroCusto: '',
@@ -4236,6 +4275,7 @@ router.patch('/:id/finalizar', ...requisicaoAuth, denyOperador, async (req, res)
          r.status,
          r.armazem_origem_id,
          r.separador_usuario_id,
+         r.tra_gerada_em,
          r.devolucao_tra_gerada_em,
          r.devolucao_tra_apeados_gerada_em,
          r.devolucao_trfl_pendente_gerada_em,
@@ -4257,11 +4297,20 @@ router.patch('/:id/finalizar', ...requisicaoAuth, denyOperador, async (req, res)
     if (check.rows[0].status === 'cancelada') return res.status(400).json({ error: 'Requisição cancelada' });
     const row = check.rows[0];
     const fluxoDevolucao = isFluxoDevolucaoViaturaCentral(row.origem_tipo, row.destino_tipo);
+    const fluxoCentralApeado =
+      String(row.origem_tipo || '').trim().toLowerCase() === 'central' &&
+      String(row.destino_tipo || '').trim().toLowerCase() === 'apeado';
     if (fluxoDevolucao) {
       const docsPendentesOk = Boolean(row.devolucao_tra_apeados_gerada_em) && Boolean(row.devolucao_trfl_pendente_gerada_em);
       if (!(['EM EXPEDICAO', 'APEADOS'].includes(row.status) && row.devolucao_tra_gerada_em && docsPendentesOk)) {
         return res.status(400).json({
           error: 'No fluxo de devolução, só é possível finalizar após gerar DEV, TRA APEADOS e TRFL PENDENTE.'
+        });
+      }
+    } else if (fluxoCentralApeado) {
+      if (!(['separado', 'Entregue'].includes(row.status) && Boolean(row.tra_gerada_em))) {
+        return res.status(400).json({
+          error: 'Para transferência Central -> APEADO, finalize apenas após gerar a TRA.'
         });
       }
     } else if (row.status !== 'Entregue') {

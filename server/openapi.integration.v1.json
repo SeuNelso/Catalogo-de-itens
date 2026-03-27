@@ -1,0 +1,101 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Catalogo Integrations API",
+    "version": "1.0.0",
+    "description": "API de integração externa (OAuth2 Client Credentials)."
+  },
+  "servers": [
+    {
+      "url": "http://localhost:3001/api/integrations/v1"
+    }
+  ],
+  "paths": {
+    "/oauth/token": {
+      "post": {
+        "summary": "Emitir token OAuth2 (client_credentials)",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "object",
+                "required": ["grant_type", "client_id", "client_secret"],
+                "properties": {
+                  "grant_type": { "type": "string", "example": "client_credentials" },
+                  "client_id": { "type": "string" },
+                  "client_secret": { "type": "string" },
+                  "scope": { "type": "string", "example": "transfers:read transfers:write" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Token emitido" },
+          "400": { "description": "Requisição inválida" },
+          "401": { "description": "Cliente inválido" }
+        }
+      }
+    },
+    "/items": {
+      "get": {
+        "summary": "Listar catálogo",
+        "security": [{ "bearerAuth": [] }],
+        "responses": { "200": { "description": "OK" } }
+      }
+    },
+    "/warehouses": {
+      "get": {
+        "summary": "Listar armazéns",
+        "security": [{ "bearerAuth": [] }],
+        "responses": { "200": { "description": "OK" } }
+      }
+    },
+    "/requests": {
+      "get": {
+        "summary": "Listar requisições",
+        "security": [{ "bearerAuth": [] }],
+        "responses": { "200": { "description": "OK" } }
+      },
+      "post": {
+        "summary": "Criar requisição",
+        "security": [{ "bearerAuth": [] }],
+        "responses": { "201": { "description": "Criada" } }
+      }
+    },
+    "/transfers": {
+      "get": {
+        "summary": "Listar transferências",
+        "security": [{ "bearerAuth": [] }],
+        "responses": { "200": { "description": "OK" } }
+      },
+      "post": {
+        "summary": "Criar transferência",
+        "security": [{ "bearerAuth": [] }],
+        "responses": { "201": { "description": "Criada" } }
+      }
+    },
+    "/returns": {
+      "get": {
+        "summary": "Listar devoluções",
+        "security": [{ "bearerAuth": [] }],
+        "responses": { "200": { "description": "OK" } }
+      },
+      "post": {
+        "summary": "Criar devolução",
+        "security": [{ "bearerAuth": [] }],
+        "responses": { "201": { "description": "Criada" } }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "OpaqueToken"
+      }
+    }
+  }
+}
