@@ -72,9 +72,13 @@ app.use(compression({ threshold: '1kb' }));
 app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || '12mb' }));
 app.use('/uploads', express.static('uploads'));
 
-// Servir arquivos estáticos do React em produção
-if (process.env.NODE_ENV === 'production') {
-  app.use(express.static(path.join(__dirname, '../client/build')));
+// Servir arquivos estáticos do React quando o build existir (independente de NODE_ENV).
+const clientBuildPath = path.join(__dirname, '../client/build');
+const hasClientBuild = fs.existsSync(clientBuildPath);
+if (hasClientBuild) {
+  app.use(express.static(clientBuildPath));
+} else {
+  console.warn('[STATIC] client/build não encontrado. A rota "/" não servirá o frontend até gerar build.');
 }
 
 // Configuração do Multer para upload de imagens
@@ -5392,9 +5396,9 @@ app.use(
 );
 
 
-if (process.env.NODE_ENV === 'production') {
+if (hasClientBuild) {
   app.get('*', (req, res) => {
-    res.sendFile(path.join(__dirname, '../client/build', 'index.html'));
+    res.sendFile(path.join(clientBuildPath, 'index.html'));
   });
 }
 
