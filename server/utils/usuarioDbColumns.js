@@ -23,6 +23,7 @@ async function usuariosTemColunaPodeControloStock() {
 function usuarioTemPermissaoControloStock(req) {
   if (!req || !req.user) return false;
   if (req.user.role === 'admin') return true;
+  if (req.user.role === 'supervisor_armazem') return true;
   return req.user.pode_controlo_stock === true;
 }
 
