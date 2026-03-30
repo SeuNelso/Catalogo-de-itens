@@ -63,6 +63,14 @@ const migrationFile = path.join(
                           ? 'migrate-requisicoes-itens-quantidade-apeados.sql'
                       : arg === 'integrations-v1' || arg === 'integracoes-v1'
                         ? 'migrate-integrations-v1.sql'
+                      : arg === 'localizacao-estoque' || arg === 'armazens-localizacao-item'
+                        ? 'migrate-armazens-localizacao-item.sql'
+                      : arg === 'usuarios-pode-controlo-stock' || arg === 'pode-controlo-stock'
+                        ? 'migrate-usuarios-pode-controlo-stock.sql'
+                      : arg === 'movimentacao-interna' || arg === 'armazem-movimentacao-interna'
+                        ? 'migrate-armazem-movimentacao-interna.sql'
+                      : arg === 'requisicoes-trfl-tra-estoque' || arg === 'trfl-tra-estoque'
+                        ? 'migrate-requisicoes-trfl-tra-estoque.sql'
                       : 'migrate-requisicoes-itens-preparacao.sql'
 );
 

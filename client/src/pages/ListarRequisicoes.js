@@ -13,8 +13,10 @@ import {
 import { desenharPaginaNotaEntregaDigi } from '../utils/notaEntregaPdf';
 import { operadorPodeDocsELogisticaAposSeparacao, isAdmin } from '../utils/roles';
 import { getRequisicoesArmazemOrigemIds } from '../utils/requisicoesArmazemOrigem';
+import { podeUsarControloStock } from '../utils/controloStock';
 
 const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
+  const RECEBIMENTO_TRANSFERENCIA_MARKER = 'RECEBIMENTO_TRANSFERENCIA_V1';
   const [requisicoes, setRequisicoes] = useState([]);
   const [toast, setToast] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -49,7 +51,7 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
   const isModoTransferencias = modo === 'transferencias';
   const rotaBase = isModoTransferencias ? '/transferencias' : '/requisicoes';
   const flowParam = String(new URLSearchParams(location.search || '').get('fluxo') || '').toLowerCase();
-  const hasFluxoTransferSelecionado = ['centrais', 'apeados'].includes(flowParam);
+  const hasFluxoTransferSelecionado = ['centrais', 'apeados', 'recebimento'].includes(flowParam);
   const createTransferLink = hasFluxoTransferSelecionado
     ? `/transferencias/criar?transferencias=1&fluxo=${flowParam}`
     : '/transferencias/criar?transferencias=1';
@@ -69,6 +71,7 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
     user && !acessoTotalRequisicoes && getRequisicoesArmazemOrigemIds(user).length === 0
   );
   const podeCriarOuImportarRequisicao = canCreateOrEdit && !semArmazemOrigemAtribuido;
+  const podeTransferenciaLocalizacao = Boolean(user && podeUsarControloStock(user));
 
   useEffect(() => {
     fetchRequisicoes();
@@ -103,7 +106,7 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
     const params = new URLSearchParams(location.search || '');
     const statusParam = params.get('status') || '';
     const fluxoTransferenciaParam = String(params.get('fluxo') || '').toLowerCase();
-    const fluxoValido = ['centrais', 'apeados'].includes(fluxoTransferenciaParam);
+    const fluxoValido = ['centrais', 'apeados', 'recebimento'].includes(fluxoTransferenciaParam);
     const temFiltroNaUrl = Boolean(statusParam);
 
     setFiltros(prev => {
@@ -616,6 +619,62 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
       fetchRequisicoes();
     } catch (error) {
       setToast({ type: 'error', message: error.message || 'Erro ao finalizar requisição' });
+    }
+  };
+
+  const handleExportReporteRecebimento = async (req) => {
+    try {
+      if (!req?.id) throw new Error('Requisição inválida');
+      await downloadExport(
+        `/api/requisicoes/transferencias/recebimento/${req.id}/export-reporte`,
+        `REPORTE_recebimento_${req.id}_${new Date().toISOString().slice(0, 10)}.xlsx`,
+        'Reporte de recebimento gerado com sucesso.'
+      );
+      await fetchRequisicoes();
+    } catch (error) {
+      setToast({ type: 'error', message: error.message || 'Erro ao gerar reporte de recebimento' });
+    }
+  };
+
+  const handleFinalizarRecebimento = async (reqId) => {
+    try {
+      const ok = await confirm({
+        title: 'Finalizar recebimento',
+        message: 'Deseja marcar este recebimento como Finalizado?',
+        confirmLabel: 'Finalizar',
+      });
+      if (!ok) return;
+      const token = localStorage.getItem('token');
+      const response = await fetch(`/api/requisicoes/transferencias/recebimento/${reqId}/finalizar`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || 'Erro ao finalizar recebimento');
+      }
+      await fetchRequisicoes();
+      setToast({ type: 'success', message: 'Recebimento finalizado.' });
+    } catch (error) {
+      setToast({ type: 'error', message: error.message || 'Erro ao finalizar recebimento' });
+    }
+  };
+
+  const handleReceberStockRecebimento = async (reqId) => {
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch(`/api/requisicoes/transferencias/recebimento/${reqId}/receber-stock`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || 'Erro ao receber stock');
+      }
+      await fetchRequisicoes();
+      setToast({ type: 'success', message: 'Stock recebido com sucesso.' });
+    } catch (error) {
+      setToast({ type: 'error', message: error.message || 'Erro ao receber stock' });
     }
   };
 
@@ -1146,6 +1205,11 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
     return !precisaAdmin || user?.role === 'admin';
   };
 
+  const isFluxoRecebimentoMercadoria = (reqObj) => {
+    const obs = String(reqObj?.observacoes || '').toUpperCase();
+    return obs.startsWith(RECEBIMENTO_TRANSFERENCIA_MARKER);
+  };
+
   const isFluxoCentralApeadoSemTrfl = (reqObj) => {
     const origem = String(reqObj?.armazem_origem_tipo || '').trim().toLowerCase();
     const destino = String(reqObj?.armazem_destino_tipo || '').trim().toLowerCase();
@@ -1163,6 +1227,7 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
     const flowFilter = hasFluxoTransferSelecionado ? flowParam : '';
 
     const getFluxoTransferencia = (req) => {
+      if (isFluxoRecebimentoMercadoria(req)) return 'recebimento';
       const tipoOrigem = armazensById[Number(req?.armazem_origem_id)] || '';
       const tipoDestino = armazensById[Number(req?.armazem_id)] || '';
       if (
@@ -1247,15 +1312,21 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
     return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
   });
 
-  const statusCards = [
-    { key: 'pendente', label: 'Pendentes', color: 'bg-yellow-50 border-yellow-200 text-yellow-800' },
-    { key: 'EM SEPARACAO', label: 'Em separação', color: 'bg-orange-50 border-orange-200 text-orange-900' },
-    { key: 'separado', label: 'Separadas', color: 'bg-green-50 border-green-200 text-green-800' },
-    { key: 'EM EXPEDICAO', label: 'Em expedição', color: 'bg-blue-50 border-blue-200 text-blue-800' },
-    { key: 'Entregue', label: 'Entregues', color: 'bg-emerald-50 border-emerald-200 text-emerald-800' },
-    { key: 'FINALIZADO', label: 'Finalizadas', color: 'bg-slate-50 border-slate-300 text-slate-800' },
-    { key: 'cancelada', label: 'Canceladas', color: 'bg-red-50 border-red-200 text-red-800' }
-  ];
+  const statusCards = isModoTransferencias && flowParam === 'recebimento'
+    ? [
+        { key: 'pendente', label: 'Pendentes', color: 'bg-yellow-50 border-yellow-200 text-yellow-800' },
+        { key: 'EM EXPEDICAO', label: 'Em processo', color: 'bg-orange-50 border-orange-200 text-orange-900' },
+        { key: 'FINALIZADO', label: 'Finalizadas', color: 'bg-slate-50 border-slate-300 text-slate-800' },
+      ]
+    : [
+        { key: 'pendente', label: 'Pendentes', color: 'bg-yellow-50 border-yellow-200 text-yellow-800' },
+        { key: 'EM SEPARACAO', label: 'Em separação', color: 'bg-orange-50 border-orange-200 text-orange-900' },
+        { key: 'separado', label: 'Separadas', color: 'bg-green-50 border-green-200 text-green-800' },
+        { key: 'EM EXPEDICAO', label: 'Em expedição', color: 'bg-blue-50 border-blue-200 text-blue-800' },
+        { key: 'Entregue', label: 'Entregues', color: 'bg-emerald-50 border-emerald-200 text-emerald-800' },
+        { key: 'FINALIZADO', label: 'Finalizadas', color: 'bg-slate-50 border-slate-300 text-slate-800' },
+        { key: 'cancelada', label: 'Canceladas', color: 'bg-red-50 border-red-200 text-red-800' }
+      ];
   const countsByStatus = requisicoesPorFluxo.reduce((acc, r) => {
     const s = r.status || 'pendente';
     acc[s] = (acc[s] || 0) + 1;
@@ -1340,10 +1411,16 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
               )}
               <button
                 type="button"
-                onClick={() => navigate('/requisicoes/importar')}
+                onClick={() => {
+                  if (isModoTransferencias && flowParam === 'recebimento') {
+                    navigate('/transferencias?recebimento=1');
+                    return;
+                  }
+                  navigate('/requisicoes/importar');
+                }}
                 className="inline-flex items-center gap-2 px-4 py-2 border border-blue-300 text-blue-700 rounded-lg hover:bg-blue-50 transition-colors text-sm"
               >
-                <FaFileImport /> Importar requisição
+                <FaFileImport /> {isModoTransferencias && flowParam === 'recebimento' ? 'Importar Guia AT' : 'Importar requisição'}
               </button>
               <Link
                 to={isModoTransferencias ? createTransferLink : '/requisicoes/criar'}
@@ -1387,6 +1464,30 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
                   <div className="text-sm font-semibold text-gray-900">Transferências para APEADOS</div>
                   <div className="mt-0.5 text-xs text-gray-600">{'Fluxo Central <-> APEADO'}</div>
                 </button>
+                <button
+                  type="button"
+                  onClick={() => navigate('/transferencias?fluxo=recebimento')}
+                  className={`w-full text-left rounded-lg border px-4 py-3 transition-colors ${
+                    flowParam === 'recebimento'
+                      ? 'border-[#0915FF] bg-blue-50'
+                      : 'border-gray-300 bg-white hover:border-[#0915FF] hover:bg-blue-50/40'
+                  }`}
+                >
+                  <div className="text-sm font-semibold text-gray-900">Recebimento de mercadoria</div>
+                  <div className="mt-0.5 text-xs text-gray-600">Importação de Guia AT e conferência em tarefa</div>
+                </button>
+                {podeTransferenciaLocalizacao && (
+                  <button
+                    type="button"
+                    onClick={() => navigate('/transferencias/localizacao')}
+                    className="w-full text-left rounded-lg border px-4 py-3 transition-colors border-gray-300 bg-white hover:border-emerald-600 hover:bg-emerald-50/50"
+                  >
+                    <div className="text-sm font-semibold text-gray-900">Transferência de localização</div>
+                    <div className="mt-0.5 text-xs text-gray-600">
+                      Mover stock entre localizações do mesmo central (controlo de stock)
+                    </div>
+                  </button>
+                )}
               </div>
             </div>
 
@@ -1432,7 +1533,7 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
               type="button"
               onClick={() => {
                 const flowParam = String(new URLSearchParams(location.search || '').get('fluxo') || '').toLowerCase();
-                if (isModoTransferencias && ['centrais', 'apeados'].includes(flowParam)) {
+                if (isModoTransferencias && ['centrais', 'apeados', 'recebimento'].includes(flowParam)) {
                   navigate(`${rotaBase}?fluxo=${flowParam}`);
                 } else {
                   navigate(rotaBase);
@@ -1498,7 +1599,7 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
                 type="button"
                 onClick={() => {
                   const flowParam = String(new URLSearchParams(location.search || '').get('fluxo') || '').toLowerCase();
-                  if (isModoTransferencias && ['centrais', 'apeados'].includes(flowParam)) {
+                  if (isModoTransferencias && ['centrais', 'apeados', 'recebimento'].includes(flowParam)) {
                     navigate(`${rotaBase}?fluxo=${flowParam}`);
                   } else {
                     navigate(rotaBase);
@@ -1659,7 +1760,65 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
                       </div>
                     </div>
                   <div className="flex gap-2 mt-4 sm:mt-0 flex-wrap" onClick={(e) => e.stopPropagation()}>
+                    {isFluxoRecebimentoMercadoria(req) && canDocsELogisticaPosSeparacao && req.status === 'EM EXPEDICAO' && (
+                      <button
+                        type="button"
+                        disabled={prepBloqueio}
+                        onClick={() => handleExportReporteRecebimento(req)}
+                        className={`px-3 py-2 text-indigo-700 rounded-lg border border-indigo-300 transition-colors ${
+                          prepBloqueio ? 'opacity-50 cursor-not-allowed' : 'hover:bg-indigo-50'
+                        }`}
+                        title={prepBloqueio ? 'Reservada para separação a outro operador' : 'Gerar reporte de recebimento'}
+                      >
+                        GERAR REPORTE
+                      </button>
+                    )}
+                    {isFluxoRecebimentoMercadoria(req) &&
+                      canDocsELogisticaPosSeparacao &&
+                      req.status === 'EM EXPEDICAO' &&
+                      podeUsarControloStock(user) &&
+                      req.tra_gerada_em &&
+                      !req.tra_baixa_expedicao_aplicada_em && (
+                      <button
+                        type="button"
+                        disabled={prepBloqueio}
+                        onClick={() => handleReceberStockRecebimento(req.id)}
+                        className={`px-3 py-2 rounded-lg bg-[#0915FF] text-white transition-colors ${
+                          prepBloqueio ? 'opacity-50 cursor-not-allowed' : 'hover:bg-[#070FCC]'
+                        }`}
+                        title={prepBloqueio ? 'Reservada para separação a outro operador' : 'Receber stock na localização de recebimento'}
+                      >
+                        Receber stock
+                      </button>
+                    )}
+                    {isFluxoRecebimentoMercadoria(req) && canDocsELogisticaPosSeparacao && req.status === 'FINALIZADO' && (
+                      <button
+                        type="button"
+                        disabled={prepBloqueio}
+                        onClick={() => handleExportReporteRecebimento(req)}
+                        className={`px-3 py-2 text-indigo-700 rounded-lg border border-indigo-300 transition-colors ${
+                          prepBloqueio ? 'opacity-50 cursor-not-allowed' : 'hover:bg-indigo-50'
+                        }`}
+                        title={prepBloqueio ? 'Reservada para separação a outro operador' : 'Baixar reporte de recebimento'}
+                      >
+                        BAIXAR REPORTE
+                      </button>
+                    )}
+                    {isFluxoRecebimentoMercadoria(req) && canDocsELogisticaPosSeparacao && req.status === 'EM EXPEDICAO' && (
+                      <button
+                        type="button"
+                        disabled={prepBloqueio}
+                        onClick={() => handleFinalizarRecebimento(req.id)}
+                        className={`px-3 py-2 bg-slate-700 text-white rounded-lg transition-colors ${
+                          prepBloqueio ? 'opacity-50 cursor-not-allowed' : 'hover:bg-slate-800'
+                        }`}
+                        title={prepBloqueio ? 'Reservada para separação a outro operador' : 'Marcar como Finalizado'}
+                      >
+                        Finalizar
+                      </button>
+                    )}
                     {canDocsELogisticaPosSeparacao &&
+                    !isFluxoRecebimentoMercadoria(req) &&
                     (req.status === 'separado' && req.separacao_confirmada) &&
                     !isFluxoCentralApeadoSemTrfl(req) ? (
                       <button
@@ -1678,7 +1837,7 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
                         GERAR TRFL
                       </button>
                     ) : null}
-                    {canPrepare && req.status === 'EM EXPEDICAO' && (
+                    {canPrepare && !isFluxoRecebimentoMercadoria(req) && req.status === 'EM EXPEDICAO' && (
                       <button
                         type="button"
                         disabled={prepBloqueio}
@@ -1692,6 +1851,7 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
                       </button>
                     )}
                     {canDocsELogisticaPosSeparacao &&
+                    !isFluxoRecebimentoMercadoria(req) &&
                     (((req.status === 'Entregue' && !req.tra_gerada_em) ||
                       (isFluxoCentralApeadoSemTrfl(req) && req.status === 'separado' && req.separacao_confirmada && !req.tra_gerada_em))) && (
                       <button
@@ -1707,6 +1867,7 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
                       </button>
                     )}
                     {canDocsELogisticaPosSeparacao &&
+                    !isFluxoRecebimentoMercadoria(req) &&
                     ((req.status === 'Entregue' && req.tra_gerada_em) ||
                       (isFluxoCentralApeadoSemTrfl(req) && req.status === 'separado' && req.tra_gerada_em)) && (
                       <button
@@ -1722,7 +1883,7 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
                       </button>
                     )}
                     {/* Re-download TRFL/TRA fica apenas no menu de contexto */}
-                    {req.status === 'separado' && !req.separacao_confirmada && canPrepare && (
+                    {req.status === 'separado' && !req.separacao_confirmada && canPrepare && !isFluxoRecebimentoMercadoria(req) && (
                         <button
                         type="button"
                         disabled={prepBloqueio}
@@ -1756,7 +1917,7 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
                         <FaBoxOpen /> {req.status === 'EM SEPARACAO' ? 'Continuar preparação' : 'Preparar'}
                       </button>
                     )}
-                    {req.status === 'pendente' && podeCriarOuImportarRequisicao && (
+                    {req.status === 'pendente' && podeCriarOuImportarRequisicao && !isFluxoRecebimentoMercadoria(req) && (
                       <button
                         onClick={() => navigate(`/requisicoes/editar/${req.id}`)}
                         className="px-3 py-2 text-[#0915FF] hover:bg-[#0915FF] hover:text-white rounded-lg transition-colors"

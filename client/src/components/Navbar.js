@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { ChevronDown, Settings, Database, Users, User, FileText, Download, Plus, Trash2, Image, RefreshCw, Menu, X, AlertTriangle, Package, ShoppingCart, Archive, RotateCcw, Truck } from 'react-feather';
+import { ChevronDown, Settings, Database, Users, User, FileText, Download, Plus, Trash2, Image, RefreshCw, Menu, X, AlertTriangle, Package, ShoppingCart, Archive, RotateCcw, Truck, MapPin, Share2 } from 'react-feather';
 import { podeAcederRequisicoes } from '../utils/roles';
+import { podeUsarControloStock } from '../utils/controloStock';
 
 const Navbar = () => {
   const { isAuthenticated, logout, user } = useAuth();
@@ -10,6 +11,7 @@ const Navbar = () => {
   const [gerirOpen, setGerirOpen] = useState(false);
   const [dadosOpen, setDadosOpen] = useState(false);
   const [clogOpen, setClogOpen] = useState(false);
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [isInteracting, setIsInteracting] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
@@ -18,12 +20,14 @@ const Navbar = () => {
     setGerirOpen(false);
     setDadosOpen(false);
     setClogOpen(false);
+    setUserMenuOpen(false);
   };
 
   const toggleDropdown = (menu) => {
     setGerirOpen((prev) => (menu === 'gerir' ? !prev : false));
     setDadosOpen((prev) => (menu === 'dados' ? !prev : false));
     setClogOpen((prev) => (menu === 'clog' ? !prev : false));
+    setUserMenuOpen((prev) => (menu === 'user' ? !prev : false));
   };
 
   const handleLogout = () => {
@@ -39,6 +43,12 @@ const Navbar = () => {
   const showGerirMenu = isAdmin || isArmazemLogistica;
   /** Conta autenticada que não é admin: acede a /admin-usuarios só para o próprio perfil */
   const showMeuPerfil = isAuthenticated && !isAdmin;
+  const podeStockMenu = user && podeUsarControloStock(user);
+  const displayName =
+    [user?.nome, user?.sobrenome].filter(Boolean).join(' ').trim() ||
+    user?.username ||
+    user?.email ||
+    '';
 
   // Fechar menu mobile ao navegar
   const handleNavigation = () => {
@@ -73,7 +83,19 @@ const Navbar = () => {
       const gerirDropdown = document.querySelector('.gerir-dropdown');
       const dadosDropdown = document.querySelector('.dados-dropdown');
       const clogDropdown = document.querySelector('.clog-dropdown');
-      
+      if (userMenuOpen) {
+        const userDropDesk = document.querySelector('.user-menu-dropdown-desktop');
+        const userDropMob = document.querySelector('.user-menu-dropdown-mobile');
+        const insideUser =
+          (userDropDesk && userDropDesk.contains(event.target)) ||
+          (userDropMob && userDropMob.contains(event.target));
+        if (!insideUser) {
+          setTimeout(() => {
+            setUserMenuOpen(false);
+          }, 100);
+        }
+      }
+
       if (gerirOpen && gerirDropdown && !gerirDropdown.contains(event.target)) {
         setTimeout(() => {
           setGerirOpen(false);
@@ -97,7 +119,7 @@ const Navbar = () => {
     return () => {
       document.removeEventListener('mousedown', handleClickOutside);
     };
-  }, [gerirOpen, dadosOpen, clogOpen]);
+  }, [gerirOpen, dadosOpen, clogOpen, userMenuOpen]);
 
   // Fechar dropdowns quando o mouse sai deles (com delay)
   useEffect(() => {
@@ -215,61 +237,81 @@ const Navbar = () => {
                 </Link>
               </div>
               {canSeeRequisicoes && (
-                <div
-                  className="relative inline-block clog-dropdown"
-                  onMouseEnter={() => setIsInteracting(true)}
-                  onMouseLeave={() => setIsInteracting(false)}
-                >
-                  <button
-                    className="bg-transparent border-none text-white font-semibold text-sm lg:text-base py-3 px-2 lg:px-3 xl:px-4 cursor-pointer flex items-center gap-1 lg:gap-2 transition-colors duration-200 rounded-lg hover:bg-white/10"
-                    onClick={() => toggleDropdown('clog')}
+                <div className="flex items-center gap-1 lg:gap-2">
+                  <div
+                    className="relative inline-block clog-dropdown"
+                    onMouseEnter={() => setIsInteracting(true)}
+                    onMouseLeave={() => setIsInteracting(false)}
                   >
-                    <Truck size={14} className="lg:w-4 lg:h-4" />
-                    <span>Clog</span>
-                    <ChevronDown size={14} className={`ml-1 text-white transition-transform duration-200 lg:w-4 lg:h-4 ${clogOpen ? 'rotate-180' : ''}`} />
-                  </button>
-                  {clogOpen && (
-                    <div className="absolute top-full left-0 bg-[#0915FF] border border-gray-200 rounded-lg shadow-lg min-w-48 lg:min-w-56 z-50 p-2 -mt-1 pt-2">
-                      <div className="flex flex-col gap-1">
-                        <Link
-                          to="/requisicoes"
-                          onClick={(e) => { e.preventDefault(); e.stopPropagation(); setClogOpen(false); setTimeout(() => navigate('/requisicoes'), 100); }}
-                          className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded"
-                        >
-                          <ShoppingCart size={14} className="lg:w-4 lg:h-4" />
-                          Requisições
-                        </Link>
-                        <Link
-                          to="/devolucoes"
-                          onClick={(e) => { e.preventDefault(); e.stopPropagation(); setClogOpen(false); setTimeout(() => navigate('/devolucoes'), 100); }}
-                          className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded"
-                        >
-                          <RotateCcw size={14} className="lg:w-4 lg:h-4" />
-                          Devoluções
-                        </Link>
-                        <Link
-                          to="/transferencias"
-                          onClick={(e) => { e.preventDefault(); e.stopPropagation(); setClogOpen(false); setTimeout(() => navigate('/transferencias'), 100); }}
-                          className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded"
-                        >
-                          <Truck size={14} className="lg:w-4 lg:h-4" />
-                          Transferências
-                        </Link>
+                    <button
+                      className="bg-transparent border-none text-white font-semibold text-sm lg:text-base py-3 px-2 lg:px-3 xl:px-4 cursor-pointer flex items-center gap-1 lg:gap-2 transition-colors duration-200 rounded-lg hover:bg-white/10"
+                      onClick={() => toggleDropdown('clog')}
+                    >
+                      <Truck size={14} className="lg:w-4 lg:h-4" />
+                      <span>Clog</span>
+                      <ChevronDown size={14} className={`ml-1 text-white transition-transform duration-200 lg:w-4 lg:h-4 ${clogOpen ? 'rotate-180' : ''}`} />
+                    </button>
+                    {clogOpen && (
+                      <div className="absolute top-full left-0 bg-[#0915FF] border border-gray-200 rounded-lg shadow-lg min-w-48 lg:min-w-56 z-50 p-2 -mt-1 pt-2">
+                        <div className="flex flex-col gap-1">
+                          <Link
+                            to="/requisicoes"
+                            onClick={(e) => { e.preventDefault(); e.stopPropagation(); setClogOpen(false); setTimeout(() => navigate('/requisicoes'), 100); }}
+                            className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded"
+                          >
+                            <ShoppingCart size={14} className="lg:w-4 lg:h-4" />
+                            Requisições
+                          </Link>
+                          <Link
+                            to="/devolucoes"
+                            onClick={(e) => { e.preventDefault(); e.stopPropagation(); setClogOpen(false); setTimeout(() => navigate('/devolucoes'), 100); }}
+                            className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded"
+                          >
+                            <RotateCcw size={14} className="lg:w-4 lg:h-4" />
+                            Devoluções
+                          </Link>
+                          <Link
+                            to="/transferencias"
+                            onClick={(e) => { e.preventDefault(); e.stopPropagation(); setClogOpen(false); setTimeout(() => navigate('/transferencias'), 100); }}
+                            className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded"
+                          >
+                            <Truck size={14} className="lg:w-4 lg:h-4" />
+                            Transferências
+                          </Link>
+                          {podeStockMenu && (
+                            <Link
+                              to="/transferencias/localizacao"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                setClogOpen(false);
+                                setTimeout(() => navigate('/transferencias/localizacao'), 100);
+                              }}
+                              className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded"
+                            >
+                              <Share2 size={14} className="lg:w-4 lg:h-4" />
+                              Transf. localização
+                            </Link>
+                          )}
+                        </div>
                       </div>
-                    </div>
+                    )}
+                  </div>
+                  {showGerirMenu && podeStockMenu && (
+                    <Link
+                      to="/consulta-estoque-localizacoes"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        closeAllDropdowns();
+                        setTimeout(() => navigate('/consulta-estoque-localizacoes'), 100);
+                      }}
+                      className="inline-flex items-center gap-1 lg:gap-2 bg-transparent border-none text-white font-semibold text-sm lg:text-base py-3 px-2 lg:px-3 xl:px-4 no-underline cursor-pointer rounded-lg transition-colors duration-200 hover:bg-white/10"
+                      title="Consulta: localizações e stock (centrais)"
+                    >
+                      <MapPin size={14} className="lg:w-4 lg:h-4" />
+                      <span>Consulta</span>
+                    </Link>
                   )}
-                </div>
-              )}
-              {showMeuPerfil && (
-                <div className="relative font-medium text-sm lg:text-base uppercase tracking-wider text-white cursor-pointer flex items-center px-2 lg:px-3 xl:px-4 h-12 min-w-12 lg:min-w-14 xl:min-w-16 rounded-lg transition-all duration-200 hover:bg-white/10 hover:text-yellow-400">
-                  <Link
-                    to="/admin-usuarios"
-                    className="text-inherit no-underline px-0.5 font-semibold w-full h-full flex items-center justify-center gap-1.5"
-                  >
-                    <User size={14} className="lg:w-4 lg:h-4 shrink-0" />
-                    <span className="hidden lg:inline">Meu perfil</span>
-                    <span className="lg:hidden">Perfil</span>
-                  </Link>
                 </div>
               )}
             </>
@@ -516,12 +558,57 @@ const Navbar = () => {
         </nav>
         
         {/* Usuário Desktop - Visível apenas em telas médias e grandes */}
-        <div className="hidden md:flex items-center gap-2 lg:gap-3">
+        <div className="hidden md:flex items-center gap-2 lg:gap-3 flex-shrink-0">
           {isAuthenticated ? (
             <>
-              <span className="text-white font-semibold text-sm lg:text-base hidden xl:inline">{user?.nome || user?.username}</span>
-              <button 
-                className="bg-white text-[#0915FF] font-bold border-none rounded py-2 px-3 lg:px-4 xl:px-7 ml-2 lg:ml-4 xl:ml-8 text-sm lg:text-base cursor-pointer transition-all duration-200 shadow-lg hover:bg-gray-100" 
+              {showMeuPerfil ? (
+                <div
+                  className="relative user-menu-dropdown-desktop"
+                  onMouseEnter={() => setIsInteracting(true)}
+                  onMouseLeave={() => setIsInteracting(false)}
+                >
+                  <button
+                    type="button"
+                    className="bg-transparent border-none text-white font-semibold text-sm lg:text-base py-2 pl-2 pr-1 lg:pl-3 cursor-pointer flex items-center gap-1 max-w-[11rem] lg:max-w-[15rem] rounded-lg transition-colors duration-200 hover:bg-white/10 text-left"
+                    onClick={() => toggleDropdown('user')}
+                    aria-expanded={userMenuOpen}
+                    aria-haspopup="true"
+                  >
+                    <span className="truncate whitespace-nowrap" title={displayName}>
+                      {displayName || 'Conta'}
+                    </span>
+                    <ChevronDown
+                      size={16}
+                      className={`shrink-0 text-white transition-transform duration-200 ${userMenuOpen ? 'rotate-180' : ''}`}
+                    />
+                  </button>
+                  {userMenuOpen && (
+                    <div className="absolute top-full right-0 bg-[#0915FF] border border-gray-200 rounded-lg shadow-lg min-w-52 z-50 p-2 -mt-0.5 pt-2">
+                      <Link
+                        to="/admin-usuarios"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          closeAllDropdowns();
+                          setTimeout(() => navigate('/admin-usuarios'), 100);
+                        }}
+                        className="flex items-center gap-2 py-2.5 px-3 text-white no-underline font-medium text-sm transition-colors duration-200 hover:bg-white/10 rounded"
+                      >
+                        <User size={16} />
+                        Meu perfil
+                      </Link>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <span
+                  className="text-white font-semibold text-sm lg:text-base truncate whitespace-nowrap max-w-[11rem] lg:max-w-[15rem]"
+                  title={displayName}
+                >
+                  {displayName || user?.username || '—'}
+                </span>
+              )}
+              <button
+                className="bg-white text-[#0915FF] font-bold border-none rounded py-2 px-3 lg:px-4 xl:px-6 ml-1 lg:ml-2 text-sm lg:text-base cursor-pointer transition-all duration-200 shadow-lg hover:bg-gray-100 shrink-0"
                 onClick={handleLogout}
               >
                 SAIR
@@ -581,48 +668,59 @@ const Navbar = () => {
                 </Link>
               </div>
               {canSeeRequisicoes && (
-                <div className="relative w-full clog-dropdown">
-                  <button
-                    className="w-full justify-between py-3 sm:py-4 px-4 sm:px-5 bg-transparent border-none text-white font-semibold text-sm sm:text-base cursor-pointer flex items-center gap-2 transition-colors duration-200 rounded-lg"
-                    onClick={() => toggleDropdown('clog')}
-                  >
-                    <div className="flex items-center gap-2">
-                      <Truck size={14} className="sm:w-4 sm:h-4" />
-                      Clog
-                    </div>
-                    <ChevronDown size={14} className={`text-white transition-transform duration-200 sm:w-4 sm:h-4 ${clogOpen ? 'rotate-180' : ''}`} />
-                  </button>
-                  {clogOpen && (
-                    <div className="static shadow-none border-none bg-white/5 m-0 p-0 rounded-none">
-                      <div className="flex flex-col">
-                        <Link to="/requisicoes" onClick={(e) => handleMobileNavigation('/requisicoes', e)} className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10">
-                          <ShoppingCart size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" />
-                          Requisições
-                        </Link>
-                        <Link to="/devolucoes" onClick={(e) => handleMobileNavigation('/devolucoes', e)} className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10">
-                          <RotateCcw size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" />
-                          Devoluções
-                        </Link>
-                        <Link to="/transferencias" onClick={(e) => handleMobileNavigation('/transferencias', e)} className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10">
-                          <Truck size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" />
-                          Transferências
-                        </Link>
+                <>
+                  <div className="relative w-full clog-dropdown">
+                    <button
+                      className="w-full justify-between py-3 sm:py-4 px-4 sm:px-5 bg-transparent border-none text-white font-semibold text-sm sm:text-base cursor-pointer flex items-center gap-2 transition-colors duration-200 rounded-lg"
+                      onClick={() => toggleDropdown('clog')}
+                    >
+                      <div className="flex items-center gap-2">
+                        <Truck size={14} className="sm:w-4 sm:h-4" />
+                        Clog
                       </div>
-                    </div>
+                      <ChevronDown size={14} className={`text-white transition-transform duration-200 sm:w-4 sm:h-4 ${clogOpen ? 'rotate-180' : ''}`} />
+                    </button>
+                    {clogOpen && (
+                      <div className="static shadow-none border-none bg-white/5 m-0 p-0 rounded-none">
+                        <div className="flex flex-col">
+                          <Link to="/requisicoes" onClick={(e) => handleMobileNavigation('/requisicoes', e)} className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10">
+                            <ShoppingCart size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" />
+                            Requisições
+                          </Link>
+                          <Link to="/devolucoes" onClick={(e) => handleMobileNavigation('/devolucoes', e)} className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10">
+                            <RotateCcw size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" />
+                            Devoluções
+                          </Link>
+                          <Link to="/transferencias" onClick={(e) => handleMobileNavigation('/transferencias', e)} className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10">
+                            <Truck size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" />
+                            Transferências
+                          </Link>
+                          {podeStockMenu && (
+                            <Link
+                              to="/transferencias/localizacao"
+                              onClick={(e) => handleMobileNavigation('/transferencias/localizacao', e)}
+                              className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10"
+                            >
+                              <Share2 size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" />
+                              Transf. localização
+                            </Link>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                  {showGerirMenu && podeStockMenu && (
+                    <Link
+                      to="/consulta-estoque-localizacoes"
+                      onClick={(e) => handleMobileNavigation('/consulta-estoque-localizacoes', e)}
+                      className="w-[85vw] sm:w-[90vw] py-3 sm:py-4 px-4 sm:px-5 bg-transparent text-white font-semibold text-sm sm:text-base no-underline flex items-center gap-2 transition-colors duration-200 rounded-lg hover:bg-white/10 m-0 mb-0.5"
+                      title="Consulta: localizações e stock (centrais)"
+                    >
+                      <MapPin size={14} className="sm:w-4 sm:h-4" />
+                      Consulta
+                    </Link>
                   )}
-                </div>
-              )}
-              {showMeuPerfil && (
-                <div className="w-[85vw] sm:w-[90vw] py-3 sm:py-4.5 px-0 h-auto rounded-xl text-center text-base sm:text-lg font-semibold bg-white/8 m-0 mb-1 sm:mb-0.5 transition-all duration-200">
-                  <Link
-                    to="/admin-usuarios"
-                    onClick={(e) => handleMobileNavigation('/admin-usuarios', e)}
-                    className="text-white no-underline font-semibold w-full h-full flex items-center justify-center"
-                  >
-                    <User size={16} className="inline mr-2 sm:mr-3" />
-                    Meu perfil
-                  </Link>
-                </div>
+                </>
               )}
             </>
           )}
@@ -794,12 +892,46 @@ const Navbar = () => {
               )}
             </div>
           )}
-          <div className="flex-col gap-2 items-start py-2 sm:py-3 px-4 sm:px-5 border-t border-white/10 mt-1 sm:mt-2 w-full">
+          <div className="flex-col gap-2 items-stretch py-2 sm:py-3 px-4 sm:px-5 border-t border-white/10 mt-1 sm:mt-2 w-full user-menu-dropdown-mobile">
             {isAuthenticated ? (
               <>
-                <span className="text-white font-semibold text-xs sm:text-sm opacity-90">{user?.nome || user?.username}</span>
-                <button 
-                  className="w-full text-center py-2.5 sm:py-3 text-sm sm:text-base font-bold m-0 rounded-lg bg-white text-[#0915FF] transition-all duration-200 hover:bg-gray-100" 
+                {showMeuPerfil ? (
+                  <>
+                    <button
+                      type="button"
+                      className="w-full flex items-center justify-between gap-2 py-2 px-1 text-white font-semibold text-sm sm:text-base bg-transparent border-none rounded-lg hover:bg-white/10 text-left"
+                      onClick={() => toggleDropdown('user')}
+                      aria-expanded={userMenuOpen}
+                    >
+                      <span className="truncate whitespace-nowrap min-w-0 flex-1" title={displayName}>
+                        {displayName || 'Conta'}
+                      </span>
+                      <ChevronDown
+                        size={18}
+                        className={`shrink-0 transition-transform duration-200 ${userMenuOpen ? 'rotate-180' : ''}`}
+                      />
+                    </button>
+                    {userMenuOpen && (
+                      <Link
+                        to="/admin-usuarios"
+                        onClick={(e) => handleMobileNavigation('/admin-usuarios', e)}
+                        className="flex items-center gap-2 py-2.5 px-3 pl-6 text-white no-underline text-sm font-medium rounded-lg bg-white/5 hover:bg-white/10"
+                      >
+                        <User size={16} />
+                        Meu perfil
+                      </Link>
+                    )}
+                  </>
+                ) : (
+                  <span
+                    className="text-white font-semibold text-sm sm:text-base truncate whitespace-nowrap px-1"
+                    title={displayName}
+                  >
+                    {displayName || user?.username || '—'}
+                  </span>
+                )}
+                <button
+                  className="w-full text-center py-2.5 sm:py-3 text-sm sm:text-base font-bold m-0 rounded-lg bg-white text-[#0915FF] transition-all duration-200 hover:bg-gray-100"
                   onClick={handleLogout}
                 >
                   SAIR

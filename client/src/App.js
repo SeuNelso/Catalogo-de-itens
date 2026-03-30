@@ -28,10 +28,13 @@ import ImportarUnidades from './pages/ImportarUnidades';
 import ImportarRequisicao from './pages/ImportarRequisicao';
 import ListarRequisicoes from './pages/ListarRequisicoes';
 import ListarDevolucoes from './pages/ListarDevolucoes';
+import TransferenciasHome from './pages/TransferenciasHome';
 import CriarRequisicao from './pages/CriarRequisicao';
 import EditarRequisicao from './pages/EditarRequisicao';
 import PrepararRequisicao from './pages/PrepararRequisicao';
 import Armazens from './pages/Armazens';
+import ConsultaLocalizacoesEstoque from './pages/ConsultaLocalizacoesEstoque';
+import TransferenciaLocalizacao from './pages/TransferenciaLocalizacao';
 import './App.css';
 import { ROLES_COM_ACESSO_REQUISICOES } from './utils/roles';
 
@@ -199,7 +202,7 @@ function App() {
                   path="/transferencias"
                   element={
                     <ProtectedRoute allowedRoles={[...ROLES_COM_ACESSO_REQUISICOES]}>
-                      <ListarRequisicoes modo="transferencias" />
+                      <TransferenciasHome />
                     </ProtectedRoute>
                   }
                 />
@@ -216,6 +219,17 @@ function App() {
                   element={
                     <ProtectedRoute allowedRoles={['admin', 'backoffice_operations', 'backoffice_armazem', 'supervisor_armazem']}>
                       <CriarRequisicao />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/transferencias/localizacao"
+                  element={
+                    <ProtectedRoute
+                      allowedRoles={['admin', 'backoffice_armazem', 'supervisor_armazem']}
+                      requireControloStock
+                    >
+                      <TransferenciaLocalizacao />
                     </ProtectedRoute>
                   }
                 />
@@ -250,6 +264,17 @@ function App() {
                       <Armazens />
                     </ProtectedRoute>
                   } 
+                />
+                <Route
+                  path="/consulta-estoque-localizacoes"
+                  element={
+                    <ProtectedRoute
+                      allowedRoles={['admin', 'backoffice_armazem', 'supervisor_armazem']}
+                      requireControloStock
+                    >
+                      <ConsultaLocalizacoesEstoque />
+                    </ProtectedRoute>
+                  }
                 />
               </Routes>
             </div>

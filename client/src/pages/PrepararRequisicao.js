@@ -3,9 +3,20 @@ import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useConfirm } from '../contexts/ConfirmContext';
 import Toast from '../components/Toast';
-import { FaArrowLeft, FaCheck, FaBox, FaMapMarkerAlt, FaArrowRight, FaEdit, FaQrcode, FaTrash } from 'react-icons/fa';
+import {
+  FaArrowLeft,
+  FaCheck,
+  FaBox,
+  FaMapMarkerAlt,
+  FaArrowRight,
+  FaEdit,
+  FaQrcode,
+  FaTrash
+} from 'react-icons/fa';
 import axios from 'axios';
-import QrScannerModal, { Html5QrcodeSupportedFormats } from '../components/QrScannerModal';
+import QrScannerModal from '../components/QrScannerModal';
+import PesquisaComLeitorQr from '../components/PesquisaComLeitorQr';
+import { FORMATOS_QR_BARCODE } from '../utils/qrBarcodeFormats';
 import jsPDF from 'jspdf';
 import {
   formatCriadorRequisicao,
@@ -15,6 +26,11 @@ import {
 import { desenharPaginaNotaEntregaDigi, NOTA_DEVOLUCAO_PDF_OPTS } from '../utils/notaEntregaPdf';
 import { quantidadeStockNacionalNoArmazem } from '../utils/stockNacionalArmazem';
 import { operadorPodeDocsELogisticaAposSeparacao, isAdmin } from '../utils/roles';
+import { podeUsarControloStock } from '../utils/controloStock';
+import {
+  podeFinalizarDevolucaoTransferenciasPendentes,
+  mensagemDocumentosEmFaltaFinalizarDevolucao
+} from '../utils/podeFinalizarDevolucaoTransferenciasPendentes';
 
 function labelArmazem(armazem) {
   if (!armazem) return '';
@@ -22,6 +38,14 @@ function labelArmazem(armazem) {
 }
 
 const MAX_BOBINAS_LOTE = 500;
+const RECEBIMENTO_TRANSFERENCIA_MARKER = 'RECEBIMENTO_TRANSFERENCIA_V1';
+
+const normPrepLocBusca = (v) =>
+  String(v || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
 
 /** Itens LOTE/SN: uma linha por unidade; alinha ao nº em «quantidade preparada». */
 function resizeBobinasArray(prevBobinas, n) {
@@ -66,9 +90,19 @@ const PrepararRequisicao = () => {
     bobinas: [] // itens controlados por LOTE ou S/N
   });
   const [showQrScanner, setShowQrScanner] = useState(false);
+  const [prepLocBusca, setPrepLocBusca] = useState('');
   const [serialScannerIdx, setSerialScannerIdx] = useState(null);
   const [serialScannerContinuous, setSerialScannerContinuous] = useState(false);
   const [stockNacionalPrep, setStockNacionalPrep] = useState({ loading: false, valor: null });
+  /** Stock por localização (armazém central + módulo) para filtrar saída na preparação */
+  const [preparacaoStockLoc, setPreparacaoStockLoc] = useState({
+    loading: false,
+    filtroAtivo: false,
+    porLocalizacao: [],
+    moduloOff: false,
+    semNenhuma: false,
+    erro: null,
+  });
   // No ciclo de devolução (EM EXPEDICAO = "Em processo"): ao clicar "Receber" mostramos o botão de gerar TRA.
   const [receberAtivo, setReceberAtivo] = useState(false);
   const RECEBER_ATIVO_IDS_KEY = 'devolucao_receber_ativo_ids_v1';
@@ -148,6 +182,87 @@ const PrepararRequisicao = () => {
       ac.abort();
     };
   }, [itemPreparando?.item_id, armazemOrigem]);
+
+  useEffect(() => {
+    if (!itemPreparando?.item_id || !armazemOrigem?.id) {
+      setPreparacaoStockLoc({
+        loading: false,
+        filtroAtivo: false,
+        porLocalizacao: [],
+        moduloOff: false,
+        semNenhuma: false,
+        erro: null,
+      });
+      return;
+    }
+    if (String(armazemOrigem.tipo || '').toLowerCase() !== 'central') {
+      setPreparacaoStockLoc({
+        loading: false,
+        filtroAtivo: false,
+        porLocalizacao: [],
+        moduloOff: false,
+        semNenhuma: false,
+        erro: null,
+      });
+      return;
+    }
+    if (!podeUsarControloStock(user)) {
+      setPreparacaoStockLoc({
+        loading: false,
+        filtroAtivo: false,
+        porLocalizacao: [],
+        moduloOff: false,
+        semNenhuma: false,
+        erro: null,
+      });
+      return;
+    }
+    const ac = new AbortController();
+    setPreparacaoStockLoc((s) => ({ ...s, loading: true, erro: null }));
+    const token = localStorage.getItem('token');
+    (async () => {
+      try {
+        const { data } = await axios.get(
+          `/api/armazens/${armazemOrigem.id}/itens/${itemPreparando.item_id}/localizacoes-com-stock`,
+          {
+            headers: token ? { Authorization: `Bearer ${token}` } : {},
+            signal: ac.signal,
+          }
+        );
+        const locs = Array.isArray(data.localizacoes) ? data.localizacoes : [];
+        const moduloOk = data.armazem_central === true && data.modulo_instalado === true;
+        const filtro = moduloOk && locs.length > 0;
+        setPreparacaoStockLoc({
+          loading: false,
+          filtroAtivo: filtro,
+          porLocalizacao: locs,
+          moduloOff: data.armazem_central === true && data.modulo_instalado === false,
+          semNenhuma: moduloOk && locs.length === 0,
+          erro: null,
+        });
+      } catch (err) {
+        if (axios.isCancel?.(err) || err.code === 'ERR_CANCELED' || err.name === 'CanceledError') return;
+        setPreparacaoStockLoc({
+          loading: false,
+          filtroAtivo: false,
+          porLocalizacao: [],
+          moduloOff: false,
+          semNenhuma: false,
+          erro: err.response?.data?.error || err.message || 'Erro ao carregar stock por localização',
+        });
+      }
+    })();
+    return () => ac.abort();
+  }, [itemPreparando?.item_id, armazemOrigem?.id, armazemOrigem?.tipo, user]);
+
+  useEffect(() => {
+    if (!preparacaoStockLoc.filtroAtivo) return;
+    setFormItem((prev) =>
+      prev.localizacao_origem === '_custom_'
+        ? { ...prev, localizacao_origem: '', localizacao_origem_custom: '' }
+        : prev
+    );
+  }, [preparacaoStockLoc.filtroAtivo]);
 
   const fetchRequisicao = async (silent = false) => {
     try {
@@ -240,9 +355,20 @@ const PrepararRequisicao = () => {
       }
     }
     const isOrigemCustom = locOrigem && locs.length > 0 && !locs.includes(locOrigem);
-    const qtdPreparada = item.quantidade_preparada !== undefined && item.quantidade_preparada !== null
-      ? item.quantidade_preparada
-      : item.quantidade;
+    const isRecebimentoMercadoria = String(requisicao?.observacoes || '')
+      .toUpperCase()
+      .startsWith(RECEBIMENTO_TRANSFERENCIA_MARKER);
+    const qtdPreparada = isRecebimentoMercadoria
+      ? (
+          item.quantidade_preparada !== undefined && item.quantidade_preparada !== null
+            ? item.quantidade_preparada
+            : ''
+        )
+      : (
+          item.quantidade_preparada !== undefined && item.quantidade_preparada !== null
+            ? item.quantidade_preparada
+            : item.quantidade
+        );
     const tipoControlo = (item.tipocontrolo || '').toUpperCase();
     const isLote = tipoControlo === 'LOTE';
     const isSerial = tipoControlo === 'S/N';
@@ -643,7 +769,16 @@ const PrepararRequisicao = () => {
   };
 
   const fecharPrepararItem = () => {
+    setPrepLocBusca('');
     setItemPreparando(null);
+    setPreparacaoStockLoc({
+      loading: false,
+      filtroAtivo: false,
+      porLocalizacao: [],
+      moduloOff: false,
+      semNenhuma: false,
+      erro: null,
+    });
     setFormItem({
       quantidade_preparada: '',
       localizacao_origem: '',
@@ -755,10 +890,33 @@ const PrepararRequisicao = () => {
       if (!ok) return;
     }
 
-    const locOrigem = (formItem.localizacao_origem === '_custom_' ? formItem.localizacao_origem_custom : formItem.localizacao_origem)?.trim() || '';
-    if (!locOrigem) {
+    const locOrigem = isFluxoRecebimentoMercadoria
+      ? ''
+      : ((formItem.localizacao_origem === '_custom_' ? formItem.localizacao_origem_custom : formItem.localizacao_origem)?.trim() || '');
+    if (!isFluxoRecebimentoMercadoria && !locOrigem) {
       setToast({ type: 'error', message: 'A localização de saída (onde está saindo) é obrigatória.' });
       return;
+    }
+
+    if (!isFluxoRecebimentoMercadoria && podeUsarControloStock(user) && preparacaoStockLoc.filtroAtivo && qtdPreparadaNumerica > 0) {
+      const row = preparacaoStockLoc.porLocalizacao.find(
+        (r) => String(r.localizacao || '').trim().toUpperCase() === locOrigem.toUpperCase()
+      );
+      const disp = row != null ? Number(row.quantidade) : NaN;
+      if (!Number.isFinite(disp)) {
+        setToast({
+          type: 'error',
+          message: 'Escolha uma localização onde este artigo tem stock registado.',
+        });
+        return;
+      }
+      if (disp + 1e-9 < qtdPreparadaNumerica) {
+        setToast({
+          type: 'error',
+          message: `Stock insuficiente na localização selecionada (disponível: ${disp}, necessário: ${qtdPreparadaNumerica}).`,
+        });
+        return;
+      }
     }
 
     const tipoControlo = (itemPreparando.tipocontrolo || '').toUpperCase();
@@ -821,7 +979,7 @@ const PrepararRequisicao = () => {
               ? bobinasPayload.length
               : qtdPreparadaNumerica,
           quantidade_apeados: Math.max(0, Math.floor(Number(formItem.quantidade_apeados) || 0)),
-          localizacao_origem: locOrigem,
+          localizacao_origem: isFluxoRecebimentoMercadoria ? null : locOrigem,
           lote: formItem.lote || null,
           serialnumber: formItem.serialnumber || null,
           bobinas: tipoControlo === 'LOTE' ? bobinasPayload : undefined,
@@ -848,6 +1006,36 @@ const PrepararRequisicao = () => {
     }
   };
 
+  const locsOrigemParaPreparacao = useMemo(() => {
+    const todas = armazemOrigem?.localizacoes?.map((l) => l.localizacao).filter(Boolean) || [];
+    if (!podeUsarControloStock(user)) return todas;
+    if (preparacaoStockLoc.loading || !preparacaoStockLoc.filtroAtivo) return todas;
+    const comStock = new Set(
+      (preparacaoStockLoc.porLocalizacao || [])
+        .filter((r) => Number(r.quantidade) > 0)
+        .map((r) => String(r.localizacao || '').trim())
+    );
+    const filtradas = todas.filter((loc) => comStock.has(loc));
+    const salvo = itemPreparando?.localizacao_origem
+      ? String(itemPreparando.localizacao_origem).trim()
+      : '';
+    if (filtradas.length === 0) return todas;
+    if (salvo && todas.includes(salvo) && !filtradas.includes(salvo)) {
+      return [salvo, ...filtradas.filter((x) => x !== salvo)];
+    }
+    return filtradas;
+  }, [armazemOrigem, preparacaoStockLoc, itemPreparando?.localizacao_origem, user]);
+
+  const locsOrigemSelectFiltradas = useMemo(() => {
+    const q = normPrepLocBusca(prepLocBusca);
+    if (!q) return locsOrigemParaPreparacao;
+    return locsOrigemParaPreparacao.filter((loc) => normPrepLocBusca(loc).includes(q));
+  }, [locsOrigemParaPreparacao, prepLocBusca]);
+
+  useEffect(() => {
+    setPrepLocBusca('');
+  }, [itemPreparando?.id]);
+
   if (loading) {
     return (
       <div className="min-h-screen bg-[#F7F8FA] flex items-center justify-center">
@@ -873,7 +1061,7 @@ const PrepararRequisicao = () => {
   const podeAdminRemoverLinha =
     user && isAdmin(user.role) && (isSeparado || isEmExpedicao) && (requisicao.itens?.length || 0) > 1;
   const fasePreparacaoAberta = isPendente || isEmSeparacao;
-  const locsOrigem = armazemOrigem?.localizacoes?.map(l => l.localizacao).filter(Boolean) || [];
+  const locsOrigem = armazemOrigem?.localizacoes?.map((l) => l.localizacao).filter(Boolean) || [];
   const todosPreparados = requisicao.itens?.every(it => it.preparacao_confirmada === true) ?? false;
   const itensPorConfirmar = requisicao.itens?.filter(it => it.preparacao_confirmada !== true) ?? [];
   const preparacaoBloqueadaOutrem = preparacaoReservadaOutroUtilizador(requisicao, user);
@@ -882,10 +1070,19 @@ const PrepararRequisicao = () => {
   const isFluxoDevolucao =
     String(armazemOrigem?.tipo || requisicao.armazem_origem_tipo || '').toLowerCase() === 'viatura' &&
     String(armazemDestino?.tipo || requisicao.armazem_destino_tipo || '').toLowerCase() === 'central';
+  const isFluxoRecebimentoMercadoria = String(requisicao?.observacoes || '')
+    .toUpperCase()
+    .startsWith(RECEBIMENTO_TRANSFERENCIA_MARKER);
+  const tituloOrigem = isFluxoRecebimentoMercadoria ? 'Origem (fornecimento)' : 'Origem';
+  const tituloDestino = isFluxoRecebimentoMercadoria ? 'Destino (recebimento)' : 'Destino';
+  const valorOrigem = isFluxoRecebimentoMercadoria
+    ? (requisicao.armazem_descricao || '—')
+    : (requisicao.armazem_origem_descricao || '—');
+  const valorDestino = isFluxoRecebimentoMercadoria
+    ? (requisicao.armazem_origem_descricao || '—')
+    : (requisicao.armazem_descricao || '—');
   const podeFinalizarTransferenciasPendentes =
-    Boolean(requisicao?.devolucao_tra_gerada_em) &&
-    Boolean(requisicao?.devolucao_tra_apeados_gerada_em) &&
-    Boolean(requisicao?.devolucao_trfl_pendente_gerada_em);
+    requisicao && podeFinalizarDevolucaoTransferenciasPendentes(requisicao);
 
   return (
     <div className="min-h-screen bg-[#F7F8FA] p-4 sm:p-6 lg:p-8">
@@ -917,7 +1114,7 @@ const PrepararRequisicao = () => {
                 GERAR DEV (devolução)
               </button>
             )}
-            {(requisicao.status === 'separado' && requisicao.separacao_confirmada) && podeTrflTraReporte && !isFluxoDevolucao && (
+            {(requisicao.status === 'separado' && requisicao.separacao_confirmada) && podeTrflTraReporte && !isFluxoDevolucao && !isFluxoRecebimentoMercadoria && (
               <button
                 onClick={handleExportTRFL}
                 className="px-3 py-2 text-blue-700 hover:bg-blue-50 rounded-lg border border-blue-300 transition-colors"
@@ -1010,7 +1207,8 @@ const PrepararRequisicao = () => {
                   title={
                     podeFinalizarTransferenciasPendentes
                       ? 'Marcar devolução como Finalizada'
-                      : 'Para finalizar, gere TRA APEADOS e TRFL PENDENTE.'
+                      : mensagemDocumentosEmFaltaFinalizarDevolucao(requisicao) ||
+                        'Conclua os documentos em falta antes de finalizar.'
                   }
                 >
                   FINALIZAR
@@ -1019,6 +1217,7 @@ const PrepararRequisicao = () => {
 
             {/* Requisição normal: EM EXPEDICAO */}
             {!isFluxoDevolucao &&
+              !isFluxoRecebimentoMercadoria &&
               requisicao.status === 'EM EXPEDICAO' &&
               podeAgirSeparacao && (
                 <button
@@ -1054,11 +1253,20 @@ const PrepararRequisicao = () => {
 
         <div className="mb-6">
           <h1 className="text-2xl sm:text-3xl font-bold text-gray-800 mb-2">
-            {isFluxoDevolucao ? `Preparar Devolução #${id}` : `Preparar Requisição #${id}`}
+            {isFluxoRecebimentoMercadoria
+              ? `Preparar Recebimento #${id}`
+              : isFluxoDevolucao
+                ? `Preparar Devolução #${id}`
+                : `Preparar Requisição #${id}`}
           </h1>
-          {!isFluxoDevolucao && (
+          {!isFluxoDevolucao && !isFluxoRecebimentoMercadoria && (
             <p className="text-gray-600">
               Prepare cada item: confirme a quantidade e escolha a localização de saída. O destino é sempre <strong>EXPEDICAO</strong>.
+            </p>
+          )}
+          {isFluxoRecebimentoMercadoria && (
+            <p className="text-gray-600">
+              Confirme a quantidade realmente recebida de cada item. O destino é sempre a <strong>localização de recebimento</strong> do armazém destino.
             </p>
           )}
         </div>
@@ -1067,13 +1275,13 @@ const PrepararRequisicao = () => {
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6">
             {requisicao.armazem_origem_descricao && (
               <div>
-                <span className="text-sm text-gray-500">Origem</span>
-                <p className="font-medium text-gray-900">{requisicao.armazem_origem_descricao}</p>
+                <span className="text-sm text-gray-500">{tituloOrigem}</span>
+                <p className="font-medium text-gray-900">{valorOrigem}</p>
               </div>
             )}
             <div>
-              <span className="text-sm text-gray-500">Destino</span>
-              <p className="font-medium text-gray-900">{requisicao.armazem_descricao}</p>
+              <span className="text-sm text-gray-500">{tituloDestino}</span>
+              <p className="font-medium text-gray-900">{valorDestino}</p>
             </div>
             <div>
               <span className="text-sm text-gray-500">Criado por</span>
@@ -1114,7 +1322,7 @@ const PrepararRequisicao = () => {
                   {requisicao.status === 'pendente' ? 'Pendente' :
                     requisicao.status === 'EM SEPARACAO' ? 'Em separação' :
                     requisicao.status === 'separado' ? 'Separadas' :
-                    requisicao.status === 'EM EXPEDICAO' ? (isFluxoDevolucao ? 'Em processo' : 'Em expedição') :
+                    requisicao.status === 'EM EXPEDICAO' ? ((isFluxoDevolucao || isFluxoRecebimentoMercadoria) ? 'Em processo' : 'Em expedição') :
                     requisicao.status === 'APEADOS' ? 'APEADOS' :
                     requisicao.status === 'Entregue' ? 'Entregue' :
                     requisicao.status === 'FINALIZADO' ? 'Finalizado' :
@@ -1145,25 +1353,51 @@ const PrepararRequisicao = () => {
                   }`}
                 >
                   <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-                    <div className="flex-1">
-                      <div className="font-medium text-gray-900">{item.item_codigo}</div>
-                      <div className="text-sm text-gray-500">{item.item_descricao}</div>
-                      <div className="mt-2 flex items-center gap-4 text-sm flex-wrap">
-                        <span>
-                          Quantidade: <strong className="text-[#0915FF]">{item.quantidade}</strong>
-                          {(qtdPreparada > 0 || preparado) && (
-                            <span className="ml-2 text-gray-600">
-                              (preparado: {qtdPreparada})
+                    <div className="flex-1 min-w-0">
+                      {isPreparando ? (
+                        <div className="flex flex-col gap-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="text-xs font-semibold uppercase tracking-wide text-[#0915FF]">
+                              A preparar
                             </span>
-                          )}
-                        </span>
-                        {preparado && (
-                          <span className="text-green-600 font-medium flex items-center gap-1">
-                            <FaCheck /> Preparado{!completo && ' (quantidade parcial)'}
-                          </span>
-                        )}
-                      </div>
-                      {(item.localizacao_origem || item.localizacao_destino) && (
+                            {preparado && (
+                              <span className="text-green-600 text-xs font-medium flex items-center gap-1">
+                                <FaCheck /> Já tinha preparação
+                              </span>
+                            )}
+                          </div>
+                          <div className="font-mono font-semibold text-gray-900">{item.item_codigo}</div>
+                          <p className="text-sm text-gray-600 line-clamp-2" title={item.item_descricao}>
+                            {item.item_descricao}
+                          </p>
+                          <p className="text-xs text-gray-500">
+                            Pedido na requisição:{' '}
+                            <strong className="text-[#0915FF] tabular-nums">{item.quantidade}</strong>
+                            {(qtdPreparada > 0 || preparado) && (
+                              <span className="text-gray-500"> · já registado: {qtdPreparada}</span>
+                            )}
+                          </p>
+                        </div>
+                      ) : (
+                        <>
+                          <div className="font-medium text-gray-900">{item.item_codigo}</div>
+                          <div className="text-sm text-gray-500">{item.item_descricao}</div>
+                          <div className="mt-2 flex items-center gap-4 text-sm flex-wrap">
+                            <span>
+                              Quantidade: <strong className="text-[#0915FF]">{item.quantidade}</strong>
+                              {(qtdPreparada > 0 || preparado) && (
+                                <span className="ml-2 text-gray-600">(preparado: {qtdPreparada})</span>
+                              )}
+                            </span>
+                            {preparado && (
+                              <span className="text-green-600 font-medium flex items-center gap-1">
+                                <FaCheck /> Preparado{!completo && ' (quantidade parcial)'}
+                              </span>
+                            )}
+                          </div>
+                        </>
+                      )}
+                      {!isPreparando && !isFluxoRecebimentoMercadoria && (item.localizacao_origem || item.localizacao_destino) && (
                         <div className="mt-2 flex flex-wrap gap-2 text-xs">
                           {item.localizacao_origem && (
                             <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-gray-200 rounded">
@@ -1214,114 +1448,144 @@ const PrepararRequisicao = () => {
                   </div>
 
                   {isPreparando && (
-                    <form onSubmit={handlePrepararItem} className="mt-4 pt-4 border-t border-gray-200 space-y-4">
-                      <div className="flex flex-col lg:flex-row gap-4 lg:items-start lg:gap-6">
-                        <div className="flex-1 min-w-0">
-                          <label className="block text-sm font-medium text-gray-700 mb-1">Quantidade preparada</label>
-                          <input
-                            type="number"
-                            min="0"
-                            step={(item.tipocontrolo || '').toUpperCase() === 'LOTE' ? 1 : 'any'}
-                            value={formItem.quantidade_preparada}
-                            onChange={handleQuantidadePreparadaChange}
-                            className="w-full sm:w-32 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0915FF]"
-                            required
-                          />
-                          {/* Devolução: quantidade parcial a considerar como APEADOS (destino FERR no TRFL) */}
-                          {isFluxoDevolucao && (
-                            <div className="mt-3">
-                              <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer select-none">
-                                <input
-                                  type="checkbox"
-                                  checked={Number(formItem.quantidade_apeados) > 0}
-                                  onChange={(e) => {
-                                    const totalQty = Math.floor(Number(formItem.quantidade_preparada) || 0);
-                                    const nextChecked = Boolean(e.target.checked);
+                    <form onSubmit={handlePrepararItem} className="mt-4 pt-4 border-t border-gray-200 space-y-3">
+                      <nav
+                        className="flex flex-wrap items-center gap-1.5 text-[11px] font-semibold"
+                        aria-label="Passos da preparação"
+                      >
+                        <span className="rounded-md bg-[#0915FF] text-white px-2.5 py-1 shadow-sm">1 · Quantidade</span>
+                        {!isFluxoRecebimentoMercadoria && (
+                          <>
+                            <span className="text-gray-300" aria-hidden>
+                              →
+                            </span>
+                            <span className="rounded-md bg-gray-200 text-gray-800 px-2.5 py-1">2 · Local</span>
+                          </>
+                        )}
+                        <span className="text-gray-300" aria-hidden>
+                          →
+                        </span>
+                        <span className="rounded-md bg-gray-100 text-gray-500 px-2.5 py-1">
+                          {isFluxoRecebimentoMercadoria ? '2 · Confirmar' : '3 · Confirmar'}
+                        </span>
+                      </nav>
 
-                                    if (!nextChecked) {
-                                      setFormItem((prev) => ({ ...prev, quantidade_apeados: 0 }));
-                                      return;
-                                    }
-
-                                    if (totalQty < 1) {
-                                      setToast({ type: 'error', message: 'Defina primeiro uma quantidade de devolução (mínimo 1).' });
-                                      return;
-                                    }
-
-                                    setFormItem((prev) => {
-                                      const current = Number(prev.quantidade_apeados) || 0;
-                                      const nextApeados = current > 0 ? current : 1;
-                                      return { ...prev, quantidade_apeados: Math.min(nextApeados, totalQty) };
-                                    });
-                                  }}
-                                />
-                                <span>Marcar uma parte como APEADOS</span>
-                              </label>
-
-                              {Number(formItem.quantidade_apeados) > 0 && (
-                                <div className="mt-2">
-                                  <label className="block text-xs font-medium text-gray-700 mb-1">
-                                    Quantidade APEADOS (mín. 1)
-                                  </label>
+                      <>
+                      <section className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm space-y-3">
+                        <h4 className="text-sm font-semibold text-gray-900 flex items-center gap-2">
+                          <span className="flex h-7 w-7 items-center justify-center rounded-full bg-[#0915FF]/12 text-xs font-bold text-[#0915FF]">
+                            1
+                          </span>
+                          {isFluxoRecebimentoMercadoria ? 'Quantidade recebida' : 'Quantidade a separar'}
+                        </h4>
+                        <div className="flex flex-col sm:flex-row sm:items-stretch gap-4">
+                          <div className="flex-1 min-w-0 space-y-2">
+                            <label className="block text-xs font-medium text-gray-500" htmlFor={`qtd-prep-${item.id}`}>
+                              {isFluxoRecebimentoMercadoria ? 'Unidades / bobinas recebidas agora' : 'Unidades / bobinas a preparar agora'}
+                            </label>
+                            <input
+                              id={`qtd-prep-${item.id}`}
+                              type="number"
+                              min="0"
+                              step={(item.tipocontrolo || '').toUpperCase() === 'LOTE' ? 1 : 'any'}
+                              value={formItem.quantidade_preparada}
+                              onChange={handleQuantidadePreparadaChange}
+                              placeholder={isFluxoRecebimentoMercadoria ? 'Digite a quantidade recebida' : ''}
+                              inputMode="decimal"
+                              className="w-full sm:max-w-[160px] px-3 py-2.5 border-2 border-gray-200 rounded-xl text-xl font-semibold tabular-nums text-gray-900 focus:border-[#0915FF] focus:ring-2 focus:ring-[#0915FF]/25"
+                              required
+                            />
+                            {isFluxoRecebimentoMercadoria && (
+                              <p className="text-[11px] text-gray-500">
+                                Digite a quantidade real recebida para este artigo.
+                              </p>
+                            )}
+                            {isFluxoDevolucao && (
+                              <div className="rounded-lg border border-violet-100 bg-violet-50/60 px-3 py-2 space-y-2">
+                                <label className="flex items-center gap-2 text-sm text-violet-900 cursor-pointer select-none">
                                   <input
-                                    type="number"
-                                    min="1"
-                                    step="1"
-                                    max={Math.floor(Number(formItem.quantidade_preparada) || 0)}
-                                    value={formItem.quantidade_apeados}
+                                    type="checkbox"
+                                    checked={Number(formItem.quantidade_apeados) > 0}
                                     onChange={(e) => {
                                       const totalQty = Math.floor(Number(formItem.quantidade_preparada) || 0);
-                                      const nextVal = Math.floor(Number(e.target.value) || 0);
-                                      if (totalQty < 1) return;
-                                      const clamped = Math.max(1, Math.min(nextVal, totalQty));
-                                      setFormItem((prev) => ({ ...prev, quantidade_apeados: clamped }));
+                                      const nextChecked = Boolean(e.target.checked);
+
+                                      if (!nextChecked) {
+                                        setFormItem((prev) => ({ ...prev, quantidade_apeados: 0 }));
+                                        return;
+                                      }
+
+                                      if (totalQty < 1) {
+                                        setToast({
+                                          type: 'error',
+                                          message: 'Defina primeiro uma quantidade de devolução (mínimo 1).'
+                                        });
+                                        return;
+                                      }
+
+                                      setFormItem((prev) => {
+                                        const current = Number(prev.quantidade_apeados) || 0;
+                                        const nextApeados = current > 0 ? current : 1;
+                                        return { ...prev, quantidade_apeados: Math.min(nextApeados, totalQty) };
+                                      });
                                     }}
-                                    className="w-full sm:w-32 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0915FF]"
-                                    required
                                   />
-                                </div>
-                              )}
+                                  <span>Parte desta quantidade é APEADOS</span>
+                                </label>
+
+                                {Number(formItem.quantidade_apeados) > 0 && (
+                                  <div>
+                                    <label className="block text-xs font-medium text-violet-900 mb-1">
+                                      Qtd. APEADOS (mín. 1)
+                                    </label>
+                                    <input
+                                      type="number"
+                                      min="1"
+                                      step="1"
+                                      max={Math.floor(Number(formItem.quantidade_preparada) || 0)}
+                                      value={formItem.quantidade_apeados}
+                                      onChange={(e) => {
+                                        const totalQty = Math.floor(Number(formItem.quantidade_preparada) || 0);
+                                        const nextVal = Math.floor(Number(e.target.value) || 0);
+                                        if (totalQty < 1) return;
+                                        const clamped = Math.max(1, Math.min(nextVal, totalQty));
+                                        setFormItem((prev) => ({ ...prev, quantidade_apeados: clamped }));
+                                      }}
+                                      className="w-full sm:w-32 px-3 py-2 border border-violet-200 rounded-lg bg-white text-sm"
+                                      required
+                                    />
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                          {!isFluxoRecebimentoMercadoria && armazemOrigem && (
+                            <div className="sm:w-44 shrink-0 flex flex-col justify-center rounded-xl border border-gray-100 bg-gradient-to-b from-slate-50 to-white px-4 py-3 text-center sm:text-right">
+                              <div className="text-[10px] font-bold uppercase tracking-wide text-gray-500">
+                                Stock nacional
+                              </div>
+                              <div
+                                className="text-[11px] text-gray-500 truncate mt-1 sm:ml-auto max-w-full"
+                                title={labelArmazem(armazemOrigem)}
+                              >
+                                {labelArmazem(armazemOrigem)}
+                              </div>
+                              <div className="mt-2 text-2xl font-bold tabular-nums text-gray-900">
+                                {stockNacionalPrep.loading ? (
+                                  <span className="inline-block animate-pulse">…</span>
+                                ) : stockNacionalPrep.valor != null ? (
+                                  stockNacionalPrep.valor
+                                ) : (
+                                  '—'
+                                )}
+                              </div>
                             </div>
                           )}
-                          <p className="text-xs text-gray-500 mt-1">
-                            {(item.tipocontrolo || '').toUpperCase() === 'LOTE' ? (
-                              <>
-                                Requisitada: {item.quantidade} bobina(s). Este número define quantas bobinas vai separar — aparecem
-                                automaticamente os campos de lote e metragem por bobina. Use 0 se não tiver o item.
-                              </>
-                            ) : (item.tipocontrolo || '').toUpperCase() === 'S/N' ? (
-                              <>
-                                Requisitada: {item.quantidade} unidade(s). Este número define quantos campos de serial number serão exibidos.
-                                Use 0 se não tiver o item.
-                              </>
-                            ) : (
-                              <>
-                                Requisitada: {item.quantidade}. Pode ser diferente (para mais ou para menos); o sistema irá pedir confirmação.
-                                Use 0 se não tiver o item.
-                              </>
-                            )}
-                          </p>
                         </div>
-                        {armazemOrigem && (
-                          <div className="shrink-0 w-full sm:max-w-[220px] rounded-lg bg-gray-50 px-3 py-2.5 lg:self-start">
-                            <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-600 text-center sm:text-left">
-                              Stock nacional · armazém origem
-                            </div>
-                            <div
-                              className="text-xs text-gray-600 mt-0.5 truncate text-center sm:text-left"
-                              title={labelArmazem(armazemOrigem)}
-                            >
-                              {labelArmazem(armazemOrigem)}
-                            </div>
-                            <div className="mt-2 text-2xl font-bold tabular-nums text-gray-900 min-h-[2rem] flex items-center justify-center sm:justify-start">
-                              {stockNacionalPrep.loading ? '…' : stockNacionalPrep.valor != null ? stockNacionalPrep.valor : '—'}
-                            </div>
-                          </div>
-                        )}
-                      </div>
+                      </section>
                       {(item.tipocontrolo || '').toUpperCase() === 'LOTE' && (
-                        <div className="space-y-3">
-                          <span className="text-sm font-medium text-gray-700">Bobinas preparadas</span>
+                        <section className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm space-y-3">
+                          <h4 className="text-sm font-semibold text-gray-800">Bobinas (lote e metros)</h4>
                           {(formItem.bobinas || []).length === 0 && (
                             <p className="text-xs text-gray-500">
                               Indique acima a quantidade preparada (número de bobinas) para mostrar os campos de lote e metragem.
@@ -1396,12 +1660,12 @@ const PrepararRequisicao = () => {
                               </div>
                             ))}
                           </div>
-                        </div>
+                        </section>
                       )}
                       {(item.tipocontrolo || '').toUpperCase() === 'S/N' && (
-                        <div className="space-y-3">
+                        <section className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm space-y-3">
                           <div className="flex flex-wrap items-center justify-between gap-2">
-                            <span className="text-sm font-medium text-gray-700">Seriais preparados</span>
+                            <h4 className="text-sm font-semibold text-gray-800">Seriais (S/N)</h4>
                             <button
                               type="button"
                               onClick={() => {
@@ -1521,144 +1785,234 @@ const PrepararRequisicao = () => {
                             title="Ler serial (código de barras / QR)"
                             readerId="qr-reader-serial"
                             closeOnScan={!serialScannerContinuous}
-                            formatsToSupport={[
-                              Html5QrcodeSupportedFormats.CODE_128,
-                              Html5QrcodeSupportedFormats.CODE_39,
-                              Html5QrcodeSupportedFormats.CODE_93,
-                              Html5QrcodeSupportedFormats.EAN_13,
-                              Html5QrcodeSupportedFormats.EAN_8,
-                              Html5QrcodeSupportedFormats.UPC_A,
-                              Html5QrcodeSupportedFormats.UPC_E,
-                              Html5QrcodeSupportedFormats.ITF,
-                              Html5QrcodeSupportedFormats.CODABAR,
-                              Html5QrcodeSupportedFormats.QR_CODE
-                            ]}
+                            formatsToSupport={FORMATOS_QR_BARCODE}
                           />
-                        </div>
+                        </section>
                       )}
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">
-                          Localização de saída (onde está saindo) <span className="text-red-600">*</span>
-                        </label>
+                      {!isFluxoRecebimentoMercadoria && (
+                      <section className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm space-y-3">
+                        <h4 className="text-sm font-semibold text-gray-900 flex flex-wrap items-center gap-2">
+                          <span className="flex h-7 w-7 items-center justify-center rounded-full bg-[#0915FF]/12 text-xs font-bold text-[#0915FF]">
+                            2
+                          </span>
+                          Localização de saída
+                          <span className="text-red-600 text-xs font-normal">obrigatório</span>
+                        </h4>
                         {armazemOrigem && (
-                          <p className="text-xs text-gray-500 mb-2">
-                            Armazém origem: <strong>{armazemOrigem.codigo ? `${armazemOrigem.codigo} - ` : ''}{armazemOrigem.descricao}</strong>
-                            {locsOrigem.length === 0 && <span className="block mt-1 text-amber-600">Nenhuma localização cadastrada</span>}
+                          <p className="text-xs text-gray-600 flex flex-wrap items-center gap-2">
+                            <FaMapMarkerAlt className="text-amber-600 shrink-0" aria-hidden />
+                            <span>
+                              <span className="text-gray-500">Armazém:</span>{' '}
+                              <strong className="text-gray-800">
+                                {armazemOrigem.codigo ? `${armazemOrigem.codigo} — ` : ''}
+                                {armazemOrigem.descricao}
+                              </strong>
+                            </span>
+                            {locsOrigem.length === 0 && (
+                              <span className="text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-2 py-0.5 text-[11px]">
+                                Sem localizações cadastradas
+                              </span>
+                            )}
                           </p>
+                        )}
+                        {preparacaoStockLoc.loading && (
+                          <p className="text-xs text-gray-500 flex items-center gap-2">
+                            <span className="inline-block h-3.5 w-3.5 rounded-full border-2 border-gray-300 border-t-[#0915FF] animate-spin" />
+                            A carregar localizações…
+                          </p>
+                        )}
+                        {preparacaoStockLoc.erro && (
+                          <p className="text-xs text-amber-900 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                            {preparacaoStockLoc.erro}
+                          </p>
+                        )}
+                        {preparacaoStockLoc.filtroAtivo && (
+                          <div className="flex items-start gap-2 text-xs text-emerald-900 bg-emerald-50 border border-emerald-100 rounded-lg px-3 py-2">
+                            <FaCheck className="shrink-0 mt-0.5 text-emerald-600" aria-hidden />
+                            <span>Lista filtrada: só localizações com stock registado deste artigo.</span>
+                          </div>
+                        )}
+                        {preparacaoStockLoc.semNenhuma && (
+                          <div className="text-xs text-amber-900 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 leading-relaxed">
+                            Sem stock em nenhuma localização. Pode continuar a indicar localização; o servidor valida ao
+                            guardar. Atualize o armazém se for preciso.
+                          </div>
+                        )}
+                        {preparacaoStockLoc.moduloOff && String(armazemOrigem?.tipo || '').toLowerCase() === 'central' && (
+                          <details className="text-xs text-gray-600 border border-dashed border-gray-200 rounded-lg px-3 py-1">
+                            <summary className="cursor-pointer py-1.5 font-medium text-gray-700 list-none [&::-webkit-details-marker]:hidden">
+                              Módulo de stock por localização
+                            </summary>
+                            <p className="pb-2 text-gray-500 leading-relaxed">
+                              Não está configurado neste ambiente: todas as localizações aparecem. Com o módulo ativo, o
+                              servidor reforça as regras ao guardar.
+                            </p>
+                          </details>
                         )}
                         {locsOrigem.length > 0 ? (
                           <>
-                            <div className="flex gap-2">
-                              <select
-                                value={formItem.localizacao_origem}
-                                onChange={(e) => setFormItem(prev => ({ ...prev, localizacao_origem: e.target.value }))}
-                                className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0915FF]"
-                                required
-                              >
-                                <option value="">Selecione a localização...</option>
-                                {locsOrigem.map((loc, i) => (
-                                  <option key={i} value={loc}>{loc}</option>
-                                ))}
-                                <option value="_custom_">Outra (digite)</option>
-                              </select>
-                              <button
-                                type="button"
-                                onClick={() => setShowQrScanner(true)}
-                                className="px-3 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-100 flex items-center gap-1"
-                                title="Ler localização com QR Code"
-                              >
-                                <FaQrcode /> Ler QR
-                              </button>
-                            </div>
-                            {formItem.localizacao_origem === '_custom_' && (
-                              <input
-                                type="text"
-                                value={formItem.localizacao_origem_custom}
-                                onChange={(e) => setFormItem(prev => ({ ...prev, localizacao_origem_custom: e.target.value }))}
-                                className="w-full mt-2 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0915FF]"
-                                placeholder="Digite a localização de saída"
-                                required
+                            <div className="mb-2">
+                              <PesquisaComLeitorQr
+                                value={prepLocBusca}
+                                onChange={(e) => setPrepLocBusca(e.target.value)}
+                                placeholder="Filtrar ou ler localização de saída…"
+                                onLerClick={() => setShowQrScanner(true)}
+                                lerTitle="Ler QR ou código de barras da localização"
+                                lerAriaLabel="Ler QR ou código de barras da localização de saída"
                               />
+                            </div>
+                            <select
+                              value={formItem.localizacao_origem}
+                              onChange={(e) => setFormItem((prev) => ({ ...prev, localizacao_origem: e.target.value }))}
+                              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0915FF]"
+                              required
+                            >
+                              <option value="">Selecione a localização...</option>
+                              {locsOrigemSelectFiltradas.map((loc, i) => {
+                                let label = loc;
+                                if (preparacaoStockLoc.filtroAtivo) {
+                                  const r = preparacaoStockLoc.porLocalizacao.find(
+                                    (x) => String(x.localizacao || '').trim() === String(loc).trim()
+                                  );
+                                  if (r && Number(r.quantidade) > 0) {
+                                    label = `${loc} (${Number(r.quantidade)} disp.)`;
+                                  }
+                                }
+                                return (
+                                  <option key={`${loc}-${i}`} value={loc}>
+                                    {label}
+                                  </option>
+                                );
+                              })}
+                              {!preparacaoStockLoc.filtroAtivo && <option value="_custom_">Outra (digite)</option>}
+                            </select>
+                            {locsOrigemParaPreparacao.length > 0 && locsOrigemSelectFiltradas.length === 0 && (
+                              <p className="text-[11px] text-amber-800 mt-1">Nenhuma localização corresponde ao filtro.</p>
+                            )}
+                            {formItem.localizacao_origem === '_custom_' && (
+                              <div className="mt-2">
+                                <PesquisaComLeitorQr
+                                  value={formItem.localizacao_origem_custom}
+                                  onChange={(e) =>
+                                    setFormItem((prev) => ({ ...prev, localizacao_origem_custom: e.target.value }))
+                                  }
+                                  placeholder="Digite a localização de saída"
+                                  onLerClick={() => setShowQrScanner(true)}
+                                  lerTitle="Ler QR ou código de barras da localização"
+                                  lerAriaLabel="Ler localização personalizada"
+                                />
+                              </div>
                             )}
                           </>
                         ) : (
-                          <div className="flex gap-2">
-                            <input
-                              type="text"
-                              value={formItem.localizacao_origem}
-                              onChange={(e) => setFormItem(prev => ({ ...prev, localizacao_origem: e.target.value }))}
-                              className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0915FF]"
-                              placeholder="Ex: Prateleira A3"
-                              required
-                            />
-                            <button
-                              type="button"
-                              onClick={() => setShowQrScanner(true)}
-                              className="px-3 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-100 flex items-center gap-1"
-                              title="Ler localização com QR Code"
-                            >
-                              <FaQrcode /> Ler QR
-                            </button>
-                          </div>
+                          <PesquisaComLeitorQr
+                            value={formItem.localizacao_origem}
+                            onChange={(e) => setFormItem((prev) => ({ ...prev, localizacao_origem: e.target.value }))}
+                            placeholder="Ex: Prateleira A3"
+                            onLerClick={() => setShowQrScanner(true)}
+                            lerTitle="Ler QR ou código de barras da localização"
+                            lerAriaLabel="Ler localização de saída"
+                          />
                         )}
-                        <QrScannerModal
-                          open={showQrScanner}
-                          onClose={() => setShowQrScanner(false)}
-                          onScan={(texto) => {
-                            const loc = (texto || '').trim();
-                            if (!loc) return;
-                            if (locsOrigem.length > 0) {
-                              if (locsOrigem.includes(loc)) {
-                                setFormItem(prev => ({ ...prev, localizacao_origem: loc, localizacao_origem_custom: '' }));
-                                setToast({ type: 'success', message: `Localização definida: ${loc}` });
-                              } else {
-                                setToast({
-                                  type: 'error',
-                                  message: `Localização não reconhecida. O QR Code deve ser uma das localizações do armazém: ${locsOrigem.join(', ')}`
-                                });
+                      </section>
+                      )}
+                      {!isFluxoRecebimentoMercadoria && (
+                      <QrScannerModal
+                        open={showQrScanner}
+                        onClose={() => setShowQrScanner(false)}
+                        onScan={(texto) => {
+                          const loc = (texto || '').trim();
+                          if (!loc) return;
+                          setPrepLocBusca(loc);
+                          if (locsOrigem.length > 0) {
+                            let pendingToast = null;
+                            setFormItem((prev) => {
+                              if (locsOrigemParaPreparacao.includes(loc)) {
+                                pendingToast = { type: 'success', message: `Localização definida: ${loc}` };
+                                return { ...prev, localizacao_origem: loc, localizacao_origem_custom: '' };
                               }
-                            } else {
-                              setFormItem(prev => ({ ...prev, localizacao_origem: loc }));
-                              setToast({ type: 'success', message: `Localização definida: ${loc}` });
-                            }
-                          }}
-                          title="Ler localização por QR Code (apenas localizações do armazém)"
-                        />
-                      </div>
-                      <div className="rounded-lg bg-gray-50 border border-gray-200 p-3">
-                        <p className="text-sm font-medium text-gray-700">Destino (automático)</p>
-                        <p className="text-xs text-gray-600 mt-1">
-                          Todos os itens vão para <strong>EXPEDICAO</strong>
-                          {armazemDestino?.codigo && (
-                            <span> — armazém destino: {armazemDestino.codigo} ({armazemDestino.codigo}, {armazemDestino.codigo}.FERR)</span>
-                          )}
-                        </p>
-                      </div>
-                      <div className="flex gap-2">
-                        <button
-                          type="submit"
-                          disabled={submitting === item.id}
-                          className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 flex items-center gap-2"
-                        >
-                          {submitting === item.id ? (
-                            <>
-                              <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white" />
-                              Salvando...
-                            </>
-                          ) : (
-                            <>
-                              <FaCheck /> Confirmar preparação
-                            </>
-                          )}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={fecharPrepararItem}
-                          className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50"
-                        >
-                          Cancelar
-                        </button>
-                      </div>
+                              if (prev.localizacao_origem === '_custom_') {
+                                pendingToast = { type: 'success', message: `Localização definida: ${loc}` };
+                                return { ...prev, localizacao_origem_custom: loc };
+                              }
+                              pendingToast = {
+                                type: 'error',
+                                message: `Localização não reconhecida. Use uma das opções permitidas: ${locsOrigemParaPreparacao.join(', ')}`
+                              };
+                              return prev;
+                            });
+                            if (pendingToast) setToast(pendingToast);
+                          } else {
+                            setFormItem((prev) => ({ ...prev, localizacao_origem: loc }));
+                            setToast({ type: 'success', message: `Localização definida: ${loc}` });
+                          }
+                        }}
+                        title="Ler localização (QR ou código de barras)"
+                        formatsToSupport={FORMATOS_QR_BARCODE}
+                      />
+                      )}
+                      </>
+                      <section className="rounded-xl border-2 border-gray-200 bg-gradient-to-br from-slate-50 to-white p-4 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between shadow-sm">
+                        <div className="flex items-start gap-3 min-w-0">
+                          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#0915FF] text-xs font-bold text-white shadow-md">
+                            {isFluxoRecebimentoMercadoria ? '2' : '3'}
+                          </span>
+                          <div>
+                            <p className="text-[11px] font-bold uppercase tracking-wide text-gray-500">
+                              Confirmar · destino fixo
+                            </p>
+                            <p className="text-sm text-gray-900 mt-1 leading-snug">
+                              {isFluxoRecebimentoMercadoria ? (
+                                <>Entrada → <strong>RECEBIMENTO</strong></>
+                              ) : (
+                                <>Saída → <strong>EXPEDICAO</strong></>
+                              )}
+                              {armazemDestino?.codigo && !isFluxoRecebimentoMercadoria && (
+                                <>
+                                  {' '}
+                                  <span className="text-gray-600 font-normal">no armazém</span>{' '}
+                                  <span className="font-mono font-semibold">{armazemDestino.codigo}</span>
+                                  <span className="text-gray-500 text-xs block sm:inline sm:ml-1">
+                                    ({armazemDestino.codigo}, {armazemDestino.codigo}.FERR)
+                                  </span>
+                                </>
+                              )}
+                              {isFluxoRecebimentoMercadoria && armazemOrigem?.codigo && (
+                                <>
+                                  {' '}
+                                  <span className="text-gray-600 font-normal">no armazém</span>{' '}
+                                  <span className="font-mono font-semibold">{armazemOrigem.codigo}</span>
+                                </>
+                              )}
+                            </p>
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap gap-2 sm:justify-end">
+                          <button
+                            type="button"
+                            onClick={fecharPrepararItem}
+                            className="px-4 py-2.5 border border-gray-300 rounded-xl bg-white text-gray-700 text-sm font-medium hover:bg-gray-50 order-2 sm:order-1"
+                          >
+                            Cancelar
+                          </button>
+                          <button
+                            type="submit"
+                            disabled={submitting === item.id}
+                            className="px-5 py-2.5 bg-emerald-600 text-white rounded-xl hover:bg-emerald-700 disabled:opacity-50 flex items-center justify-center gap-2 text-sm font-semibold shadow-sm order-1 sm:order-2 min-w-[200px]"
+                          >
+                            {submitting === item.id ? (
+                              <>
+                                <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent" />
+                                A guardar…
+                              </>
+                            ) : (
+                              <>
+                                <FaCheck /> Confirmar preparação
+                              </>
+                            )}
+                          </button>
+                        </div>
+                      </section>
                     </form>
                   )}
                 </div>
@@ -1670,18 +2024,26 @@ const PrepararRequisicao = () => {
             <div className="mt-6 pt-6 border-t border-gray-200">
               {todosPreparados ? (
                 <>
-                  <p className="text-gray-700 mb-3">Todos os itens foram preparados. Clique abaixo para concluir a separação da requisição.</p>
+                  <p className="text-gray-700 mb-3">
+                    {isFluxoRecebimentoMercadoria
+                      ? 'Todos os itens foram confirmados. Clique abaixo para concluir a preparação do recebimento.'
+                      : 'Todos os itens foram preparados. Clique abaixo para concluir a separação da requisição.'}
+                  </p>
                   <button
                     type="button"
                     onClick={handleCompletarSeparacao}
                     className="px-4 py-3 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors flex items-center gap-2 font-medium"
                   >
-                    <FaCheck /> Concluir preparação da requisição
+                    <FaCheck /> {isFluxoRecebimentoMercadoria ? 'Concluir preparação do recebimento' : 'Concluir preparação da requisição'}
                   </button>
                 </>
               ) : (
                 <>
-                  <p className="text-gray-700 mb-2">Confirme a preparação de todos os itens (use 0 quando não tiver o item) para poder concluir.</p>
+                  <p className="text-gray-700 mb-2">
+                    {isFluxoRecebimentoMercadoria
+                      ? 'Confirme todos os itens (use 0 quando não tiver recebido) para poder concluir.'
+                      : 'Confirme a preparação de todos os itens (use 0 quando não tiver o item) para poder concluir.'}
+                  </p>
                   {itensPorConfirmar.length > 0 && (
                     <p className="text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-3 text-sm">
                       <strong>Faltam confirmar {itensPorConfirmar.length} {itensPorConfirmar.length === 1 ? 'item' : 'itens'}:</strong>{' '}
@@ -1695,7 +2057,7 @@ const PrepararRequisicao = () => {
                     className="px-4 py-3 bg-gray-300 text-gray-500 rounded-lg cursor-not-allowed flex items-center gap-2 font-medium"
                     title="Confirme todos os itens primeiro"
                   >
-                    <FaCheck /> Concluir preparação da requisição
+                    <FaCheck /> {isFluxoRecebimentoMercadoria ? 'Concluir preparação do recebimento' : 'Concluir preparação da requisição'}
                   </button>
                 </>
               )}

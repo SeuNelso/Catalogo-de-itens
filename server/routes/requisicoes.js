@@ -2,8 +2,10 @@
  * Rotas /api/requisicoes — montar com app.use('/api/requisicoes', createRequisicoesRouter(deps))
  */
 const express = require('express');
-const XLSX = require('xlsx');
 const ExcelJS = require('exceljs');
+const fs = require('fs');
+const pdfParseLib = require('pdf-parse');
+const { buildExcelTransferencia } = require('../utils/buildExcelTransferencia');
 
 /** Nome legível do utilizador que criou a requisição (nome+sobrenome → username → nº colaborador). */
 const SQL_CRIADOR_NOME = `COALESCE(
@@ -18,7 +20,9 @@ const { isTipoArmazemOrigemRequisicao } = require('../utils/armazensRequisicaoOr
 const {
   usuarioEscopadoSemArmazensAtribuidos,
   requisicaoPerfilNegadoMiddleware,
+  isFluxoDevolucaoViaturaCentral,
 } = require('../middleware/requisicoesScope');
+const { usuarioTemPermissaoControloStock } = require('../utils/usuarioDbColumns');
 
 const SQL_CRIADOR_COM_EMAIL = `${SQL_CRIADOR_NOME} AS usuario_nome,
         u.email AS usuario_email,
@@ -64,6 +68,667 @@ const SQL_LISTA_CRIADOR_E_SEPARADOR = `${SQL_CRIADOR_COM_EMAIL},
         r.separador_usuario_id,
         ${SQL_SEPARADOR_NOME} AS separador_nome`;
 
+function makeStockPrepBizError(status, error, code, extra) {
+  const err = new Error(error);
+  err.isStockPrepBiz = true;
+  err.status = status;
+  err.payload = { error, ...(code ? { code } : {}), ...extra };
+  return err;
+}
+
+function quantidadeNecessariaStockPreparacao({
+  isZero,
+  tipoControlo,
+  quantidade_preparada,
+  bobinas,
+  serialsNormalizados,
+}) {
+  if (isZero) return 0;
+  const t = (tipoControlo || '').toUpperCase();
+  if (t === 'LOTE' && Array.isArray(bobinas) && bobinas.length > 0) {
+    return bobinas.reduce((sum, b) => sum + (Number(b.metros) || 0), 0);
+  }
+  if (t === 'S/N' && Array.isArray(serialsNormalizados) && serialsNormalizados.length > 0) {
+    return serialsNormalizados.length;
+  }
+  return Number(quantidade_preparada) || 0;
+}
+
+/** Armazém central + armazens_localizacao_item: exige quantidade na localização de saída (só chamada se o utilizador tiver controlo de stock). */
+async function assertStockSuficientePreparacaoLocalizacao(client, opts) {
+  const { armazemOrigemId, itemId, itemCodigo, locLabel, needQty } = opts;
+  const need = Number(needQty);
+  if (!armazemOrigemId || !Number.isFinite(need) || need <= 0) return;
+  const lab = (locLabel && String(locLabel).trim()) || '';
+  if (!lab) return;
+  const tipoR = await client.query(
+    `SELECT LOWER(TRIM(COALESCE(tipo,''))) AS tipo FROM armazens WHERE id = $1`,
+    [armazemOrigemId]
+  );
+  if (!tipoR.rows[0] || tipoR.rows[0].tipo !== 'central') return;
+  try {
+    const r = await client.query(
+      `SELECT ali.quantidade::numeric AS q
+       FROM armazens_localizacao_item ali
+       INNER JOIN armazens_localizacoes al ON al.id = ali.localizacao_id AND al.armazem_id = $1
+       WHERE ali.item_id = $2 AND UPPER(TRIM(al.localizacao)) = UPPER(TRIM($3::text))`,
+      [armazemOrigemId, itemId, lab]
+    );
+    const disp = r.rows.length ? Number(r.rows[0].q) : 0;
+    if (disp + 1e-9 < need) {
+      throw makeStockPrepBizError(
+        400,
+        disp <= 0
+          ? `Não há stock do artigo ${itemCodigo || itemId} na localização «${lab}».`
+          : `Stock insuficiente na localização «${lab}» para o artigo ${itemCodigo || itemId} (disponível: ${disp}, necessário: ${need}).`,
+        disp <= 0 ? 'STOCK_LOCALIZACAO_PREPARACAO_INEXISTENTE' : 'STOCK_PREPARACAO_INSUFICIENTE',
+        { item_id: itemId, disponivel: disp, necessario: need }
+      );
+    }
+  } catch (e) {
+    if (e.code === '42P01') return;
+    throw e;
+  }
+}
+
+async function resolveLocalizacaoIdPorCodigo(client, armazemId, label) {
+  const r = await client.query(
+    `SELECT id FROM armazens_localizacoes
+     WHERE armazem_id = $1 AND UPPER(TRIM(localizacao)) = UPPER(TRIM($2::text))
+     LIMIT 1`,
+    [armazemId, label]
+  );
+  return r.rows[0]?.id ?? null;
+}
+
+async function resolveLocalizacaoExpedicaoId(client, armazemId) {
+  try {
+    const r = await client.query(
+      `SELECT id FROM armazens_localizacoes
+       WHERE armazem_id = $1
+         AND (
+           LOWER(COALESCE(tipo_localizacao, '')) = 'expedicao'
+           OR UPPER(TRIM(localizacao)) = 'EXPEDICAO'
+         )
+       ORDER BY id
+       LIMIT 1`,
+      [armazemId]
+    );
+    return r.rows[0]?.id ?? null;
+  } catch (e) {
+    if (e.code === '42703') {
+      const r2 = await client.query(
+        `SELECT id FROM armazens_localizacoes
+         WHERE armazem_id = $1 AND UPPER(TRIM(localizacao)) = 'EXPEDICAO'
+         ORDER BY id
+         LIMIT 1`,
+        [armazemId]
+      );
+      return r2.rows[0]?.id ?? null;
+    }
+    throw e;
+  }
+}
+
+async function adicionarQtyArmazemLocalizacaoItem(client, localizacaoId, itemId, qty) {
+  const q = Number(qty);
+  if (!Number.isFinite(q) || q <= 0) return;
+  await client.query(
+    `INSERT INTO armazens_localizacao_item (localizacao_id, item_id, quantidade)
+     VALUES ($1, $2, $3::numeric)
+     ON CONFLICT (localizacao_id, item_id) DO UPDATE SET
+       quantidade = armazens_localizacao_item.quantidade + EXCLUDED.quantidade,
+       updated_at = CURRENT_TIMESTAMP`,
+    [localizacaoId, itemId, q]
+  );
+}
+
+async function localizacaoArmazemPorTipoConn(poolConn, armazemId, tipoLoc) {
+  if (!armazemId) return null;
+  const r = await poolConn.query(
+    `SELECT localizacao FROM armazens_localizacoes
+     WHERE armazem_id = $1 AND LOWER(COALESCE(tipo_localizacao, '')) = $2
+     ORDER BY id LIMIT 1`,
+    [armazemId, String(tipoLoc || '').toLowerCase()]
+  );
+  return r.rows[0]?.localizacao || null;
+}
+
+function computeDestLocFerrNormal(codigoDestino, locResultRows) {
+  let localizacaoFERR = codigoDestino + '.FERR';
+  let localizacaoNormal = codigoDestino;
+  if (locResultRows && locResultRows.length > 0) {
+    const locs = locResultRows.map((r) => r.localizacao);
+    const comFerr = locs.find((l) => (l || '').toUpperCase().includes('.FERR'));
+    const semFerr = locs.find((l) => !(l || '').toUpperCase().includes('.FERR'));
+    if (comFerr) localizacaoFERR = comFerr;
+    if (semFerr) localizacaoNormal = semFerr;
+  }
+  return { localizacaoFERR, localizacaoNormal };
+}
+
+async function subtrairQtyArmazemLocalizacaoItem(client, localizacaoId, itemId, qty, itemCodigo) {
+  const sub = await client.query(
+    `UPDATE armazens_localizacao_item
+     SET quantidade = quantidade - $1::numeric, updated_at = CURRENT_TIMESTAMP
+     WHERE localizacao_id = $2 AND item_id = $3 AND quantidade >= $1::numeric
+     RETURNING quantidade`,
+    [qty, localizacaoId, itemId]
+  );
+  if (sub.rows.length === 0) {
+    throw makeStockPrepBizError(
+      400,
+      itemCodigo
+        ? `Stock insuficiente na localização de saída para o artigo ${itemCodigo}.`
+        : 'Stock insuficiente na localização de saída.',
+      'STOCK_LOCALIZACAO_INSUFICIENTE',
+      { item_id: itemId }
+    );
+  }
+  const rest = Number(sub.rows[0].quantidade);
+  if (rest <= 0) {
+    await client.query('DELETE FROM armazens_localizacao_item WHERE localizacao_id = $1 AND item_id = $2', [
+      localizacaoId,
+      itemId,
+    ]);
+  }
+}
+
+function requisicaoTemLinhasQuantidadeTrfl(itens, bobinas) {
+  const list = itens || [];
+  const bob = bobinas || [];
+  for (const b of bob) {
+    if ((Number(b.metros) || 0) > 0) return true;
+  }
+  for (const ri of list) {
+    const tipoControlo = (ri.tipocontrolo || '').toUpperCase();
+    const temBobinas = bob.some((x) => x.item_id === ri.item_id);
+    if (tipoControlo === 'LOTE' && temBobinas) continue;
+    const qty = parseInt(ri.quantidade_preparada ?? ri.quantidade, 10) || 0;
+    if (qty > 0) return true;
+  }
+  return false;
+}
+
+/**
+ * 1.ª geração de TRFL (fluxo normal central): retira de cada localização de preparação e soma em EXPEDICAO.
+ * Idempotente via requisicoes.trfl_estoque_aplicado_em.
+ */
+async function aplicarStockTrflSePendenteNormais(client, { requisicaoId, armazemOrigemId, itens, bobinas }) {
+  let doc;
+  try {
+    doc = await client.query(
+      `SELECT trfl_estoque_aplicado_em FROM requisicoes WHERE id = $1 FOR UPDATE`,
+      [requisicaoId]
+    );
+  } catch (e) {
+    if (e.code === '42703') return;
+    throw e;
+  }
+  if (doc.rows[0]?.trfl_estoque_aplicado_em) return;
+
+  if (!requisicaoTemLinhasQuantidadeTrfl(itens, bobinas)) {
+    await client.query(
+      `UPDATE requisicoes SET trfl_estoque_aplicado_em = CURRENT_TIMESTAMP WHERE id = $1 AND trfl_estoque_aplicado_em IS NULL`,
+      [requisicaoId]
+    );
+    return;
+  }
+
+  const expId = await resolveLocalizacaoExpedicaoId(client, armazemOrigemId);
+  if (!expId) {
+    throw makeStockPrepBizError(
+      400,
+      'Não existe localização de expedição no armazém de origem (tipo expedicao ou código EXPEDICAO).',
+      'LOCALIZACAO_EXPEDICAO_INEXISTENTE'
+    );
+  }
+
+  async function moverParaExpedicao(origLabel, itemId, itemCodigo, qty) {
+    const q = Number(qty);
+    if (!Number.isFinite(q) || q <= 0) return;
+    const lab = (origLabel && String(origLabel).trim()) || '';
+    if (!lab) {
+      throw makeStockPrepBizError(
+        400,
+        `Artigo ${itemCodigo || itemId}: falta localização de origem na preparação para movimentar stock.`,
+        'LOCALIZACAO_ORIGEM_PREPARACAO_EM_FALTA',
+        { item_id: itemId }
+      );
+    }
+    const origId = await resolveLocalizacaoIdPorCodigo(client, armazemOrigemId, lab);
+    if (!origId) {
+      throw makeStockPrepBizError(
+        400,
+        `A localização de saída «${lab}» não existe no armazém de origem.`,
+        'LOCALIZACAO_ORIGEM_INEXISTENTE',
+        { item_id: itemId }
+      );
+    }
+    if (origId === expId) {
+      throw makeStockPrepBizError(
+        400,
+        'A localização de saída não pode ser a mesma que a expedição.',
+        'ORIGEM_IGUAL_EXPEDICAO',
+        { item_id: itemId }
+      );
+    }
+    await subtrairQtyArmazemLocalizacaoItem(client, origId, itemId, q, itemCodigo || String(itemId));
+    await adicionarQtyArmazemLocalizacaoItem(client, expId, itemId, q);
+  }
+
+  const list = itens || [];
+  const bob = bobinas || [];
+  for (const b of bob) {
+    const ri = list.find((it) => it.item_id === b.item_id) || {};
+    await moverParaExpedicao(ri.localizacao_origem, b.item_id, ri.item_codigo || b.item_codigo, Number(b.metros) || 0);
+  }
+  for (const ri of list) {
+    const tipoControlo = (ri.tipocontrolo || '').toUpperCase();
+    const temBobinas = bob.some((x) => x.item_id === ri.item_id);
+    if (tipoControlo === 'LOTE' && temBobinas) continue;
+    const qty = parseInt(ri.quantidade_preparada ?? ri.quantidade, 10) || 0;
+    if (qty <= 0) continue;
+    await moverParaExpedicao(ri.localizacao_origem, ri.item_id, ri.item_codigo, qty);
+  }
+
+  try {
+    await client.query(
+      `UPDATE requisicoes SET trfl_estoque_aplicado_em = CURRENT_TIMESTAMP WHERE id = $1`,
+      [requisicaoId]
+    );
+  } catch (e) {
+    if (e.code === '42703') {
+      /* coluna em falta: movimento já feito na BD de stock */
+      return;
+    }
+    throw e;
+  }
+}
+
+/**
+ * 1.ª geração de TRA (saída do central): baixa stock na EXPEDICAO do armazém de origem.
+ * Se o destino for outro armazém central, credita na localização de recebimento desse armazém.
+ */
+async function baixarStockTraExpedicaoSePendenteNormais(client, {
+  requisicaoId,
+  armazemOrigemId,
+  armazemDestinoId,
+  tipoDestinoNorm,
+  itens,
+  bobinas,
+  localizacaoRecebimentoDestino,
+}) {
+  let doc;
+  try {
+    doc = await client.query(
+      `SELECT tra_baixa_expedicao_aplicada_em FROM requisicoes WHERE id = $1 FOR UPDATE`,
+      [requisicaoId]
+    );
+  } catch (e) {
+    if (e.code === '42703') return;
+    throw e;
+  }
+  if (doc.rows[0]?.tra_baixa_expedicao_aplicada_em) return;
+
+  if (!requisicaoTemLinhasQuantidadeTrfl(itens, bobinas)) {
+    await client.query(
+      `UPDATE requisicoes SET tra_baixa_expedicao_aplicada_em = CURRENT_TIMESTAMP WHERE id = $1 AND tra_baixa_expedicao_aplicada_em IS NULL`,
+      [requisicaoId]
+    );
+    return;
+  }
+
+  let destLocId = null;
+  if (String(tipoDestinoNorm || '').toLowerCase() === 'central' && armazemDestinoId) {
+    let locRec = localizacaoRecebimentoDestino
+      ? String(localizacaoRecebimentoDestino).trim()
+      : null;
+    if (!locRec) {
+      locRec = await localizacaoArmazemPorTipoConn(client, armazemDestinoId, 'recebimento');
+    }
+    if (locRec) {
+      destLocId = await resolveLocalizacaoIdPorCodigo(client, armazemDestinoId, locRec);
+    }
+    if (!destLocId) {
+      throw makeStockPrepBizError(
+        400,
+        'Não foi possível resolver a localização de recebimento no armazém destino (central) para o stock.',
+        'LOCALIZACAO_RECEB_DESTINO',
+        { armazem_destino_id: armazemDestinoId }
+      );
+    }
+  }
+
+  const expId = await resolveLocalizacaoExpedicaoId(client, armazemOrigemId);
+  if (!expId) {
+    throw makeStockPrepBizError(
+      400,
+      'Não existe localização de expedição no armazém de origem.',
+      'LOCALIZACAO_EXPEDICAO_INEXISTENTE'
+    );
+  }
+
+  async function baixaLinha(itemId, itemCodigo, qty) {
+    const q = Number(qty);
+    if (!Number.isFinite(q) || q <= 0) return;
+    await subtrairQtyArmazemLocalizacaoItem(client, expId, itemId, q, itemCodigo || String(itemId));
+    if (destLocId) {
+      await adicionarQtyArmazemLocalizacaoItem(client, destLocId, itemId, q);
+    }
+  }
+
+  const list = itens || [];
+  const bob = bobinas || [];
+  for (const b of bob) {
+    const ri = list.find((it) => it.item_id === b.item_id) || {};
+    await baixaLinha(b.item_id, ri.item_codigo || b.item_codigo, Number(b.metros) || 0);
+  }
+  for (const ri of list) {
+    const tipoControlo = (ri.tipocontrolo || '').toUpperCase();
+    const temBobinas = bob.some((x) => x.item_id === ri.item_id);
+    if (tipoControlo === 'LOTE' && temBobinas) continue;
+    const qty = parseInt(ri.quantidade_preparada ?? ri.quantidade, 10) || 0;
+    if (qty <= 0) continue;
+    await baixaLinha(ri.item_id, ri.item_codigo, qty);
+  }
+
+  try {
+    await client.query(
+      `UPDATE requisicoes SET tra_baixa_expedicao_aplicada_em = CURRENT_TIMESTAMP WHERE id = $1`,
+      [requisicaoId]
+    );
+  } catch (e) {
+    if (e.code === '42703') return;
+    throw e;
+  }
+}
+
+async function creditarStockNaLocalizacaoArmazem(client, armazemId, itemId, itemCodigo, locLabel, qty) {
+  const q = Number(qty);
+  if (!Number.isFinite(q) || q <= 0) return;
+  const lab = String(locLabel || '').trim();
+  if (!lab) {
+    throw makeStockPrepBizError(
+      400,
+      'Localização de destino em falta para movimento de stock.',
+      'LOCALIZACAO_STOCK_EM_FALTA',
+      { item_id: itemId }
+    );
+  }
+  const locId = await resolveLocalizacaoIdPorCodigo(client, armazemId, lab);
+  if (!locId) {
+    throw makeStockPrepBizError(
+      400,
+      `A localização «${lab}» não existe no armazém.`,
+      'LOCALIZACAO_STOCK_INEXISTENTE',
+      { item_id: itemId }
+    );
+  }
+  await adicionarQtyArmazemLocalizacaoItem(client, locId, itemId, q);
+}
+
+async function moverStockMesmoArmazemPorLabels(client, armazemId, itemId, itemCodigo, fromLabel, toLabel, qty) {
+  const q = Number(qty);
+  if (!Number.isFinite(q) || q <= 0) return;
+  const from = String(fromLabel || '').trim();
+  const to = String(toLabel || '').trim();
+  if (!from || !to) {
+    throw makeStockPrepBizError(
+      400,
+      'Localização de origem ou destino em falta para movimento de stock.',
+      'LOCALIZACAO_STOCK_EM_FALTA',
+      { item_id: itemId }
+    );
+  }
+  if (from.toUpperCase() === to.toUpperCase()) return;
+  const fromId = await resolveLocalizacaoIdPorCodigo(client, armazemId, from);
+  const toId = await resolveLocalizacaoIdPorCodigo(client, armazemId, to);
+  if (!fromId || !toId) {
+    throw makeStockPrepBizError(
+      400,
+      `Localização de movimento interno inexistente («${from}» → «${to}»).`,
+      'LOCALIZACAO_STOCK_INEXISTENTE',
+      { item_id: itemId }
+    );
+  }
+  await subtrairQtyArmazemLocalizacaoItem(client, fromId, itemId, q, itemCodigo || String(itemId));
+  await adicionarQtyArmazemLocalizacaoItem(client, toId, itemId, q);
+}
+
+async function moverStockEntreArmazensPorLabels(client, origArmId, origLabel, destArmId, destLabel, itemId, itemCodigo, qty) {
+  const q = Number(qty);
+  if (!Number.isFinite(q) || q <= 0) return;
+  const ol = String(origLabel || '').trim();
+  const dl = String(destLabel || '').trim();
+  if (!ol || !dl) {
+    throw makeStockPrepBizError(
+      400,
+      'Localização de origem ou destino em falta para transferência entre armazéns.',
+      'LOCALIZACAO_STOCK_EM_FALTA',
+      { item_id: itemId }
+    );
+  }
+  const origId = await resolveLocalizacaoIdPorCodigo(client, origArmId, ol);
+  const destId = await resolveLocalizacaoIdPorCodigo(client, destArmId, dl);
+  if (!origId || !destId) {
+    throw makeStockPrepBizError(
+      400,
+      `Localização inexistente na transferência entre armazéns («${ol}» → «${dl}»).`,
+      'LOCALIZACAO_STOCK_INEXISTENTE',
+      { item_id: itemId }
+    );
+  }
+  await subtrairQtyArmazemLocalizacaoItem(client, origId, itemId, q, itemCodigo || String(itemId));
+  await adicionarQtyArmazemLocalizacaoItem(client, destId, itemId, q);
+}
+
+/** DEV (devolução): crédito na localização de recebimento do central. */
+async function aplicarStockDevolucaoEntradaRecebimento(client, { centralId, locRec, itensComFerramenta, bobinas }) {
+  if (!centralId || !locRec) return;
+  const list = itensComFerramenta || [];
+  const bob = bobinas || [];
+  for (const b of bob) {
+    const metros = Number(b.metros) || 0;
+    if (metros <= 0) continue;
+    const ri = list.find((it) => it.item_id === b.item_id) || {};
+    await creditarStockNaLocalizacaoArmazem(
+      client,
+      centralId,
+      b.item_id,
+      ri.item_codigo || b.item_codigo,
+      locRec,
+      metros
+    );
+  }
+  for (const ri of list) {
+    const tipoControlo = (ri.tipocontrolo || '').toUpperCase();
+    const temBobinas = bob.some((x) => x.item_id === ri.item_id);
+    if (tipoControlo === 'LOTE' && temBobinas) continue;
+    const qty = parseInt(ri.quantidade_preparada ?? ri.quantidade, 10) || 0;
+    if (qty <= 0) continue;
+    await creditarStockNaLocalizacaoArmazem(client, centralId, ri.item_id, ri.item_codigo, locRec, qty);
+  }
+}
+
+/** TRFL interna devolução: recebimento → FERR / zona normal (mesmo central). */
+async function aplicarStockTrflDevolucaoInterno(client, {
+  centralId,
+  locRec,
+  localizacaoFERR,
+  localizacaoNormal,
+  itensComFerramenta,
+  bobinas,
+}) {
+  if (!centralId || !locRec) return;
+  const list = itensComFerramenta || [];
+  const bob = bobinas || [];
+  const apeadosQtyByItemId = new Map(
+    list.map((it) => [Number(it.item_id), Math.max(0, parseInt(it.quantidade_apeados ?? 0, 10) || 0)])
+  );
+  const apeadosCountByItemId = new Map();
+
+  for (const b of bob) {
+    const ri = list.find((it) => it.item_id === b.item_id) || {};
+    const itemId = Number(b.item_id);
+    const apeadosQty = apeadosQtyByItemId.get(itemId) ?? 0;
+    const prevCount = apeadosCountByItemId.get(itemId) ?? 0;
+    const nextCount = prevCount + 1;
+    apeadosCountByItemId.set(itemId, nextCount);
+    const destLoc = nextCount <= apeadosQty ? localizacaoFERR : localizacaoNormal;
+    const metros = Number(b.metros) || 0;
+    if (metros <= 0) continue;
+    await moverStockMesmoArmazemPorLabels(
+      client,
+      centralId,
+      itemId,
+      ri.item_codigo || b.item_codigo,
+      locRec,
+      destLoc,
+      metros
+    );
+  }
+
+  for (const ri of list) {
+    const tipoControlo = (ri.tipocontrolo || '').toUpperCase();
+    const temBobinas = bob.some((bb) => bb.item_id === ri.item_id);
+    if (tipoControlo === 'LOTE' && temBobinas) continue;
+    const qty = parseInt(ri.quantidade_preparada ?? ri.quantidade, 10) || 0;
+    if (qty <= 0) continue;
+    const apeadosQty = Math.max(0, Math.min(qty, parseInt(ri.quantidade_apeados ?? 0, 10) || 0));
+    const normalQty = Math.max(0, qty - apeadosQty);
+    if (apeadosQty > 0) {
+      await moverStockMesmoArmazemPorLabels(client, centralId, ri.item_id, ri.item_codigo, locRec, localizacaoFERR, apeadosQty);
+    }
+    if (normalQty > 0) {
+      await moverStockMesmoArmazemPorLabels(client, centralId, ri.item_id, ri.item_codigo, locRec, localizacaoNormal, normalQty);
+    }
+  }
+}
+
+/** TRFL pendente armazenagem: remanescente da origem lógica de stock → localização escolhida. */
+async function aplicarStockTrflPendenteDevolucao(client, {
+  centralId,
+  locOrigemMovimento,
+  localizacaoDefault,
+  itemLocalizacoes,
+  itens,
+  bobinasByRequisicaoItemId,
+}) {
+  if (!centralId || !locOrigemMovimento) return;
+  const itemLocalizacoesObj = itemLocalizacoes || {};
+
+  for (const it of itens || []) {
+    const totalQty = parseInt(it.quantidade_preparada ?? it.quantidade, 10) || 0;
+    const apeadosQty = parseInt(it.quantidade_apeados ?? 0, 10) || 0;
+    const remQty = Math.max(0, totalQty - apeadosQty);
+    if (remQty <= 0) continue;
+    const keyA = String(it.id);
+    const keyB = String(it.item_id);
+    const locByItem = String(itemLocalizacoesObj[keyA] || itemLocalizacoesObj[keyB] || '').trim();
+    const localizacaoDestino = locByItem || localizacaoDefault;
+    if (!localizacaoDestino) continue;
+
+    const tipoControlo = String(it.tipocontrolo || '').toUpperCase();
+
+    if (tipoControlo === 'LOTE') {
+      const bobinas = bobinasByRequisicaoItemId.get(Number(it.id)) || [];
+      const selecionadas = bobinas.slice(apeadosQty, apeadosQty + remQty);
+      for (const b of selecionadas) {
+        const metros = Number(b.metros) || 0;
+        if (metros <= 0) continue;
+        await moverStockMesmoArmazemPorLabels(
+          client,
+          centralId,
+          it.item_id,
+          it.item_codigo || b.item_codigo,
+          locOrigemMovimento,
+          localizacaoDestino,
+          metros
+        );
+      }
+    } else if (tipoControlo === 'S/N') {
+      await moverStockMesmoArmazemPorLabels(
+        client,
+        centralId,
+        it.item_id,
+        it.item_codigo,
+        locOrigemMovimento,
+        localizacaoDestino,
+        remQty
+      );
+    } else {
+      await moverStockMesmoArmazemPorLabels(
+        client,
+        centralId,
+        it.item_id,
+        it.item_codigo,
+        locOrigemMovimento,
+        localizacaoDestino,
+        remQty
+      );
+    }
+  }
+}
+
+/** TRA APEADOS: saída na localização de origem (FERR após TRFL interna, senão recebimento) → recebimento do armazém APEADO. */
+async function aplicarStockTraApeadosDevolucao(client, {
+  centralId,
+  locOrigemCentral,
+  destinoApeadoId,
+  locRecApeado,
+  apeadosItens,
+  bobinasByRequisicaoItemId,
+}) {
+  if (!centralId || !destinoApeadoId || !locRecApeado || !locOrigemCentral) return;
+
+  for (const it of apeadosItens || []) {
+    const apeadosQty = parseInt(it.quantidade_apeados ?? 0, 10) || 0;
+    if (apeadosQty <= 0) continue;
+    const tipoControlo = String(it.tipocontrolo || '').toUpperCase();
+    if (tipoControlo === 'LOTE') {
+      const bobinas = bobinasByRequisicaoItemId.get(Number(it.id)) || [];
+      const selecionadas = bobinas.slice(0, apeadosQty);
+      for (const b of selecionadas) {
+        const metros = Number(b.metros) || 0;
+        if (metros <= 0) continue;
+        await moverStockEntreArmazensPorLabels(
+          client,
+          centralId,
+          locOrigemCentral,
+          destinoApeadoId,
+          locRecApeado,
+          it.item_id,
+          it.item_codigo || b.item_codigo,
+          metros
+        );
+      }
+    } else if (tipoControlo === 'S/N') {
+      await moverStockEntreArmazensPorLabels(
+        client,
+        centralId,
+        locOrigemCentral,
+        destinoApeadoId,
+        locRecApeado,
+        it.item_id,
+        it.item_codigo,
+        apeadosQty
+      );
+    } else {
+      await moverStockEntreArmazensPorLabels(
+        client,
+        centralId,
+        locOrigemCentral,
+        destinoApeadoId,
+        locRecApeado,
+        it.item_id,
+        it.item_codigo,
+        apeadosQty
+      );
+    }
+  }
+}
+
 function createRequisicoesRouter(deps) {
   const {
     pool,
@@ -76,6 +741,48 @@ function createRequisicoesRouter(deps) {
   } = deps;
 
   const router = express.Router();
+
+  const RECEBIMENTO_TRANSFERENCIA_MARKER = 'RECEBIMENTO_TRANSFERENCIA_V1';
+
+  function hasRecebimentoMarker(requisicao) {
+    const obs = String(requisicao?.observacoes || '');
+    return obs.toUpperCase().startsWith(RECEBIMENTO_TRANSFERENCIA_MARKER);
+  }
+
+  async function extractPdfText(buffer) {
+    // Compatível com API nova (classe PDFParse) e legado (função default).
+    if (pdfParseLib && typeof pdfParseLib.PDFParse === 'function') {
+      const parser = new pdfParseLib.PDFParse({ data: buffer });
+      try {
+        const out = await parser.getText();
+        return String(out?.text || '');
+      } finally {
+        try {
+          await parser.destroy();
+        } catch (_) {}
+      }
+    }
+    const fn = typeof pdfParseLib === 'function' ? pdfParseLib : pdfParseLib?.default;
+    if (typeof fn === 'function') {
+      const out = await fn(buffer);
+      return String(out?.text || '');
+    }
+    throw new Error('Biblioteca de PDF sem parser compatível.');
+  }
+
+  function getRecebimentoDestinoCodigo(requisicao) {
+    // Nesta implementação, para garantir scope por "armazém de origem" (requisicoes_armazem_origem_ids),
+    // criamos a requisição com:
+    // - requisicoes.armazem_origem_id = armazém destino (onde o utilizador vai receber)
+    // - requisicoes.armazem_id = armazém origem (de onde vêm os bens)
+    // Então:
+    // - "destino" (recebimento) = requisicao.armazem_origem_codigo
+    // - "origem" (envio) = requisicao.armazem_destino_codigo
+    return {
+      destino: requisicao?.armazem_origem_codigo || '',
+      origem: requisicao?.armazem_destino_codigo || '',
+    };
+  }
 
   function respostaBloqueioSeparador(res) {
     return res.status(403).json({
@@ -179,7 +886,11 @@ router.get('/', ...requisicaoAuth, async (req, res) => {
     }
 
     if (req.requisicaoArmazemOrigemIds && req.requisicaoArmazemOrigemIds.length > 0) {
-      query += ` AND r.armazem_origem_id = ANY($${paramCount++}::int[])`;
+      if (devolucoesViaturaCentral) {
+        query += ` AND r.armazem_id = ANY($${paramCount++}::int[])`;
+      } else {
+        query += ` AND r.armazem_origem_id = ANY($${paramCount++}::int[])`;
+      }
       params.push(req.requisicaoArmazemOrigemIds);
     }
 
@@ -254,7 +965,11 @@ router.get('/', ...requisicaoAuth, async (req, res) => {
           }
         }
         if (req.requisicaoArmazemOrigemIds && req.requisicaoArmazemOrigemIds.length > 0) {
-          fallbackQuery += ` AND r.armazem_origem_id = ANY($${pc++}::int[])`;
+          if (devolucoesViaturaCentral) {
+            fallbackQuery += ` AND r.armazem_id = ANY($${pc++}::int[])`;
+          } else {
+            fallbackQuery += ` AND r.armazem_origem_id = ANY($${pc++}::int[])`;
+          }
           fbParams.push(req.requisicaoArmazemOrigemIds);
         }
         if (minhas) {
@@ -336,7 +1051,9 @@ router.get('/:id/export-excel', ...requisicaoAuth, denyOperador, async (req, res
       reqResult = await pool.query(`
         SELECT r.*,
           a.codigo as armazem_destino_codigo,
+          a.tipo AS armazem_destino_tipo,
           ao.codigo as armazem_origem_codigo,
+          ao.tipo AS armazem_origem_tipo,
           (COALESCE(a.codigo, '') || CASE WHEN a.codigo IS NOT NULL AND a.codigo <> '' THEN ' - ' ELSE '' END || a.descricao) as armazem_descricao,
           (COALESCE(ao.codigo, '') || CASE WHEN ao.codigo IS NOT NULL AND ao.codigo <> '' THEN ' - ' ELSE '' END || ao.descricao) as armazem_origem_descricao,
           ${SQL_CRIADOR_NOME} AS usuario_nome
@@ -370,7 +1087,7 @@ router.get('/:id/export-excel', ...requisicaoAuth, denyOperador, async (req, res
     }
 
     const requisicao = reqResult.rows[0];
-    if (!requisicaoArmazemOrigemAcessoPermitido(req, requisicao.armazem_origem_id)) {
+    if (!requisicaoArmazemOrigemAcessoPermitido(req, requisicao.armazem_origem_id, { requisicao })) {
       return res.status(403).json({ error: 'Sem acesso a esta requisição.' });
     }
     const itensResult = await pool.query(`
@@ -436,40 +1153,6 @@ router.get('/:id/export-excel', ...requisicaoAuth, denyOperador, async (req, res
 // Fallback localização expedição (quando armazém central não tem expedição configurada)
 const LOCALIZACAO_EXPEDICAO_FALLBACK = 'EXPEDICAO.E';
 const LOCALIZACAO_RECEBIMENTO_FALLBACK = 'RECEBIMENTO.E';
-
-/** Devolução: origem viatura → destino armazém central (entrada em recebimento + movimento interno). */
-function isFluxoDevolucaoViaturaCentral(origemTipo, destTipo) {
-  return (
-    String(origemTipo || '').toLowerCase() === 'viatura' &&
-    String(destTipo || '').toLowerCase() === 'central'
-  );
-}
-
-async function localizacaoArmazemPorTipo(poolConn, armazemId, tipoLoc) {
-  if (!armazemId) return null;
-  const r = await poolConn.query(
-    `SELECT localizacao FROM armazens_localizacoes
-     WHERE armazem_id = $1 AND LOWER(COALESCE(tipo_localizacao, '')) = $2
-     ORDER BY id LIMIT 1`,
-    [armazemId, String(tipoLoc || '').toLowerCase()]
-  );
-  return r.rows[0]?.localizacao || null;
-}
-
-// Helper: gera buffer Excel com as colunas padrão (Date, OriginWarehouse, ... Batch)
-function buildExcelTransferencia(rows, res, filename) {
-  const wb = XLSX.utils.book_new();
-  const ws = XLSX.utils.json_to_sheet(rows.length ? rows : [{
-    Date: '', OriginWarehouse: '', OriginLocation: '', Article: '', Quatity: '',
-    SerialNumber1: '', SerialNumber2: '', MacAddress: '', CentroCusto: '',
-    DestinationWarehouse: '', DestinationLocation: '', ProjectCode: '', Batch: ''
-  }], { header: ['Date', 'OriginWarehouse', 'OriginLocation', 'Article', 'Quatity', 'SerialNumber1', 'SerialNumber2', 'MacAddress', 'CentroCusto', 'DestinationWarehouse', 'DestinationLocation', 'ProjectCode', 'Batch'] });
-  XLSX.utils.book_append_sheet(wb, ws, 'Dados');
-  const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
-  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-  res.send(buffer);
-}
 
 // Helper: gera ficheiro de reporte formatado no template
 // (Artigo, Descrição, Quantidade, ORIGEM, S/N, LOTE, DESTINO[, Observações])
@@ -729,7 +1412,7 @@ router.get('/:id/export-trfl', ...requisicaoAuth, denyOperador, async (req, res)
     const { id } = req.params;
     const requisicao = await getRequisicaoComItens(id);
     if (!requisicao) return res.status(404).json({ error: 'Requisição não encontrada' });
-    if (!requisicaoArmazemOrigemAcessoPermitido(req, requisicao.armazem_origem_id)) {
+    if (!requisicaoArmazemOrigemAcessoPermitido(req, requisicao.armazem_origem_id, { requisicao })) {
       return res.status(403).json({ error: 'Sem acesso a esta requisição.' });
     }
     if (!requisicao.separacao_confirmada) {
@@ -767,23 +1450,7 @@ router.get('/:id/export-trfl', ...requisicaoAuth, denyOperador, async (req, res)
       if (!requisicao.armazem_id) {
         return res.status(400).json({ error: 'Requisição sem armazém de destino.' });
       }
-      let docRow;
-      try {
-        docRow = await pool.query(
-          'SELECT devolucao_tra_gerada_em, devolucao_trfl_gerada_em FROM requisicoes WHERE id = $1',
-          [id]
-        );
-      } catch (docErr) {
-        if (docErr.code === '42703') {
-          return res.status(503).json({
-            error: 'Colunas de documentos de devolução em falta.',
-            details: 'Execute: npm run db:migrate:requisicoes-devolucao-docs'
-          });
-        }
-        throw docErr;
-      }
-      const traDev = docRow.rows[0]?.devolucao_tra_gerada_em;
-      if (!traDev) {
+      if (!requisicao.devolucao_tra_gerada_em) {
         return res.status(400).json({
           error: 'Gere primeiro a TRA de devolução (entrada no armazém destino na localização de recebimento).'
         });
@@ -794,7 +1461,7 @@ router.get('/:id/export-trfl', ...requisicaoAuth, denyOperador, async (req, res)
         return res.status(400).json({ error: 'Armazém de destino não encontrado.' });
       }
       const ad = armDestRow.rows[0];
-      let locRec = await localizacaoArmazemPorTipo(pool, ad.id, 'recebimento');
+      let locRec = await localizacaoArmazemPorTipoConn(pool, ad.id, 'recebimento');
       if (!locRec) locRec = LOCALIZACAO_RECEBIMENTO_FALLBACK;
 
       let locDestRows = [];
@@ -925,8 +1592,48 @@ router.get('/:id/export-trfl', ...requisicaoAuth, denyOperador, async (req, res)
         }
       }
 
+      const cTrflDev = await pool.connect();
       try {
-        await pool.query(
+        await cTrflDev.query('BEGIN');
+        let lockTrflD;
+        try {
+          lockTrflD = await cTrflDev.query(
+            'SELECT devolucao_tra_gerada_em, devolucao_trfl_gerada_em FROM requisicoes WHERE id = $1 FOR UPDATE',
+            [id]
+          );
+        } catch (docErr) {
+          if (docErr.code === '42703') {
+            await cTrflDev.query('ROLLBACK');
+            cTrflDev.release();
+            return res.status(503).json({
+              error: 'Colunas de documentos de devolução em falta.',
+              details: 'Execute: npm run db:migrate:requisicoes-devolucao-docs'
+            });
+          }
+          throw docErr;
+        }
+        if (!lockTrflD.rows[0]?.devolucao_tra_gerada_em) {
+          await cTrflDev.query('ROLLBACK');
+          cTrflDev.release();
+          return res.status(400).json({
+            error: 'Gere primeiro a TRA de devolução (entrada no armazém destino na localização de recebimento).'
+          });
+        }
+        if (!lockTrflD.rows[0]?.devolucao_trfl_gerada_em && usuarioTemPermissaoControloStock(req)) {
+          try {
+            await aplicarStockTrflDevolucaoInterno(cTrflDev, {
+              centralId: ad.id,
+              locRec,
+              localizacaoFERR,
+              localizacaoNormal,
+              itensComFerramenta,
+              bobinas,
+            });
+          } catch (st) {
+            if (st.code !== '42P01') throw st;
+          }
+        }
+        await cTrflDev.query(
           `UPDATE requisicoes
            SET devolucao_trfl_gerada_em = COALESCE(devolucao_trfl_gerada_em, CURRENT_TIMESTAMP),
                tra_gerada_em = COALESCE(tra_gerada_em, CURRENT_TIMESTAMP),
@@ -937,7 +1644,12 @@ router.get('/:id/export-trfl', ...requisicaoAuth, denyOperador, async (req, res)
            WHERE id = $1`,
           [id]
         );
+        await cTrflDev.query('COMMIT');
       } catch (upErr) {
+        await cTrflDev.query('ROLLBACK').catch(() => {});
+        if (upErr.isStockPrepBiz) {
+          return res.status(upErr.status).json(upErr.payload);
+        }
         if (upErr.code === '42703') {
           return res.status(503).json({
             error: 'Colunas de documentos de devolução em falta.',
@@ -945,6 +1657,8 @@ router.get('/:id/export-trfl', ...requisicaoAuth, denyOperador, async (req, res)
           });
         }
         throw upErr;
+      } finally {
+        cTrflDev.release();
       }
 
       buildExcelTransferencia(rows, res, `TRFL_requisicao_${id}_devolucao_${new Date().toISOString().slice(0, 10)}.xlsx`);
@@ -977,6 +1691,34 @@ router.get('/:id/export-trfl', ...requisicaoAuth, denyOperador, async (req, res)
       bobinas = bobinasResult.rows;
     } catch (_) {
       bobinas = [];
+    }
+
+    const reqIdNum = parseInt(id, 10);
+    if (usuarioTemPermissaoControloStock(req)) {
+      const cTrfl = await pool.connect();
+      try {
+        await cTrfl.query('BEGIN');
+        try {
+          await aplicarStockTrflSePendenteNormais(cTrfl, {
+            requisicaoId: reqIdNum,
+            armazemOrigemId: requisicao.armazem_origem_id,
+            itens: requisicao.itens || [],
+            bobinas,
+          });
+          await cTrfl.query('COMMIT');
+        } catch (innerTrfl) {
+          await cTrfl.query('ROLLBACK').catch(() => {});
+          if (innerTrfl.code === '42P01' || innerTrfl.code === '42703') {
+            /* módulo de stock ou colunas de tracking em falta */
+          } else if (innerTrfl.isStockPrepBiz) {
+            return res.status(innerTrfl.status).json(innerTrfl.payload);
+          } else {
+            throw innerTrfl;
+          }
+        }
+      } finally {
+        cTrfl.release();
+      }
     }
 
     const rows = [];
@@ -1086,6 +1828,33 @@ router.post('/export-trfl-multi', ...requisicaoAuth, denyOperador, async (req, r
         bobinas = [];
       }
 
+      if (usuarioTemPermissaoControloStock(req)) {
+        const cTrflM = await pool.connect();
+        try {
+          await cTrflM.query('BEGIN');
+          try {
+            await aplicarStockTrflSePendenteNormais(cTrflM, {
+              requisicaoId: id,
+              armazemOrigemId: requisicao.armazem_origem_id,
+              itens: requisicao.itens || [],
+              bobinas,
+            });
+            await cTrflM.query('COMMIT');
+          } catch (innerTrflM) {
+            await cTrflM.query('ROLLBACK').catch(() => {});
+            if (innerTrflM.code === '42P01' || innerTrflM.code === '42703') {
+              /* sem módulo de stock ou colunas */
+            } else if (innerTrflM.isStockPrepBiz) {
+              return res.status(innerTrflM.status).json(innerTrflM.payload);
+            } else {
+              throw innerTrflM;
+            }
+          }
+        } finally {
+          cTrflM.release();
+        }
+      }
+
       const rows = [];
 
       for (const b of bobinas) {
@@ -1146,7 +1915,7 @@ router.get('/:id/export-tra', ...requisicaoAuth, denyOperador, async (req, res) 
     const { id } = req.params;
     const requisicao = await getRequisicaoComItens(id);
     if (!requisicao) return res.status(404).json({ error: 'Requisição não encontrada' });
-    if (!requisicaoArmazemOrigemAcessoPermitido(req, requisicao.armazem_origem_id)) {
+    if (!requisicaoArmazemOrigemAcessoPermitido(req, requisicao.armazem_origem_id, { requisicao })) {
       return res.status(403).json({ error: 'Sem acesso a esta requisição.' });
     }
     if (!requisicao.separacao_confirmada) {
@@ -1179,7 +1948,7 @@ router.get('/:id/export-tra', ...requisicaoAuth, denyOperador, async (req, res) 
       }
 
       let locRec = LOCALIZACAO_RECEBIMENTO_FALLBACK;
-      const locRecQ = await localizacaoArmazemPorTipo(pool, requisicao.armazem_id, 'recebimento');
+      const locRecQ = await localizacaoArmazemPorTipoConn(pool, requisicao.armazem_id, 'recebimento');
       if (locRecQ) locRec = locRecQ;
 
       const codigoViatura = requisicao.armazem_origem_codigo || 'E';
@@ -1262,8 +2031,39 @@ router.get('/:id/export-tra', ...requisicaoAuth, denyOperador, async (req, res) 
         });
       }
 
+      const cDev = await pool.connect();
       try {
-        await pool.query(
+        await cDev.query('BEGIN');
+        let lockDev;
+        try {
+          lockDev = await cDev.query(
+            'SELECT devolucao_tra_gerada_em FROM requisicoes WHERE id = $1 FOR UPDATE',
+            [id]
+          );
+        } catch (e) {
+          if (e.code === '42703') {
+            await cDev.query('ROLLBACK');
+            cDev.release();
+            return res.status(503).json({
+              error: 'Colunas de documentos de devolução em falta.',
+              details: 'Execute: npm run db:migrate:requisicoes-devolucao-docs'
+            });
+          }
+          throw e;
+        }
+        if (!lockDev.rows[0]?.devolucao_tra_gerada_em && usuarioTemPermissaoControloStock(req)) {
+          try {
+            await aplicarStockDevolucaoEntradaRecebimento(cDev, {
+              centralId: requisicao.armazem_id,
+              locRec,
+              itensComFerramenta,
+              bobinas,
+            });
+          } catch (st) {
+            if (st.code !== '42P01') throw st;
+          }
+        }
+        await cDev.query(
           `UPDATE requisicoes
            SET devolucao_tra_gerada_em = COALESCE(devolucao_tra_gerada_em, CURRENT_TIMESTAMP),
                status = CASE
@@ -1273,14 +2073,21 @@ router.get('/:id/export-tra', ...requisicaoAuth, denyOperador, async (req, res) 
            WHERE id = $1`,
           [id]
         );
-      } catch (e) {
-        if (e.code === '42703') {
+        await cDev.query('COMMIT');
+      } catch (eDev) {
+        await cDev.query('ROLLBACK').catch(() => {});
+        if (eDev.isStockPrepBiz) {
+          return res.status(eDev.status).json(eDev.payload);
+        }
+        if (eDev.code === '42703') {
           return res.status(503).json({
             error: 'Colunas de documentos de devolução em falta.',
             details: 'Execute: npm run db:migrate:requisicoes-devolucao-docs'
           });
         }
-        throw e;
+        throw eDev;
+      } finally {
+        cDev.release();
       }
 
       buildExcelTransferencia(rows, res, `DEV_requisicao_${id}_devolucao_${new Date().toISOString().slice(0, 10)}.xlsx`);
@@ -1333,7 +2140,7 @@ router.get('/:id/export-tra', ...requisicaoAuth, denyOperador, async (req, res) 
     // destino deve ser sempre a localização de recebimento.
     let localizacaoDestinoRecebimento = localizacaoNormal;
     if (tipoDestNorm === 'central') {
-      const locRecDestino = await localizacaoArmazemPorTipo(pool, armazemDestinoId, 'recebimento');
+      const locRecDestino = await localizacaoArmazemPorTipoConn(pool, armazemDestinoId, 'recebimento');
       if (locRecDestino) localizacaoDestinoRecebimento = locRecDestino;
     }
 
@@ -1425,15 +2232,40 @@ router.get('/:id/export-tra', ...requisicaoAuth, denyOperador, async (req, res) 
       });
     }
 
-    // Registra a primeira geração de TRA (para liberar FINALIZAR no frontend)
+    const cTra = await pool.connect();
     try {
-      await pool.query(
+      await cTra.query('BEGIN');
+      if (usuarioTemPermissaoControloStock(req)) {
+        try {
+          await baixarStockTraExpedicaoSePendenteNormais(cTra, {
+            requisicaoId: parseInt(id, 10),
+            armazemOrigemId: requisicao.armazem_origem_id,
+            armazemDestinoId,
+            tipoDestinoNorm: tipoDestNorm,
+            itens: itensComFerramenta,
+            bobinas,
+            localizacaoRecebimentoDestino: tipoDestNorm === 'central' ? localizacaoDestinoRecebimento : null,
+          });
+        } catch (seTra) {
+          if (seTra.code !== '42P01' && seTra.code !== '42703') throw seTra;
+        }
+      }
+      await cTra.query(
         `UPDATE requisicoes
          SET tra_gerada_em = COALESCE(tra_gerada_em, CURRENT_TIMESTAMP)
          WHERE id = $1`,
         [id]
       );
-    } catch (_) {}
+      await cTra.query('COMMIT');
+    } catch (eTra) {
+      await cTra.query('ROLLBACK').catch(() => {});
+      if (eTra.isStockPrepBiz) {
+        return res.status(eTra.status).json(eTra.payload);
+      }
+      throw eTra;
+    } finally {
+      cTra.release();
+    }
 
     // Exportação TRA não altera status
     buildExcelTransferencia(rows, res, `TRA_requisicao_${id}_${new Date().toISOString().slice(0, 10)}.xlsx`);
@@ -1456,7 +2288,7 @@ router.get('/:id/export-tra-apeados', ...requisicaoAuth, denyOperador, async (re
 
     const requisicao = await getRequisicaoComItens(id);
     if (!requisicao) return res.status(404).json({ error: 'Requisição não encontrada' });
-    if (!requisicaoArmazemOrigemAcessoPermitido(req, requisicao.armazem_origem_id)) {
+    if (!requisicaoArmazemOrigemAcessoPermitido(req, requisicao.armazem_origem_id, { requisicao })) {
       return res.status(403).json({ error: 'Sem acesso a esta requisição.' });
     }
 
@@ -1486,19 +2318,35 @@ router.get('/:id/export-tra-apeados', ...requisicaoAuth, denyOperador, async (re
       return res.status(400).json({ error: 'Destino deve ser um armazém do tipo APEADO.' });
     }
 
-    // Localização de origem: recebimento do armazém central que recebeu o artigo.
+    // Origem no stock / Excel: recebimento antes da TRFL interna; zona FERR depois (quantidades APEADOS).
     const centralId = requisicao.armazem_id;
     if (!centralId) return res.status(400).json({ error: 'Requisição sem armazém central (destino da devolução).' });
 
-    let locRecCentral = await localizacaoArmazemPorTipo(pool, centralId, 'recebimento');
+    let locRecCentral = await localizacaoArmazemPorTipoConn(pool, centralId, 'recebimento');
     if (!locRecCentral) locRecCentral = LOCALIZACAO_RECEBIMENTO_FALLBACK;
 
+    const codigoCentralPre = String(requisicao.armazem_destino_codigo || '').trim();
+    let locCentralRowsFerr = [];
+    try {
+      const lrF = await pool.query(
+        'SELECT localizacao FROM armazens_localizacoes WHERE armazem_id = $1 ORDER BY id',
+        [centralId]
+      );
+      locCentralRowsFerr = lrF.rows || [];
+    } catch (_) {
+      locCentralRowsFerr = [];
+    }
+    const codigoCentral =
+      codigoCentralPre || (await pool.query('SELECT codigo FROM armazens WHERE id = $1', [centralId])).rows[0]?.codigo || 'E';
+    const { localizacaoFERR } = computeDestLocFerrNormal(codigoCentral, locCentralRowsFerr);
+    /** Stock dos APEADOS: após TRFL interna ficam na zona FERR; antes disso ainda no recebimento. */
+    const locOrigemApeados = requisicao.devolucao_trfl_gerada_em ? localizacaoFERR : locRecCentral;
+
     // Localização destino: recebimento do armazém APEADO (fallback para código do armazém).
-    let locRecApeado = await localizacaoArmazemPorTipo(pool, destinoApeadoId, 'recebimento');
+    let locRecApeado = await localizacaoArmazemPorTipoConn(pool, destinoApeadoId, 'recebimento');
     if (!locRecApeado) locRecApeado = String(apeadoArmRow.codigo || '');
     if (!locRecApeado) return res.status(400).json({ error: 'Localização de recebimento do armazém APEADO não encontrada.' });
 
-    const codigoCentral = String(requisicao.armazem_destino_codigo || '').trim() || (await pool.query('SELECT codigo FROM armazens WHERE id=$1', [centralId])).rows[0]?.codigo || 'E';
     const codigoApeado = String(apeadoArmRow.codigo || '').trim();
 
     const dataFormat = new Date(requisicao.created_at);
@@ -1540,7 +2388,7 @@ router.get('/:id/export-tra-apeados', ...requisicaoAuth, denyOperador, async (re
           rows.push({
             Date: dateStr,
             OriginWarehouse: codigoCentral,
-            OriginLocation: locRecCentral,
+            OriginLocation: locOrigemApeados,
             Article: String(it.item_codigo || b.item_codigo || ''),
             Quatity: Number(b.metros) || 0,
             SerialNumber1: b.serialnumber || '', SerialNumber2: '', MacAddress: '', CentroCusto: '',
@@ -1559,7 +2407,7 @@ router.get('/:id/export-tra-apeados', ...requisicaoAuth, denyOperador, async (re
         rows.push({
           Date: dateStr,
           OriginWarehouse: codigoCentral,
-          OriginLocation: locRecCentral,
+          OriginLocation: locOrigemApeados,
           Article: String(it.item_codigo || ''),
           Quatity: apeadosQty,
           SerialNumber1: apeadosSerials.join('\n'), SerialNumber2: '', MacAddress: '', CentroCusto: '',
@@ -1572,7 +2420,7 @@ router.get('/:id/export-tra-apeados', ...requisicaoAuth, denyOperador, async (re
         rows.push({
           Date: dateStr,
           OriginWarehouse: codigoCentral,
-          OriginLocation: locRecCentral,
+          OriginLocation: locOrigemApeados,
           Article: String(it.item_codigo || ''),
           Quatity: apeadosQty,
           SerialNumber1: it.serialnumber || '', SerialNumber2: '', MacAddress: '', CentroCusto: '',
@@ -1588,22 +2436,69 @@ router.get('/:id/export-tra-apeados', ...requisicaoAuth, denyOperador, async (re
       return res.status(400).json({ error: 'Não foi possível gerar linhas para APEADOS (verifique quantidade_apeados e preparação).' });
     }
 
+    const cApe = await pool.connect();
     try {
-      await pool.query(
+      await cApe.query('BEGIN');
+      let lockApe;
+      try {
+        lockApe = await cApe.query(
+          `SELECT devolucao_tra_gerada_em, devolucao_trfl_gerada_em, devolucao_tra_apeados_gerada_em
+           FROM requisicoes WHERE id = $1 FOR UPDATE`,
+          [id]
+        );
+      } catch (e) {
+        if (e.code === '42703') {
+          await cApe.query('ROLLBACK');
+          cApe.release();
+          return res.status(503).json({
+            error: 'Colunas de documentos pendentes em falta.',
+            details: 'Execute: npm run db:migrate:requisicoes-devolucao-transferencias-pendentes'
+          });
+        }
+        throw e;
+      }
+      if (!lockApe.rows[0]?.devolucao_tra_gerada_em) {
+        await cApe.query('ROLLBACK');
+        cApe.release();
+        return res.status(400).json({ error: 'Gere primeiro a TRA de devolução.' });
+      }
+      const locOrigemStock = lockApe.rows[0]?.devolucao_trfl_gerada_em ? localizacaoFERR : locRecCentral;
+      if (!lockApe.rows[0]?.devolucao_tra_apeados_gerada_em && usuarioTemPermissaoControloStock(req)) {
+        try {
+          await aplicarStockTraApeadosDevolucao(cApe, {
+            centralId,
+            locOrigemCentral: locOrigemStock,
+            destinoApeadoId,
+            locRecApeado,
+            apeadosItens,
+            bobinasByRequisicaoItemId,
+          });
+        } catch (st) {
+          if (st.code !== '42P01') throw st;
+        }
+      }
+      await cApe.query(
         `UPDATE requisicoes
          SET devolucao_tra_apeados_gerada_em = COALESCE(devolucao_tra_apeados_gerada_em, CURRENT_TIMESTAMP),
              tra_gerada_em = COALESCE(tra_gerada_em, CURRENT_TIMESTAMP)
          WHERE id = $1`,
         [id]
       );
-    } catch (e) {
-      if (e.code === '42703') {
+      await cApe.query('COMMIT');
+    } catch (eApe) {
+      await cApe.query('ROLLBACK').catch(() => {});
+      if (eApe.isStockPrepBiz) {
+        return res.status(eApe.status).json(eApe.payload);
+      }
+      if (eApe.code === '42703') {
         return res.status(503).json({
           error: 'Colunas de documentos pendentes em falta.',
           details: 'Execute: npm run db:migrate:requisicoes-devolucao-transferencias-pendentes'
         });
       }
-      throw e;
+      throw eApe;
+    } finally {
+      cApe.release();
     }
 
     buildExcelTransferencia(rows, res, `TRA_apeados_devolucao_${id}_${new Date().toISOString().slice(0, 10)}.xlsx`);
@@ -1613,7 +2508,7 @@ router.get('/:id/export-tra-apeados', ...requisicaoAuth, denyOperador, async (re
   }
 });
 
-// TRFL pendente de armazenagem (devolução): central recebimento -> localização escolhida no mesmo central
+// TRFL pendente de armazenagem (devolução): origem = recebimento ou zona normal (se já houve TRFL interna) → localização escolhida
 // Usa somente o saldo remanescente: quantidade_preparada - quantidade_apeados.
 router.get('/:id/export-trfl-pendente-armazenagem', ...requisicaoAuth, denyOperador, async (req, res) => {
   try {
@@ -1636,7 +2531,7 @@ router.get('/:id/export-trfl-pendente-armazenagem', ...requisicaoAuth, denyOpera
 
     const requisicao = await getRequisicaoComItens(id);
     if (!requisicao) return res.status(404).json({ error: 'Requisição não encontrada' });
-    if (!requisicaoArmazemOrigemAcessoPermitido(req, requisicao.armazem_origem_id)) {
+    if (!requisicaoArmazemOrigemAcessoPermitido(req, requisicao.armazem_origem_id, { requisicao })) {
       return res.status(403).json({ error: 'Sem acesso a esta requisição.' });
     }
 
@@ -1673,10 +2568,13 @@ router.get('/:id/export-trfl-pendente-armazenagem', ...requisicaoAuth, denyOpera
       return res.status(400).json({ error: 'A localização de destino não pertence ao armazém central desta devolução.' });
     }
 
-    let locRecCentral = await localizacaoArmazemPorTipo(pool, centralId, 'recebimento');
+    let locRecCentral = await localizacaoArmazemPorTipoConn(pool, centralId, 'recebimento');
     if (!locRecCentral) locRecCentral = LOCALIZACAO_RECEBIMENTO_FALLBACK;
 
     const codigoCentral = String(requisicao.armazem_destino_codigo || '').trim() || 'E';
+    const { localizacaoNormal } = computeDestLocFerrNormal(codigoCentral, destLocRows.rows || []);
+    /** Remanescente no stock: após TRFL interna está na zona normal; antes ainda no recebimento. */
+    const locOrigemPendente = requisicao.devolucao_trfl_gerada_em ? localizacaoNormal : locRecCentral;
     const dataFormat = new Date(requisicao.created_at);
     const dateStr = `${String(dataFormat.getDate()).padStart(2, '0')}/${String(dataFormat.getMonth() + 1).padStart(2, '0')}/${dataFormat.getFullYear()}`;
 
@@ -1727,7 +2625,7 @@ router.get('/:id/export-trfl-pendente-armazenagem', ...requisicaoAuth, denyOpera
           rows.push({
             Date: dateStr,
             OriginWarehouse: codigoCentral,
-            OriginLocation: locRecCentral,
+            OriginLocation: locOrigemPendente,
             Article: String(it.item_codigo || b.item_codigo || ''),
             Quatity: Number(b.metros) || 0,
             SerialNumber1: b.serialnumber || '', SerialNumber2: '', MacAddress: '', CentroCusto: '',
@@ -1746,7 +2644,7 @@ router.get('/:id/export-trfl-pendente-armazenagem', ...requisicaoAuth, denyOpera
         rows.push({
           Date: dateStr,
           OriginWarehouse: codigoCentral,
-          OriginLocation: locRecCentral,
+          OriginLocation: locOrigemPendente,
           Article: String(it.item_codigo || ''),
           Quatity: remQty,
           SerialNumber1: remSerials.join('\n'), SerialNumber2: '', MacAddress: '', CentroCusto: '',
@@ -1759,7 +2657,7 @@ router.get('/:id/export-trfl-pendente-armazenagem', ...requisicaoAuth, denyOpera
         rows.push({
           Date: dateStr,
           OriginWarehouse: codigoCentral,
-          OriginLocation: locRecCentral,
+          OriginLocation: locOrigemPendente,
           Article: String(it.item_codigo || ''),
           Quatity: remQty,
           SerialNumber1: it.serialnumber || '', SerialNumber2: '', MacAddress: '', CentroCusto: '',
@@ -1775,21 +2673,62 @@ router.get('/:id/export-trfl-pendente-armazenagem', ...requisicaoAuth, denyOpera
       return res.status(400).json({ error: 'Nenhum saldo pendente de armazenagem para exportar TRFL.' });
     }
 
+    const cPend = await pool.connect();
     try {
-      await pool.query(
+      await cPend.query('BEGIN');
+      let lockPend;
+      try {
+        lockPend = await cPend.query(
+          `SELECT devolucao_trfl_pendente_gerada_em, devolucao_trfl_gerada_em FROM requisicoes WHERE id = $1 FOR UPDATE`,
+          [id]
+        );
+      } catch (e) {
+        if (e.code === '42703') {
+          await cPend.query('ROLLBACK');
+          cPend.release();
+          return res.status(503).json({
+            error: 'Colunas de documentos pendentes em falta.',
+            details: 'Execute: npm run db:migrate:requisicoes-devolucao-transferencias-pendentes'
+          });
+        }
+        throw e;
+      }
+      const locOrigemMovimento = lockPend.rows[0]?.devolucao_trfl_gerada_em ? localizacaoNormal : locRecCentral;
+      if (!lockPend.rows[0]?.devolucao_trfl_pendente_gerada_em && usuarioTemPermissaoControloStock(req)) {
+        try {
+          await aplicarStockTrflPendenteDevolucao(cPend, {
+            centralId,
+            locOrigemMovimento,
+            localizacaoDefault,
+            itemLocalizacoes,
+            itens: requisicao.itens || [],
+            bobinasByRequisicaoItemId,
+          });
+        } catch (st) {
+          if (st.code !== '42P01') throw st;
+        }
+      }
+      await cPend.query(
         `UPDATE requisicoes
          SET devolucao_trfl_pendente_gerada_em = COALESCE(devolucao_trfl_pendente_gerada_em, CURRENT_TIMESTAMP)
          WHERE id = $1`,
         [id]
       );
-    } catch (e) {
-      if (e.code === '42703') {
+      await cPend.query('COMMIT');
+    } catch (ePend) {
+      await cPend.query('ROLLBACK').catch(() => {});
+      if (ePend.isStockPrepBiz) {
+        return res.status(ePend.status).json(ePend.payload);
+      }
+      if (ePend.code === '42703') {
         return res.status(503).json({
           error: 'Colunas de documentos pendentes em falta.',
           details: 'Execute: npm run db:migrate:requisicoes-devolucao-transferencias-pendentes'
         });
       }
-      throw e;
+      throw ePend;
+    } finally {
+      cPend.release();
     }
 
     buildExcelTransferencia(rows, res, `TRFL_pendente_armazenagem_devolucao_${id}_${new Date().toISOString().slice(0, 10)}.xlsx`);
@@ -1889,6 +2828,20 @@ router.post('/export-tra-multi', ...requisicaoAuth, denyOperador, async (req, re
         bobinas = [];
       }
 
+      let tipoDestNormMulti = '';
+      if (armazemDestinoId) {
+        const trDm = await pool.query(
+          'SELECT LOWER(TRIM(COALESCE(tipo, \'\'))) AS t FROM armazens WHERE id = $1',
+          [armazemDestinoId]
+        );
+        tipoDestNormMulti = String(trDm.rows[0]?.t || '').toLowerCase();
+      }
+      let localizacaoDestinoRecebimentoMulti = localizacaoNormal;
+      if (tipoDestNormMulti === 'central') {
+        const locRecDestino = await localizacaoArmazemPorTipoConn(pool, armazemDestinoId, 'recebimento');
+        if (locRecDestino) localizacaoDestinoRecebimentoMulti = locRecDestino;
+      }
+
       const dataFormat = new Date(requisicao.created_at);
       const dateStr = `${String(dataFormat.getDate()).padStart(2, '0')}/${String(dataFormat.getMonth() + 1).padStart(2, '0')}/${dataFormat.getFullYear()}`;
 
@@ -1936,6 +2889,41 @@ router.post('/export-tra-multi', ...requisicaoAuth, denyOperador, async (req, re
       }
 
       if (rows.length > 0) {
+        const cTraM = await pool.connect();
+        try {
+          await cTraM.query('BEGIN');
+          if (usuarioTemPermissaoControloStock(req)) {
+            try {
+              await baixarStockTraExpedicaoSePendenteNormais(cTraM, {
+                requisicaoId: id,
+                armazemOrigemId: requisicao.armazem_origem_id,
+                armazemDestinoId,
+                tipoDestinoNorm: tipoDestNormMulti,
+                itens: itensComFerramenta,
+                bobinas,
+                localizacaoRecebimentoDestino:
+                  tipoDestNormMulti === 'central' ? localizacaoDestinoRecebimentoMulti : null,
+              });
+            } catch (seTraM) {
+              if (seTraM.code !== '42P01' && seTraM.code !== '42703') throw seTraM;
+            }
+          }
+          await cTraM.query(
+            `UPDATE requisicoes
+             SET tra_gerada_em = COALESCE(tra_gerada_em, CURRENT_TIMESTAMP)
+             WHERE id = $1`,
+            [id]
+          );
+          await cTraM.query('COMMIT');
+        } catch (eTraM) {
+          await cTraM.query('ROLLBACK').catch(() => {});
+          if (eTraM.isStockPrepBiz) {
+            return res.status(eTraM.status).json(eTraM.payload);
+          }
+          throw eTraM;
+        } finally {
+          cTraM.release();
+        }
         allRows = allRows.concat(rows);
       }
     }
@@ -1943,19 +2931,6 @@ router.post('/export-tra-multi', ...requisicaoAuth, denyOperador, async (req, re
     if (allRows.length === 0) {
       return res.status(400).json({ error: 'Nenhuma requisição válida para exportar TRA combinado.' });
     }
-
-    // Registra a primeira geração de TRA para todas as requisições enviadas (best-effort)
-    try {
-      const cleanIds = ids.map(x => parseInt(x, 10)).filter(Boolean);
-      if (cleanIds.length > 0) {
-        await pool.query(
-          `UPDATE requisicoes
-           SET tra_gerada_em = COALESCE(tra_gerada_em, CURRENT_TIMESTAMP)
-           WHERE id = ANY($1::int[])`,
-          [cleanIds]
-        );
-      }
-    } catch (_) {}
 
     buildExcelTransferencia(allRows, res, `TRA_multi_${new Date().toISOString().slice(0, 10)}.xlsx`);
   } catch (error) {
@@ -1965,19 +2940,6 @@ router.post('/export-tra-multi', ...requisicaoAuth, denyOperador, async (req, re
 });
 
 // Clog — saída de armazém (quantidades negativas) baseado na TRA gerada
-function computeDestLocFerrNormal(codigoDestino, locResultRows) {
-  let localizacaoFERR = codigoDestino + '.FERR';
-  let localizacaoNormal = codigoDestino;
-  if (locResultRows && locResultRows.length > 0) {
-    const locs = locResultRows.map((r) => r.localizacao);
-    const comFerr = locs.find((l) => (l || '').toUpperCase().includes('.FERR'));
-    const semFerr = locs.find((l) => !(l || '').toUpperCase().includes('.FERR'));
-    if (comFerr) localizacaoFERR = comFerr;
-    if (semFerr) localizacaoNormal = semFerr;
-  }
-  return { localizacaoFERR, localizacaoNormal };
-}
-
 function clogLocInicial(isDevolucao, localizacaoOrigemTRA, rowMeta) {
   if (isDevolucao) {
     const loc = String(rowMeta?.localizacao_origem || '').trim();
@@ -2256,7 +3218,7 @@ async function buildClogRowsFromRequisicao(requisicao, dateStr) {
   const { localizacaoFERR, localizacaoNormal } = computeDestLocFerrNormal(codigoDestino, locResultRows);
   let localizacaoRecebimentoDestino = null;
   try {
-    localizacaoRecebimentoDestino = await localizacaoArmazemPorTipo(pool, armazemDestinoId, 'recebimento');
+    localizacaoRecebimentoDestino = await localizacaoArmazemPorTipoConn(pool, armazemDestinoId, 'recebimento');
   } catch (_) {
     localizacaoRecebimentoDestino = null;
   }
@@ -2324,7 +3286,7 @@ router.get('/:id/export-clog', ...requisicaoAuth, denyOperador, async (req, res)
     const { id } = req.params;
     const requisicao = await getRequisicaoComItens(id, false);
     if (!requisicao) return res.status(404).json({ error: 'Requisição não encontrada' });
-    if (!requisicaoArmazemOrigemAcessoPermitido(req, requisicao.armazem_origem_id)) {
+    if (!requisicaoArmazemOrigemAcessoPermitido(req, requisicao.armazem_origem_id, { requisicao })) {
       return res.status(403).json({ error: 'Sem acesso a esta requisição.' });
     }
     if (!podeExportarReporteOuClog(requisicao)) {
@@ -2381,7 +3343,7 @@ router.get('/:id/clog-dados', ...requisicaoAuth, denyOperador, async (req, res) 
     const { id } = req.params;
     const requisicao = await getRequisicaoComItens(id, false);
     if (!requisicao) return res.status(404).json({ error: 'Requisição não encontrada' });
-    if (!requisicaoArmazemOrigemAcessoPermitido(req, requisicao.armazem_origem_id)) {
+    if (!requisicaoArmazemOrigemAcessoPermitido(req, requisicao.armazem_origem_id, { requisicao })) {
       return res.status(403).json({ error: 'Sem acesso a esta requisição.' });
     }
     if (!podeExportarReporteOuClog(requisicao)) {
@@ -2443,7 +3405,7 @@ router.get('/:id/export-reporte', ...requisicaoAuth, denyOperador, async (req, r
     const { id } = req.params;
     const requisicao = await getRequisicaoComItens(id);
     if (!requisicao) return res.status(404).json({ error: 'Requisição não encontrada' });
-    if (!requisicaoArmazemOrigemAcessoPermitido(req, requisicao.armazem_origem_id)) {
+    if (!requisicaoArmazemOrigemAcessoPermitido(req, requisicao.armazem_origem_id, { requisicao })) {
       return res.status(403).json({ error: 'Sem acesso a esta requisição.' });
     }
     if (!podeExportarReporteOuClog(requisicao)) {
@@ -2537,7 +3499,7 @@ router.get('/:id/reporte-dados', ...requisicaoAuth, denyOperador, async (req, re
     const { id } = req.params;
     const requisicao = await getRequisicaoComItens(id);
     if (!requisicao) return res.status(404).json({ error: 'Requisição não encontrada' });
-    if (!requisicaoArmazemOrigemAcessoPermitido(req, requisicao.armazem_origem_id)) {
+    if (!requisicaoArmazemOrigemAcessoPermitido(req, requisicao.armazem_origem_id, { requisicao })) {
       return res.status(403).json({ error: 'Sem acesso a esta requisição.' });
     }
     if (!podeExportarReporteOuClog(requisicao)) {
@@ -2905,7 +3867,7 @@ router.get('/:id', ...requisicaoAuth, async (req, res) => {
     }
 
     const requisicao = reqResult.rows[0];
-    if (!requisicaoArmazemOrigemAcessoPermitido(req, requisicao.armazem_origem_id)) {
+    if (!requisicaoArmazemOrigemAcessoPermitido(req, requisicao.armazem_origem_id, { requisicao })) {
       return res.status(403).json({ error: 'Sem acesso a esta requisição.' });
     }
 
@@ -2982,20 +3944,27 @@ router.post('/', ...requisicaoAuth, denyOperador, async (req, res) => {
     }
 
     // Verificar armazém destino
-    const armazemCheck = await client.query('SELECT id FROM armazens WHERE id = $1 AND ativo = true', [armazem_id]);
+    const armazemCheck = await client.query('SELECT id, tipo FROM armazens WHERE id = $1 AND ativo = true', [
+      armazem_id,
+    ]);
     if (armazemCheck.rows.length === 0) {
       await client.query('ROLLBACK');
       return res.status(404).json({ error: 'Armazém destino não encontrado ou inativo' });
     }
+    const tipoDestinoCriar = armazemCheck.rows[0].tipo;
 
     // Verificar armazém origem (se informado)
+    let tipoOrigemCriar = null;
     if (armazem_origem_id) {
-      const origCheck = await client.query('SELECT id, tipo FROM armazens WHERE id = $1 AND ativo = true', [armazem_origem_id]);
+      const origCheck = await client.query('SELECT id, tipo FROM armazens WHERE id = $1 AND ativo = true', [
+        armazem_origem_id,
+      ]);
       if (origCheck.rows.length === 0) {
         await client.query('ROLLBACK');
         return res.status(404).json({ error: 'Armazém origem não encontrado ou inativo' });
       }
-      if (!isTipoArmazemOrigemRequisicao(origCheck.rows[0].tipo)) {
+      tipoOrigemCriar = origCheck.rows[0].tipo;
+      if (!isTipoArmazemOrigemRequisicao(tipoOrigemCriar)) {
         await client.query('ROLLBACK');
         return res.status(400).json({
           error: 'Armazém de origem não é um tipo válido (central, viatura, APEADO ou EPI).',
@@ -3005,11 +3974,22 @@ router.post('/', ...requisicaoAuth, denyOperador, async (req, res) => {
 
     if (req.requisicaoArmazemOrigemIds && req.requisicaoArmazemOrigemIds.length > 0) {
       const orig = armazem_origem_id ? parseInt(armazem_origem_id, 10) : null;
-      if (orig == null || !req.requisicaoArmazemOrigemIds.includes(orig)) {
-        await client.query('ROLLBACK');
-        return res.status(403).json({
-          error: 'Só pode criar requisições com origem num dos armazéns de origem atribuídos ao seu utilizador.',
-        });
+      const dest = parseInt(armazem_id, 10);
+      if (orig != null && isFluxoDevolucaoViaturaCentral(tipoOrigemCriar, tipoDestinoCriar)) {
+        if (!req.requisicaoArmazemOrigemIds.includes(dest)) {
+          await client.query('ROLLBACK');
+          return res.status(403).json({
+            error:
+              'Só pode criar devoluções para armazéns centrais que tenha associados ao seu utilizador (requisições / armazéns de origem).',
+          });
+        }
+      } else {
+        if (orig == null || !req.requisicaoArmazemOrigemIds.includes(orig)) {
+          await client.query('ROLLBACK');
+          return res.status(403).json({
+            error: 'Só pode criar requisições com origem num dos armazéns de origem atribuídos ao seu utilizador.',
+          });
+        }
       }
     }
 
@@ -3467,13 +4447,24 @@ router.put('/:id', ...requisicaoAuth, denyOperador, async (req, res) => {
     const { id } = req.params;
     const { armazem_origem_id, armazem_id, itens, status, localizacao, observacoes } = req.body;
 
-    // Verificar se a requisição existe
-    const checkReq = await client.query('SELECT * FROM requisicoes WHERE id = $1', [id]);
+    // Verificar se a requisição existe (tipos para escopo de devolução viatura → central)
+    const checkReq = await client.query(
+      `SELECT r.*, ao.tipo AS armazem_origem_tipo, a.tipo AS armazem_destino_tipo
+       FROM requisicoes r
+       LEFT JOIN armazens ao ON r.armazem_origem_id = ao.id
+       INNER JOIN armazens a ON r.armazem_id = a.id
+       WHERE r.id = $1`,
+      [id]
+    );
     if (checkReq.rows.length === 0) {
       await client.query('ROLLBACK');
       return res.status(404).json({ error: 'Requisição não encontrada' });
     }
-    if (!requisicaoArmazemOrigemAcessoPermitido(req, checkReq.rows[0].armazem_origem_id)) {
+    if (
+      !requisicaoArmazemOrigemAcessoPermitido(req, checkReq.rows[0].armazem_origem_id, {
+        requisicao: checkReq.rows[0],
+      })
+    ) {
       await client.query('ROLLBACK');
       return res.status(403).json({ error: 'Sem acesso a esta requisição.' });
     }
@@ -3504,9 +4495,33 @@ router.put('/:id', ...requisicaoAuth, denyOperador, async (req, res) => {
     if (armazem_origem_id !== undefined) {
       if (req.requisicaoArmazemOrigemIds && req.requisicaoArmazemOrigemIds.length > 0) {
         const newOrig = armazem_origem_id ? parseInt(armazem_origem_id, 10) : null;
-        if (newOrig == null || !req.requisicaoArmazemOrigemIds.includes(newOrig)) {
+        const destEff =
+          armazem_id !== undefined
+            ? parseInt(armazem_id, 10)
+            : parseInt(checkReq.rows[0].armazem_id, 10);
+        if (newOrig == null) {
           await client.query('ROLLBACK');
-          return res.status(403).json({ error: 'Não pode alterar o armazém de origem para fora dos armazéns permitidos.' });
+          return res.status(403).json({
+            error: 'Não pode alterar o armazém de origem para fora dos armazéns permitidos.',
+          });
+        }
+        const origT = await client.query('SELECT tipo FROM armazens WHERE id = $1', [newOrig]);
+        const destT = await client.query('SELECT tipo FROM armazens WHERE id = $1', [destEff]);
+        const tO = origT.rows[0]?.tipo;
+        const tD = destT.rows[0]?.tipo;
+        if (isFluxoDevolucaoViaturaCentral(tO, tD)) {
+          if (!req.requisicaoArmazemOrigemIds.includes(destEff)) {
+            await client.query('ROLLBACK');
+            return res.status(403).json({
+              error:
+                'Não pode guardar devolução com destino (central) fora dos armazéns associados ao seu utilizador.',
+            });
+          }
+        } else if (!req.requisicaoArmazemOrigemIds.includes(newOrig)) {
+          await client.query('ROLLBACK');
+          return res.status(403).json({
+            error: 'Não pode alterar o armazém de origem para fora dos armazéns permitidos.',
+          });
         }
       }
       if (armazem_origem_id) {
@@ -3683,15 +4698,16 @@ router.patch('/:id/atender-item', ...requisicaoAuth, async (req, res) => {
       quantidadeApeadosFinal = qApeadosRaw;
     }
     const locOrigem = typeof localizacao_origem === 'string' ? localizacao_origem.trim() : '';
-    if (!isZero && !locOrigem) {
-      return res.status(400).json({ error: 'Localização de saída (onde está saindo) é obrigatória quando há quantidade preparada.' });
-    }
-
     await client.query('BEGIN');
     let check;
     try {
       check = await client.query(
-        'SELECT id, status, armazem_origem_id, armazem_id, separador_usuario_id FROM requisicoes WHERE id = $1 FOR UPDATE',
+        `SELECT r.id, r.status, r.observacoes, r.armazem_origem_id, r.armazem_id, r.separador_usuario_id,
+                ao.tipo AS armazem_origem_tipo, a.tipo AS armazem_destino_tipo
+         FROM requisicoes r
+         LEFT JOIN armazens ao ON r.armazem_origem_id = ao.id
+         INNER JOIN armazens a ON r.armazem_id = a.id
+         WHERE r.id = $1 FOR UPDATE OF r`,
         [id]
       );
     } catch (lockErr) {
@@ -3710,11 +4726,20 @@ router.patch('/:id/atender-item', ...requisicaoAuth, async (req, res) => {
       await client.query('ROLLBACK');
       return res.status(404).json({ error: 'Requisição não encontrada' });
     }
-    if (!requisicaoArmazemOrigemAcessoPermitido(req, check.rows[0].armazem_origem_id)) {
+    if (
+      !requisicaoArmazemOrigemAcessoPermitido(req, check.rows[0].armazem_origem_id, {
+        requisicao: check.rows[0],
+      })
+    ) {
       await client.query('ROLLBACK');
       return res.status(403).json({ error: 'Sem acesso a esta requisição.' });
     }
     const stReq = String(check.rows[0].status || '');
+    const ehRecebimentoTransfer = hasRecebimentoMarker(check.rows[0]);
+    if (!isZero && !ehRecebimentoTransfer && !locOrigem) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Localização de saída (onde está saindo) é obrigatória quando há quantidade preparada.' });
+    }
     if (stReq === 'cancelada') {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: 'Requisição cancelada' });
@@ -3737,7 +4762,7 @@ router.patch('/:id/atender-item', ...requisicaoAuth, async (req, res) => {
     }
 
     const itemCheck = await client.query(
-      `SELECT ri.*, i.tipocontrolo,
+      `SELECT ri.*, i.tipocontrolo, i.codigo AS item_codigo,
         EXISTS (
           SELECT 1 FROM itens_setores is2
           WHERE is2.item_id = i.id AND UPPER(TRIM(is2.setor)) = 'FERRAMENTA'
@@ -3753,7 +4778,7 @@ router.patch('/:id/atender-item', ...requisicaoAuth, async (req, res) => {
     }
     const item = itemCheck.rows[0];
 
-    if (!isZero && check.rows[0].armazem_origem_id && check.rows[0].armazem_id) {
+    if (!ehRecebimentoTransfer && !isZero && check.rows[0].armazem_origem_id && check.rows[0].armazem_id) {
       const tiposR = await client.query(
         `SELECT ao.tipo AS origem_tipo, ad.tipo AS dest_tipo, ao.codigo AS origem_codigo
          FROM armazens ao
@@ -3820,8 +4845,17 @@ router.patch('/:id/atender-item', ...requisicaoAuth, async (req, res) => {
       }
     }
 
-    // Localização destino é sempre EXPEDICAO (automático) quando há saída
-    const localizacaoDestinoFinal = isZero ? null : 'EXPEDICAO';
+    let localizacaoDestinoFinal = null;
+    if (!isZero) {
+      if (ehRecebimentoTransfer) {
+        localizacaoDestinoFinal =
+          (await localizacaoArmazemPorTipoConn(client, check.rows[0].armazem_origem_id, 'recebimento')) ||
+          LOCALIZACAO_RECEBIMENTO_FALLBACK;
+      } else {
+        // Fluxo normal: destino automático em expedição
+        localizacaoDestinoFinal = 'EXPEDICAO';
+      }
+    }
 
     const serialnumberFinal = isZero
       ? null
@@ -3840,14 +4874,32 @@ router.patch('/:id/atender-item', ...requisicaoAuth, async (req, res) => {
     const params = [
       quantidade_preparada,
       localizacaoDestinoFinal,
-      isZero ? null : locOrigem,
+      isZero ? null : (ehRecebimentoTransfer ? null : locOrigem),
       isZero ? null : (lote || null),
       serialnumberFinal,
       quantidadeApeadosFinal,
       requisicao_item_id
     ];
 
+    const needStockQty = quantidadeNecessariaStockPreparacao({
+      isZero,
+      tipoControlo,
+      quantidade_preparada,
+      bobinas: Array.isArray(bobinas) ? bobinas : [],
+      serialsNormalizados,
+    });
+
     try {
+      if (!ehRecebimentoTransfer && usuarioTemPermissaoControloStock(req)) {
+        await assertStockSuficientePreparacaoLocalizacao(client, {
+          armazemOrigemId: check.rows[0].armazem_origem_id,
+          itemId: item.item_id,
+          itemCodigo: item.item_codigo || String(item.item_id),
+          locLabel: isZero ? '' : locOrigem,
+          needQty: needStockQty,
+        });
+      }
+
       await client.query(updateQuery, params);
 
       // Se houver bobinas para itens de lote e quantidade > 0, registrar detalhamento por bobina.
@@ -3876,6 +4928,9 @@ router.patch('/:id/atender-item', ...requisicaoAuth, async (req, res) => {
       await client.query('COMMIT');
     } catch (e) {
       await client.query('ROLLBACK').catch(() => {});
+      if (e.isStockPrepBiz) {
+        return res.status(e.status).json(e.payload);
+      }
       if (e.code === '42703') {
         return res.status(503).json({
           error: 'Erro ao preparar item: coluna preparacao_confirmada não existe no banco.',
@@ -3941,13 +4996,22 @@ router.delete('/:id/requisicao-itens/:requisicaoItemId', ...requisicaoAuth, asyn
     }
 
     const check = await pool.query(
-      'SELECT id, status, armazem_origem_id FROM requisicoes WHERE id = $1',
+      `SELECT r.id, r.status, r.armazem_origem_id, r.armazem_id, r.separador_usuario_id,
+              ao.tipo AS armazem_origem_tipo, a.tipo AS armazem_destino_tipo
+       FROM requisicoes r
+       LEFT JOIN armazens ao ON r.armazem_origem_id = ao.id
+       INNER JOIN armazens a ON r.armazem_id = a.id
+       WHERE r.id = $1`,
       [requisicaoId]
     );
     if (check.rows.length === 0) {
       return res.status(404).json({ error: 'Requisição não encontrada' });
     }
-    if (!requisicaoArmazemOrigemAcessoPermitido(req, check.rows[0].armazem_origem_id)) {
+    if (
+      !requisicaoArmazemOrigemAcessoPermitido(req, check.rows[0].armazem_origem_id, {
+        requisicao: check.rows[0],
+      })
+    ) {
       return res.status(403).json({ error: 'Sem acesso a esta requisição.' });
     }
     const st = String(check.rows[0].status || '');
@@ -4028,13 +5092,22 @@ router.patch('/:id/atender', ...requisicaoAuth, async (req, res) => {
     const { localizacao } = req.body;
 
     const check = await pool.query(
-      'SELECT id, status, armazem_origem_id, separador_usuario_id FROM requisicoes WHERE id = $1',
+      `SELECT r.id, r.status, r.armazem_origem_id, r.armazem_id, r.separador_usuario_id,
+              ao.tipo AS armazem_origem_tipo, a.tipo AS armazem_destino_tipo
+       FROM requisicoes r
+       LEFT JOIN armazens ao ON r.armazem_origem_id = ao.id
+       INNER JOIN armazens a ON r.armazem_id = a.id
+       WHERE r.id = $1`,
       [id]
     );
     if (check.rows.length === 0) {
       return res.status(404).json({ error: 'Requisição não encontrada' });
     }
-    if (!requisicaoArmazemOrigemAcessoPermitido(req, check.rows[0].armazem_origem_id)) {
+    if (
+      !requisicaoArmazemOrigemAcessoPermitido(req, check.rows[0].armazem_origem_id, {
+        requisicao: check.rows[0],
+      })
+    ) {
       return res.status(403).json({ error: 'Sem acesso a esta requisição.' });
     }
     if (separadorImpedeAcao(check.rows[0], req)) {
@@ -4115,13 +5188,22 @@ router.patch('/:id/completar-separacao', ...requisicaoAuth, async (req, res) => 
   try {
     const { id } = req.params;
     const check = await pool.query(
-      'SELECT id, status, armazem_origem_id, separador_usuario_id FROM requisicoes WHERE id = $1',
+      `SELECT r.id, r.status, r.observacoes, r.armazem_origem_id, r.armazem_id, r.separador_usuario_id,
+              ao.tipo AS armazem_origem_tipo, a.tipo AS armazem_destino_tipo
+       FROM requisicoes r
+       LEFT JOIN armazens ao ON r.armazem_origem_id = ao.id
+       INNER JOIN armazens a ON r.armazem_id = a.id
+       WHERE r.id = $1`,
       [id]
     );
     if (check.rows.length === 0) {
       return res.status(404).json({ error: 'Requisição não encontrada' });
     }
-    if (!requisicaoArmazemOrigemAcessoPermitido(req, check.rows[0].armazem_origem_id)) {
+    if (
+      !requisicaoArmazemOrigemAcessoPermitido(req, check.rows[0].armazem_origem_id, {
+        requisicao: check.rows[0],
+      })
+    ) {
       return res.status(403).json({ error: 'Sem acesso a esta requisição.' });
     }
     if (separadorImpedeAcao(check.rows[0], req)) {
@@ -4151,9 +5233,10 @@ router.patch('/:id/completar-separacao', ...requisicaoAuth, async (req, res) => 
     if (!allConfirmed) {
       return res.status(400).json({ error: 'Confirme a preparação de todos os itens antes de completar a separação (inclua 0 na quantidade quando não tiver o item).' });
     }
+    const ehRecebimentoTransfer = hasRecebimentoMarker(check.rows[0]);
     await pool.query(
       'UPDATE requisicoes SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
-      ['separado', id]
+      [ehRecebimentoTransfer ? 'EM EXPEDICAO' : 'separado', id]
     );
     const updated = await pool.query('SELECT * FROM requisicoes WHERE id = $1', [id]);
     res.json(updated.rows[0]);
@@ -4173,13 +5256,22 @@ router.patch('/:id/confirmar-separacao', ...requisicaoAuth, async (req, res) => 
   try {
     const { id } = req.params;
     const check = await pool.query(
-      'SELECT id, status, armazem_origem_id, separador_usuario_id FROM requisicoes WHERE id = $1',
+      `SELECT r.id, r.status, r.armazem_origem_id, r.armazem_id, r.separador_usuario_id,
+              ao.tipo AS armazem_origem_tipo, a.tipo AS armazem_destino_tipo
+       FROM requisicoes r
+       LEFT JOIN armazens ao ON r.armazem_origem_id = ao.id
+       INNER JOIN armazens a ON r.armazem_id = a.id
+       WHERE r.id = $1`,
       [id]
     );
     if (check.rows.length === 0) {
       return res.status(404).json({ error: 'Requisição não encontrada' });
     }
-    if (!requisicaoArmazemOrigemAcessoPermitido(req, check.rows[0].armazem_origem_id)) {
+    if (
+      !requisicaoArmazemOrigemAcessoPermitido(req, check.rows[0].armazem_origem_id, {
+        requisicao: check.rows[0],
+      })
+    ) {
       return res.status(403).json({ error: 'Sem acesso a esta requisição.' });
     }
     if (separadorImpedeAcao(check.rows[0], req)) {
@@ -4211,13 +5303,22 @@ router.patch('/:id/marcar-em-expedicao', ...requisicaoAuth, denyOperador, async 
   try {
     const { id } = req.params;
     const check = await pool.query(
-      'SELECT id, status, separacao_confirmada, armazem_origem_id, separador_usuario_id FROM requisicoes WHERE id = $1',
+      `SELECT r.id, r.status, r.separacao_confirmada, r.armazem_origem_id, r.armazem_id, r.separador_usuario_id,
+              ao.tipo AS armazem_origem_tipo, a.tipo AS armazem_destino_tipo
+       FROM requisicoes r
+       LEFT JOIN armazens ao ON r.armazem_origem_id = ao.id
+       INNER JOIN armazens a ON r.armazem_id = a.id
+       WHERE r.id = $1`,
       [id]
     );
     if (check.rows.length === 0) {
       return res.status(404).json({ error: 'Requisição não encontrada' });
     }
-    if (!requisicaoArmazemOrigemAcessoPermitido(req, check.rows[0].armazem_origem_id)) {
+    if (
+      !requisicaoArmazemOrigemAcessoPermitido(req, check.rows[0].armazem_origem_id, {
+        requisicao: check.rows[0],
+      })
+    ) {
       return res.status(403).json({ error: 'Sem acesso a esta requisição.' });
     }
     if (separadorImpedeAcao(check.rows[0], req)) {
@@ -4249,13 +5350,22 @@ router.patch('/:id/marcar-entregue', ...requisicaoAuth, async (req, res) => {
   try {
     const { id } = req.params;
     const check = await pool.query(
-      'SELECT id, status, armazem_origem_id, separador_usuario_id FROM requisicoes WHERE id = $1',
+      `SELECT r.id, r.status, r.armazem_origem_id, r.armazem_id, r.separador_usuario_id,
+              ao.tipo AS armazem_origem_tipo, a.tipo AS armazem_destino_tipo
+       FROM requisicoes r
+       LEFT JOIN armazens ao ON r.armazem_origem_id = ao.id
+       INNER JOIN armazens a ON r.armazem_id = a.id
+       WHERE r.id = $1`,
       [id]
     );
     if (check.rows.length === 0) {
       return res.status(404).json({ error: 'Requisição não encontrada' });
     }
-    if (!requisicaoArmazemOrigemAcessoPermitido(req, check.rows[0].armazem_origem_id)) {
+    if (
+      !requisicaoArmazemOrigemAcessoPermitido(req, check.rows[0].armazem_origem_id, {
+        requisicao: check.rows[0],
+      })
+    ) {
       return res.status(403).json({ error: 'Sem acesso a esta requisição.' });
     }
     if (separadorImpedeAcao(check.rows[0], req)) {
@@ -4287,10 +5397,12 @@ router.patch('/:id/finalizar', ...requisicaoAuth, denyOperador, async (req, res)
       `SELECT
          r.id,
          r.status,
+         r.armazem_id,
          r.armazem_origem_id,
          r.separador_usuario_id,
          r.tra_gerada_em,
          r.devolucao_tra_gerada_em,
+         r.devolucao_trfl_gerada_em,
          r.devolucao_tra_apeados_gerada_em,
          r.devolucao_trfl_pendente_gerada_em,
          ao.tipo AS origem_tipo,
@@ -4302,7 +5414,16 @@ router.patch('/:id/finalizar', ...requisicaoAuth, denyOperador, async (req, res)
       [id]
     );
     if (check.rows.length === 0) return res.status(404).json({ error: 'Requisição não encontrada' });
-    if (!requisicaoArmazemOrigemAcessoPermitido(req, check.rows[0].armazem_origem_id)) {
+    const rowPre = check.rows[0];
+    if (
+      !requisicaoArmazemOrigemAcessoPermitido(req, rowPre.armazem_origem_id, {
+        requisicao: {
+          ...rowPre,
+          armazem_origem_tipo: rowPre.origem_tipo,
+          armazem_destino_tipo: rowPre.destino_tipo,
+        },
+      })
+    ) {
       return res.status(403).json({ error: 'Sem acesso a esta requisição.' });
     }
     if (separadorImpedeAcao(check.rows[0], req)) {
@@ -4315,10 +5436,50 @@ router.patch('/:id/finalizar', ...requisicaoAuth, denyOperador, async (req, res)
       String(row.origem_tipo || '').trim().toLowerCase() === 'central' &&
       String(row.destino_tipo || '').trim().toLowerCase() === 'apeado';
     if (fluxoDevolucao) {
-      const docsPendentesOk = Boolean(row.devolucao_tra_apeados_gerada_em) && Boolean(row.devolucao_trfl_pendente_gerada_em);
-      if (!(['EM EXPEDICAO', 'APEADOS'].includes(row.status) && row.devolucao_tra_gerada_em && docsPendentesOk)) {
+      if (!['EM EXPEDICAO', 'APEADOS'].includes(row.status) || !row.devolucao_tra_gerada_em) {
         return res.status(400).json({
-          error: 'No fluxo de devolução, só é possível finalizar após gerar DEV, TRA APEADOS e TRFL PENDENTE.'
+          error:
+            'No fluxo de devolução, só é possível finalizar com status Em expedição ou APEADOS e após gerar o DEV.',
+        });
+      }
+      let temApeados = false;
+      let temPendenteArmazenagem = false;
+      try {
+        const agg = await pool.query(
+          `SELECT
+             COALESCE(quantidade_preparada, quantidade, 0) AS qprep,
+             COALESCE(quantidade_apeados, 0)::int AS qape
+           FROM requisicoes_itens
+           WHERE requisicao_id = $1`,
+          [id]
+        );
+        for (const ir of agg.rows || []) {
+          const total = Math.max(0, Math.floor(Number(ir.qprep) || 0));
+          const ape = Math.max(0, parseInt(ir.qape, 10) || 0);
+          if (ape > 0) temApeados = true;
+          if (Math.max(0, total - ape) > 0) temPendenteArmazenagem = true;
+        }
+      } catch (e) {
+        if (e.code !== '42P01') throw e;
+      }
+
+      let docsOk = false;
+      if (!temApeados) {
+        docsOk = Boolean(
+          row.devolucao_trfl_gerada_em || row.devolucao_trfl_pendente_gerada_em
+        );
+      } else if (!temPendenteArmazenagem) {
+        docsOk = Boolean(row.devolucao_tra_apeados_gerada_em);
+      } else {
+        docsOk =
+          Boolean(row.devolucao_tra_apeados_gerada_em) &&
+          Boolean(row.devolucao_trfl_pendente_gerada_em);
+      }
+
+      if (!docsOk) {
+        return res.status(400).json({
+          error:
+            'No fluxo de devolução, conclua os documentos em falta: sem APEADOS — TRFL interna ou TRFL PENDENTE; só APEADOS — TRA APEADOS; misto — TRA APEADOS e TRFL PENDENTE.',
         });
       }
     } else if (fluxoCentralApeado) {
@@ -4339,19 +5500,664 @@ router.patch('/:id/finalizar', ...requisicaoAuth, denyOperador, async (req, res)
   }
 });
 
+  // =========================================================
+  // Recebimento de transferência entre armazéns (UI “cards”)
+  // =========================================================
+
+  // Parse da Guia de Transporte (PDF) enviada pelo armazém de origem.
+  // Regras:
+  // - PDF contém 3 cópias (ORIGINAL, DUPLICADO, TRIPLICADO)
+  // - Usar apenas a tabela da cópia ORIGINAL
+  // - Extrair código do artigo da coluna "Designação dos Bens" (apenas código)
+  // - Quantidade na coluna ao lado (na extração textual aparece antes de "UN")
+  router.post(
+    '/transferencias/recebimento/parse-guia-transporte',
+    authenticateToken,
+    requisicaoPerfilNegadoMiddleware,
+    denyOperador,
+    requisicaoScopeMiddleware,
+    excelUploadRequisicoes.single('arquivo'),
+    async (req, res) => {
+      let tempPath = null;
+      try {
+        if (!req.file) {
+          return res.status(400).json({ error: 'Arquivo PDF da guia é obrigatório.' });
+        }
+        tempPath = req.file.path;
+        const mime = String(req.file.mimetype || '').toLowerCase();
+        const ext = String(req.file.originalname || '').toLowerCase();
+        if (!(mime.includes('pdf') || ext.endsWith('.pdf'))) {
+          return res.status(400).json({ error: 'Formato inválido. Envie um PDF.' });
+        }
+
+        const buffer = fs.readFileSync(tempPath);
+        const textRaw = await extractPdfText(buffer);
+        if (!textRaw.trim()) {
+          return res.status(400).json({ error: 'Não foi possível extrair texto do PDF.' });
+        }
+
+        // 1) Isolar cópia ORIGINAL
+        const originalAnchor = textRaw.search(/guia\s+de\s+transporte[\s\r\n]*original/i);
+        if (originalAnchor < 0) {
+          return res.status(400).json({ error: 'Cópia ORIGINAL não encontrada no PDF.' });
+        }
+        let originalText = textRaw.slice(originalAnchor);
+        const endCandidates = [
+          originalText.search(/--\s*1\s+of\s+\d+\s*--/i),
+          originalText.search(/guia\s+de\s+transporte[\s\r\n]*duplicado/i),
+          originalText.search(/guia\s+de\s+transporte[\s\r\n]*triplicado/i),
+        ].filter((x) => x > 0);
+        if (endCandidates.length > 0) {
+          originalText = originalText.slice(0, Math.min(...endCandidates));
+        }
+
+        // 2) Encontrar a tabela da ORIGINAL
+        const lines = originalText
+          .split(/\r?\n/)
+          .map((l) => String(l || '').replace(/\s+/g, ' ').trim())
+          .filter(Boolean);
+        const headerIdx = lines.findIndex((l) => /designa[cç][aã]o\s+dos\s+bens/i.test(l));
+        if (headerIdx < 0) {
+          return res.status(400).json({ error: 'Tabela de artigos não encontrada na cópia ORIGINAL.' });
+        }
+
+        const stopRegex = /(n\.?\s*[ºo]\s*total\s+de|impresso\s+na\s+data|p[aá]gina\s+\d+\s*\/\s*\d+)/i;
+        const tableLines = [];
+        for (let i = headerIdx + 1; i < lines.length; i++) {
+          const ln = lines[i];
+          if (stopRegex.test(ln)) break;
+          tableLines.push(ln);
+        }
+        if (tableLines.length === 0) {
+          return res.status(400).json({ error: 'Sem linhas de artigos na tabela ORIGINAL.' });
+        }
+
+        // 3) Extrair código + quantidade (tolerante a quebra de linha/formato)
+        const parseLocaleNumber = (raw) => {
+          const s = String(raw || '').replace(/\s+/g, '');
+          if (!s) return NaN;
+          const lastComma = s.lastIndexOf(',');
+          const lastDot = s.lastIndexOf('.');
+          if (lastComma !== -1 && lastDot !== -1) {
+            const decimalSep = lastComma > lastDot ? ',' : '.';
+            const thousandSep = decimalSep === ',' ? '.' : ',';
+            const noThousand = s.split(thousandSep).join('');
+            const normalized = decimalSep === ',' ? noThousand.replace(',', '.') : noThousand;
+            return Number(normalized);
+          }
+          if (lastComma !== -1) return Number(s.replace(',', '.'));
+          return Number(s);
+        };
+        const startsNewItemRow = (text) => /^\s*\d{4,}\b/.test(String(text || ''));
+        const extractCodigo = (text) => {
+          const m = /^\s*(\d{4,})\b/.exec(String(text || ''));
+          return m ? String(m[1]).trim() : null;
+        };
+        const extractQuantidade = (text) => {
+          const ln = String(text || '');
+          const mQtyBeforeUn = /(\d{1,3}(?:[.\s]\d{3})*(?:,\d+)?|\d+(?:[.,]\d+)?)\s*(?:UN|UND\.?|UNID(?:\.|ADE)?S?)\b/i.exec(ln);
+          if (mQtyBeforeUn) return parseLocaleNumber(mQtyBeforeUn[1]);
+          // fallback: pegar o primeiro número decimal "grande" da linha (normalmente a quantidade),
+          // evitando o último valor monetário (ex.: 0,00).
+          const nums = ln.match(/\d{1,3}(?:[.\s]\d{3})*(?:,\d+)?|\d+(?:[.,]\d+)?/g) || [];
+          for (const raw of nums) {
+            const n = parseLocaleNumber(raw);
+            if (Number.isFinite(n) && n > 0) return n;
+          }
+          return NaN;
+        };
+
+        // Agrupar linhas com base em quebra visual da grelha:
+        // uma nova linha de item começa apenas quando a linha inicia com código numérico.
+        // Linhas seguintes (mesmo com tokens alfanuméricos) são continuação da descrição.
+        const grouped = [];
+        for (const ln of tableLines) {
+          if (startsNewItemRow(ln) || grouped.length === 0) {
+            grouped.push(ln);
+          } else {
+            grouped[grouped.length - 1] = `${grouped[grouped.length - 1]} ${ln}`.trim();
+          }
+        }
+
+        const byCodigo = new Map();
+        for (let i = 0; i < grouped.length; i++) {
+          const line = grouped[i];
+          const codigo = extractCodigo(line);
+          if (!codigo) continue;
+
+          let qtd = extractQuantidade(line);
+          if (!Number.isFinite(qtd) || qtd <= 0) {
+            // fallback: tenta próxima linha agrupada (há PDFs em que a qty cai na linha seguinte)
+            const next = grouped[i + 1] || '';
+            qtd = extractQuantidade(`${line} ${next}`);
+          }
+          if (!Number.isFinite(qtd) || qtd <= 0) continue;
+          byCodigo.set(codigo, (byCodigo.get(codigo) || 0) + qtd);
+        }
+
+        const itens = Array.from(byCodigo.entries()).map(([codigo, quantidade]) => ({
+          codigo,
+          quantidade,
+        }));
+        if (itens.length === 0) {
+          return res.status(400).json({ error: 'Nenhum artigo válido encontrado na cópia ORIGINAL.' });
+        }
+
+        // Enriquecer com descrição cadastrada no sistema (quando existir).
+        const codigos = itens.map((x) => String(x.codigo || '').trim().toUpperCase()).filter(Boolean);
+        const placeholders = codigos.map((_, i) => `$${i + 1}`).join(',');
+        let descByCode = new Map();
+        if (codigos.length > 0) {
+          const lookup = await pool.query(
+            `SELECT codigo, descricao
+             FROM itens
+             WHERE UPPER(TRIM(codigo)) = ANY(ARRAY[${placeholders}])`,
+            codigos
+          );
+          descByCode = new Map(
+            (lookup.rows || []).map((r) => [String(r.codigo || '').trim().toUpperCase(), String(r.descricao || '').trim()])
+          );
+        }
+        const itensComDescricao = itens.map((it) => {
+          const k = String(it.codigo || '').trim().toUpperCase();
+          return {
+            ...it,
+            descricao: descByCode.get(k) || '',
+          };
+        });
+
+        return res.json({ itens: itensComDescricao, total_itens: itensComDescricao.length });
+      } catch (e) {
+        console.error('Erro ao interpretar guia de transporte PDF:', e);
+        return res.status(500).json({ error: 'Erro ao interpretar guia de transporte PDF', details: e.message });
+      } finally {
+        if (tempPath) {
+          try {
+            fs.unlinkSync(tempPath);
+          } catch (_) {}
+        }
+      }
+    }
+  );
+
+  // Criar “transferência a receber” a partir de uma lista de materiais.
+  // Guarda marcador em `requisicoes.observacoes` e inicializa status em `pendente`.
+  // Nesta implementação:
+  // - requisicoes.armazem_origem_id = armazém destino (onde o utilizador recebe)
+  // - requisicoes.armazem_id      = armazém origem (de onde vêm os bens)
+  router.post(
+    '/transferencias/recebimento',
+    ...requisicaoAuth,
+    denyOperador,
+    async (req, res) => {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+
+        const { origem_armazem_id, recebimento_armazem_id, origem_fornecedor, itens, observacoes } = req.body || {};
+
+        const origemId = parseInt(String(origem_armazem_id || ''), 10);
+        const recebimentoId = parseInt(String(recebimento_armazem_id || ''), 10);
+        const origemFornecedor = origem_fornecedor === true || String(origem_fornecedor || '') === '1';
+        if ((!origemFornecedor && !Number.isFinite(origemId)) || !Number.isFinite(recebimentoId)) {
+          await client.query('ROLLBACK');
+          return res.status(400).json({ error: 'Campos obrigatórios: origem_armazem_id e recebimento_armazem_id.' });
+        }
+        if (!origemFornecedor && origemId === recebimentoId) {
+          await client.query('ROLLBACK');
+          return res.status(400).json({ error: 'Origem e recebimento devem ser armazéns diferentes.' });
+        }
+
+        if (!Array.isArray(itens) || itens.length === 0) {
+          await client.query('ROLLBACK');
+          return res.status(400).json({ error: 'Campo obrigatório: itens (array com pelo menos 1 linha).' });
+        }
+
+        // Scope: como a requisição será criada com armazem_origem_id = recebimentoId,
+        // garantimos que o utilizador tem acesso a esse armazém (via requisicaoScopeMiddleware).
+        if (!isAdmin(req.user?.role)) {
+          const allowed = req.requisicaoArmazemOrigemIds || [];
+          if (!allowed.includes(recebimentoId)) {
+            await client.query('ROLLBACK');
+            return res.status(403).json({ error: 'Sem acesso ao armazém de recebimento.' });
+          }
+        }
+
+        // Validar armazéns
+        let origemIdFinal = origemId;
+        let origemArm = null;
+        if (origemFornecedor) {
+          const origemFornecedorQ = await client.query(
+            `SELECT id, tipo, ativo
+             FROM armazens
+             WHERE ativo = true
+               AND (
+                 UPPER(TRIM(codigo)) = 'FORNECEDOR'
+                 OR UPPER(TRIM(descricao)) = 'FORNECEDOR'
+               )
+             ORDER BY id ASC
+             LIMIT 1`
+          );
+          origemArm = origemFornecedorQ.rows[0] || null;
+          if (!origemArm) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ error: 'Armazém FORNECEDOR não encontrado. Cadastre um armazém com código ou descrição "FORNECEDOR".' });
+          }
+          origemIdFinal = Number(origemArm.id);
+        } else {
+          const origemArmQ = await client.query('SELECT id, tipo, codigo, descricao, ativo FROM armazens WHERE id = $1', [origemId]);
+          origemArm = origemArmQ.rows[0] || null;
+        }
+        const recvArmQ = await client.query('SELECT id, tipo, codigo, descricao, ativo FROM armazens WHERE id = $1', [recebimentoId]);
+        const recvArm = recvArmQ.rows[0];
+        if (!origemArm || !recvArm || origemArm.ativo !== true || recvArm.ativo !== true) {
+          await client.query('ROLLBACK');
+          return res.status(404).json({ error: 'Armazém origem/destino não encontrado ou inativo.' });
+        }
+
+        // Resolver itens por código -> item_id
+        const normalizeCode = (c) => String(c || '').trim();
+        const linhas = itens
+          .map((x) => ({
+            codigo: normalizeCode(x?.codigo),
+            quantidade: x?.quantidade,
+            descricao: x?.descricao || '',
+          }))
+          .filter((l) => l.codigo);
+
+        if (linhas.length === 0) {
+          await client.query('ROLLBACK');
+          return res.status(400).json({ error: 'Nenhum item válido (código em falta).' });
+        }
+
+        const resolvedCodes = [];
+        for (const l of linhas) {
+          const q = Number(l.quantidade);
+          if (!Number.isFinite(q) || q <= 0) continue;
+          resolvedCodes.push({ codigo: l.codigo, quantidade: q });
+        }
+        if (resolvedCodes.length === 0) {
+          await client.query('ROLLBACK');
+          return res.status(400).json({ error: 'Quantidades inválidas: cada linha tem de ter quantidade numérica > 0.' });
+        }
+
+        // SELECT por códigos normalizados (UPPER/TRIM)
+        const codes = Array.from(new Set(resolvedCodes.map((x) => x.codigo))).slice(0, 500);
+        const placeholders = codes.map((_, i) => `$${i + 1}`).join(',');
+        const codeParams = codes.map((c) => String(c).trim().toUpperCase());
+        const lookup = await client.query(
+          `SELECT id, codigo, descricao
+           FROM itens
+           WHERE UPPER(TRIM(codigo)) = ANY(ARRAY[${placeholders}])`,
+          codeParams
+        );
+
+        const byCode = new Map((lookup.rows || []).map((r) => [String(r.codigo || '').trim().toUpperCase(), r]));
+        for (const l of resolvedCodes) {
+          const k = String(l.codigo).trim().toUpperCase();
+          if (!byCode.get(k)) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ error: `Código de artigo não encontrado no stock: ${l.codigo}` });
+          }
+        }
+
+        // Inserir requisicao
+        const obs = `${RECEBIMENTO_TRANSFERENCIA_MARKER}${observacoes ? `: ${observacoes}` : ''}`;
+        const reqInsert = await client.query(
+          `INSERT INTO requisicoes (armazem_origem_id, armazem_id, observacoes, usuario_id, status)
+           VALUES ($1, $2, $3, $4, 'pendente')
+           RETURNING id, status, armazem_origem_id, armazem_id, observacoes, created_at`,
+          [recebimentoId, origemIdFinal, obs, req.user.id]
+        );
+        const requisicaoId = reqInsert.rows[0]?.id;
+
+        // Inserir/atualizar itens
+        for (const l of resolvedCodes) {
+          const k = String(l.codigo).trim().toUpperCase();
+          const itemRow = byCode.get(k);
+          await client.query(
+            `INSERT INTO requisicoes_itens (requisicao_id, item_id, quantidade)
+             VALUES ($1, $2, $3)
+             ON CONFLICT (requisicao_id, item_id)
+             DO UPDATE SET quantidade = EXCLUDED.quantidade`,
+            [requisicaoId, itemRow.id, l.quantidade]
+          );
+        }
+
+        await client.query('COMMIT');
+
+        const requisicao = await getRequisicaoComItens(requisicaoId);
+        if (!requisicao) return res.status(500).json({ error: 'Erro ao recuperar requisição criada.' });
+        // Garantir marker
+        requisicao.itens = Array.isArray(requisicao.itens) ? requisicao.itens : [];
+        return res.status(201).json(requisicao);
+      } catch (e) {
+        await client.query('ROLLBACK').catch(() => {});
+        console.error('Erro ao criar recebimento transferência:', e);
+        return res.status(500).json({ error: 'Erro ao criar recebimento transferência', details: e.message });
+      } finally {
+        client.release();
+      }
+    }
+  );
+
+  // Confirmar materiais (Pendente -> Em processo) marcando quantidades preparadas/confirmadas.
+  router.patch(
+    '/transferencias/recebimento/:id/confirmar',
+    ...requisicaoAuth,
+    async (req, res) => {
+      try {
+        const { id } = req.params;
+        const reqId = parseInt(String(id || ''), 10);
+        if (!Number.isFinite(reqId)) return res.status(400).json({ error: 'ID inválido.' });
+
+        const { itens } = req.body || {};
+        if (!Array.isArray(itens) || itens.length === 0) {
+          return res.status(400).json({ error: 'Campo obrigatório: itens (array).' });
+        }
+
+        const lock = await pool.query(
+          `SELECT r.*
+           FROM requisicoes r
+           WHERE r.id = $1
+           FOR UPDATE`,
+          [reqId]
+        );
+        if (!lock.rows.length) return res.status(404).json({ error: 'Requisição não encontrada.' });
+        const requisicao = lock.rows[0];
+
+        if (!hasRecebimentoMarker(requisicao)) {
+          return res.status(400).json({ error: 'Esta requisição não é um recebimento de transferência.' });
+        }
+
+        if (String(requisicao.status || '') !== 'pendente') {
+          return res.status(400).json({ error: 'Só é possível confirmar quando a requisição está pendente.' });
+        }
+
+        // Verificar acesso por armazem_origem_id (scope)
+        if (!isAdmin(req.user?.role)) {
+          const allowed = req.requisicaoArmazemOrigemIds || [];
+          if (!allowed.includes(requisicao.armazem_origem_id)) {
+            return res.status(403).json({ error: 'Sem acesso ao armazém de recebimento desta requisição.' });
+          }
+        }
+
+        const ids = itens
+          .map((x) => ({
+            requisicao_item_id: parseInt(String(x?.requisicao_item_id || ''), 10),
+            quantidade: Number(x?.quantidade_confirmada),
+          }))
+          .filter((x) => Number.isFinite(x.requisicao_item_id));
+
+        if (!ids.length) return res.status(400).json({ error: 'Nenhuma linha válida de itens.' });
+
+        // Garantir que confirmamos todos os itens da requisição
+        const allItemsQ = await pool.query(
+          `SELECT id FROM requisicoes_itens WHERE requisicao_id = $1`,
+          [reqId]
+        );
+        const allItemIds = new Set((allItemsQ.rows || []).map((r) => r.id));
+        const confirmedItemIds = new Set(ids.map((x) => x.requisicao_item_id));
+        for (const iId of allItemIds) {
+          if (!confirmedItemIds.has(iId)) {
+            return res.status(400).json({
+              error: 'Confirme todos os itens desta requisição.',
+              missing_item_id: iId,
+            });
+          }
+        }
+
+        // Atualizar linhas e validar quantidades
+        for (const l of ids) {
+          const q = Number(l.quantidade);
+          if (!Number.isFinite(q) || q <= 0) {
+            return res.status(400).json({ error: `Quantidade inválida para item ${l.requisicao_item_id}.` });
+          }
+          await pool.query(
+            `UPDATE requisicoes_itens
+             SET quantidade_preparada = $1,
+                 preparacao_confirmada = true,
+                 quantidade_apeados = COALESCE(quantidade_apeados, 0)
+             WHERE id = $2 AND requisicao_id = $3`,
+            [q, l.requisicao_item_id, reqId]
+          );
+        }
+
+        // Pendente -> Em processo (usamos EM EXPEDICAO como equivalente UI “Em processo”)
+        await pool.query(
+          `UPDATE requisicoes
+           SET status = 'EM EXPEDICAO',
+               updated_at = CURRENT_TIMESTAMP
+           WHERE id = $1`,
+          [reqId]
+        );
+
+        const updated = await getRequisicaoComItens(reqId);
+        return res.json(updated);
+      } catch (e) {
+        console.error('Erro ao confirmar recebimento transferência:', e);
+        return res.status(500).json({ error: 'Erro ao confirmar recebimento transferência', details: e.message });
+      }
+    }
+  );
+
+  // Exportar report de material recebido
+  router.get(
+    '/transferencias/recebimento/:id/export-reporte',
+    ...requisicaoAuth,
+    async (req, res) => {
+      try {
+        const { id } = req.params;
+        const reqId = parseInt(String(id || ''), 10);
+        if (!Number.isFinite(reqId)) return res.status(400).json({ error: 'ID inválido.' });
+
+        const requisicao = await getRequisicaoComItens(reqId);
+        if (!requisicao) return res.status(404).json({ error: 'Requisição não encontrada.' });
+        if (!hasRecebimentoMarker(requisicao)) {
+          return res.status(400).json({ error: 'Requisição não é um recebimento de transferência.' });
+        }
+        if (String(requisicao.status || '') !== 'EM EXPEDICAO') {
+          return res.status(400).json({ error: 'Reporte só está disponível quando o recebimento está em processo.' });
+        }
+
+        const destino = requisicao?.armazem_origem_descricao || '';
+        const origem = requisicao?.armazem_destino_descricao || '';
+        const locRecebimentoDestino =
+          (await localizacaoArmazemPorTipoConn(pool, requisicao.armazem_origem_id, 'recebimento')) ||
+          LOCALIZACAO_RECEBIMENTO_FALLBACK;
+
+        const rows = (requisicao.itens || []).map((it) => ({
+          Artigo: String(it.item_codigo || '').trim(),
+          'Descrição': String(it.item_descricao || '').trim(),
+          Quantidade: Number(it.quantidade_preparada ?? it.quantidade ?? 0) || 0,
+          ORIGEM: String(origem || '').trim(),
+          'S/N': String(it.serialnumber || '').trim(),
+          LOTE: String(it.lote || '').trim(),
+          DESTINO: String(locRecebimentoDestino || destino || '').trim(),
+          Observações: '',
+        }));
+
+        await pool.query(
+          `UPDATE requisicoes
+           SET tra_gerada_em = COALESCE(tra_gerada_em, CURRENT_TIMESTAMP),
+               updated_at = CURRENT_TIMESTAMP
+           WHERE id = $1`,
+          [reqId]
+        );
+
+        const filename = `MATERIAL_RECEBIDO_requisicao_${reqId}_${new Date().toISOString().slice(0, 10)}.xlsx`;
+        await buildExcelReporte(rows, res, filename, { includeObservacoes: false });
+      } catch (e) {
+        console.error('Erro ao exportar report material recebido:', e);
+        return res.status(500).json({ error: 'Erro ao exportar report', details: e.message });
+      }
+    }
+  );
+
+  router.patch(
+    '/transferencias/recebimento/:id/receber-stock',
+    ...requisicaoAuth,
+    denyOperador,
+    async (req, res) => {
+      const client = await pool.connect();
+      try {
+        if (!usuarioTemPermissaoControloStock(req)) {
+          return res.status(403).json({ error: 'Sem permissão de controlo de stock.' });
+        }
+        const reqId = parseInt(String(req.params.id || ''), 10);
+        if (!Number.isFinite(reqId)) return res.status(400).json({ error: 'ID inválido.' });
+
+        await client.query('BEGIN');
+        const lock = await client.query(
+          `SELECT id, status, observacoes, armazem_origem_id, tra_gerada_em, tra_baixa_expedicao_aplicada_em
+           FROM requisicoes
+           WHERE id = $1
+           FOR UPDATE`,
+          [reqId]
+        );
+        if (!lock.rows.length) {
+          await client.query('ROLLBACK');
+          return res.status(404).json({ error: 'Requisição não encontrada.' });
+        }
+        const row = lock.rows[0];
+        if (!hasRecebimentoMarker(row)) {
+          await client.query('ROLLBACK');
+          return res.status(400).json({ error: 'Requisição não é do fluxo de recebimento de mercadoria.' });
+        }
+        if (!isAdmin(req.user?.role)) {
+          const allowed = req.requisicaoArmazemOrigemIds || [];
+          if (!allowed.includes(row.armazem_origem_id)) {
+            await client.query('ROLLBACK');
+            return res.status(403).json({ error: 'Sem acesso a este recebimento.' });
+          }
+        }
+        if (String(row.status || '') !== 'EM EXPEDICAO') {
+          await client.query('ROLLBACK');
+          return res.status(400).json({ error: 'Só é possível receber stock quando estiver Em processo.' });
+        }
+        if (!row.tra_gerada_em) {
+          await client.query('ROLLBACK');
+          return res.status(400).json({ error: 'Gere o report antes de receber stock.' });
+        }
+        if (row.tra_baixa_expedicao_aplicada_em) {
+          await client.query('ROLLBACK');
+          return res.status(400).json({ error: 'Stock já recebido para esta requisição.' });
+        }
+
+        const itensQ = await client.query(
+          `SELECT ri.id, ri.item_id, ri.quantidade, ri.quantidade_preparada, i.codigo AS item_codigo, i.tipocontrolo
+           FROM requisicoes_itens ri
+           INNER JOIN itens i ON i.id = ri.item_id
+           WHERE ri.requisicao_id = $1`,
+          [reqId]
+        );
+        const requisicaoItemIds = (itensQ.rows || []).map((x) => Number(x.id)).filter(Number.isFinite);
+        const bobinasQ = requisicaoItemIds.length > 0
+          ? await client.query(
+              `SELECT b.requisicao_item_id, ri.item_id, b.lote, b.serialnumber, b.metros
+               FROM requisicoes_itens_bobinas b
+               INNER JOIN requisicoes_itens ri ON ri.id = b.requisicao_item_id
+               WHERE b.requisicao_item_id = ANY($1::int[])`,
+              [requisicaoItemIds]
+            )
+          : { rows: [] };
+
+        const locRec =
+          (await localizacaoArmazemPorTipoConn(client, row.armazem_origem_id, 'recebimento')) ||
+          LOCALIZACAO_RECEBIMENTO_FALLBACK;
+        await aplicarStockDevolucaoEntradaRecebimento(client, {
+          centralId: row.armazem_origem_id,
+          locRec,
+          itensComFerramenta: itensQ.rows || [],
+          bobinas: bobinasQ.rows || [],
+        });
+
+        await client.query(
+          `UPDATE requisicoes
+           SET tra_baixa_expedicao_aplicada_em = CURRENT_TIMESTAMP,
+               updated_at = CURRENT_TIMESTAMP
+           WHERE id = $1`,
+          [reqId]
+        );
+        await client.query('COMMIT');
+        const updated = await getRequisicaoComItens(reqId);
+        return res.json(updated);
+      } catch (e) {
+        await client.query('ROLLBACK').catch(() => {});
+        console.error('Erro ao receber stock de recebimento:', e);
+        return res.status(500).json({ error: 'Erro ao receber stock', details: e.message });
+      } finally {
+        client.release();
+      }
+    }
+  );
+
+  router.patch(
+    '/transferencias/recebimento/:id/finalizar',
+    ...requisicaoAuth,
+    denyOperador,
+    async (req, res) => {
+      try {
+        const reqId = parseInt(String(req.params.id || ''), 10);
+        if (!Number.isFinite(reqId)) return res.status(400).json({ error: 'ID inválido.' });
+
+        const lock = await pool.query(
+          `SELECT r.id, r.status, r.observacoes, r.armazem_origem_id
+           FROM requisicoes r
+           WHERE r.id = $1`,
+          [reqId]
+        );
+        if (!lock.rows.length) return res.status(404).json({ error: 'Requisição não encontrada.' });
+        const row = lock.rows[0];
+        if (!hasRecebimentoMarker(row)) {
+          return res.status(400).json({ error: 'Requisição não é do fluxo de recebimento de mercadoria.' });
+        }
+        if (!isAdmin(req.user?.role)) {
+          const allowed = req.requisicaoArmazemOrigemIds || [];
+          if (!allowed.includes(row.armazem_origem_id)) {
+            return res.status(403).json({ error: 'Sem acesso a este recebimento.' });
+          }
+        }
+        if (String(row.status || '') !== 'EM EXPEDICAO') {
+          return res.status(400).json({ error: 'Só é possível finalizar quando estiver Em processo.' });
+        }
+
+        await pool.query(
+          `UPDATE requisicoes
+           SET status = 'FINALIZADO',
+               updated_at = CURRENT_TIMESTAMP
+           WHERE id = $1`,
+          [reqId]
+        );
+        const updated = await getRequisicaoComItens(reqId);
+        return res.json(updated);
+      } catch (e) {
+        console.error('Erro ao finalizar recebimento de mercadoria:', e);
+        return res.status(500).json({ error: 'Erro ao finalizar recebimento', details: e.message });
+      }
+    }
+  );
+
 // Deletar requisição
 router.delete('/:id', ...requisicaoAuth, denyOperador, async (req, res) => {
   try {
     const { id } = req.params;
     const userRole = req.user?.role || '';
 
-    // Verificar se a requisição existe
-    const checkReq = await pool.query('SELECT * FROM requisicoes WHERE id = $1', [id]);
+    // Verificar se a requisição existe (tipos para escopo de devolução)
+    const checkReq = await pool.query(
+      `SELECT r.*, ao.tipo AS armazem_origem_tipo, a.tipo AS armazem_destino_tipo
+       FROM requisicoes r
+       LEFT JOIN armazens ao ON r.armazem_origem_id = ao.id
+       INNER JOIN armazens a ON r.armazem_id = a.id
+       WHERE r.id = $1`,
+      [id]
+    );
     if (checkReq.rows.length === 0) {
       return res.status(404).json({ error: 'Requisição não encontrada' });
     }
     const requisicao = checkReq.rows[0];
-    if (!requisicaoArmazemOrigemAcessoPermitido(req, requisicao.armazem_origem_id)) {
+    if (!requisicaoArmazemOrigemAcessoPermitido(req, requisicao.armazem_origem_id, { requisicao })) {
       return res.status(403).json({ error: 'Sem acesso a esta requisição.' });
     }
     const status = String(requisicao.status || '');

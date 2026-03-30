@@ -2,6 +2,7 @@
  * Stock nacional por armazém vem de `armazens_item.armazem` (texto da importação).
  * A correspondência é feita pela **descrição** do armazém de origem (`armazens.descricao`),
  * comparada com o texto guardado em cada linha de stock nacional.
+ * (Espelho no servidor: `server/utils/stockNacionalMatch.js` — manter a mesma lógica.)
  *
  * @param {{ armazem: string, quantidade: number }[]} armazensRows
  * @param {{ descricao?: string }} armazem — armazém central escolhido (usa-se só `descricao`)

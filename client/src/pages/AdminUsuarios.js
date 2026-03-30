@@ -9,7 +9,7 @@ import { filtrarArmazensCentrais } from '../utils/armazensRequisicaoOrigem';
 
 function normalizeRow(u) {
   const ids = getRequisicoesArmazemOrigemIds(u);
-  return { ...u, requisicoes_armazem_origem_ids: ids };
+  return { ...u, requisicoes_armazem_origem_ids: ids, pode_controlo_stock: Boolean(u.pode_controlo_stock) };
 }
 
 function nomeExibicao(u) {
@@ -33,6 +33,7 @@ function buildDraftFromUser(u) {
     numero_colaborador: u.numero_colaborador != null ? String(u.numero_colaborador) : '',
     role: u.role,
     requisicoes_armazem_origem_ids: [...(u.requisicoes_armazem_origem_ids || [])],
+    pode_controlo_stock: Boolean(u.pode_controlo_stock),
     nova_senha: '',
     nova_senha2: ''
   };
@@ -208,6 +209,7 @@ const AdminUsuarios = () => {
       if (isAdmin) {
         body.role = draft.role;
         body.requisicoes_armazem_origem_ids = draft.requisicoes_armazem_origem_ids || [];
+        body.pode_controlo_stock = Boolean(draft.pode_controlo_stock);
       }
       if (!trimEq(draft.nome, selectedFromList.nome)) body.nome = draft.nome.trim();
       if (!trimEq(draft.sobrenome, selectedFromList.sobrenome)) {
@@ -310,6 +312,7 @@ const AdminUsuarios = () => {
       Boolean(draft.nova_senha?.trim()) ||
       (isAdmin &&
         (draft.role !== selectedFromList.role ||
+          Boolean(draft.pode_controlo_stock) !== Boolean(selectedFromList.pode_controlo_stock) ||
           JSON.stringify([...(draft.requisicoes_armazem_origem_ids || [])].sort()) !==
             JSON.stringify([...(selectedFromList.requisicoes_armazem_origem_ids || [])].sort()))));
 
@@ -415,6 +418,11 @@ const AdminUsuarios = () => {
                               {nArm > 0 && (
                                 <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-800">
                                   {nArm} armazém(ns) req.
+                                </span>
+                              )}
+                              {u.pode_controlo_stock && (
+                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-900">
+                                  Stock
                                 </span>
                               )}
                             </div>
@@ -585,6 +593,14 @@ const AdminUsuarios = () => {
                       {ROLE_OPTIONS.find((r) => r.value === draft.role)?.label || draft.role}
                     </span>
                     {' '}(apenas um administrador pode alterar)
+                    <span className="block mt-2 text-gray-500">
+                      Controlo de stock (consulta/gestão por localização):{' '}
+                      <span className="font-medium text-gray-800">
+                        {selectedFromList.pode_controlo_stock ? 'Ativo' : 'Inativo'}
+                      </span>
+                      {' '}
+                      — definido pelo administrador.
+                    </span>
                   </p>
                 )}
 
@@ -666,6 +682,32 @@ const AdminUsuarios = () => {
                         ))
                       )}
                     </div>
+                  </div>
+                )}
+
+                {isAdmin && (
+                  <div className="mb-6 rounded-lg border border-slate-200 bg-slate-50/90 p-4">
+                    <label className="flex items-start gap-3 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        className="mt-1 rounded border-gray-300 text-[#0915FF] focus:ring-[#0915FF]"
+                        checked={Boolean(draft.pode_controlo_stock)}
+                        onChange={(e) =>
+                          setDraft((d) => (d ? { ...d, pode_controlo_stock: e.target.checked } : d))
+                        }
+                        disabled={!isEditing || savingId === draft.id}
+                      />
+                      <span>
+                        <span className="block text-sm font-medium text-gray-800">
+                          Acesso a controlo de stock
+                        </span>
+                        <span className="block text-xs text-gray-600 mt-1">
+                          Permite consultar e gerir quantidades por localização nos armazéns centrais (menu Consulta /
+                          Localizações e stock, e botão de stock na lista de armazéns). Apenas administradores podem
+                          alterar esta opção.
+                        </span>
+                      </span>
+                    </label>
                   </div>
                 )}
 

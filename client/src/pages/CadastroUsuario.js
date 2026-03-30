@@ -13,7 +13,8 @@ const CadastroUsuario = () => {
     email: '',
     username: '',
     senha: '',
-    senha2: ''
+    senha2: '',
+    pode_controlo_stock: false
   });
   const [status, setStatus] = useState('');
   const [message, setMessage] = useState('');
@@ -75,7 +76,8 @@ const CadastroUsuario = () => {
         numero_colaborador: form.numero_colaborador.trim(),
         email: form.email.trim() || undefined,
         username: form.username.trim() || undefined,
-        senha: pwd
+        senha: pwd,
+        pode_controlo_stock: Boolean(form.pode_controlo_stock)
       };
 
       const token = localStorage.getItem('token');
@@ -170,6 +172,18 @@ const CadastroUsuario = () => {
                 />
               </div>
             </div>
+            <label className="flex items-start gap-2 text-sm text-gray-700 text-left">
+              <input
+                type="checkbox"
+                checked={Boolean(form.pode_controlo_stock)}
+                onChange={(e) => setForm((f) => ({ ...f, pode_controlo_stock: e.target.checked }))}
+                className="mt-1 rounded border-gray-300 text-[#0915FF] focus:ring-[#0915FF]"
+              />
+              <span>
+                Conceder acesso a <strong>controlo de stock</strong> (consulta e gestão por localização em armazéns
+                centrais). Pode alterar mais tarde em Utilizadores.
+              </span>
+            </label>
             <button type="submit" disabled={loading} className="bg-[#0915FF] text-white font-bold rounded-lg py-2 sm:py-3 text-base sm:text-lg border-none shadow-md mt-2 transition-all disabled:opacity-60 disabled:cursor-not-allowed">
               {loading ? 'A cadastrar...' : 'Criar utilizador'}
             </button>

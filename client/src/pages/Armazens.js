@@ -1,9 +1,14 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useConfirm } from '../contexts/ConfirmContext';
 import { ROLES } from '../utils/roles';
+import { podeUsarControloStock } from '../utils/controloStock';
 import Toast from '../components/Toast';
-import { FaPlus, FaEdit, FaTrash, FaWarehouse, FaSearch, FaFileUpload, FaChevronLeft, FaChevronRight } from 'react-icons/fa';
+import QrScannerModal from '../components/QrScannerModal';
+import PesquisaComLeitorQr from '../components/PesquisaComLeitorQr';
+import { FORMATOS_QR_BARCODE } from '../utils/qrBarcodeFormats';
+import { FaPlus, FaEdit, FaTrash, FaWarehouse, FaFileUpload, FaChevronLeft, FaChevronRight, FaTimes, FaLayerGroup } from 'react-icons/fa';
 import axios from 'axios';
 
 const normalizeSearch = (v) => String(v || '')
@@ -86,6 +91,26 @@ const Armazens = () => {
   /** Criar/editar/importar/eliminar: só administrador; restantes perfis com rota a /armazéns: só consulta */
   const isAdminArmazens = user?.role === ROLES.ADMIN;
   const showFormularioArmazem = isAdminArmazens && mostrarForm;
+  /** Estoque por localização (modal): apenas administrador (com módulo de controlo de stock). */
+  const podeGerirEstoqueLocal = isAdminArmazens && podeUsarControloStock(user);
+
+  const [estoqueOpen, setEstoqueOpen] = useState(false);
+  const [estoqueArmazem, setEstoqueArmazem] = useState(null);
+  const [estoqueLocId, setEstoqueLocId] = useState('');
+  const [estoqueLinhas, setEstoqueLinhas] = useState([]);
+  const [estoqueLoading, setEstoqueLoading] = useState(false);
+  const [estoqueSaving, setEstoqueSaving] = useState(false);
+  const [estoqueBuscaItem, setEstoqueBuscaItem] = useState('');
+  const [estoqueItensRes, setEstoqueItensRes] = useState([]);
+  const [estoqueBuscaLoading, setEstoqueBuscaLoading] = useState(false);
+  const [estoqueQtdAdd, setEstoqueQtdAdd] = useState('1');
+  const [estoqueReloadKey, setEstoqueReloadKey] = useState(0);
+  const [estoqueNacionalModo, setEstoqueNacionalModo] = useState('definir');
+  const [estoqueNacionalLoading, setEstoqueNacionalLoading] = useState(false);
+
+  const [armQrOpen, setArmQrOpen] = useState(false);
+  const [armQrPurpose, setArmQrPurpose] = useState(null);
+  const armQrPurposeRef = useRef(null);
 
   const parseCentralBulkText = (text) => {
     const lines = String(text || '')
@@ -348,6 +373,296 @@ const Armazens = () => {
   useEffect(() => {
     fetchArmazens();
   }, []);
+
+  const locacoesComId = (armazem) =>
+    (armazem?.localizacoes || []).filter((l) => l && l.id != null);
+
+  const openEstoqueModal = (armazem) => {
+    if (!podeGerirEstoqueLocal) {
+      setToast({
+        type: 'error',
+        message: 'Apenas administradores com permissão de controlo de stock podem gerir estoque por localização.',
+      });
+      return;
+    }
+    if (String(armazem?.tipo || '').trim().toLowerCase() !== 'central') {
+      setToast({ type: 'error', message: 'Estoque por localização está disponível apenas em armazéns centrais.' });
+      return;
+    }
+    const locs = locacoesComId(armazem);
+    if (locs.length === 0) {
+      setToast({
+        type: 'error',
+        message:
+          'Não há localizações com identificador neste armazém. Edite o armazém e guarde para gerar localizações na base de dados.'
+      });
+      return;
+    }
+    setEstoqueArmazem(armazem);
+    setEstoqueLocId(String(locs[0].id));
+    setEstoqueBuscaItem('');
+    setEstoqueItensRes([]);
+    setEstoqueQtdAdd('1');
+    setEstoqueOpen(true);
+  };
+
+  const closeEstoqueModal = () => {
+    setEstoqueOpen(false);
+    setEstoqueArmazem(null);
+    setEstoqueLocId('');
+    setEstoqueLinhas([]);
+    setEstoqueBuscaItem('');
+    setEstoqueItensRes([]);
+  };
+
+  useEffect(() => {
+    if (!estoqueOpen || !estoqueArmazem?.id || !estoqueLocId) return;
+    let cancelled = false;
+    (async () => {
+      setEstoqueLoading(true);
+      try {
+        const token = localStorage.getItem('token');
+        const { data } = await axios.get(
+          `/api/armazens/${estoqueArmazem.id}/localizacoes/${estoqueLocId}/estoque`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        if (!cancelled) setEstoqueLinhas(Array.isArray(data) ? data.map((r) => ({ ...r })) : []);
+      } catch (e) {
+        const d = e.response?.data;
+        const hint = d?.hint ? ` ${d.hint}` : '';
+        if (!cancelled) {
+          setToast({ type: 'error', message: (d?.error || 'Erro ao carregar estoque.') + hint });
+          setEstoqueLinhas([]);
+        }
+      } finally {
+        if (!cancelled) setEstoqueLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [estoqueOpen, estoqueArmazem?.id, estoqueLocId, estoqueReloadKey]);
+
+  const locEstoqueSelecionada = useMemo(() => {
+    if (!estoqueArmazem || !estoqueLocId) return null;
+    const locs = (estoqueArmazem.localizacoes || []).filter((l) => l && l.id != null);
+    return locs.find((l) => String(l.id) === String(estoqueLocId)) || null;
+  }, [estoqueArmazem, estoqueLocId]);
+
+  const estoqueLocEhRecebimento =
+    String(locEstoqueSelecionada?.tipo_localizacao || '').toLowerCase() === 'recebimento';
+
+  const estoqueCentralTemRecebimento = useMemo(() => {
+    if (!estoqueArmazem?.localizacoes) return false;
+    return (estoqueArmazem.localizacoes || []).some(
+      (l) => l && l.id != null && String(l.tipo_localizacao || '').toLowerCase() === 'recebimento'
+    );
+  }, [estoqueArmazem]);
+
+  const idLocalRecebimentoCentral = useMemo(() => {
+    if (!estoqueArmazem?.localizacoes) return null;
+    const loc = (estoqueArmazem.localizacoes || []).find(
+      (l) => l && l.id != null && String(l.tipo_localizacao || '').toLowerCase() === 'recebimento'
+    );
+    return loc ? String(loc.id) : null;
+  }, [estoqueArmazem]);
+
+  const postAplicarStockNacionalRecebimento = async (modo) => {
+    const token = localStorage.getItem('token');
+    const { data } = await axios.post(
+      `/api/armazens/${estoqueArmazem.id}/aplicar-stock-nacional-recebimento`,
+      { modo },
+      { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } }
+    );
+    return data;
+  };
+
+  /** Um clique: todos os artigos com match de stock nacional → quantidades no recebimento (substitui por artigo). */
+  const lancarTodoStockNacionalNoRecebimento = async () => {
+    if (!podeGerirEstoqueLocal || !estoqueArmazem?.id || !estoqueCentralTemRecebimento) return;
+    const desc = String(estoqueArmazem.descricao || '').trim() || '(sem descrição)';
+    const accepted = await confirm({
+      title: 'Lançar todo o stock nacional no recebimento',
+      message:
+        `Serão atualizados automaticamente todos os artigos que tenham stock nacional cuja coluna de armazém corresponde à descrição deste central («${desc}»). ` +
+        'Em cada um, a quantidade na localização de recebimento passa a ser igual à do stock nacional (substitui o valor anterior). ' +
+        'Artigos sem correspondência no Excel não são alterados. Continuar?',
+      confirmLabel: 'Lançar tudo',
+      cancelLabel: 'Cancelar',
+      variant: 'warning'
+    });
+    if (!accepted) return;
+    setEstoqueNacionalLoading(true);
+    try {
+      const data = await postAplicarStockNacionalRecebimento('definir');
+      const n = data?.itens_atualizados ?? 0;
+      setToast({
+        type: n > 0 ? 'success' : 'warning',
+        message:
+          n > 0
+            ? `${n} artigo(s) lançados no recebimento com as quantidades do stock nacional.`
+            : data?.message || 'Nenhuma correspondência encontrada.'
+      });
+      if (idLocalRecebimentoCentral) setEstoqueLocId(idLocalRecebimentoCentral);
+      setEstoqueReloadKey((k) => k + 1);
+    } catch (e) {
+      const d = e.response?.data;
+      setToast({ type: 'error', message: d?.error || d?.message || 'Erro ao lançar stock nacional.' });
+    } finally {
+      setEstoqueNacionalLoading(false);
+    }
+  };
+
+  const aplicarStockNacionalRecebimento = async () => {
+    if (!podeGerirEstoqueLocal || !estoqueArmazem?.id) return;
+    const modoLabel =
+      estoqueNacionalModo === 'somar'
+        ? 'somar o stock nacional à quantidade já registada no recebimento'
+        : 'definir no recebimento a quantidade igual à do stock nacional (substitui o valor anterior por artigo)';
+    const accepted = await confirm({
+      title: 'Stock nacional → recebimento',
+      message: `Os textos das colunas de armazém na importação de stock nacional serão comparados com a descrição deste armazém («${String(
+        estoqueArmazem.descricao || ''
+      ).trim() || '(vazio)'}»). Será atualizada apenas a localização de recebimento deste central. Modo: ${modoLabel}. Continuar?`,
+      confirmLabel: 'Aplicar',
+      cancelLabel: 'Cancelar',
+      variant: 'warning'
+    });
+    if (!accepted) return;
+    setEstoqueNacionalLoading(true);
+    try {
+      const data = await postAplicarStockNacionalRecebimento(estoqueNacionalModo);
+      const n = data?.itens_atualizados ?? 0;
+      setToast({
+        type: n > 0 ? 'success' : 'warning',
+        message:
+          n > 0
+            ? `${n} artigo(s) atualizados no recebimento conforme stock nacional.`
+            : data?.message || 'Nenhuma correspondência encontrada.'
+      });
+      setEstoqueReloadKey((k) => k + 1);
+    } catch (e) {
+      const d = e.response?.data;
+      setToast({ type: 'error', message: d?.error || d?.message || 'Erro ao aplicar stock nacional.' });
+    } finally {
+      setEstoqueNacionalLoading(false);
+    }
+  };
+
+  const saveEstoqueLinhas = async () => {
+    if (!podeGerirEstoqueLocal || !estoqueArmazem?.id || !estoqueLocId) return;
+    setEstoqueSaving(true);
+    try {
+      const token = localStorage.getItem('token');
+      await axios.put(
+        `/api/armazens/${estoqueArmazem.id}/localizacoes/${estoqueLocId}/estoque`,
+        {
+          linhas: estoqueLinhas.map((l) => ({
+            item_id: l.item_id,
+            quantidade: Number(l.quantidade) || 0
+          }))
+        },
+        { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } }
+      );
+      setToast({ type: 'success', message: 'Estoque da localização guardado.' });
+    } catch (e) {
+      const d = e.response?.data;
+      setToast({ type: 'error', message: d?.error || 'Erro ao guardar estoque.' });
+    } finally {
+      setEstoqueSaving(false);
+    }
+  };
+
+  const updateEstoqueQuantidade = (itemId, valor) => {
+    const q = Number(valor);
+    setEstoqueLinhas((prev) =>
+      prev.map((l) => (l.item_id === itemId ? { ...l, quantidade: Number.isFinite(q) && q >= 0 ? q : 0 } : l))
+    );
+  };
+
+  const removeEstoqueLinha = (itemId) => {
+    setEstoqueLinhas((prev) => prev.filter((l) => l.item_id !== itemId));
+  };
+
+  const buscarItensParaEstoque = useCallback(async (overrideQ) => {
+    const raw = overrideQ !== undefined && overrideQ !== null ? String(overrideQ) : estoqueBuscaItem;
+    const q = raw.trim();
+    if (!q) {
+      setToast({ type: 'error', message: 'Escreva código ou descrição para pesquisar.' });
+      return;
+    }
+    setEstoqueBuscaLoading(true);
+    try {
+      const token = localStorage.getItem('token');
+      const { data } = await axios.get('/api/itens', {
+        params: { search: q, limit: 40, page: 1, incluirInativos: true },
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setEstoqueItensRes(data.itens || []);
+      if (!(data.itens || []).length) {
+        setToast({ type: 'error', message: 'Nenhum artigo encontrado.' });
+      }
+    } catch (e) {
+      setToast({ type: 'error', message: 'Erro ao pesquisar artigos.' });
+      setEstoqueItensRes([]);
+    } finally {
+      setEstoqueBuscaLoading(false);
+    }
+  }, [estoqueBuscaItem]);
+
+  const openArmQr = (purpose) => {
+    armQrPurposeRef.current = purpose;
+    setArmQrPurpose(purpose);
+    setArmQrOpen(true);
+  };
+
+  const processarArmQrScan = useCallback(
+    async (texto) => {
+      const purpose = armQrPurposeRef.current;
+      armQrPurposeRef.current = null;
+      setArmQrPurpose(null);
+      const v = String(texto || '').trim();
+      if (!v || !purpose) return;
+      if (purpose === 'centralLoc') {
+        setCentralLocSearch(v);
+        return;
+      }
+      if (purpose === 'listaArmazens') {
+        setSearchTerm(v);
+        return;
+      }
+      if (purpose === 'estoqueItem') {
+        setEstoqueBuscaItem(v);
+        await buscarItensParaEstoque(v);
+      }
+    },
+    [buscarItensParaEstoque]
+  );
+
+  const adicionarItemAoEstoqueLocal = (item) => {
+    if (!item?.id) return;
+    const addQ = Number(estoqueQtdAdd);
+    const q = Number.isFinite(addQ) && addQ > 0 ? addQ : 1;
+    setEstoqueLinhas((prev) => {
+      const idx = prev.findIndex((l) => l.item_id === item.id);
+      if (idx >= 0) {
+        const next = [...prev];
+        const atual = Number(next[idx].quantidade) || 0;
+        next[idx] = { ...next[idx], quantidade: atual + q };
+        return next;
+      }
+      return [
+        ...prev,
+        {
+          item_id: item.id,
+          codigo: item.codigo,
+          descricao: item.descricao || item.nome || '',
+          quantidade: q
+        }
+      ];
+    });
+    setToast({ type: 'success', message: `Artigo ${item.codigo} adicionado.` });
+  };
 
   const fetchArmazens = async () => {
     try {
@@ -965,15 +1280,14 @@ const Armazens = () => {
                           <div className="px-3 py-2 border-b border-gray-100 space-y-2">
                             <div className="text-xs font-medium text-gray-700">Lista de localizações</div>
                             <div className="flex flex-col sm:flex-row gap-2">
-                              <div className="relative flex-1 min-w-0">
-                                <FaSearch className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 text-xs pointer-events-none" />
-                                <input
-                                  type="text"
+                              <div className="flex-1 min-w-0">
+                                <PesquisaComLeitorQr
                                   value={centralLocSearch}
                                   onChange={(e) => setCentralLocSearch(e.target.value)}
                                   placeholder="Pesquisar localização..."
-                                  className="w-full pl-8 pr-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0915FF] focus:border-transparent"
-                                  autoComplete="off"
+                                  onLerClick={() => openArmQr('centralLoc')}
+                                  lerTitle="Ler texto para filtrar localização (QR ou código de barras)"
+                                  lerAriaLabel="Ler QR ou código de barras para filtrar localização"
                                 />
                               </div>
                               <select
@@ -1163,14 +1477,14 @@ const Armazens = () => {
         <div className="bg-white rounded-lg shadow-sm overflow-hidden">
           <div className="p-4 border-b border-gray-100 bg-gray-50">
             <div className="flex flex-col lg:flex-row gap-3 lg:items-center lg:justify-between">
-              <div className="relative w-full lg:max-w-xl">
-                <FaSearch className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-                <input
-                  type="text"
+              <div className="w-full lg:max-w-xl min-w-0">
+                <PesquisaComLeitorQr
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
                   placeholder="Buscar por código, descrição, tipo ou localização..."
-                  className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0915FF] focus:border-transparent"
+                  onLerClick={() => openArmQr('listaArmazens')}
+                  lerTitle="Ler texto para filtrar armazéns (QR ou código de barras)"
+                  lerAriaLabel="Ler QR ou código de barras para filtrar lista de armazéns"
                 />
               </div>
             </div>
@@ -1266,8 +1580,19 @@ const Armazens = () => {
                             ) : null}
                           </p>
                         </div>
+                        <div className="flex shrink-0 gap-0.5" onClick={(e) => e.stopPropagation()}>
+                          {podeGerirEstoqueLocal && armazem.tipo === 'central' && locacoesComId(armazem).length > 0 && (
+                            <button
+                              type="button"
+                              onClick={() => openEstoqueModal(armazem)}
+                              className="p-1.5 text-emerald-700 hover:bg-emerald-50 rounded-md transition-colors"
+                              title="Estoque por localização (armazém central) — administrador"
+                            >
+                              <FaLayerGroup className="text-sm" />
+                            </button>
+                          )}
                         {isAdminArmazens && (
-                          <div className="flex shrink-0 gap-0.5" onClick={(e) => e.stopPropagation()}>
+                          <>
                             <button
                               type="button"
                               onClick={() => handleEdit(armazem)}
@@ -1284,8 +1609,9 @@ const Armazens = () => {
                             >
                               <FaTrash className="text-sm" />
                             </button>
-                          </div>
+                          </>
                         )}
+                        </div>
                       </div>
                     </li>
                   );
@@ -1319,6 +1645,287 @@ const Armazens = () => {
             </div>
           )}
         </div>
+
+        {estoqueOpen && estoqueArmazem && (
+          <div
+            className="fixed inset-0 z-[10000] flex items-center justify-center p-4 bg-black/50"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="estoque-local-titulo"
+            onClick={(e) => {
+              if (e.target === e.currentTarget) closeEstoqueModal();
+            }}
+          >
+            <div className="bg-white rounded-xl shadow-xl w-full max-w-3xl max-h-[90vh] flex flex-col border border-gray-200">
+              <div className="flex items-start justify-between gap-3 p-4 border-b border-gray-100">
+                <div className="min-w-0">
+                  <h2 id="estoque-local-titulo" className="text-lg font-semibold text-gray-900">
+                    Estoque por localização (central)
+                  </h2>
+                  <p className="text-sm text-gray-600 mt-0.5 truncate" title={`${estoqueArmazem.codigo} — ${estoqueArmazem.descricao}`}>
+                    {estoqueArmazem.codigo} — {estoqueArmazem.descricao}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={closeEstoqueModal}
+                  className="p-2 rounded-lg text-gray-500 hover:bg-gray-100"
+                  aria-label="Fechar"
+                >
+                  <FaTimes />
+                </button>
+              </div>
+              <div className="p-4 overflow-y-auto flex-1 space-y-4">
+                {podeGerirEstoqueLocal && estoqueCentralTemRecebimento && (
+                  <div className="rounded-xl border-2 border-emerald-300 bg-gradient-to-br from-emerald-50 via-white to-teal-50/40 p-4 shadow-sm">
+                    <p className="text-sm font-semibold text-emerald-900">Lançamento automático no recebimento</p>
+                    <p className="text-xs text-gray-700 mt-1.5 leading-relaxed">
+                      Coloca de uma vez <strong>todos os artigos</strong> que tenham stock nacional associado a este armazém
+                      (texto da importação ligado à <strong>descrição</strong> do central) com as respetivas{' '}
+                      <strong>quantidades importadas</strong> na localização de <strong>recebimento</strong>. Os valores
+                      anteriores no recebimento são <strong>substituídos</strong> por artigo; artigos sem linha nacional
+                      correspondente não são alterados.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={lancarTodoStockNacionalNoRecebimento}
+                      disabled={estoqueNacionalLoading}
+                      className="mt-3 w-full sm:w-auto px-4 py-2.5 rounded-lg bg-emerald-700 text-white text-sm font-semibold hover:bg-emerald-800 disabled:opacity-50 shadow-sm"
+                    >
+                      {estoqueNacionalLoading ? 'A lançar…' : 'Lançar todo o stock nacional no recebimento'}
+                    </button>
+                    <p className="text-[10px] text-gray-500 mt-2">
+                      Depois do lançamento, a vista muda para o recebimento para conferir. Importação:{' '}
+                      <Link to="/importar-stock-nacional" className="text-[#0915FF] hover:underline">
+                        Stock nacional
+                      </Link>
+                      .
+                    </p>
+                  </div>
+                )}
+
+                <div>
+                  <label className="block text-xs font-medium text-gray-700 mb-1">Localização</label>
+                  <select
+                    value={estoqueLocId}
+                    onChange={(e) => setEstoqueLocId(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#0915FF]"
+                  >
+                    {locacoesComId(estoqueArmazem).map((l) => (
+                      <option key={l.id} value={String(l.id)}>
+                        {l.localizacao}
+                        {l.tipo_localizacao && l.tipo_localizacao !== 'normal'
+                          ? ` (${l.tipo_localizacao})`
+                          : ''}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="mt-1 text-[11px] text-gray-500">
+                    Apenas armazéns <strong>centrais</strong>. Quantidades por artigo nesta localização. O stock nacional (
+                    <Link to="/importar-stock-nacional" className="text-[#0915FF] hover:underline">
+                      importação Excel
+                    </Link>
+                    ) usa o texto das colunas de armazém; a ligação ao central faz-se pela <strong>descrição</strong> do
+                    armazém (igual às outras áreas da aplicação).
+                  </p>
+                  {podeGerirEstoqueLocal && estoqueLocEhRecebimento && (
+                    <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50/80 p-3 space-y-2">
+                      <p className="text-xs font-semibold text-amber-900">Recebimento · stock nacional</p>
+                      <p className="text-[11px] text-amber-900/90">
+                        Atualiza <strong>só esta localização de recebimento</strong> com as quantidades do stock nacional
+                        dos artigos cuja coluna de armazém corresponde à descrição:{' '}
+                        <span className="font-mono">{(estoqueArmazem.descricao || '').trim() || '—'}</span>.
+                      </p>
+                      <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+                        <label className="text-[11px] text-gray-700 shrink-0">Modo:</label>
+                        <select
+                          value={estoqueNacionalModo}
+                          onChange={(e) => setEstoqueNacionalModo(e.target.value)}
+                          disabled={estoqueNacionalLoading}
+                          className="flex-1 text-xs px-2 py-1.5 border border-amber-300 rounded-lg bg-white"
+                        >
+                          <option value="definir">Definir quantidade = stock nacional (substitui por artigo)</option>
+                          <option value="somar">Somar stock nacional ao que já está no recebimento</option>
+                        </select>
+                        <button
+                          type="button"
+                          onClick={aplicarStockNacionalRecebimento}
+                          disabled={estoqueNacionalLoading || estoqueLoading}
+                          className="text-xs px-3 py-2 rounded-lg bg-amber-700 text-white font-medium hover:bg-amber-800 disabled:opacity-50 whitespace-nowrap"
+                        >
+                          {estoqueNacionalLoading ? 'A aplicar…' : 'Aplicar stock nacional'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {estoqueLoading ? (
+                  <p className="text-sm text-gray-600">A carregar…</p>
+                ) : (
+                  <>
+                    <div className="rounded-lg border border-gray-200 overflow-hidden">
+                      <table className="min-w-full text-sm">
+                        <thead className="bg-gray-50 text-left text-xs text-gray-600">
+                          <tr>
+                            <th className="px-3 py-2 font-medium">Código</th>
+                            <th className="px-3 py-2 font-medium">Descrição</th>
+                            <th className="px-3 py-2 font-medium w-28">Qtd</th>
+                            {podeGerirEstoqueLocal && <th className="px-3 py-2 w-10" />}
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-100">
+                          {estoqueLinhas.length === 0 ? (
+                            <tr>
+                              <td colSpan={podeGerirEstoqueLocal ? 4 : 3} className="px-3 py-6 text-center text-gray-500">
+                                Sem linhas. Adicione artigos abaixo.
+                              </td>
+                            </tr>
+                          ) : (
+                            estoqueLinhas.map((l) => (
+                              <tr key={l.item_id}>
+                                <td className="px-3 py-2 font-mono text-gray-900">{l.codigo}</td>
+                                <td className="px-3 py-2 text-gray-700">{l.descricao}</td>
+                                <td className="px-3 py-2">
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    step="any"
+                                    value={l.quantidade}
+                                    onChange={(e) => updateEstoqueQuantidade(l.item_id, e.target.value)}
+                                    disabled={!podeGerirEstoqueLocal}
+                                    className="w-full px-2 py-1 border border-gray-300 rounded text-sm disabled:bg-gray-50"
+                                  />
+                                </td>
+                                {podeGerirEstoqueLocal && (
+                                  <td className="px-3 py-2">
+                                    <button
+                                      type="button"
+                                      onClick={() => removeEstoqueLinha(l.item_id)}
+                                      className="p-1 text-red-600 hover:bg-red-50 rounded"
+                                      title="Remover linha"
+                                    >
+                                      <FaTrash className="text-xs" />
+                                    </button>
+                                  </td>
+                                )}
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    {podeGerirEstoqueLocal && (
+                      <div className="rounded-lg border border-dashed border-gray-300 p-3 bg-gray-50/80">
+                        <div className="text-xs font-semibold text-gray-700 mb-2">Adicionar artigo</div>
+                        <div className="flex flex-col sm:flex-row gap-2 sm:items-stretch">
+                          <div className="flex-1 min-w-0">
+                            <PesquisaComLeitorQr
+                              value={estoqueBuscaItem}
+                              onChange={(e) => setEstoqueBuscaItem(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  e.preventDefault();
+                                  buscarItensParaEstoque();
+                                }
+                              }}
+                              placeholder="Código ou descrição…"
+                              onLerClick={() => openArmQr('estoqueItem')}
+                              disabled={estoqueBuscaLoading}
+                              lerDisabled={estoqueBuscaLoading}
+                              lerTitle="Ler QR ou código de barras do artigo"
+                              lerAriaLabel="Ler QR ou código de barras para pesquisar artigo"
+                            />
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => buscarItensParaEstoque()}
+                            disabled={estoqueBuscaLoading}
+                            className="px-4 py-2 bg-white border border-gray-300 rounded-lg text-sm hover:bg-gray-50 disabled:opacity-50 sm:self-stretch sm:h-auto"
+                          >
+                            {estoqueBuscaLoading ? '…' : 'Pesquisar'}
+                          </button>
+                          <input
+                            type="number"
+                            min="1"
+                            step="any"
+                            value={estoqueQtdAdd}
+                            onChange={(e) => setEstoqueQtdAdd(e.target.value)}
+                            className="w-full sm:w-24 px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                            title="Quantidade a somar"
+                          />
+                        </div>
+                        {estoqueItensRes.length > 0 && (
+                          <ul className="mt-2 max-h-36 overflow-y-auto divide-y divide-gray-200 border border-gray-200 rounded-lg bg-white">
+                            {estoqueItensRes.map((it) => (
+                              <li
+                                key={it.id}
+                                className="flex items-center justify-between gap-2 px-3 py-2 text-sm"
+                              >
+                                <div className="min-w-0">
+                                  <span className="font-mono font-medium">{it.codigo}</span>
+                                  <span className="text-gray-600 ml-2 truncate block sm:inline">
+                                    {it.descricao || it.nome || ''}
+                                  </span>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => adicionarItemAoEstoqueLocal(it)}
+                                  className="shrink-0 px-2 py-1 text-xs bg-[#0915FF] text-white rounded hover:bg-[#070FCC]"
+                                >
+                                  Adicionar
+                                </button>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+              <div className="p-4 border-t border-gray-100 flex flex-wrap justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={closeEstoqueModal}
+                  className="px-4 py-2 border border-gray-300 rounded-lg text-sm hover:bg-gray-50"
+                >
+                  Fechar
+                </button>
+                {podeGerirEstoqueLocal && (
+                  <button
+                    type="button"
+                    onClick={saveEstoqueLinhas}
+                    disabled={estoqueSaving || estoqueLoading || !estoqueLocId}
+                    className="px-4 py-2 bg-[#0915FF] text-white rounded-lg text-sm hover:bg-[#070FCC] disabled:opacity-50"
+                  >
+                    {estoqueSaving ? 'A guardar…' : 'Guardar estoque'}
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        <QrScannerModal
+          open={armQrOpen}
+          onClose={() => {
+            armQrPurposeRef.current = null;
+            setArmQrPurpose(null);
+            setArmQrOpen(false);
+          }}
+          onScan={processarArmQrScan}
+          title={
+            armQrPurpose === 'centralLoc'
+              ? 'Ler texto para filtrar localização (QR ou código de barras)'
+              : armQrPurpose === 'listaArmazens'
+                ? 'Ler texto para filtrar armazéns (QR ou código de barras)'
+                : 'Ler código ou descrição do artigo (QR ou código de barras)'
+          }
+          readerId="qr-reader-armazens-contexto"
+          formatsToSupport={FORMATOS_QR_BARCODE}
+        />
 
         {toast && (
           <Toast

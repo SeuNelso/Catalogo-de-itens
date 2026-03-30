@@ -1,0 +1,1284 @@
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Link, Navigate } from 'react-router-dom';
+import axios from 'axios';
+import {
+  FaChevronDown,
+  FaExchangeAlt,
+  FaList,
+  FaMapMarkerAlt,
+  FaQrcode,
+  FaSearch,
+  FaWarehouse
+} from 'react-icons/fa';
+import QrScannerModal from '../components/QrScannerModal';
+import PesquisaComLeitorQr from '../components/PesquisaComLeitorQr';
+import { FORMATOS_QR_BARCODE } from '../utils/qrBarcodeFormats';
+import { useAuth } from '../contexts/AuthContext';
+import { podeUsarControloStock } from '../utils/controloStock';
+import { podeGerarTrflMovimentacaoInterna } from '../utils/roles';
+import Toast from '../components/Toast';
+
+const MAX_SUGESTOES = 40;
+
+const normBusca = (s) =>
+  String(s || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+
+/**
+ * Uma única caixa: escrever filtra; clique na seta ou foco mostra lista; «Ler» mantém-se à direita.
+ */
+function LocalizacaoCombobox({
+  instanceId,
+  options,
+  inputValue,
+  selectedId,
+  inputId,
+  onInputChange,
+  onSelect,
+  onBlurCommitExact,
+  disabled,
+  lerDisabled,
+  onLerClick,
+  placeholder,
+  lerTitle,
+  lerAriaLabel,
+  emptyListMessage,
+  filterNoMatchMessage
+}) {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef(null);
+  const listId = `${instanceId}-loc-list`;
+
+  useEffect(() => {
+    const onDoc = (e) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false);
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, []);
+
+  const handleInputChange = (e) => {
+    onInputChange(e.target.value);
+    setOpen(true);
+  };
+
+  const handleInputBlur = () => {
+    window.setTimeout(() => {
+      if (wrapRef.current?.contains(document.activeElement)) return;
+      setOpen(false);
+      onBlurCommitExact?.();
+    }, 120);
+  };
+
+  const showList = open && !disabled;
+  const hasOptions = options.length > 0;
+
+  return (
+    <div ref={wrapRef} className="relative">
+      <div className="flex gap-2 min-w-0">
+        <div className="relative flex-1 min-w-0">
+          <FaSearch className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm pointer-events-none z-[1]" />
+          <input
+            id={inputId}
+            type="text"
+            role="combobox"
+            aria-expanded={showList}
+            aria-controls={listId}
+            aria-autocomplete="list"
+            value={inputValue}
+            onChange={handleInputChange}
+            onFocus={() => !disabled && setOpen(true)}
+            onBlur={handleInputBlur}
+            placeholder={placeholder}
+            disabled={disabled}
+            autoComplete="off"
+            className="w-full pl-9 pr-10 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#0915FF]"
+          />
+          <button
+            type="button"
+            tabIndex={-1}
+            disabled={disabled}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => !disabled && setOpen((o) => !o)}
+            className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded text-gray-500 hover:bg-gray-100 disabled:opacity-40"
+            title="Mostrar localizações"
+            aria-label="Abrir lista de localizações"
+          >
+            <FaChevronDown className={`text-sm transition-transform ${open ? 'rotate-180' : ''}`} />
+          </button>
+        </div>
+        <button
+          type="button"
+          onClick={onLerClick}
+          disabled={lerDisabled || disabled}
+          className="shrink-0 px-3 py-2 border border-gray-300 rounded-lg text-sm flex items-center justify-center gap-1.5 text-gray-700 hover:bg-gray-50 disabled:opacity-45 disabled:cursor-not-allowed"
+          title={lerTitle}
+          aria-label={lerAriaLabel || lerTitle}
+        >
+          <FaQrcode className="text-base text-[#0915FF]" />
+          <span className="hidden sm:inline whitespace-nowrap">Ler</span>
+        </button>
+      </div>
+      {showList && (
+        <ul
+          id={listId}
+          role="listbox"
+          className="absolute z-[100] left-0 right-0 mt-1 max-h-[min(240px,42vh)] overflow-y-auto rounded-lg border border-gray-200 bg-white shadow-lg py-1"
+        >
+          {!hasOptions ? (
+            <li className="px-3 py-3 text-xs text-gray-500 text-center">{filterNoMatchMessage}</li>
+          ) : (
+            options.map((l) => (
+              <li key={l.id} role="option" aria-selected={String(l.id) === String(selectedId ?? '')}>
+                <button
+                  type="button"
+                  className="w-full text-left px-3 py-2 text-sm hover:bg-[#0915FF]/10 font-mono"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    onSelect(l);
+                    setOpen(false);
+                  }}
+                >
+                  {l.localizacao}
+                </button>
+              </li>
+            ))
+          )}
+        </ul>
+      )}
+      {emptyListMessage ? <p className="text-[11px] text-amber-800 mt-1">{emptyListMessage}</p> : null}
+    </div>
+  );
+}
+
+const TransferenciaLocalizacao = () => {
+  const { user } = useAuth();
+  const [armazens, setArmazens] = useState([]);
+  const [loadingArmazens, setLoadingArmazens] = useState(true);
+  const [armazemId, setArmazemId] = useState('');
+  const [origemId, setOrigemId] = useState('');
+  const [destinoId, setDestinoId] = useState('');
+  const [linhasOrigem, setLinhasOrigem] = useState([]);
+  const [loadingEstoque, setLoadingEstoque] = useState(false);
+  const [codigoArtigo, setCodigoArtigo] = useState('');
+  const [qtdDigitada, setQtdDigitada] = useState('');
+  /** Uma única linha por movimentação (1 artigo por ticket). */
+  const [linhaPendente, setLinhaPendente] = useState(null);
+  const [qrLeitorOpen, setQrLeitorOpen] = useState(false);
+  const [qrLeitorPurpose, setQrLeitorPurpose] = useState(null);
+  const qrLeitorPurposeRef = useRef(null);
+  const [filtroOrigemLoc, setFiltroOrigemLoc] = useState('');
+  const [filtroDestinoLoc, setFiltroDestinoLoc] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [toast, setToast] = useState(null);
+
+  const [tickets, setTickets] = useState([]);
+  const [loadingTickets, setLoadingTickets] = useState(false);
+  const [ticketsSoPendentesTrfl, setTicketsSoPendentesTrfl] = useState(true);
+  const [selectedTicketIds, setSelectedTicketIds] = useState([]);
+  const [exportingTrfl, setExportingTrfl] = useState(false);
+  const [pesquisaArtigo, setPesquisaArtigo] = useState('');
+  /** 1=origem, 2=artigo, 3=quantidade, 4=destino, 5=confirmar */
+  const [wizardStep, setWizardStep] = useState(1);
+  /** Linha de stock escolhida no passo 2 → passo 3 */
+  const [artigoCorrente, setArtigoCorrente] = useState(null);
+
+  const pode = user && podeUsarControloStock(user);
+  const podeExportarTrfl = podeGerarTrflMovimentacaoInterna(user?.role);
+
+  const WIZARD_STEPS = [
+    { n: 1, label: 'Origem' },
+    { n: 2, label: 'Artigo' },
+    { n: 3, label: 'Quantidade' },
+    { n: 4, label: 'Destino' },
+    { n: 5, label: 'Confirmar' }
+  ];
+
+  useEffect(() => {
+    const load = async () => {
+      try {
+        setLoadingArmazens(true);
+        const token = localStorage.getItem('token');
+        const { data } = await axios.get('/api/armazens?ativo=true&consulta_estoque_localizacao=1', {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        setArmazens(Array.isArray(data) ? data : []);
+      } catch (e) {
+        console.error(e);
+        setToast({ type: 'error', message: 'Erro ao carregar armazéns.' });
+      } finally {
+        setLoadingArmazens(false);
+      }
+    };
+    load();
+  }, []);
+
+  const centrais = useMemo(
+    () => (armazens || []).filter((a) => String(a?.tipo || '').trim().toLowerCase() === 'central'),
+    [armazens]
+  );
+
+  const armazemUnico = centrais.length === 1;
+
+  useEffect(() => {
+    if (loadingArmazens || centrais.length !== 1) return;
+    setArmazemId((prev) => (prev ? prev : String(centrais[0].id)));
+  }, [loadingArmazens, centrais]);
+
+  const armazemSel = useMemo(
+    () => centrais.find((a) => String(a.id) === String(armazemId)),
+    [centrais, armazemId]
+  );
+
+  const armazemExibicao = armazemSel || (armazemUnico ? centrais[0] : null);
+
+  const locsComId = useMemo(() => {
+    const locs = armazemSel?.localizacoes || [];
+    return locs.filter((l) => l && l.id != null);
+  }, [armazemSel]);
+
+  const locsComIdFiltradasOrigem = useMemo(() => {
+    const q = normBusca(filtroOrigemLoc);
+    if (!q) return locsComId;
+    return locsComId.filter((l) => normBusca(l.localizacao || '').includes(q));
+  }, [locsComId, filtroOrigemLoc]);
+
+  const locsDestinoCandidatas = useMemo(
+    () => locsComId.filter((l) => String(l.id) !== String(origemId)),
+    [locsComId, origemId]
+  );
+
+  const locsComIdFiltradasDestino = useMemo(() => {
+    const q = normBusca(filtroDestinoLoc);
+    if (!q) return locsDestinoCandidatas;
+    return locsDestinoCandidatas.filter((l) => normBusca(l.localizacao || '').includes(q));
+  }, [locsDestinoCandidatas, filtroDestinoLoc]);
+
+  const abrirLeitorQr = (purpose) => {
+    qrLeitorPurposeRef.current = purpose;
+    setQrLeitorPurpose(purpose);
+    setQrLeitorOpen(true);
+  };
+
+  const aplicarScanOrigem = useCallback(
+    (texto) => {
+      const trimmed = String(texto || '').trim();
+      if (!trimmed) return;
+      const byId = locsComId.find((l) => String(l.id) === trimmed);
+      if (byId) {
+        setFiltroOrigemLoc(byId.localizacao || trimmed);
+        setOrigemId(String(byId.id));
+        setToast({ type: 'success', message: `Origem: ${byId.localizacao}` });
+        return;
+      }
+      const n = normBusca(trimmed);
+      const exact = locsComId.filter((l) => normBusca(l.localizacao || '') === n);
+      if (exact.length === 1) {
+        setFiltroOrigemLoc(trimmed);
+        setOrigemId(String(exact[0].id));
+        setToast({ type: 'success', message: `Origem: ${exact[0].localizacao}` });
+        return;
+      }
+      setFiltroOrigemLoc(trimmed);
+      const filtered = locsComId.filter((l) => normBusca(l.localizacao || '').includes(n));
+      if (filtered.length === 1) {
+        setOrigemId(String(filtered[0].id));
+        setToast({ type: 'success', message: `Origem: ${filtered[0].localizacao}` });
+      } else if (filtered.length === 0) {
+        setToast({ type: 'error', message: 'Localização não encontrada neste armazém.' });
+      } else {
+        setToast({ type: 'info', message: 'Filtro aplicado; escolha a localização na lista.' });
+      }
+    },
+    [locsComId]
+  );
+
+  const aplicarScanDestino = useCallback(
+    (texto) => {
+      const trimmed = String(texto || '').trim();
+      if (!trimmed) return;
+      const list = locsDestinoCandidatas;
+      const byId = list.find((l) => String(l.id) === trimmed);
+      if (byId) {
+        setFiltroDestinoLoc(byId.localizacao || trimmed);
+        setDestinoId(String(byId.id));
+        setToast({ type: 'success', message: `Destino: ${byId.localizacao}` });
+        return;
+      }
+      const n = normBusca(trimmed);
+      const exact = list.filter((l) => normBusca(l.localizacao || '') === n);
+      if (exact.length === 1) {
+        setFiltroDestinoLoc(trimmed);
+        setDestinoId(String(exact[0].id));
+        setToast({ type: 'success', message: `Destino: ${exact[0].localizacao}` });
+        return;
+      }
+      setFiltroDestinoLoc(trimmed);
+      const filtered = list.filter((l) => normBusca(l.localizacao || '').includes(n));
+      if (filtered.length === 1) {
+        setDestinoId(String(filtered[0].id));
+        setToast({ type: 'success', message: `Destino: ${filtered[0].localizacao}` });
+      } else if (filtered.length === 0) {
+        setToast({ type: 'error', message: 'Localização de destino não encontrada.' });
+      } else {
+        setToast({ type: 'info', message: 'Filtro aplicado; escolha o destino na lista.' });
+      }
+    },
+    [locsDestinoCandidatas]
+  );
+
+  useEffect(() => {
+    setOrigemId('');
+    setDestinoId('');
+    setLinhasOrigem([]);
+    setCodigoArtigo('');
+    setQtdDigitada('');
+    setLinhaPendente(null);
+    setPesquisaArtigo('');
+    setWizardStep(1);
+    setArtigoCorrente(null);
+    setFiltroOrigemLoc('');
+    setFiltroDestinoLoc('');
+  }, [armazemId]);
+
+  useEffect(() => {
+    setLinhasOrigem([]);
+    setCodigoArtigo('');
+    setQtdDigitada('');
+    setLinhaPendente(null);
+    setDestinoId('');
+    setFiltroDestinoLoc('');
+    setPesquisaArtigo('');
+    setWizardStep(1);
+    setArtigoCorrente(null);
+    if (!armazemId || !origemId) return;
+    let cancelled = false;
+    (async () => {
+      setLoadingEstoque(true);
+      try {
+        const token = localStorage.getItem('token');
+        const { data } = await axios.get(
+          `/api/armazens/${armazemId}/localizacoes/${origemId}/estoque`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        if (!cancelled) {
+          setLinhasOrigem(Array.isArray(data) ? data : []);
+        }
+      } catch (e) {
+        const d = e.response?.data;
+        if (!cancelled) {
+          setLinhasOrigem([]);
+          setToast({
+            type: 'error',
+            message: (d?.error || 'Erro ao carregar stock da origem.') + (d?.hint ? ` ${d.hint}` : '')
+          });
+        }
+      } finally {
+        if (!cancelled) setLoadingEstoque(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [armazemId, origemId]);
+
+  const loadTickets = useCallback(async () => {
+    if (!armazemId) {
+      setTickets([]);
+      return;
+    }
+    setLoadingTickets(true);
+    try {
+      const token = localStorage.getItem('token');
+      const q = ticketsSoPendentesTrfl ? '?limit=200&pendente_trfl=1' : '?limit=200';
+      const { data } = await axios.get(`/api/armazens/${armazemId}/movimentacoes-internas${q}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setTickets(Array.isArray(data) ? data : []);
+    } catch (e) {
+      console.error(e);
+      setTickets([]);
+    } finally {
+      setLoadingTickets(false);
+    }
+  }, [armazemId, ticketsSoPendentesTrfl]);
+
+  useEffect(() => {
+    loadTickets();
+  }, [loadTickets]);
+
+  const labelLoc = (id) => {
+    const l = locsComId.find((x) => String(x.id) === String(id));
+    return l ? l.localizacao : '';
+  };
+
+  const handleOrigemComboboxInput = useCallback(
+    (val) => {
+      setFiltroOrigemLoc(val);
+      setOrigemId((cur) => {
+        if (!cur) return '';
+        const l = locsComId.find((x) => String(x.id) === String(cur));
+        const label = l ? String(l.localizacao || '') : '';
+        if (normBusca(val) !== normBusca(label)) return '';
+        return cur;
+      });
+    },
+    [locsComId]
+  );
+
+  const commitOrigemSeCorrespondenciaExata = useCallback(() => {
+    if (origemId) return;
+    const q = normBusca(filtroOrigemLoc);
+    if (!q) return;
+    const exact = locsComId.filter((l) => normBusca(l.localizacao || '') === q);
+    if (exact.length === 1) setOrigemId(String(exact[0].id));
+  }, [origemId, filtroOrigemLoc, locsComId]);
+
+  const handleDestinoComboboxInput = useCallback(
+    (val) => {
+      setFiltroDestinoLoc(val);
+      setDestinoId((cur) => {
+        if (!cur) return '';
+        const l = locsDestinoCandidatas.find((x) => String(x.id) === String(cur));
+        const label = l ? String(l.localizacao || '') : '';
+        if (normBusca(val) !== normBusca(label)) return '';
+        return cur;
+      });
+    },
+    [locsDestinoCandidatas]
+  );
+
+  const commitDestinoSeCorrespondenciaExata = useCallback(() => {
+    if (destinoId) return;
+    const q = normBusca(filtroDestinoLoc);
+    if (!q) return;
+    const exact = locsDestinoCandidatas.filter((l) => normBusca(l.localizacao || '') === q);
+    if (exact.length === 1) setDestinoId(String(exact[0].id));
+  }, [destinoId, filtroDestinoLoc, locsDestinoCandidatas]);
+
+  const { artigosFiltradosPesquisa, pesquisaResultadosTruncados } = useMemo(() => {
+    const q = normBusca(pesquisaArtigo);
+    if (!q || !linhasOrigem.length) {
+      return { artigosFiltradosPesquisa: [], pesquisaResultadosTruncados: false };
+    }
+    const all = linhasOrigem.filter((row) => {
+      const c = normBusca(row.codigo);
+      const d = normBusca(row.descricao);
+      return c.includes(q) || d.includes(q);
+    });
+    return {
+      artigosFiltradosPesquisa: all.slice(0, MAX_SUGESTOES),
+      pesquisaResultadosTruncados: all.length > MAX_SUGESTOES
+    };
+  }, [linhasOrigem, pesquisaArtigo]);
+
+  const selecionarArtigoDaPesquisa = (row) => {
+    setArtigoCorrente(row);
+    setCodigoArtigo(String(row.codigo || '').trim());
+    setPesquisaArtigo('');
+    setQtdDigitada('');
+    setWizardStep(3);
+  };
+
+  const findRowByCodigo = (cod) => {
+    const c = String(cod || '').trim();
+    if (!c) return null;
+    const up = c.toUpperCase();
+    return (
+      linhasOrigem.find((r) => String(r.codigo || '').trim().toUpperCase() === up) ||
+      linhasOrigem.find((r) => String(r.codigo || '').trim() === c) ||
+      null
+    );
+  };
+
+  const validarCodigoManualParaPasso3 = () => {
+    const row = findRowByCodigo(codigoArtigo);
+    if (!row) {
+      setToast({
+        type: 'error',
+        message: 'Código não encontrado nesta origem. Pesquise ou use o leitor.'
+      });
+      return;
+    }
+    setArtigoCorrente(row);
+    setQtdDigitada('');
+    setWizardStep(3);
+  };
+
+  const processarLeituraQr = useCallback(
+    (texto) => {
+      const purpose = qrLeitorPurposeRef.current;
+      qrLeitorPurposeRef.current = null;
+      setQrLeitorPurpose(null);
+      const raw = String(texto || '').trim();
+      if (!raw || !purpose) return;
+      switch (purpose) {
+        case 'origem':
+          aplicarScanOrigem(raw);
+          break;
+        case 'destino':
+          aplicarScanDestino(raw);
+          break;
+        case 'pesquisaArtigo':
+          setPesquisaArtigo(raw);
+          break;
+        case 'codigoArtigo': {
+          setCodigoArtigo(raw);
+          const up = raw.toUpperCase();
+          const r =
+            linhasOrigem.find((x) => String(x.codigo || '').trim().toUpperCase() === up) ||
+            linhasOrigem.find((x) => String(x.codigo || '').trim() === raw) ||
+            null;
+          if (r) {
+            setArtigoCorrente(r);
+            setQtdDigitada('');
+            setWizardStep(3);
+            setToast({ type: 'success', message: `Artigo ${r.codigo} — indique a quantidade.` });
+          } else {
+            setToast({ type: 'error', message: 'Código lido não existe nesta origem.' });
+          }
+          break;
+        }
+        default:
+          break;
+      }
+    },
+    [aplicarScanOrigem, aplicarScanDestino, linhasOrigem]
+  );
+
+  useEffect(() => {
+    if (wizardStep === 3 && !artigoCorrente) setWizardStep(2);
+  }, [wizardStep, artigoCorrente]);
+
+  const confirmarQuantidadeEIrDestino = () => {
+    const row = artigoCorrente || findRowByCodigo(codigoArtigo);
+    if (!row) {
+      setToast({
+        type: 'error',
+        message: 'Código não encontrado nesta localização de origem (use a pesquisa ou o código exato).'
+      });
+      return;
+    }
+    const q = Number(String(qtdDigitada).replace(',', '.'));
+    if (!Number.isFinite(q) || q <= 0) {
+      setToast({ type: 'error', message: 'Indique uma quantidade válida (> 0).' });
+      return;
+    }
+    const max = Number(row.quantidade) || 0;
+    if (q > max) {
+      setToast({
+        type: 'error',
+        message: `Quantidade superior ao disponível (${max}) para ${row.codigo}.`
+      });
+      return;
+    }
+    setLinhaPendente({
+      item_id: row.item_id,
+      codigo: row.codigo,
+      descricao: row.descricao,
+      quantidade: q
+    });
+    setCodigoArtigo('');
+    setQtdDigitada('');
+    setArtigoCorrente(null);
+    setWizardStep(4);
+    setToast({ type: 'success', message: 'Escolha a localização de destino.' });
+  };
+
+  const handleTransferir = async () => {
+    if (!armazemId || !origemId || !destinoId || origemId === destinoId) {
+      setToast({ type: 'error', message: 'Selecione origem e destino diferentes.' });
+      return;
+    }
+    if (!linhaPendente) {
+      setToast({ type: 'error', message: 'Defina o artigo e a quantidade antes de confirmar.' });
+      return;
+    }
+    setSubmitting(true);
+    setToast(null);
+    try {
+      const token = localStorage.getItem('token');
+      await axios.post(
+        `/api/armazens/${armazemId}/transferencia-localizacao`,
+        {
+          origem_localizacao_id: parseInt(origemId, 10),
+          destino_localizacao_id: parseInt(destinoId, 10),
+          linhas: [{ item_id: linhaPendente.item_id, quantidade: linhaPendente.quantidade }]
+        },
+        { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } }
+      );
+      setToast({ type: 'success', message: 'Transferência concluída. Os tickets aparecem na fila abaixo.' });
+      setLinhaPendente(null);
+      setDestinoId('');
+      setCodigoArtigo('');
+      setQtdDigitada('');
+      setPesquisaArtigo('');
+      setArtigoCorrente(null);
+      setFiltroDestinoLoc('');
+      setWizardStep(2);
+      const { data } = await axios.get(`/api/armazens/${armazemId}/localizacoes/${origemId}/estoque`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setLinhasOrigem(Array.isArray(data) ? data : []);
+      loadTickets();
+    } catch (e) {
+      const d = e.response?.data;
+      setToast({
+        type: 'error',
+        message: d?.error || d?.message || 'Erro ao transferir stock.'
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const toggleTicket = (id) => {
+    setSelectedTicketIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+    );
+  };
+
+  const selecionarTodosPendentes = () => {
+    const pendentes = tickets.filter((t) => t.trfl_gerada_em == null).map((t) => t.id);
+    setSelectedTicketIds(pendentes);
+  };
+
+  const gerarTrfl = async () => {
+    if (!podeExportarTrfl) {
+      setToast({ type: 'error', message: 'O seu perfil não pode gerar TRFL desta fila.' });
+      return;
+    }
+    if (!armazemId || selectedTicketIds.length === 0) {
+      setToast({ type: 'error', message: 'Selecione pelo menos um ticket pendente de TRFL.' });
+      return;
+    }
+    setExportingTrfl(true);
+    setToast(null);
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch(`/api/armazens/${armazemId}/movimentacoes-internas/export-trfl`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ ids: selectedTicketIds })
+      });
+      if (!res.ok) {
+        let msg = 'Erro ao gerar TRFL.';
+        try {
+          const j = await res.json();
+          msg = j.error || j.message || msg;
+        } catch {
+          /* ignore */
+        }
+        throw new Error(msg);
+      }
+      const blob = await res.blob();
+      const disp = res.headers.get('content-disposition') || '';
+      let fn = `TRFL_mov_interna_arm${armazemId}.xlsx`;
+      const m = /filename\*?=(?:UTF-8'')?["']?([^";\n]+)/i.exec(disp);
+      if (m) fn = decodeURIComponent(m[1].replace(/["']/g, '').trim());
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = fn;
+      a.click();
+      window.URL.revokeObjectURL(url);
+      setToast({ type: 'success', message: 'Ficheiro TRFL transferido.' });
+      setSelectedTicketIds([]);
+      loadTickets();
+    } catch (err) {
+      setToast({ type: 'error', message: err.message || 'Erro ao exportar.' });
+    } finally {
+      setExportingTrfl(false);
+    }
+  };
+
+  const disponivelArtigoCorrente = useMemo(() => {
+    if (!artigoCorrente) return 0;
+    return Number(artigoCorrente.quantidade) || 0;
+  }, [artigoCorrente]);
+
+  const voltarUmPasso = () => {
+    if (wizardStep === 5) setWizardStep(4);
+    else if (wizardStep === 4) {
+      const lp = linhaPendente;
+      if (lp) {
+        const row = linhasOrigem.find((r) => r.item_id === lp.item_id);
+        if (row) setArtigoCorrente(row);
+        setQtdDigitada(String(lp.quantidade));
+      }
+      setWizardStep(3);
+    } else if (wizardStep === 3) {
+      setArtigoCorrente(null);
+      setQtdDigitada('');
+      setLinhaPendente(null);
+      setWizardStep(2);
+    } else if (wizardStep === 2) setWizardStep(1);
+  };
+
+  if (!pode) {
+    return <Navigate to="/transferencias" replace />;
+  }
+
+  if (loadingArmazens) {
+    return (
+      <div className="min-h-screen bg-[#F7F8FA] flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#0915FF] mx-auto" />
+          <p className="mt-4 text-gray-600">A carregar…</p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-[#F7F8FA] p-4 sm:p-6 lg:p-8">
+      <div className="max-w-5xl mx-auto">
+        <div className="mb-5 flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+          <div>
+            <h1 className="text-xl sm:text-2xl font-bold text-gray-800 flex items-center gap-2">
+              <FaExchangeAlt className="text-[#0915FF]" />
+              Transferência de localização
+            </h1>
+            <p className="text-xs text-gray-500 mt-1">
+              Um artigo por movimentação: origem → artigo → quantidade → destino → confirmar.
+            </p>
+          </div>
+          <p className="text-sm shrink-0">
+            <Link to="/transferencias" className="text-[#0915FF] hover:underline">
+              Transferências
+            </Link>
+            <span className="text-gray-400 mx-1">·</span>
+            <Link to="/consulta-estoque-localizacoes" className="text-[#0915FF] hover:underline">
+              Stock
+            </Link>
+          </p>
+        </div>
+
+        {centrais.length === 0 ? (
+          <div className="bg-white rounded-lg border border-gray-200 p-8 text-center text-gray-600">
+            <FaWarehouse className="mx-auto text-4xl text-gray-300 mb-3" />
+            <p>Não há armazéns centrais disponíveis para o seu utilizador.</p>
+          </div>
+        ) : (
+          <div className="space-y-6 max-w-3xl mx-auto">
+            <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-visible">
+              <div className="px-3 sm:px-4 py-3 border-b border-gray-100 bg-gray-50/90">
+                <div className="flex items-center justify-between gap-2 overflow-x-auto pb-1">
+                  {WIZARD_STEPS.map((st, idx) => {
+                    const ativo = wizardStep === st.n;
+                    const feito = wizardStep > st.n;
+                    return (
+                      <React.Fragment key={st.n}>
+                        {idx > 0 && <span className="text-gray-300 text-xs shrink-0">→</span>}
+                        <div
+                          className={`flex flex-col items-center min-w-[52px] shrink-0 ${
+                            ativo ? 'text-[#0915FF]' : feito ? 'text-emerald-600' : 'text-gray-400'
+                          }`}
+                        >
+                          <span
+                            className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold border-2 ${
+                              ativo
+                                ? 'border-[#0915FF] bg-[#0915FF] text-white'
+                                : feito
+                                  ? 'border-emerald-500 bg-emerald-500 text-white'
+                                  : 'border-gray-300 bg-white'
+                            }`}
+                          >
+                            {feito ? '✓' : st.n}
+                          </span>
+                          <span className="text-[10px] font-medium mt-0.5 text-center leading-tight">{st.label}</span>
+                        </div>
+                      </React.Fragment>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="p-4 sm:p-5">
+                {wizardStep === 1 && (
+                  <div className="space-y-4">
+                    <p className="text-sm font-medium text-gray-800">Onde está o stock a retirar?</p>
+                    {!armazemUnico && (
+                      <div>
+                        <label className="block text-xs text-gray-600 mb-1">Armazém central</label>
+                        <select
+                          value={armazemId}
+                          onChange={(e) => setArmazemId(e.target.value)}
+                          className="w-full px-3 py-2.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#0915FF]"
+                        >
+                          <option value="">Selecione…</option>
+                          {centrais.map((a) => (
+                            <option key={a.id} value={String(a.id)}>
+                              {a.codigo} — {a.descricao}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+                    {armazemUnico && (
+                      <p className="text-sm text-gray-700">
+                        <FaWarehouse className="inline mr-1 text-[#0915FF]" />
+                        <span className="font-semibold">{armazemExibicao?.codigo}</span>
+                        {armazemExibicao?.descricao ? ` — ${armazemExibicao.descricao}` : ''}
+                      </p>
+                    )}
+                    <div>
+                      <label className="block text-xs text-gray-600 mb-1" htmlFor="transf-loc-origem-input">
+                        <FaMapMarkerAlt className="inline mr-1 text-amber-600" />
+                        Localização de origem
+                      </label>
+                      <LocalizacaoCombobox
+                        instanceId="transf-loc-origem"
+                        inputId="transf-loc-origem-input"
+                        selectedId={origemId}
+                        options={locsComIdFiltradasOrigem}
+                        inputValue={filtroOrigemLoc}
+                        onInputChange={handleOrigemComboboxInput}
+                        onSelect={(l) => {
+                          setOrigemId(String(l.id));
+                          setFiltroOrigemLoc(l.localizacao || '');
+                        }}
+                        onBlurCommitExact={commitOrigemSeCorrespondenciaExata}
+                        disabled={!armazemId || locsComId.length === 0}
+                        lerDisabled={!armazemId || locsComId.length === 0}
+                        onLerClick={() => abrirLeitorQr('origem')}
+                        placeholder="Pesquisar ou escolher localização de origem…"
+                        lerTitle="Ler QR ou código de barras da localização"
+                        lerAriaLabel="Ler QR ou código de barras da localização de origem"
+                        emptyListMessage={
+                          armazemId && locsComId.length === 0
+                            ? 'Não há localizações com identificador neste armazém.'
+                            : null
+                        }
+                        filterNoMatchMessage="Nenhuma localização corresponde ao texto."
+                      />
+                    </div>
+                    {origemId && !loadingEstoque && linhasOrigem.length === 0 && (
+                      <p className="text-xs text-amber-800">Sem stock nesta localização.</p>
+                    )}
+                    {origemId && !loadingEstoque && linhasOrigem.length > 0 && (
+                      <p className="text-xs text-gray-500">
+                        {linhasOrigem.length} artigo(s) nesta origem — avance para escolher o artigo.
+                      </p>
+                    )}
+                    <button
+                      type="button"
+                      disabled={
+                        !armazemId ||
+                        !origemId ||
+                        loadingEstoque ||
+                        linhasOrigem.length === 0
+                      }
+                      onClick={() => setWizardStep(2)}
+                      className="w-full py-2.5 rounded-lg bg-[#0915FF] text-white text-sm font-semibold hover:bg-[#070FCC] disabled:opacity-50"
+                    >
+                      Continuar
+                    </button>
+                  </div>
+                )}
+
+                {wizardStep === 2 && (
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-sm font-medium text-gray-800">Qual artigo?</p>
+                      <button type="button" onClick={voltarUmPasso} className="text-xs text-gray-600 hover:underline">
+                        ← Voltar
+                      </button>
+                    </div>
+                    <p className="text-xs text-gray-500 font-mono bg-gray-50 rounded px-2 py-1">{labelLoc(origemId)}</p>
+                    <div>
+                      <label className="block text-xs text-gray-600 mb-1">
+                        <FaSearch className="inline mr-1" />
+                        Pesquisar (código ou descrição)
+                      </label>
+                      <PesquisaComLeitorQr
+                        inputType="search"
+                        value={pesquisaArtigo}
+                        onChange={(e) => setPesquisaArtigo(e.target.value)}
+                        disabled={loadingEstoque || linhasOrigem.length === 0}
+                        lerDisabled={loadingEstoque || linhasOrigem.length === 0}
+                        placeholder="Comece a escrever…"
+                        onLerClick={() => abrirLeitorQr('pesquisaArtigo')}
+                        lerTitle="Ler QR ou código de barras do artigo"
+                        lerAriaLabel="Ler QR ou código de barras do artigo"
+                      />
+                      {normBusca(pesquisaArtigo).length > 0 && (
+                        <div className="mt-2 rounded-lg border border-gray-200 max-h-[min(220px,38vh)] overflow-y-auto">
+                          {artigosFiltradosPesquisa.length === 0 ? (
+                            <p className="px-3 py-4 text-xs text-gray-500 text-center">Sem resultados.</p>
+                          ) : (
+                            <ul className="divide-y divide-gray-100">
+                              {artigosFiltradosPesquisa.map((row) => {
+                                const max = Number(row.quantidade) || 0;
+                                return (
+                                  <li key={row.item_id}>
+                                    <button
+                                      type="button"
+                                      onClick={() => selecionarArtigoDaPesquisa(row)}
+                                      className="w-full text-left px-3 py-2 text-sm hover:bg-[#0915FF]/5"
+                                    >
+                                      <span className="font-mono font-medium">{row.codigo}</span>
+                                      <span className="text-gray-700 block text-xs line-clamp-2">{row.descricao}</span>
+                                      <span className="text-[11px] text-gray-500">Disponível: {max}</span>
+                                    </button>
+                                  </li>
+                                );
+                              })}
+                            </ul>
+                          )}
+                          {pesquisaResultadosTruncados && (
+                            <p className="px-2 py-1.5 text-[10px] text-amber-800 bg-amber-50">Refine a pesquisa (máx. {MAX_SUGESTOES} linhas).</p>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex flex-col gap-2">
+                      <div className="flex gap-2 items-stretch">
+                        <div className="flex-1 min-w-0">
+                          <PesquisaComLeitorQr
+                            showSearchIcon={false}
+                            fontMono
+                            value={codigoArtigo}
+                            onChange={(e) => setCodigoArtigo(e.target.value)}
+                            placeholder="Ou código manual"
+                            onLerClick={() => abrirLeitorQr('codigoArtigo')}
+                            disabled={loadingEstoque}
+                            lerDisabled={loadingEstoque}
+                            lerTitle="Ler QR ou código de barras do artigo"
+                            lerAriaLabel="Ler QR ou código de barras do código do artigo"
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          onClick={validarCodigoManualParaPasso3}
+                          className="px-3 py-2 rounded-lg bg-gray-800 text-white text-sm shrink-0 self-stretch"
+                        >
+                          OK
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {wizardStep === 3 && artigoCorrente && (
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-sm font-medium text-gray-800">Quantidade a transferir</p>
+                      <button type="button" onClick={voltarUmPasso} className="text-xs text-gray-600 hover:underline">
+                        ← Voltar
+                      </button>
+                    </div>
+                    <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-sm">
+                      <p className="font-mono font-semibold text-gray-900">{artigoCorrente.codigo}</p>
+                      <p className="text-gray-700 text-xs mt-1">{artigoCorrente.descricao}</p>
+                      <p className="text-sm mt-2">
+                        Disponível nesta origem:{' '}
+                        <strong className="tabular-nums text-[#0915FF]">{disponivelArtigoCorrente}</strong>
+                      </p>
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-600 mb-1">Quantidade</label>
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        value={qtdDigitada}
+                        onChange={(e) => setQtdDigitada(e.target.value)}
+                        className="w-full px-3 py-2.5 border border-gray-300 rounded-lg text-sm text-right tabular-nums text-lg"
+                        placeholder="0"
+                        autoFocus
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={confirmarQuantidadeEIrDestino}
+                      className="w-full py-2.5 rounded-lg bg-[#0915FF] text-white text-sm font-semibold hover:bg-[#070FCC]"
+                    >
+                      Continuar para destino →
+                    </button>
+                  </div>
+                )}
+
+                {wizardStep === 4 && (
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-sm font-medium text-gray-800">Destino do stock</p>
+                      <button type="button" onClick={voltarUmPasso} className="text-xs text-gray-600 hover:underline">
+                        ← Voltar
+                      </button>
+                    </div>
+                    {!linhaPendente ? (
+                      <p className="text-sm text-amber-800">Volte atrás e confirme o artigo e a quantidade.</p>
+                    ) : (
+                      <>
+                        <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs mb-3">
+                          <span className="font-mono font-semibold">{linhaPendente.codigo}</span>
+                          <span className="text-gray-600 block line-clamp-2 mt-0.5">{linhaPendente.descricao}</span>
+                          <span className="text-gray-800 mt-1 block">
+                            Quantidade: <strong className="tabular-nums">{linhaPendente.quantidade}</strong>
+                          </span>
+                        </div>
+                        <label className="block text-xs text-gray-600 mb-1" htmlFor="transf-loc-destino-input">
+                          <FaMapMarkerAlt className="inline mr-1 text-emerald-600" />
+                          Localização de destino
+                        </label>
+                        <LocalizacaoCombobox
+                          instanceId="transf-loc-destino"
+                          inputId="transf-loc-destino-input"
+                          selectedId={destinoId}
+                          options={locsComIdFiltradasDestino}
+                          inputValue={filtroDestinoLoc}
+                          onInputChange={handleDestinoComboboxInput}
+                          onSelect={(l) => {
+                            setDestinoId(String(l.id));
+                            setFiltroDestinoLoc(l.localizacao || '');
+                          }}
+                          onBlurCommitExact={commitDestinoSeCorrespondenciaExata}
+                          disabled={locsDestinoCandidatas.length === 0}
+                          lerDisabled={locsDestinoCandidatas.length === 0}
+                          onLerClick={() => abrirLeitorQr('destino')}
+                          placeholder="Pesquisar ou escolher localização de destino…"
+                          lerTitle="Ler QR ou código de barras da localização"
+                          lerAriaLabel="Ler QR ou código de barras da localização de destino"
+                          emptyListMessage={
+                            locsComId.length > 0 && locsDestinoCandidatas.length === 0
+                              ? 'Não há outra localização para destino (só existe a origem).'
+                              : null
+                          }
+                          filterNoMatchMessage="Nenhuma localização corresponde ao texto."
+                        />
+                        <button
+                          type="button"
+                          disabled={!destinoId || destinoId === origemId}
+                          onClick={() => setWizardStep(5)}
+                          className="w-full py-2.5 rounded-lg bg-[#0915FF] text-white text-sm font-semibold hover:bg-[#070FCC] disabled:opacity-50"
+                        >
+                          Rever e criar tickets →
+                        </button>
+                      </>
+                    )}
+                  </div>
+                )}
+
+                {wizardStep === 5 && (
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-sm font-medium text-gray-800">Confirmar</p>
+                      <button type="button" onClick={voltarUmPasso} className="text-xs text-gray-600 hover:underline">
+                        ← Voltar
+                      </button>
+                    </div>
+                    <div className="text-xs text-gray-600 space-y-1 rounded-lg border border-gray-200 p-3 bg-gray-50">
+                      <p>
+                        <span className="text-gray-500">Origem:</span>{' '}
+                        <span className="font-mono">{labelLoc(origemId)}</span>
+                      </p>
+                      <p>
+                        <span className="text-gray-500">Destino:</span>{' '}
+                        <span className="font-mono">{labelLoc(destinoId) || '—'}</span>
+                      </p>
+                    </div>
+                    {linhaPendente && (
+                      <div className="text-sm border border-gray-200 rounded-lg px-3 py-3 flex justify-between gap-2 bg-white">
+                        <span>
+                          <span className="font-mono font-medium">{linhaPendente.codigo}</span>
+                          <span className="text-gray-600 text-xs block line-clamp-2 mt-0.5">{linhaPendente.descricao}</span>
+                        </span>
+                        <span className="tabular-nums font-medium shrink-0 self-center">× {linhaPendente.quantidade}</span>
+                      </div>
+                    )}
+                    <button
+                      type="button"
+                      onClick={handleTransferir}
+                      disabled={
+                        submitting ||
+                        !destinoId ||
+                        destinoId === origemId ||
+                        !linhaPendente
+                      }
+                      className="w-full py-3 rounded-lg bg-emerald-600 text-white text-sm font-bold hover:bg-emerald-700 disabled:opacity-50"
+                    >
+                      {submitting ? 'A criar tickets…' : 'Finalizar — criar movimentação'}
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="bg-white rounded-xl border border-gray-200 shadow-md overflow-hidden ring-1 ring-gray-900/5">
+              <div className="px-4 py-3 bg-slate-800 text-white flex flex-wrap items-center gap-3 justify-between">
+                <h2 className="text-sm font-semibold flex items-center gap-2">
+                  <FaList className="text-emerald-400" />
+                  Fila de tickets (movimentação interna)
+                </h2>
+                <p className="text-xs text-slate-300">
+                  Registos após confirmar transferências · TRFL só para perfis autorizados
+                </p>
+              </div>
+              <div className="p-4 sm:p-5">
+                <div className="flex flex-wrap items-center gap-3 text-xs mb-4">
+                  <label className="inline-flex items-center gap-1.5 cursor-pointer text-gray-700">
+                    <input
+                      type="checkbox"
+                      checked={ticketsSoPendentesTrfl}
+                      onChange={(e) => {
+                        setTicketsSoPendentesTrfl(e.target.checked);
+                        setSelectedTicketIds([]);
+                      }}
+                    />
+                    Só pendentes de TRFL
+                  </label>
+                  <button
+                    type="button"
+                    onClick={loadTickets}
+                    disabled={!armazemId || loadingTickets}
+                    className="px-3 py-1.5 border border-gray-300 rounded-lg bg-white hover:bg-gray-50 disabled:opacity-50 font-medium"
+                  >
+                    Atualizar
+                  </button>
+                  {podeExportarTrfl && tickets.length > 0 && (
+                    <>
+                      <span className="hidden sm:inline text-gray-300">|</span>
+                      <button
+                        type="button"
+                        onClick={selecionarTodosPendentes}
+                        className="px-3 py-1.5 border border-gray-300 rounded-lg hover:bg-gray-50"
+                      >
+                        Selecionar pendentes
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedTicketIds([])}
+                        className="px-3 py-1.5 border border-gray-300 rounded-lg hover:bg-gray-50"
+                      >
+                        Limpar seleção
+                      </button>
+                      <button
+                        type="button"
+                        onClick={gerarTrfl}
+                        disabled={exportingTrfl || selectedTicketIds.length === 0}
+                        className="px-3 py-1.5 rounded-lg bg-emerald-600 text-white font-semibold hover:bg-emerald-700 disabled:opacity-50"
+                      >
+                        {exportingTrfl ? 'A gerar…' : 'Gerar TRFL (Excel)'}
+                      </button>
+                      <span className="text-gray-500 self-center tabular-nums">{selectedTicketIds.length} selec.</span>
+                    </>
+                  )}
+                </div>
+                {!podeExportarTrfl && (
+                  <p className="text-xs text-gray-600 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-4">
+                    A geração do ficheiro <strong>TRFL</strong> está reservada a <strong>administrador</strong>,{' '}
+                    <strong>backoffice de armazém</strong> e <strong>supervisor de armazém</strong>. Pode consultar a
+                    fila abaixo.
+                  </p>
+                )}
+                {!armazemId ? (
+                  <p className="text-sm text-gray-500">Selecione o armazém no assistente acima para carregar a fila.</p>
+                ) : loadingTickets ? (
+                  <p className="text-sm text-gray-500">A carregar tickets…</p>
+                ) : tickets.length === 0 ? (
+                  <p className="text-sm text-gray-500">
+                    {ticketsSoPendentesTrfl
+                      ? 'Nenhum ticket pendente de TRFL.'
+                      : 'Nenhum registo recente.'}
+                  </p>
+                ) : (
+                  <div className="overflow-x-auto rounded-lg border border-gray-200">
+                    <table className="min-w-full text-sm">
+                      <thead className="bg-gray-100 text-left text-xs text-gray-600 uppercase tracking-wide">
+                        <tr>
+                          {podeExportarTrfl && <th className="px-3 py-2.5 w-10" aria-label="Selecionar" />}
+                          <th className="px-3 py-2.5">Data</th>
+                          <th className="px-3 py-2.5">Origem</th>
+                          <th className="px-3 py-2.5">Destino</th>
+                          <th className="px-3 py-2.5">Artigo</th>
+                          <th className="px-3 py-2.5 text-right">Qtd</th>
+                          <th className="px-3 py-2.5">TRFL</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-100 bg-white">
+                        {tickets.map((t) => {
+                          const pendente = t.trfl_gerada_em == null;
+                          const checked = selectedTicketIds.includes(t.id);
+                          return (
+                            <tr key={t.id} className={pendente ? 'hover:bg-gray-50/80' : 'opacity-70 bg-gray-50/50'}>
+                              {podeExportarTrfl && (
+                                <td className="px-3 py-2">
+                                  <input
+                                    type="checkbox"
+                                    disabled={!pendente}
+                                    checked={checked && pendente}
+                                    onChange={() => toggleTicket(t.id)}
+                                    title={pendente ? '' : 'TRFL já gerada para este ticket'}
+                                  />
+                                </td>
+                              )}
+                              <td className="px-3 py-2 whitespace-nowrap text-xs text-gray-700">
+                                {t.created_at
+                                  ? new Date(t.created_at).toLocaleString('pt-PT')
+                                  : '—'}
+                              </td>
+                              <td className="px-3 py-2 font-mono text-xs">{t.origem_localizacao_label || '—'}</td>
+                              <td className="px-3 py-2 font-mono text-xs">{t.destino_localizacao_label || '—'}</td>
+                              <td className="px-3 py-2">
+                                <span className="font-mono font-medium">{t.item_codigo}</span>
+                                {t.item_descricao ? (
+                                  <span className="block text-xs text-gray-500 truncate max-w-[220px]">
+                                    {t.item_descricao}
+                                  </span>
+                                ) : null}
+                              </td>
+                              <td className="px-3 py-2 text-right tabular-nums font-medium">{t.quantidade}</td>
+                              <td className="px-3 py-2 text-xs">
+                                {pendente ? (
+                                  <span className="text-amber-700 font-medium">Pendente</span>
+                                ) : (
+                                  <span className="text-emerald-700 font-medium">Gerada</span>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        <QrScannerModal
+          open={qrLeitorOpen}
+          onClose={() => {
+            qrLeitorPurposeRef.current = null;
+            setQrLeitorPurpose(null);
+            setQrLeitorOpen(false);
+          }}
+          onScan={processarLeituraQr}
+          title={
+            qrLeitorPurpose === 'origem'
+              ? 'Ler localização de origem (QR ou código de barras)'
+              : qrLeitorPurpose === 'destino'
+                ? 'Ler localização de destino (QR ou código de barras)'
+                : qrLeitorPurpose === 'pesquisaArtigo'
+                  ? 'Ler artigo — pesquisa (QR ou código de barras)'
+                  : 'Ler código do artigo (QR ou código de barras)'
+          }
+          readerId="qr-reader-transf-localizacao"
+          closeOnScan
+          formatsToSupport={FORMATOS_QR_BARCODE}
+        />
+
+        {toast && <Toast type={toast.type} message={toast.message} onClose={() => setToast(null)} />}
+      </div>
+    </div>
+  );
+};
+
+export default TransferenciaLocalizacao;

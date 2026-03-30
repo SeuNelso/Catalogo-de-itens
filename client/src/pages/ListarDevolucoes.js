@@ -22,6 +22,10 @@ import {
   isRequisicaoDoUtilizadorAtual
 } from '../utils/requisicaoCriador';
 import { getRequisicoesArmazemOrigemIds } from '../utils/requisicoesArmazemOrigem';
+import {
+  podeFinalizarDevolucaoTransferenciasPendentes as devolucaoPodeFinalizarTransferenciasPendentes,
+  mensagemDocumentosEmFaltaFinalizarDevolucao
+} from '../utils/podeFinalizarDevolucaoTransferenciasPendentes';
 
 const normalize = (v) =>
   String(v || '')
@@ -618,10 +622,7 @@ const ListarDevolucoes = () => {
       .filter(Boolean);
     const reqIdNum = Number(r.id);
     const selectedApeadoId = apeadoDestinoByReqId[reqIdNum] ?? (apeadoArmazens[0]?.id ?? '');
-    const podeFinalizarTransferenciasPendentes =
-      Boolean(r.devolucao_tra_gerada_em) &&
-      Boolean(r.devolucao_tra_apeados_gerada_em) &&
-      Boolean(r.devolucao_trfl_pendente_gerada_em);
+    const podeFinalizarTransferenciasPendentes = devolucaoPodeFinalizarTransferenciasPendentes(r);
     const armazemCentralDestino =
       (armazensDestino || []).find((a) => Number(a?.id) === Number(r.armazem_id)) || null;
     const locsCentralAll = Array.isArray(armazemCentralDestino?.localizacoes)
@@ -1223,10 +1224,7 @@ const ListarDevolucoes = () => {
     const elegiveis = uniqueIds.filter((id) => {
       const r = byId.get(id);
       if (!r) return false;
-      const docsOk =
-        Boolean(r.devolucao_tra_gerada_em) &&
-        Boolean(r.devolucao_tra_apeados_gerada_em) &&
-        Boolean(r.devolucao_trfl_pendente_gerada_em);
+      const docsOk = devolucaoPodeFinalizarTransferenciasPendentes(r);
       if ((r.status === 'EM EXPEDICAO' || r.status === 'APEADOS') && docsOk) return true;
       if (r.status === 'Entregue' && (Boolean(r.devolucao_tra_gerada_em) || Boolean(r.tra_gerada_em))) {
         return true;
@@ -1664,7 +1662,8 @@ const ListarDevolucoes = () => {
                                   prepBloqueio
                                     ? 'Reservada para separação a outro operador'
                                     : !podeFinalizarTransferenciasPendentes
-                                      ? 'Para finalizar, gere TRA APEADOS e TRFL PENDENTE.'
+                                      ? mensagemDocumentosEmFaltaFinalizarDevolucao(r) ||
+                                        'Conclua os documentos em falta antes de finalizar.'
                                       : 'Marcar como Finalizado'
                                 }
                               >
@@ -1996,16 +1995,13 @@ const ListarDevolucoes = () => {
                   (x) => x.status === 'APEADOS' && Boolean(x.devolucao_trfl_gerada_em)
                 );
 
-                const podeFin = (x) =>
-                  Boolean(x.devolucao_tra_gerada_em) &&
-                  Boolean(x.devolucao_tra_apeados_gerada_em) &&
-                  Boolean(x.devolucao_trfl_pendente_gerada_em);
+                const podeFin = (x) => devolucaoPodeFinalizarTransferenciasPendentes(x);
                 const canFinalizarDevCtx =
                   Boolean(canDocsELogisticaPosSeparacao) &&
                   complete &&
                   all((x) => {
                     if (x.status === 'EM EXPEDICAO' || x.status === 'APEADOS') {
-                      return Boolean(x.devolucao_tra_gerada_em) && podeFin(x);
+                      return podeFin(x);
                     }
                     if (x.status === 'Entregue') {
                       return Boolean(x.devolucao_tra_gerada_em || x.tra_gerada_em);

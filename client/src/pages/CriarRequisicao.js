@@ -267,6 +267,10 @@ const CriarRequisicao = () => {
     if (user?.role === 'admin') {
       return origem;
     }
+    // Devolução (viatura → central): o servidor valida o acesso pelo armazém central (destino), não pela viatura.
+    if (isModoDevolucao) {
+      return origem;
+    }
     if (allowed.length > 0) {
       const set = new Set(allowed);
       return origem.filter((a) => set.has(a.id));

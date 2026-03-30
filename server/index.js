@@ -38,13 +38,23 @@ const { JWT_SECRET, PORT } = require('./config/secrets');
 const { createAuthenticateToken } = require('./middleware/auth');
 const {
   requisicaoScopeMiddleware,
+  requisicaoPerfilNegadoMiddleware,
   requisicaoArmazemOrigemAcessoPermitido,
   assertIdsRequisicoesPermitidas,
   createRequisicaoAuth,
   fetchRequisicoesArmazemIdsForUser,
+  usuarioPodeConsultarEstoqueLocalizacaoArmazem,
+  usuarioPodeConsultarStockPreparacaoRequisicao,
   usuarioRequisicaoArmazemJunctionTableExists,
   usuariosTemColunaRequisicoesArmazemOrigem,
 } = require('./middleware/requisicoesScope');
+const {
+  usuariosTemColunaPodeControloStock,
+  usuarioTemPermissaoControloStock,
+  armazemMovimentacaoInternaTableExists,
+} = require('./utils/usuarioDbColumns');
+const { buildExcelTransferencia } = require('./utils/buildExcelTransferencia');
+const { quantidadeStockNacionalNoArmazem } = require('./utils/stockNacionalMatch');
 const { createRequisicoesRouter } = require('./routes/requisicoes');
 const { createIntegrationRouter } = require('./routes/integrations');
 
@@ -1348,6 +1358,14 @@ app.post('/api/login', async (req, res) => {
     }
 
     const reqArmIds = await fetchRequisicoesArmazemIdsForUser(user.id);
+    const podeControloStockJwt =
+      user.role === 'admin'
+        ? true
+        : Boolean(
+            user.pode_controlo_stock === true ||
+              user.pode_controlo_stock === 't' ||
+              user.pode_controlo_stock === 1
+          );
 
     try {
       const token = jwt.sign(
@@ -1356,7 +1374,8 @@ app.post('/api/login', async (req, res) => {
           username: user.username || String(user.numero_colaborador || ''),
           role: user.role,
           requisicoes_armazem_origem_ids: reqArmIds,
-          requisicoes_armazem_origem_id: reqArmIds.length === 1 ? reqArmIds[0] : null
+          requisicoes_armazem_origem_id: reqArmIds.length === 1 ? reqArmIds[0] : null,
+          pode_controlo_stock: podeControloStockJwt
         },
         JWT_SECRET,
         { expiresIn: '24h' }
@@ -1376,7 +1395,8 @@ app.post('/api/login', async (req, res) => {
           numero_colaborador: user.numero_colaborador,
           role: user.role,
           requisicoes_armazem_origem_ids: reqArmIds,
-          requisicoes_armazem_origem_id: reqArmIds.length === 1 ? reqArmIds[0] : null
+          requisicoes_armazem_origem_id: reqArmIds.length === 1 ? reqArmIds[0] : null,
+          pode_controlo_stock: podeControloStockJwt
         }
       });
     } catch (jwtErr) {
@@ -1392,16 +1412,18 @@ app.post('/api/login', async (req, res) => {
 // Verificar token (dados atualizados da BD, incl. armazéns de requisições)
 app.get('/api/verify-token', authenticateToken, async (req, res) => {
   try {
+    const hasStockCol = await usuariosTemColunaPodeControloStock();
+    const stockSql = hasStockCol ? ', COALESCE(pode_controlo_stock, false) AS pode_controlo_stock' : '';
     let r;
     try {
       r = await pool.query(
-        `SELECT id, username, nome, sobrenome, telemovel, email, numero_colaborador, role FROM usuarios WHERE id = $1`,
+        `SELECT id, username, nome, sobrenome, telemovel, email, numero_colaborador, role${stockSql} FROM usuarios WHERE id = $1`,
         [req.user.id]
       );
     } catch (colErr) {
       if (colErr.code !== '42703') throw colErr;
       r = await pool.query(
-        `SELECT id, username, nome, email, numero_colaborador, role FROM usuarios WHERE id = $1`,
+        `SELECT id, username, nome, email, numero_colaborador, role${stockSql} FROM usuarios WHERE id = $1`,
         [req.user.id]
       );
     }
@@ -1410,6 +1432,12 @@ app.get('/api/verify-token', authenticateToken, async (req, res) => {
     }
     const u = r.rows[0];
     const reqArmIds = await fetchRequisicoesArmazemIdsForUser(u.id);
+    const podeControloStockUser =
+      u.role === 'admin'
+        ? true
+        : Boolean(
+            u.pode_controlo_stock === true || u.pode_controlo_stock === 't' || u.pode_controlo_stock === 1
+          );
     res.json({
       valid: true,
       user: {
@@ -1423,7 +1451,8 @@ app.get('/api/verify-token', authenticateToken, async (req, res) => {
         numero_colaborador: u.numero_colaborador,
         role: u.role,
         requisicoes_armazem_origem_ids: reqArmIds,
-        requisicoes_armazem_origem_id: reqArmIds.length === 1 ? reqArmIds[0] : null
+        requisicoes_armazem_origem_id: reqArmIds.length === 1 ? reqArmIds[0] : null,
+        pode_controlo_stock: podeControloStockUser
       }
     });
   } catch (e) {
@@ -2900,6 +2929,18 @@ app.post('/api/cadastrar-usuario', authenticateToken, async (req, res) => {
       }
     }
 
+    const marcarControloStock =
+      req.body.pode_controlo_stock === true ||
+      req.body.pode_controlo_stock === 'true' ||
+      req.body.pode_controlo_stock === 1 ||
+      req.body.pode_controlo_stock === '1';
+    if (marcarControloStock && (await usuariosTemColunaPodeControloStock())) {
+      await pool.query(
+        `UPDATE usuarios SET pode_controlo_stock = true WHERE LOWER(TRIM(username)) = LOWER(TRIM($1)) AND TRIM(numero_colaborador::text) = TRIM($2)`,
+        [username, numero_colaborador]
+      );
+    }
+
     res.status(201).json({ message: 'Usuário cadastrado com sucesso!' });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -2913,12 +2954,14 @@ app.get('/api/usuarios', authenticateToken, async (req, res) => {
   }
   const isAdmin = req.user.role === 'admin';
   try {
+    const hasStockCol = await usuariosTemColunaPodeControloStock();
+    const stockSel = hasStockCol ? ', COALESCE(u.pode_controlo_stock, false) AS pode_controlo_stock' : '';
     const hasJunc = await usuarioRequisicaoArmazemJunctionTableExists();
     const hasCol = await usuariosTemColunaRequisicoesArmazemOrigem();
     let sql;
     if (hasJunc) {
       sql = `
-      SELECT u.id, u.username, u.numero_colaborador, u.nome, u.sobrenome, u.telemovel, u.role, u.email, u.data_criacao,
+      SELECT u.id, u.username, u.numero_colaborador, u.nome, u.sobrenome, u.telemovel, u.role, u.email, u.data_criacao${stockSel},
         COALESCE(
           (SELECT json_agg(ura.armazem_id ORDER BY ura.armazem_id)
            FROM usuario_requisicoes_armazens ura WHERE ura.usuario_id = u.id),
@@ -2937,7 +2980,7 @@ app.get('/api/usuarios', authenticateToken, async (req, res) => {
     `;
     } else if (hasCol) {
       sql = `
-      SELECT u.id, u.username, u.numero_colaborador, u.nome, u.sobrenome, u.telemovel, u.role, u.email, u.data_criacao, u.requisicoes_armazem_origem_id,
+      SELECT u.id, u.username, u.numero_colaborador, u.nome, u.sobrenome, u.telemovel, u.role, u.email, u.data_criacao${stockSel}, u.requisicoes_armazem_origem_id,
         a.codigo as requisicoes_armazem_origem_codigo,
         a.descricao as requisicoes_armazem_origem_descricao,
         CASE WHEN u.requisicoes_armazem_origem_id IS NOT NULL
@@ -2952,7 +2995,7 @@ app.get('/api/usuarios', authenticateToken, async (req, res) => {
     `;
     } else {
       sql = `
-      SELECT u.id, u.username, u.numero_colaborador, u.nome, u.sobrenome, u.telemovel, u.role, u.email, u.data_criacao,
+      SELECT u.id, u.username, u.numero_colaborador, u.nome, u.sobrenome, u.telemovel, u.role, u.email, u.data_criacao${stockSel || ', false AS pode_controlo_stock'},
         NULL::integer AS requisicoes_armazem_origem_id,
         NULL::text AS requisicoes_armazem_origem_codigo,
         NULL::text AS requisicoes_armazem_origem_descricao,
@@ -2982,7 +3025,11 @@ app.get('/api/usuarios', authenticateToken, async (req, res) => {
       }
       if (!Array.isArray(ids)) ids = [];
       ids = ids.map((x) => parseInt(x, 10)).filter((n) => !Number.isNaN(n));
-      return { ...row, requisicoes_armazem_origem_ids: ids };
+      const podeStockRow =
+        row.pode_controlo_stock === true ||
+        row.pode_controlo_stock === 't' ||
+        row.pode_controlo_stock === 1;
+      return { ...row, requisicoes_armazem_origem_ids: ids, pode_controlo_stock: Boolean(podeStockRow) };
     });
     res.json(rows);
   } catch (error) {
@@ -3168,9 +3215,26 @@ app.patch('/api/usuarios/:id', authenticateToken, async (req, res) => {
     }
   }
 
+  if (isAdmin && Object.prototype.hasOwnProperty.call(req.body, 'pode_controlo_stock')) {
+    if (!(await usuariosTemColunaPodeControloStock())) {
+      return res.status(400).json({
+        error: 'Coluna pode_controlo_stock em falta na base de dados.',
+        detalhes: 'Execute: npm run db:migrate:usuarios-pode-controlo-stock',
+      });
+    }
+    const ps = Boolean(
+      req.body.pode_controlo_stock === true ||
+        req.body.pode_controlo_stock === 'true' ||
+        req.body.pode_controlo_stock === 1 ||
+        req.body.pode_controlo_stock === '1'
+    );
+    updates.push(`pode_controlo_stock = $${pi++}`);
+    params.push(ps);
+  }
+
   if (updates.length === 0 && (idsPayload === undefined || !isAdmin)) {
     return res.status(400).json({
-      error: 'Nada a atualizar. Envie dados do perfil, nova palavra-passe, ou (admin) role/armazéns.'
+      error: 'Nada a atualizar. Envie dados do perfil, nova palavra-passe, ou (admin) role/armazéns/controlo de stock.'
     });
   }
 
@@ -3190,6 +3254,7 @@ app.patch('/api/usuarios/:id', authenticateToken, async (req, res) => {
           'updated_at/created_at em usuarios: npm run db:migrate:usuarios-timestamps. ' +
           'sobrenome/telemovel: npm run db:migrate:usuarios-dados-pessoais. ' +
           'requisicoes_armazem_origem_id: npm run db:migrate:usuarios-req-armazem. ' +
+          'pode_controlo_stock: npm run db:migrate:usuarios-pode-controlo-stock. ' +
           'numero_colaborador: ver migrações / init-db.'
       });
     }
@@ -4772,11 +4837,19 @@ app.get('/api/download-template-unidades', authenticateToken, (req, res) => {
 // Listar todos os armazéns (com localizações quando a tabela existir)
 // Query `destino_requisicao=1`: não aplica o filtro de supervisor — necessário para escolher
 // armazém destino (viatura, EPI, APEADO, etc.) ao criar/editar requisição; a origem continua validada no POST.
+// Query `consulta_estoque_localizacao=1`: para backoffice_armazem, lista só armazéns associados ao utilizador
+// (como supervisor já tem na listagem geral). Usado pela página de consulta localizações/stock.
 app.get('/api/armazens', authenticateToken, async (req, res) => {
   try {
-    const { ativo, destino_requisicao } = req.query;
+    const { ativo, destino_requisicao, consulta_estoque_localizacao } = req.query;
     const listagemParaDestinoRequisicao =
       String(destino_requisicao || '') === '1' || String(destino_requisicao || '').toLowerCase() === 'true';
+    const listagemConsultaEstoqueLocalizacao =
+      String(consulta_estoque_localizacao || '') === '1' ||
+      String(consulta_estoque_localizacao || '').toLowerCase() === 'true';
+    if (listagemConsultaEstoqueLocalizacao && !usuarioTemPermissaoControloStock(req)) {
+      return res.json([]);
+    }
     let query = 'SELECT * FROM armazens WHERE 1=1';
     const params = [];
 
@@ -4799,7 +4872,12 @@ app.get('/api/armazens', authenticateToken, async (req, res) => {
     }
 
     let armazens = result.rows;
-    if (req.user && req.user.role === 'supervisor_armazem' && !listagemParaDestinoRequisicao) {
+    const aplicarFiltroArmazensPorUtilizador =
+      req.user &&
+      !listagemParaDestinoRequisicao &&
+      (req.user.role === 'supervisor_armazem' ||
+        (listagemConsultaEstoqueLocalizacao && req.user.role === 'backoffice_armazem'));
+    if (aplicarFiltroArmazensPorUtilizador) {
       const allowed = await fetchRequisicoesArmazemIdsForUser(req.user.id);
       if (!allowed.length) {
         return res.json([]);
@@ -4920,6 +4998,824 @@ app.get('/api/armazens/:id', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('Erro ao buscar armazém:', error);
     res.status(500).json({ error: 'Erro ao buscar armazém', details: error.message });
+  }
+});
+
+const rolesEstoquePorLocalizacao = ['admin', 'backoffice_armazem', 'supervisor_armazem'];
+/** Modal «Estoque por localização» em Armazéns: substituir grelha e aplicar stock nacional ao recebimento — só admin. */
+const rolesGerirEstoqueLocalizacaoModal = ['admin'];
+/** Export TRFL a partir de tickets de movimentação interna — apenas estes perfis (restrito face a outros com controlo de stock). */
+const rolesTrflMovimentacaoInterna = ['admin', 'backoffice_armazem', 'supervisor_armazem'];
+
+// Listar stock por localização (itens + quantidades) — apenas armazéns centrais
+app.get('/api/armazens/:armazemId/localizacoes/:locId/estoque', authenticateToken, async (req, res) => {
+  if (!usuarioTemPermissaoControloStock(req)) {
+    return res.status(403).json({
+      error:
+        'O seu perfil não tem permissão para controlo de stock. Um administrador pode ativar esta opção no utilizador.',
+      code: 'CONTROLO_STOCK_NEGADO',
+    });
+  }
+  if (!rolesEstoquePorLocalizacao.includes(req.user.role)) {
+    return res.status(403).json({ error: 'Sem permissão para consultar estoque por localização' });
+  }
+  try {
+    const armazemId = parseInt(req.params.armazemId, 10);
+    const locId = parseInt(req.params.locId, 10);
+    if (!Number.isFinite(armazemId) || !Number.isFinite(locId)) {
+      return res.status(400).json({ error: 'IDs inválidos' });
+    }
+    const podeArm = await usuarioPodeConsultarEstoqueLocalizacaoArmazem(req, armazemId);
+    if (!podeArm) {
+      return res.status(403).json({
+        error: 'Só pode consultar stock dos armazéns centrais associados ao seu utilizador.',
+        code: 'CONSULTA_ESTOQUE_ARMAZEM_NEGADA',
+      });
+    }
+    const armRow = await pool.query(
+      'SELECT LOWER(TRIM(COALESCE(tipo, \'\'))) AS tipo FROM armazens WHERE id = $1',
+      [armazemId]
+    );
+    if (armRow.rows.length === 0) {
+      return res.status(404).json({ error: 'Armazém não encontrado' });
+    }
+    const tipoArm = String(armRow.rows[0].tipo || 'viatura').trim().toLowerCase();
+    if (tipoArm !== 'central') {
+      return res.status(403).json({ error: 'Estoque por localização só está disponível para armazéns centrais.' });
+    }
+    const chk = await pool.query(
+      'SELECT id FROM armazens_localizacoes WHERE id = $1 AND armazem_id = $2',
+      [locId, armazemId]
+    );
+    if (chk.rows.length === 0) {
+      return res.status(404).json({ error: 'Localização não encontrada neste armazém' });
+    }
+    const r = await pool.query(
+      `SELECT ali.item_id, i.codigo, i.descricao, ali.quantidade::float AS quantidade
+       FROM armazens_localizacao_item ali
+       INNER JOIN itens i ON i.id = ali.item_id
+       WHERE ali.localizacao_id = $1
+       ORDER BY i.codigo ASC`,
+      [locId]
+    );
+    return res.json(r.rows);
+  } catch (e) {
+    if (e.code === '42P01') {
+      return res.status(503).json({
+        error: 'Módulo de estoque por localização não está instalado.',
+        hint: 'Execute: npm run db:migrate:localizacao-estoque'
+      });
+    }
+    console.error('Erro GET estoque localização:', e);
+    return res.status(500).json({ error: 'Erro ao listar estoque', details: e.message });
+  }
+});
+
+/** Preparação de requisição: localizações do central onde o artigo tem stock (>0). Requer escopo de requisições. */
+app.get(
+  '/api/armazens/:armazemId/itens/:itemId/localizacoes-com-stock',
+  authenticateToken,
+  requisicaoPerfilNegadoMiddleware,
+  requisicaoScopeMiddleware,
+  async (req, res) => {
+    try {
+      const armazemId = parseInt(req.params.armazemId, 10);
+      const itemId = parseInt(req.params.itemId, 10);
+      if (!Number.isFinite(armazemId) || !Number.isFinite(itemId)) {
+        return res.status(400).json({ error: 'armazemId ou itemId inválido' });
+      }
+      if (!usuarioPodeConsultarStockPreparacaoRequisicao(req, armazemId)) {
+        return res.status(403).json({
+          error: 'Sem permissão para consultar stock deste armazém.',
+          code: 'PREPARACAO_STOCK_ARMAZEM_NEGADO',
+        });
+      }
+      const arm = await pool.query(
+        `SELECT LOWER(TRIM(COALESCE(tipo,''))) AS t FROM armazens WHERE id = $1`,
+        [armazemId]
+      );
+      if (arm.rows.length === 0) {
+        return res.status(404).json({ error: 'Armazém não encontrado' });
+      }
+      if (String(arm.rows[0].t || '').toLowerCase() !== 'central') {
+        return res.json({
+          armazem_central: false,
+          modulo_instalado: false,
+          localizacoes: null,
+        });
+      }
+      const itemOk = await pool.query('SELECT 1 FROM itens WHERE id = $1', [itemId]);
+      if (itemOk.rows.length === 0) {
+        return res.status(404).json({ error: 'Artigo não encontrado' });
+      }
+      try {
+        const r = await pool.query(
+          `SELECT al.localizacao, ali.quantidade::float AS quantidade
+           FROM armazens_localizacao_item ali
+           INNER JOIN armazens_localizacoes al ON al.id = ali.localizacao_id AND al.armazem_id = $1
+           WHERE ali.item_id = $2 AND ali.quantidade > 0
+           ORDER BY al.localizacao ASC`,
+          [armazemId, itemId]
+        );
+        return res.json({
+          armazem_central: true,
+          modulo_instalado: true,
+          localizacoes: r.rows,
+        });
+      } catch (e) {
+        if (e.code === '42P01') {
+          return res.json({
+            armazem_central: true,
+            modulo_instalado: false,
+            localizacoes: null,
+          });
+        }
+        throw e;
+      }
+    } catch (e) {
+      console.error('Erro GET localizacoes-com-stock preparação:', e);
+      return res.status(500).json({ error: 'Erro ao consultar stock por localização', details: e.message });
+    }
+  }
+);
+
+// Pesquisa de artigo no armazém central: localizações com quantidade > 0 (consulta)
+app.get('/api/armazens/:armazemId/estoque-artigo-lookup', authenticateToken, async (req, res) => {
+  if (!usuarioTemPermissaoControloStock(req)) {
+    return res.status(403).json({
+      error:
+        'O seu perfil não tem permissão para controlo de stock. Um administrador pode ativar esta opção no utilizador.',
+      code: 'CONTROLO_STOCK_NEGADO',
+    });
+  }
+  if (!rolesEstoquePorLocalizacao.includes(req.user.role)) {
+    return res.status(403).json({ error: 'Sem permissão para consultar estoque por localização' });
+  }
+  try {
+    const armazemId = parseInt(req.params.armazemId, 10);
+    if (!Number.isFinite(armazemId)) {
+      return res.status(400).json({ error: 'armazemId inválido' });
+    }
+    const podeArm = await usuarioPodeConsultarEstoqueLocalizacaoArmazem(req, armazemId);
+    if (!podeArm) {
+      return res.status(403).json({
+        error: 'Só pode consultar stock dos armazéns centrais associados ao seu utilizador.',
+        code: 'CONSULTA_ESTOQUE_ARMAZEM_NEGADA',
+      });
+    }
+    const armRow = await pool.query(
+      'SELECT LOWER(TRIM(COALESCE(tipo, \'\'))) AS tipo FROM armazens WHERE id = $1',
+      [armazemId]
+    );
+    if (armRow.rows.length === 0) {
+      return res.status(404).json({ error: 'Armazém não encontrado' });
+    }
+    const tipoArm = String(armRow.rows[0].tipo || 'viatura').trim().toLowerCase();
+    if (tipoArm !== 'central') {
+      return res.status(403).json({ error: 'Apenas armazéns centrais.' });
+    }
+    const q = String(req.query.q || '').trim();
+    if (q.length < 2) {
+      return res.status(400).json({ error: 'Indique pelo menos 2 caracteres (código ou descrição).' });
+    }
+    const maxItens = Math.min(parseInt(req.query.max_itens, 10) || 30, 50);
+    const r = await pool.query(
+      `WITH matching AS (
+         SELECT i.id
+         FROM itens i
+         INNER JOIN armazens_localizacao_item ali ON ali.item_id = i.id AND ali.quantidade > 0
+         INNER JOIN armazens_localizacoes al ON al.id = ali.localizacao_id AND al.armazem_id = $1
+         WHERE strpos(lower(i.codigo), lower($2::text)) > 0
+            OR strpos(lower(COALESCE(i.descricao, '')), lower($2::text)) > 0
+         GROUP BY i.id
+         ORDER BY MIN(i.codigo)
+         LIMIT $3
+       )
+       SELECT i.id AS item_id, i.codigo, i.descricao,
+         al.id AS localizacao_id, al.localizacao,
+         COALESCE(al.tipo_localizacao, 'normal') AS tipo_localizacao,
+         ali.quantidade::float AS quantidade
+       FROM matching m
+       INNER JOIN itens i ON i.id = m.id
+       INNER JOIN armazens_localizacao_item ali ON ali.item_id = i.id AND ali.quantidade > 0
+       INNER JOIN armazens_localizacoes al ON al.id = ali.localizacao_id AND al.armazem_id = $1
+       ORDER BY i.codigo ASC, al.localizacao ASC`,
+      [armazemId, q, maxItens]
+    );
+    const byItem = new Map();
+    for (const row of r.rows || []) {
+      const id = row.item_id;
+      if (!byItem.has(id)) {
+        byItem.set(id, {
+          item_id: id,
+          codigo: row.codigo,
+          descricao: row.descricao,
+          localizacoes: [],
+        });
+      }
+      byItem.get(id).localizacoes.push({
+        localizacao_id: row.localizacao_id,
+        localizacao: row.localizacao,
+        tipo_localizacao: row.tipo_localizacao,
+        quantidade: row.quantidade,
+      });
+    }
+    return res.json({
+      query: q,
+      itens: [...byItem.values()],
+      limite_itens: maxItens,
+      possivelmente_mais: byItem.size >= maxItens,
+    });
+  } catch (e) {
+    if (e.code === '42P01') {
+      return res.status(503).json({
+        error: 'Módulo de estoque por localização não está instalado.',
+        hint: 'Execute: npm run db:migrate:localizacao-estoque',
+      });
+    }
+    console.error('Erro GET estoque-artigo-lookup:', e);
+    return res.status(500).json({ error: 'Erro na pesquisa', details: e.message });
+  }
+});
+
+// Substituir stock da localização (transação) — apenas armazéns centrais
+app.put('/api/armazens/:armazemId/localizacoes/:locId/estoque', authenticateToken, async (req, res) => {
+  if (!usuarioTemPermissaoControloStock(req)) {
+    return res.status(403).json({
+      error:
+        'O seu perfil não tem permissão para controlo de stock. Um administrador pode ativar esta opção no utilizador.',
+      code: 'CONTROLO_STOCK_NEGADO',
+    });
+  }
+  if (!rolesGerirEstoqueLocalizacaoModal.includes(req.user.role)) {
+    return res.status(403).json({
+      error: 'Apenas administradores podem atualizar o estoque por localização.',
+      code: 'GERIR_ESTOQUE_LOCALIZACAO_ADMIN',
+    });
+  }
+  try {
+    const armazemId = parseInt(req.params.armazemId, 10);
+    const locId = parseInt(req.params.locId, 10);
+    if (!Number.isFinite(armazemId) || !Number.isFinite(locId)) {
+      return res.status(400).json({ error: 'IDs inválidos' });
+    }
+    const armRow = await pool.query(
+      'SELECT LOWER(TRIM(COALESCE(tipo, \'\'))) AS tipo FROM armazens WHERE id = $1',
+      [armazemId]
+    );
+    if (armRow.rows.length === 0) {
+      return res.status(404).json({ error: 'Armazém não encontrado' });
+    }
+    const tipoArm = String(armRow.rows[0].tipo || 'viatura').trim().toLowerCase();
+    if (tipoArm !== 'central') {
+      return res.status(403).json({ error: 'Estoque por localização só está disponível para armazéns centrais.' });
+    }
+    const podeArmPut = await usuarioPodeConsultarEstoqueLocalizacaoArmazem(req, armazemId);
+    if (!podeArmPut) {
+      return res.status(403).json({
+        error: 'Só pode atualizar stock dos armazéns centrais associados ao seu utilizador.',
+        code: 'ATUALIZACAO_ESTOQUE_ARMAZEM_NEGADA',
+      });
+    }
+    const chk = await pool.query(
+      'SELECT id FROM armazens_localizacoes WHERE id = $1 AND armazem_id = $2',
+      [locId, armazemId]
+    );
+    if (chk.rows.length === 0) {
+      return res.status(404).json({ error: 'Localização não encontrada neste armazém' });
+    }
+    const linhas = req.body?.linhas;
+    if (!Array.isArray(linhas)) {
+      return res.status(400).json({ error: 'Body inválido: "linhas" (array) é obrigatório' });
+    }
+    const normalized = [];
+    const seen = new Set();
+    for (const row of linhas) {
+      const itemId = parseInt(row?.item_id, 10);
+      if (!Number.isFinite(itemId)) continue;
+      if (seen.has(itemId)) continue;
+      seen.add(itemId);
+      const q = Number(row?.quantidade);
+      if (!Number.isFinite(q) || q < 0) {
+        return res.status(400).json({ error: `Quantidade inválida para item_id ${itemId}` });
+      }
+      normalized.push({ item_id: itemId, quantidade: q });
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('DELETE FROM armazens_localizacao_item WHERE localizacao_id = $1', [locId]);
+      for (const { item_id, quantidade } of normalized) {
+        if (quantidade === 0) continue;
+        const ir = await client.query('SELECT 1 FROM itens WHERE id = $1', [item_id]);
+        if (ir.rows.length === 0) {
+          await client.query('ROLLBACK');
+          return res.status(400).json({ error: `Item #${item_id} não existe` });
+        }
+        await client.query(
+          'INSERT INTO armazens_localizacao_item (localizacao_id, item_id, quantidade) VALUES ($1, $2, $3)',
+          [locId, item_id, quantidade]
+        );
+      }
+      await client.query('COMMIT');
+      const n = normalized.filter((x) => x.quantidade > 0).length;
+      return res.json({ ok: true, count: n });
+    } catch (inner) {
+      await client.query('ROLLBACK');
+      throw inner;
+    } finally {
+      client.release();
+    }
+  } catch (e) {
+    if (e.code === '42P01') {
+      return res.status(503).json({
+        error: 'Módulo de estoque por localização não está instalado.',
+        hint: 'Execute: npm run db:migrate:localizacao-estoque'
+      });
+    }
+    console.error('Erro PUT estoque localização:', e);
+    return res.status(500).json({ error: 'Erro ao gravar estoque', details: e.message });
+  }
+});
+
+// Preencher localização de recebimento com quantidades do stock nacional (importação Excel → armazens_item),
+// fazendo corresponder o texto `armazens_item.armazem` à descrição do armazém central (`armazens.descricao`).
+app.post('/api/armazens/:armazemId/aplicar-stock-nacional-recebimento', authenticateToken, async (req, res) => {
+  if (!usuarioTemPermissaoControloStock(req)) {
+    return res.status(403).json({
+      error:
+        'O seu perfil não tem permissão para controlo de stock. Um administrador pode ativar esta opção no utilizador.',
+      code: 'CONTROLO_STOCK_NEGADO',
+    });
+  }
+  if (!rolesGerirEstoqueLocalizacaoModal.includes(req.user.role)) {
+    return res.status(403).json({
+      error: 'Apenas administradores podem aplicar stock nacional ao recebimento.',
+      code: 'GERIR_ESTOQUE_LOCALIZACAO_ADMIN',
+    });
+  }
+  try {
+    const armazemId = parseInt(req.params.armazemId, 10);
+    if (!Number.isFinite(armazemId)) {
+      return res.status(400).json({ error: 'armazemId inválido' });
+    }
+    const podeArmPut = await usuarioPodeConsultarEstoqueLocalizacaoArmazem(req, armazemId);
+    if (!podeArmPut) {
+      return res.status(403).json({
+        error: 'Só pode atualizar stock dos armazéns centrais associados ao seu utilizador.',
+        code: 'ATUALIZACAO_ESTOQUE_ARMAZEM_NEGADA',
+      });
+    }
+    const armRow = await pool.query(
+      'SELECT id, descricao, LOWER(TRIM(COALESCE(tipo, \'\'))) AS tipo FROM armazens WHERE id = $1',
+      [armazemId]
+    );
+    if (armRow.rows.length === 0) {
+      return res.status(404).json({ error: 'Armazém não encontrado' });
+    }
+    const tipoArm = String(armRow.rows[0].tipo || 'viatura').trim().toLowerCase();
+    if (tipoArm !== 'central') {
+      return res.status(403).json({ error: 'Apenas armazéns centrais têm recebimento com stock por localização.' });
+    }
+    const armazemDescricao = String(armRow.rows[0].descricao || '').trim();
+    if (!armazemDescricao) {
+      return res.status(400).json({
+        error: 'O armazém não tem descrição; é necessária para ligar ao texto das colunas do stock nacional.',
+      });
+    }
+
+    const locRec = await pool.query(
+      `SELECT id FROM armazens_localizacoes
+       WHERE armazem_id = $1 AND LOWER(TRIM(COALESCE(tipo_localizacao, ''))) = 'recebimento'
+       ORDER BY id ASC LIMIT 1`,
+      [armazemId]
+    );
+    if (locRec.rows.length === 0) {
+      return res.status(400).json({
+        error: 'Não existe localização de tipo Recebimento neste armazém central.',
+      });
+    }
+    const recebimentoLocId = locRec.rows[0].id;
+
+    const modo = String(req.body?.modo || 'definir').toLowerCase() === 'somar' ? 'somar' : 'definir';
+    const dryRun = Boolean(req.body?.dry_run);
+
+    let aiRows;
+    try {
+      aiRows = await pool.query(
+        'SELECT item_id, armazem, quantidade::float AS quantidade FROM armazens_item ORDER BY item_id'
+      );
+    } catch (e) {
+      if (e.code === '42P01') {
+        return res.status(503).json({
+          error: 'Tabela armazens_item (stock nacional) não existe.',
+          hint: 'Importe stock nacional ou execute as migrações necessárias.',
+        });
+      }
+      throw e;
+    }
+
+    const byItem = new Map();
+    for (const row of aiRows.rows || []) {
+      const iid = row.item_id;
+      if (iid == null) continue;
+      if (!byItem.has(iid)) byItem.set(iid, []);
+      byItem.get(iid).push({ armazem: row.armazem, quantidade: row.quantidade });
+    }
+
+    const armazemRef = { descricao: armazemDescricao };
+    const updates = [];
+    for (const [itemId, rows] of byItem) {
+      const q = quantidadeStockNacionalNoArmazem(rows, armazemRef);
+      if (q == null || !Number.isFinite(q) || q <= 0) continue;
+      updates.push({ item_id: itemId, quantidade_nacional: q });
+    }
+
+    if (updates.length === 0) {
+      return res.json({
+        ok: true,
+        dry_run: dryRun,
+        modo,
+        itens_atualizados: 0,
+        message:
+          'Nenhum artigo com stock nacional corresponde à descrição deste armazém. Verifique a descrição do armazém e os cabeçalhos/colunas da importação.',
+      });
+    }
+
+    const ids = updates.map((u) => u.item_id);
+    const codRes = await pool.query('SELECT id, codigo FROM itens WHERE id = ANY($1::int[])', [ids]);
+    const codById = new Map(codRes.rows.map((r) => [r.id, r.codigo]));
+    const enriched = updates.map((u) => ({
+      item_id: u.item_id,
+      codigo: codById.get(u.item_id) || String(u.item_id),
+      quantidade_nacional: u.quantidade_nacional,
+    }));
+
+    if (dryRun) {
+      const amostra = enriched.slice(0, 25);
+      return res.json({
+        ok: true,
+        dry_run: true,
+        modo,
+        armazem_descricao: armazemDescricao,
+        itens_atualizados: enriched.length,
+        amostra,
+      });
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      let aplicados = 0;
+      for (const u of enriched) {
+        const ir = await client.query('SELECT 1 FROM itens WHERE id = $1', [u.item_id]);
+        if (ir.rows.length === 0) continue;
+        const cur = await client.query(
+          'SELECT quantidade FROM armazens_localizacao_item WHERE localizacao_id = $1 AND item_id = $2',
+          [recebimentoLocId, u.item_id]
+        );
+        const base = cur.rows.length ? Number(cur.rows[0].quantidade) : 0;
+        const qNac = Number(u.quantidade_nacional);
+        const newQ = modo === 'somar' ? base + qNac : qNac;
+        if (!Number.isFinite(newQ) || newQ < 0) {
+          await client.query('ROLLBACK');
+          return res.status(400).json({ error: `Quantidade inválida após cálculo para item ${u.codigo}` });
+        }
+        if (newQ === 0) {
+          await client.query(
+            'DELETE FROM armazens_localizacao_item WHERE localizacao_id = $1 AND item_id = $2',
+            [recebimentoLocId, u.item_id]
+          );
+        } else {
+          await client.query(
+            `INSERT INTO armazens_localizacao_item (localizacao_id, item_id, quantidade)
+             VALUES ($1, $2, $3::numeric)
+             ON CONFLICT (localizacao_id, item_id) DO UPDATE SET
+               quantidade = EXCLUDED.quantidade,
+               updated_at = CURRENT_TIMESTAMP`,
+            [recebimentoLocId, u.item_id, newQ]
+          );
+        }
+        aplicados += 1;
+      }
+      await client.query('COMMIT');
+      return res.json({
+        ok: true,
+        dry_run: false,
+        modo,
+        armazem_descricao: armazemDescricao,
+        recebimento_localizacao_id: recebimentoLocId,
+        itens_atualizados: aplicados,
+      });
+    } catch (inner) {
+      await client.query('ROLLBACK');
+      throw inner;
+    } finally {
+      client.release();
+    }
+  } catch (e) {
+    if (e.code === '42P01') {
+      return res.status(503).json({
+        error: 'Módulo de estoque por localização não está instalado.',
+        hint: 'Execute: npm run db:migrate:localizacao-estoque',
+      });
+    }
+    console.error('Erro POST aplicar-stock-nacional-recebimento:', e);
+    return res.status(500).json({ error: 'Erro ao aplicar stock nacional', details: e.message });
+  }
+});
+
+// Mover stock entre duas localizações do mesmo armazém central (sem requisição)
+app.post('/api/armazens/:armazemId/transferencia-localizacao', authenticateToken, async (req, res) => {
+  if (!usuarioTemPermissaoControloStock(req)) {
+    return res.status(403).json({
+      error:
+        'O seu perfil não tem permissão para controlo de stock. Um administrador pode ativar esta opção no utilizador.',
+      code: 'CONTROLO_STOCK_NEGADO',
+    });
+  }
+  if (!rolesEstoquePorLocalizacao.includes(req.user.role)) {
+    return res.status(403).json({ error: 'Sem permissão para transferir stock entre localizações' });
+  }
+  try {
+    const armazemId = parseInt(req.params.armazemId, 10);
+    const origemLocId = parseInt(req.body?.origem_localizacao_id, 10);
+    const destinoLocId = parseInt(req.body?.destino_localizacao_id, 10);
+    if (!Number.isFinite(armazemId) || !Number.isFinite(origemLocId) || !Number.isFinite(destinoLocId)) {
+      return res.status(400).json({ error: 'armazemId, origem_localizacao_id e destino_localizacao_id são obrigatórios' });
+    }
+    if (origemLocId === destinoLocId) {
+      return res.status(400).json({ error: 'A localização de origem e de destino devem ser diferentes' });
+    }
+    const armRow = await pool.query(
+      'SELECT LOWER(TRIM(COALESCE(tipo, \'\'))) AS tipo FROM armazens WHERE id = $1',
+      [armazemId]
+    );
+    if (armRow.rows.length === 0) {
+      return res.status(404).json({ error: 'Armazém não encontrado' });
+    }
+    const tipoArm = String(armRow.rows[0].tipo || 'viatura').trim().toLowerCase();
+    if (tipoArm !== 'central') {
+      return res.status(403).json({ error: 'Transferência entre localizações só é permitida em armazéns centrais.' });
+    }
+    const podeArm = await usuarioPodeConsultarEstoqueLocalizacaoArmazem(req, armazemId);
+    if (!podeArm) {
+      return res.status(403).json({
+        error: 'Só pode movimentar stock nos armazéns centrais associados ao seu utilizador.',
+        code: 'TRANSFERENCIA_LOCALIZACAO_ARMAZEM_NEGADA',
+      });
+    }
+    const chkOrig = await pool.query(
+      'SELECT id FROM armazens_localizacoes WHERE id = $1 AND armazem_id = $2',
+      [origemLocId, armazemId]
+    );
+    const chkDst = await pool.query(
+      'SELECT id FROM armazens_localizacoes WHERE id = $1 AND armazem_id = $2',
+      [destinoLocId, armazemId]
+    );
+    if (chkOrig.rows.length === 0 || chkDst.rows.length === 0) {
+      return res.status(404).json({ error: 'Uma ou ambas as localizações não pertencem a este armazém' });
+    }
+    const linhas = req.body?.linhas;
+    if (!Array.isArray(linhas) || linhas.length === 0) {
+      return res.status(400).json({ error: 'Body inválido: "linhas" (array não vazio) é obrigatório' });
+    }
+    const normalized = [];
+    const seen = new Set();
+    for (const row of linhas) {
+      const itemId = parseInt(row?.item_id, 10);
+      if (!Number.isFinite(itemId)) continue;
+      if (seen.has(itemId)) continue;
+      seen.add(itemId);
+      const q = Number(row?.quantidade);
+      if (!Number.isFinite(q) || q <= 0) {
+        return res.status(400).json({ error: `Quantidade inválida para item_id ${itemId} (deve ser > 0)` });
+      }
+      normalized.push({ item_id: itemId, quantidade: q });
+    }
+    if (normalized.length === 0) {
+      return res.status(400).json({ error: 'Nenhuma linha válida em "linhas"' });
+    }
+
+    const temTabelaTickets = await armazemMovimentacaoInternaTableExists();
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      let moved = 0;
+      const ticketIds = [];
+      for (const { item_id: itemId, quantidade: q } of normalized) {
+        const ir = await client.query('SELECT 1 FROM itens WHERE id = $1', [itemId]);
+        if (ir.rows.length === 0) {
+          await client.query('ROLLBACK');
+          return res.status(400).json({ error: `Item #${itemId} não existe` });
+        }
+        const sub = await client.query(
+          `UPDATE armazens_localizacao_item
+           SET quantidade = quantidade - $1::numeric, updated_at = CURRENT_TIMESTAMP
+           WHERE localizacao_id = $2 AND item_id = $3 AND quantidade >= $1::numeric
+           RETURNING quantidade`,
+          [q, origemLocId, itemId]
+        );
+        if (sub.rows.length === 0) {
+          await client.query('ROLLBACK');
+          const cod = await pool.query('SELECT codigo FROM itens WHERE id = $1', [itemId]);
+          const c = cod.rows[0]?.codigo || String(itemId);
+          return res.status(400).json({
+            error: `Stock insuficiente na localização de origem para o artigo ${c}.`,
+            item_id: itemId,
+            code: 'STOCK_ORIGEM_INSUFICIENTE',
+          });
+        }
+        const rest = Number(sub.rows[0].quantidade);
+        if (rest <= 0) {
+          await client.query(
+            'DELETE FROM armazens_localizacao_item WHERE localizacao_id = $1 AND item_id = $2',
+            [origemLocId, itemId]
+          );
+        }
+        await client.query(
+          `INSERT INTO armazens_localizacao_item (localizacao_id, item_id, quantidade)
+           VALUES ($1, $2, $3::numeric)
+           ON CONFLICT (localizacao_id, item_id) DO UPDATE SET
+             quantidade = armazens_localizacao_item.quantidade + EXCLUDED.quantidade,
+             updated_at = CURRENT_TIMESTAMP`,
+          [destinoLocId, itemId, q]
+        );
+        moved += 1;
+        if (temTabelaTickets) {
+          const ti = await client.query(
+            `INSERT INTO armazem_movimentacao_interna (
+               armazem_id, usuario_id, origem_localizacao_id, destino_localizacao_id, item_id, quantidade
+             ) VALUES ($1, $2, $3, $4, $5, $6::numeric) RETURNING id`,
+            [armazemId, req.user.id, origemLocId, destinoLocId, itemId, q]
+          );
+          ticketIds.push(ti.rows[0].id);
+        }
+      }
+      await client.query('COMMIT');
+      return res.json({ ok: true, movimentos: moved, ticket_ids: ticketIds });
+    } catch (inner) {
+      await client.query('ROLLBACK');
+      throw inner;
+    } finally {
+      client.release();
+    }
+  } catch (e) {
+    if (e.code === '42P01') {
+      return res.status(503).json({
+        error: 'Módulo de estoque por localização não está instalado.',
+        hint: 'Execute: npm run db:migrate:localizacao-estoque',
+      });
+    }
+    console.error('Erro POST transferencia-localizacao:', e);
+    return res.status(500).json({ error: 'Erro ao transferir stock', details: e.message });
+  }
+});
+
+// Fila de tickets de movimentação interna (mesmo armazém central)
+app.get('/api/armazens/:armazemId/movimentacoes-internas', authenticateToken, async (req, res) => {
+  if (!usuarioTemPermissaoControloStock(req)) {
+    return res.status(403).json({
+      error:
+        'O seu perfil não tem permissão para controlo de stock. Um administrador pode ativar esta opção no utilizador.',
+      code: 'CONTROLO_STOCK_NEGADO',
+    });
+  }
+  if (!rolesEstoquePorLocalizacao.includes(req.user.role)) {
+    return res.status(403).json({ error: 'Sem permissão' });
+  }
+  try {
+    const armazemId = parseInt(req.params.armazemId, 10);
+    if (!Number.isFinite(armazemId)) {
+      return res.status(400).json({ error: 'armazemId inválido' });
+    }
+    const podeArm = await usuarioPodeConsultarEstoqueLocalizacaoArmazem(req, armazemId);
+    if (!podeArm) {
+      return res.status(403).json({ error: 'Sem acesso a este armazém.' });
+    }
+    if (!(await armazemMovimentacaoInternaTableExists())) {
+      return res.json([]);
+    }
+    let limit = parseInt(req.query.limit, 10);
+    if (!Number.isFinite(limit) || limit < 1) limit = 150;
+    if (limit > 500) limit = 500;
+    const apenasPendente =
+      String(req.query.pendente_trfl || '') === '1' || String(req.query.pendente_trfl || '').toLowerCase() === 'true';
+    let sql = `
+      SELECT ami.id, ami.armazem_id, ami.usuario_id, ami.origem_localizacao_id, ami.destino_localizacao_id,
+        ami.item_id, ami.quantidade::float AS quantidade, ami.trfl_gerada_em, ami.created_at,
+        a.codigo AS armazem_codigo, i.codigo AS item_codigo, i.descricao AS item_descricao,
+        lo.localizacao AS origem_localizacao_label, ld.localizacao AS destino_localizacao_label
+      FROM armazem_movimentacao_interna ami
+      INNER JOIN armazens a ON a.id = ami.armazem_id
+      INNER JOIN itens i ON i.id = ami.item_id
+      INNER JOIN armazens_localizacoes lo ON lo.id = ami.origem_localizacao_id
+      INNER JOIN armazens_localizacoes ld ON ld.id = ami.destino_localizacao_id
+      WHERE ami.armazem_id = $1`;
+    const params = [armazemId];
+    if (apenasPendente) {
+      sql += ' AND ami.trfl_gerada_em IS NULL';
+    }
+    sql += ` ORDER BY ami.created_at DESC, ami.id DESC LIMIT $2`;
+    params.push(limit);
+    const r = await pool.query(sql, params);
+    return res.json(r.rows);
+  } catch (e) {
+    console.error('Erro GET movimentacoes-internas:', e);
+    return res.status(500).json({ error: 'Erro ao listar movimentações', details: e.message });
+  }
+});
+
+// TRFL a partir de tickets selecionados (modelo interno Date, OriginWarehouse, …)
+app.post('/api/armazens/:armazemId/movimentacoes-internas/export-trfl', authenticateToken, async (req, res) => {
+  if (!usuarioTemPermissaoControloStock(req)) {
+    return res.status(403).json({
+      error:
+        'O seu perfil não tem permissão para controlo de stock. Um administrador pode ativar esta opção no utilizador.',
+      code: 'CONTROLO_STOCK_NEGADO',
+    });
+  }
+  if (!rolesTrflMovimentacaoInterna.includes(req.user.role)) {
+    return res.status(403).json({
+      error: 'Apenas administrador, backoffice de armazém ou supervisor de armazém podem gerar TRFL desta fila.',
+      code: 'TRFL_MOV_INTERN_NEGADO',
+    });
+  }
+  try {
+    const armazemId = parseInt(req.params.armazemId, 10);
+    if (!Number.isFinite(armazemId)) {
+      return res.status(400).json({ error: 'armazemId inválido' });
+    }
+    const podeArm = await usuarioPodeConsultarEstoqueLocalizacaoArmazem(req, armazemId);
+    if (!podeArm) {
+      return res.status(403).json({ error: 'Sem acesso a este armazém.' });
+    }
+    if (!(await armazemMovimentacaoInternaTableExists())) {
+      return res.status(503).json({
+        error: 'Tabela de movimentações internas não existe.',
+        hint: 'Execute: npm run db:migrate:movimentacao-interna',
+      });
+    }
+    const rawIds = req.body?.ids;
+    if (!Array.isArray(rawIds) || rawIds.length === 0) {
+      return res.status(400).json({ error: 'Envie "ids": array de IDs de tickets.' });
+    }
+    const idNums = [...new Set(rawIds.map((x) => parseInt(x, 10)).filter((n) => Number.isFinite(n) && n > 0))];
+    if (idNums.length === 0) {
+      return res.status(400).json({ error: 'Nenhum id válido.' });
+    }
+    const r = await pool.query(
+      `SELECT ami.id, ami.created_at, ami.quantidade::float AS quantidade,
+        a.codigo AS armazem_codigo,
+        i.codigo AS item_codigo,
+        lo.localizacao AS origem_loc, ld.localizacao AS destino_loc
+       FROM armazem_movimentacao_interna ami
+       INNER JOIN armazens a ON a.id = ami.armazem_id
+       INNER JOIN itens i ON i.id = ami.item_id
+       INNER JOIN armazens_localizacoes lo ON lo.id = ami.origem_localizacao_id
+       INNER JOIN armazens_localizacoes ld ON ld.id = ami.destino_localizacao_id
+       WHERE ami.id = ANY($1::int[]) AND ami.armazem_id = $2
+       ORDER BY ami.created_at ASC, ami.id ASC`,
+      [idNums, armazemId]
+    );
+    if (r.rows.length === 0) {
+      return res.status(404).json({ error: 'Nenhum ticket encontrado para estes IDs neste armazém.' });
+    }
+    if (r.rows.length !== idNums.length) {
+      return res.status(400).json({ error: 'Alguns IDs não pertencem a este armazém ou não existem.' });
+    }
+    const rows = r.rows.map((row) => {
+      const d = row.created_at ? new Date(row.created_at) : new Date();
+      const dateStr = `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
+      const wh = String(row.armazem_codigo || 'E');
+      return {
+        Date: dateStr,
+        OriginWarehouse: wh,
+        OriginLocation: String(row.origem_loc || ''),
+        Article: String(row.item_codigo || ''),
+        Quatity: Number(row.quantidade) || 0,
+        SerialNumber1: '',
+        SerialNumber2: '',
+        MacAddress: '',
+        CentroCusto: '',
+        DestinationWarehouse: wh,
+        DestinationLocation: String(row.destino_loc || ''),
+        ProjectCode: '',
+        Batch: '',
+      };
+    });
+    await pool.query(
+      `UPDATE armazem_movimentacao_interna
+       SET trfl_gerada_em = COALESCE(trfl_gerada_em, CURRENT_TIMESTAMP)
+       WHERE id = ANY($1::int[]) AND armazem_id = $2`,
+      [idNums, armazemId]
+    );
+    const fnDate = new Date().toISOString().slice(0, 10);
+    buildExcelTransferencia(rows, res, `TRFL_mov_interna_arm${armazemId}_${fnDate}.xlsx`);
+  } catch (e) {
+    console.error('Erro export-trfl movimentacoes-internas:', e);
+    return res.status(500).json({ error: 'Erro ao gerar TRFL', details: e.message });
   }
 });
 

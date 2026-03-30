@@ -49,6 +49,17 @@ export function podeAcederRequisicoes(role) {
   return Boolean(role && ROLES_COM_ACESSO_REQUISICOES.includes(role));
 }
 
+/** Gerar Excel TRFL a partir da fila de movimentação interna (transferência entre localizações). */
+export const ROLES_GERAR_TRFL_MOV_INTERN = Object.freeze([
+  ROLES.ADMIN,
+  ROLES.BACKOFFICE_ARMAZEM,
+  ROLES.SUPERVISOR_ARMAZEM,
+]);
+
+export function podeGerarTrflMovimentacaoInterna(role) {
+  return Boolean(role && ROLES_GERAR_TRFL_MOV_INTERN.includes(role));
+}
+
 /** Opções do select em AdminUsuarios (valor = coluna role). */
 export const ROLE_OPTIONS = [
   { value: ROLES.ADMIN, label: 'Administrador (ADMIN)' },

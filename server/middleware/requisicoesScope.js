@@ -107,12 +107,59 @@ async function requisicaoScopeMiddleware(req, res, next) {
   }
 }
 
-function requisicaoArmazemOrigemAcessoPermitido(req, armazemOrigemId) {
+/**
+ * Consulta / gravação de stock por localização num armazém central: admin sem limite;
+ * backoffice/supervisor só nos armazéns cadastrados no utilizador (origem de requisições).
+ */
+async function usuarioPodeConsultarEstoqueLocalizacaoArmazem(req, armazemId) {
+  const id = parseInt(armazemId, 10);
+  if (!Number.isFinite(id) || !req.user) return false;
+  if (roleComAcessoTotalRequisicoes(req.user.role)) return true;
+  const role = req.user.role;
+  if (role !== 'backoffice_armazem' && role !== 'supervisor_armazem') return false;
+  const allowed = await fetchRequisicoesArmazemIdsForUser(req.user.id);
+  if (!allowed.length) return false;
+  return allowed.includes(id);
+}
+
+/** Listar localizações com stock ao preparar requisição: admin ou armazém de origem permitido ao utilizador. */
+function usuarioPodeConsultarStockPreparacaoRequisicao(req, armazemId) {
+  const sid = parseInt(armazemId, 10);
+  if (!Number.isFinite(sid) || !req.user) return false;
+  if (roleComAcessoTotalRequisicoes(req.user.role)) return true;
+  const allowed = req.requisicaoArmazemOrigemIds;
+  if (!allowed || allowed.length === 0) return false;
+  return allowed.includes(sid);
+}
+
+/** Devolução: origem viatura → destino armazém central (escopo pelo central, não pela viatura). */
+function isFluxoDevolucaoViaturaCentral(origemTipo, destTipo) {
+  return (
+    String(origemTipo || '').trim().toLowerCase() === 'viatura' &&
+    String(destTipo || '').trim().toLowerCase() === 'central'
+  );
+}
+
+/**
+ * @param {object} [opts]
+ * @param {object} [opts.requisicao] — linha com armazem_id, armazem_origem_tipo, armazem_destino_tipo (ex.: JOIN armazens)
+ */
+function requisicaoArmazemOrigemAcessoPermitido(req, armazemOrigemId, opts) {
   if (!req.user) return false;
   if (roleComAcessoTotalRequisicoes(req.user.role)) return true;
   const allowed = req.requisicaoArmazemOrigemIds;
   /** Sem armazéns atribuídos ⇒ não acede a requisições (não é “ver tudo”). */
   if (!allowed || allowed.length === 0) return false;
+  const rec = opts && opts.requisicao;
+  if (
+    rec &&
+    rec.armazem_id != null &&
+    rec.armazem_id !== '' &&
+    isFluxoDevolucaoViaturaCentral(rec.armazem_origem_tipo, rec.armazem_destino_tipo)
+  ) {
+    const did = parseInt(rec.armazem_id, 10);
+    if (!Number.isNaN(did)) return allowed.includes(did);
+  }
   const sid =
     armazemOrigemId != null && armazemOrigemId !== '' ? parseInt(armazemOrigemId, 10) : NaN;
   if (Number.isNaN(sid)) return false;
@@ -139,8 +186,18 @@ async function assertIdsRequisicoesPermitidas(req, idsRaw) {
     throw e;
   }
   const bad = await pool.query(
-    `SELECT id FROM requisicoes WHERE id = ANY($1::int[])
-     AND (armazem_origem_id IS NULL OR NOT (armazem_origem_id = ANY($2::int[])))
+    `SELECT r.id FROM requisicoes r
+     LEFT JOIN armazens ao ON r.armazem_origem_id = ao.id
+     INNER JOIN armazens ad ON r.armazem_id = ad.id
+     WHERE r.id = ANY($1::int[])
+       AND NOT (
+         (r.armazem_origem_id IS NOT NULL AND r.armazem_origem_id = ANY($2::int[]))
+         OR (
+           LOWER(TRIM(COALESCE(ao.tipo, ''))) = 'viatura'
+           AND LOWER(TRIM(COALESCE(ad.tipo, ''))) = 'central'
+           AND r.armazem_id = ANY($2::int[])
+         )
+       )
      LIMIT 1`,
     [idsClean, allowed],
   );
@@ -158,10 +215,13 @@ function createRequisicaoAuth(authenticateToken) {
 module.exports = {
   requisicaoScopeMiddleware,
   requisicaoPerfilNegadoMiddleware,
+  isFluxoDevolucaoViaturaCentral,
   requisicaoArmazemOrigemAcessoPermitido,
   usuarioEscopadoSemArmazensAtribuidos,
   assertIdsRequisicoesPermitidas,
   createRequisicaoAuth,
+  usuarioPodeConsultarEstoqueLocalizacaoArmazem,
+  usuarioPodeConsultarStockPreparacaoRequisicao,
   /** Usado no login / verify-token para incluir armazéns de origem no JWT e no utilizador. */
   fetchRequisicoesArmazemIdsForUser,
   /** Introspecção BD para listagem/edição de utilizadores e requisições. */

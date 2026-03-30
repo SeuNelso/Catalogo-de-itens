@@ -1,6 +1,19 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Html5Qrcode, Html5QrcodeSupportedFormats } from 'html5-qrcode';
 
+/** Evita exceção/rejeição "Cannot stop, scanner is not running or paused" (duplo stop ou race no unmount). */
+function safeStopScanner(instance) {
+  if (!instance) return;
+  try {
+    const ret = instance.stop();
+    if (ret != null && typeof ret.then === 'function') {
+      ret.catch(() => {});
+    }
+  } catch {
+    /* já parado ou nunca iniciou */
+  }
+}
+
 /**
  * Modal que abre a câmera e lê QR code / código de barras.
  * Ao detectar, chama onScan(texto) e fecha.
@@ -56,8 +69,9 @@ const QrScannerModal = ({
               if (last.text === text && now - last.at < 1200) return; // evita leituras duplicadas do mesmo frame
               lastScanRef.current = { text, at: now };
               if (closeOnScan) {
-                scannerRef.current.stop().catch(() => {});
+                const s = scannerRef.current;
                 scannerRef.current = null;
+                safeStopScanner(s);
                 onScan(text);
                 onClose();
               } else {
@@ -77,12 +91,18 @@ const QrScannerModal = ({
     startScanner();
     return () => {
       mounted = false;
-      if (scannerRef.current) {
-        scannerRef.current.stop().catch(() => {});
-        scannerRef.current = null;
-      }
+      const s = scannerRef.current;
+      scannerRef.current = null;
+      safeStopScanner(s);
     };
   }, [open, onScan, onClose, readerId, formatsToSupport, closeOnScan]);
+
+  const fecharScanner = () => {
+    const s = scannerRef.current;
+    scannerRef.current = null;
+    safeStopScanner(s);
+    onClose();
+  };
 
   if (!open) return null;
 
@@ -93,7 +113,7 @@ const QrScannerModal = ({
           <h3 className="text-lg font-semibold text-gray-900">{title}</h3>
           <button
             type="button"
-            onClick={() => { if (scannerRef.current) scannerRef.current.stop().catch(() => {}); onClose(); }}
+            onClick={fecharScanner}
             className="text-gray-500 hover:text-gray-700 p-1"
             aria-label="Fechar"
           >
@@ -110,7 +130,7 @@ const QrScannerModal = ({
         <div className="p-4 border-t border-gray-200">
           <button
             type="button"
-            onClick={() => { if (scannerRef.current) scannerRef.current.stop().catch(() => {}); onClose(); }}
+            onClick={fecharScanner}
             className="w-full py-2 px-4 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50"
           >
             Cancelar
