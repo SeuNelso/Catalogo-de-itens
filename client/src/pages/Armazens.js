@@ -91,8 +91,8 @@ const Armazens = () => {
   /** Criar/editar/importar/eliminar: só administrador; restantes perfis com rota a /armazéns: só consulta */
   const isAdminArmazens = user?.role === ROLES.ADMIN;
   const showFormularioArmazem = isAdminArmazens && mostrarForm;
-  /** Estoque por localização (modal): apenas administrador (com módulo de controlo de stock). */
-  const podeGerirEstoqueLocal = isAdminArmazens && podeUsarControloStock(user);
+  /** Estoque por localização (modal): acesso por flag de controlo de stock no utilizador. */
+  const podeGerirEstoqueLocal = podeUsarControloStock(user);
 
   const [estoqueOpen, setEstoqueOpen] = useState(false);
   const [estoqueArmazem, setEstoqueArmazem] = useState(null);

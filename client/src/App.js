@@ -226,7 +226,6 @@ function App() {
                   path="/transferencias/localizacao"
                   element={
                     <ProtectedRoute
-                      allowedRoles={['admin', 'backoffice_armazem', 'supervisor_armazem']}
                       requireControloStock
                     >
                       <TransferenciaLocalizacao />
@@ -269,7 +268,6 @@ function App() {
                   path="/consulta-estoque-localizacoes"
                   element={
                     <ProtectedRoute
-                      allowedRoles={['admin', 'backoffice_armazem', 'supervisor_armazem']}
                       requireControloStock
                     >
                       <ConsultaLocalizacoesEstoque />

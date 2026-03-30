@@ -19,11 +19,9 @@ async function usuariosTemColunaPodeControloStock() {
   return _cachePodeControloStock;
 }
 
-/** Admin: sempre. Outros: flag no utilizador (JWT / req.user). */
+/** Sem bypass por role: só utiliza flag no utilizador (JWT sincronizado com BD). */
 function usuarioTemPermissaoControloStock(req) {
   if (!req || !req.user) return false;
-  if (req.user.role === 'admin') return true;
-  if (req.user.role === 'supervisor_armazem') return true;
   return req.user.pode_controlo_stock === true;
 }
 

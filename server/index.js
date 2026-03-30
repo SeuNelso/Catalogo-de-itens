@@ -5001,12 +5001,6 @@ app.get('/api/armazens/:id', authenticateToken, async (req, res) => {
   }
 });
 
-const rolesEstoquePorLocalizacao = ['admin', 'backoffice_armazem', 'supervisor_armazem'];
-/** Modal «Estoque por localização» em Armazéns: substituir grelha e aplicar stock nacional ao recebimento — só admin. */
-const rolesGerirEstoqueLocalizacaoModal = ['admin'];
-/** Export TRFL a partir de tickets de movimentação interna — apenas estes perfis (restrito face a outros com controlo de stock). */
-const rolesTrflMovimentacaoInterna = ['admin', 'backoffice_armazem', 'supervisor_armazem'];
-
 // Listar stock por localização (itens + quantidades) — apenas armazéns centrais
 app.get('/api/armazens/:armazemId/localizacoes/:locId/estoque', authenticateToken, async (req, res) => {
   if (!usuarioTemPermissaoControloStock(req)) {
@@ -5015,9 +5009,6 @@ app.get('/api/armazens/:armazemId/localizacoes/:locId/estoque', authenticateToke
         'O seu perfil não tem permissão para controlo de stock. Um administrador pode ativar esta opção no utilizador.',
       code: 'CONTROLO_STOCK_NEGADO',
     });
-  }
-  if (!rolesEstoquePorLocalizacao.includes(req.user.role)) {
-    return res.status(403).json({ error: 'Sem permissão para consultar estoque por localização' });
   }
   try {
     const armazemId = parseInt(req.params.armazemId, 10);
@@ -5148,9 +5139,6 @@ app.get('/api/armazens/:armazemId/estoque-artigo-lookup', authenticateToken, asy
       code: 'CONTROLO_STOCK_NEGADO',
     });
   }
-  if (!rolesEstoquePorLocalizacao.includes(req.user.role)) {
-    return res.status(403).json({ error: 'Sem permissão para consultar estoque por localização' });
-  }
   try {
     const armazemId = parseInt(req.params.armazemId, 10);
     if (!Number.isFinite(armazemId)) {
@@ -5247,12 +5235,6 @@ app.put('/api/armazens/:armazemId/localizacoes/:locId/estoque', authenticateToke
       code: 'CONTROLO_STOCK_NEGADO',
     });
   }
-  if (!rolesGerirEstoqueLocalizacaoModal.includes(req.user.role)) {
-    return res.status(403).json({
-      error: 'Apenas administradores podem atualizar o estoque por localização.',
-      code: 'GERIR_ESTOQUE_LOCALIZACAO_ADMIN',
-    });
-  }
   try {
     const armazemId = parseInt(req.params.armazemId, 10);
     const locId = parseInt(req.params.locId, 10);
@@ -5347,12 +5329,6 @@ app.post('/api/armazens/:armazemId/aplicar-stock-nacional-recebimento', authenti
       error:
         'O seu perfil não tem permissão para controlo de stock. Um administrador pode ativar esta opção no utilizador.',
       code: 'CONTROLO_STOCK_NEGADO',
-    });
-  }
-  if (!rolesGerirEstoqueLocalizacaoModal.includes(req.user.role)) {
-    return res.status(403).json({
-      error: 'Apenas administradores podem aplicar stock nacional ao recebimento.',
-      code: 'GERIR_ESTOQUE_LOCALIZACAO_ADMIN',
     });
   }
   try {
@@ -5535,9 +5511,6 @@ app.post('/api/armazens/:armazemId/transferencia-localizacao', authenticateToken
       code: 'CONTROLO_STOCK_NEGADO',
     });
   }
-  if (!rolesEstoquePorLocalizacao.includes(req.user.role)) {
-    return res.status(403).json({ error: 'Sem permissão para transferir stock entre localizações' });
-  }
   try {
     const armazemId = parseInt(req.params.armazemId, 10);
     const origemLocId = parseInt(req.body?.origem_localizacao_id, 10);
@@ -5682,9 +5655,6 @@ app.get('/api/armazens/:armazemId/movimentacoes-internas', authenticateToken, as
       code: 'CONTROLO_STOCK_NEGADO',
     });
   }
-  if (!rolesEstoquePorLocalizacao.includes(req.user.role)) {
-    return res.status(403).json({ error: 'Sem permissão' });
-  }
   try {
     const armazemId = parseInt(req.params.armazemId, 10);
     if (!Number.isFinite(armazemId)) {
@@ -5734,12 +5704,6 @@ app.post('/api/armazens/:armazemId/movimentacoes-internas/export-trfl', authenti
       error:
         'O seu perfil não tem permissão para controlo de stock. Um administrador pode ativar esta opção no utilizador.',
       code: 'CONTROLO_STOCK_NEGADO',
-    });
-  }
-  if (!rolesTrflMovimentacaoInterna.includes(req.user.role)) {
-    return res.status(403).json({
-      error: 'Apenas administrador, backoffice de armazém ou supervisor de armazém podem gerar TRFL desta fila.',
-      code: 'TRFL_MOV_INTERN_NEGADO',
     });
   }
   try {
