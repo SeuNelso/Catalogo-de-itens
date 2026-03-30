@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import axios from 'axios';
 import Toast from '../components/Toast';
 import { useAuth } from '../contexts/AuthContext';
-import * as XLSX from 'xlsx';
 import { podeUsarControloStock } from '../utils/controloStock';
 
 const parseNumberPt = (v) => {
@@ -157,6 +156,7 @@ const TransferenciasRecebimento = () => {
             quantidade: Number(it?.quantidade)
           }));
         } else {
+          const XLSX = await import('xlsx');
           const buf = await file.arrayBuffer();
           const wb = XLSX.read(buf, { type: 'array' });
           const sheetName = wb.SheetNames?.[0];

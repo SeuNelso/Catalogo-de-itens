@@ -3,6 +3,7 @@
  */
 const express = require('express');
 const ExcelJS = require('exceljs');
+const XLSX = require('xlsx');
 const fs = require('fs');
 const pdfParseLib = require('pdf-parse');
 const { buildExcelTransferencia } = require('../utils/buildExcelTransferencia');
