@@ -15,7 +15,12 @@ function createAuthenticateToken(jwtSecret) {
         return res.status(403).json({ error: 'Token inválido' });
       }
       (async () => {
-        let mergedUser = user;
+        // Nunca confiar em `pode_controlo_stock` vindo do JWT:
+        // usar sempre o valor atual da BD (ou false em fallback).
+        let mergedUser = {
+          ...user,
+          pode_controlo_stock: false
+        };
         try {
           const uid = Number(user && user.id);
           if (Number.isFinite(uid)) {
@@ -54,7 +59,8 @@ function createAuthenticateToken(jwtSecret) {
                   mergedUser = {
                     ...user,
                     id: dbu.id,
-                    role: dbu.role || user.role
+                    role: dbu.role || user.role,
+                    pode_controlo_stock: false
                   };
                 }
               }
