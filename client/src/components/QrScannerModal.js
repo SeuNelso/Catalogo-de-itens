@@ -46,6 +46,33 @@ const QrScannerModal = ({
     setZoomRange({ min: 1, max: 1, step: 0.1 });
 
     let mounted = true;
+    const probeCameraAccess = async () => {
+      if (!navigator?.mediaDevices?.getUserMedia) return null;
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        let deviceId = null;
+        try {
+          const track = stream.getVideoTracks?.()[0];
+          const settings = track?.getSettings?.() || {};
+          deviceId = settings?.deviceId || null;
+        } catch {}
+        try {
+          stream.getTracks().forEach((t) => t.stop());
+        } catch {}
+        return { deviceId };
+      } catch (err) {
+        return { error: err };
+      }
+    };
+    const errorText = (err) => {
+      if (!err) return '';
+      const name = String(err?.name || '').trim();
+      const msg = String(err?.message || '').trim();
+      const constraint = String(err?.constraint || '').trim();
+      const base = [name, msg].filter(Boolean).join(': ');
+      if (constraint) return `${base || 'Erro'} (constraint: ${constraint})`;
+      return base || String(err);
+    };
     const readTrackCapabilities = (instance) => {
       if (!instance || typeof instance.getRunningTrackCapabilities !== 'function') return;
       try {
@@ -69,61 +96,108 @@ const QrScannerModal = ({
     const startScanner = async () => {
       try {
         setErro(null);
+        const probe = await probeCameraAccess();
+        if (probe?.error) {
+          throw probe.error;
+        }
         const html5Qr = new Html5Qrcode(readerId);
         scannerRef.current = html5Qr;
 
-        const cameras = await Html5Qrcode.getCameras();
-        if (!cameras || cameras.length === 0) {
-          setErro('Nenhuma câmera encontrada.');
-          return;
-        }
+        const qrConfig = {
+          fps: 15,
+          // Área de leitura maior ajuda quando o QR é pequeno no enquadramento.
+          qrbox: (viewfinderWidth, viewfinderHeight) => {
+            const side = Math.floor(Math.min(viewfinderWidth, viewfinderHeight) * 0.85);
+            return { width: side, height: side };
+          },
+          aspectRatio: 1,
+          disableFlip: true,
+          ...(Array.isArray(formatsToSupport) && formatsToSupport.length > 0
+            ? { formatsToSupport }
+            : {})
+        };
 
-        await html5Qr.start(
+        const onDecoded = (decodedText) => {
+          if (!mounted || !scannerRef.current) return;
+          const text = (decodedText || '').trim();
+          if (text) {
+            const now = Date.now();
+            const last = lastScanRef.current;
+            if (last.text === text && now - last.at < 1200) return; // evita leituras duplicadas do mesmo frame
+            lastScanRef.current = { text, at: now };
+            if (closeOnScan) {
+              const s = scannerRef.current;
+              scannerRef.current = null;
+              safeStopScanner(s);
+              onScan(text);
+              onClose();
+            } else {
+              onScan(text);
+            }
+          }
+        };
+
+        const onError = () => {};
+        // Alguns dispositivos falham ao listar câmeras (getCameras) antes de iniciar stream.
+        // Primeiro tentamos por facingMode; só depois tentamos ids concretos.
+        const sourcesToTry = [
+          ...(probe?.deviceId ? [probe.deviceId] : []),
           {
-            facingMode: { ideal: 'environment' },
-            // Forca tentativa de stream em alta resolução para melhorar leitura de QR pequeno.
+            facingMode: { exact: 'environment' },
             width: { ideal: 1920 },
             height: { ideal: 1080 },
             advanced: [{ focusMode: 'continuous' }]
           },
           {
-            fps: 15,
-            // Área de leitura maior ajuda quando o QR é pequeno no enquadramento.
-            qrbox: (viewfinderWidth, viewfinderHeight) => {
-              const side = Math.floor(Math.min(viewfinderWidth, viewfinderHeight) * 0.85);
-              return { width: side, height: side };
-            },
-            aspectRatio: 1,
-            disableFlip: true,
-            ...(Array.isArray(formatsToSupport) && formatsToSupport.length > 0
-              ? { formatsToSupport }
-              : {})
+            facingMode: { ideal: 'environment' },
+            width: { ideal: 1920 },
+            height: { ideal: 1080 },
+            advanced: [{ focusMode: 'continuous' }]
           },
-          (decodedText) => {
-            if (!mounted || !scannerRef.current) return;
-            const text = (decodedText || '').trim();
-            if (text) {
-              const now = Date.now();
-              const last = lastScanRef.current;
-              if (last.text === text && now - last.at < 1200) return; // evita leituras duplicadas do mesmo frame
-              lastScanRef.current = { text, at: now };
-              if (closeOnScan) {
-                const s = scannerRef.current;
-                scannerRef.current = null;
-                safeStopScanner(s);
-                onScan(text);
-                onClose();
-              } else {
-                onScan(text);
-              }
-            }
-          },
-          () => {}
-        );
+          { facingMode: { ideal: 'environment' } },
+          { facingMode: 'environment' }
+        ];
+        try {
+          const cameras = await Html5Qrcode.getCameras();
+          if (Array.isArray(cameras) && cameras.length > 0) {
+            const backCamera = cameras.find((c) => {
+              const lbl = String(c.label || '').toLowerCase();
+              return lbl.includes('back') || lbl.includes('trás') || lbl.includes('rear') || lbl.includes('environment');
+            });
+            const fallbackCameraId = backCamera?.id || cameras[0].id;
+            if (fallbackCameraId) sourcesToTry.push(fallbackCameraId);
+          }
+        } catch {
+          // ignorar: alguns browsers bloqueiam enumeração antes de stream.
+        }
+
+        let started = false;
+        let lastErr = null;
+        for (const source of sourcesToTry) {
+          try {
+            await html5Qr.start(source, qrConfig, onDecoded, onError);
+            started = true;
+            break;
+          } catch (e) {
+            lastErr = e;
+          }
+        }
+        if (!started) {
+          throw lastErr || new Error('Não foi possível iniciar a câmera.');
+        }
         readTrackCapabilities(html5Qr);
       } catch (e) {
         if (mounted) {
-          setErro(e?.message || 'Não foi possível aceder à câmera. Verifique as permissões.');
+          const detail = errorText(e);
+          if (!window.isSecureContext) {
+            setErro('A câmera só funciona em contexto seguro (HTTPS) ou localhost.');
+          } else if (detail) {
+            setErro(`Não foi possível aceder à câmera (${detail}).`);
+          } else {
+            setErro(
+              'Não foi possível aceder à câmera. Feche outros apps que estejam usando a câmera e recarregue a página.'
+            );
+          }
         }
       }
     };
