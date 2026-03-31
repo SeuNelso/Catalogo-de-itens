@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Html5Qrcode, Html5QrcodeSupportedFormats } from 'html5-qrcode';
+const INITIAL_ZOOM = 2.7;
 
 /** Evita exceção/rejeição "Cannot stop, scanner is not running or paused" (duplo stop ou race no unmount). */
 function safeStopScanner(instance) {
@@ -86,7 +87,11 @@ const QrScannerModal = ({
           if (max > min && mounted) {
             setZoomSupported(true);
             setZoomRange({ min, max, step });
-            setZoomValue(min);
+            const target = Math.min(max, Math.max(min, INITIAL_ZOOM));
+            setZoomValue(target);
+            if (typeof instance.applyVideoConstraints === 'function') {
+              instance.applyVideoConstraints({ advanced: [{ zoom: target }] }).catch(() => {});
+            }
           }
         }
       } catch {

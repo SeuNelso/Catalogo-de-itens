@@ -36,6 +36,7 @@
     "db:migrate:requisicoes-devolucao-transferencias-pendentes": "node server/run-migration.js requisicoes-devolucao-transferencias-pendentes",
     "db:migrate:requisicoes-status-apeados": "node server/run-migration.js status-apeados",
     "db:migrate:requisicoes-itens-quantidade-apeados": "node server/run-migration.js requisicoes-itens-quantidade-apeados",
+    "db:migrate:requisicoes-itens-serial-long": "node server/run-migration.js requisicoes-itens-serial-long",
     "db:migrate:integrations-v1": "node server/run-migration.js integrations-v1",
     "db:migrate:localizacao-estoque": "node server/run-migration.js localizacao-estoque",
     "db:migrate:usuarios-pode-controlo-stock": "node server/run-migration.js usuarios-pode-controlo-stock",
