@@ -4620,12 +4620,46 @@ router.post(
       return { normalizedText, tokenSet };
     };
 
+    const scanCodigoArmazemFromWarehouseColumn = (sheet) => {
+      const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false, defval: '' });
+      if (!Array.isArray(rows) || rows.length === 0) return null;
+      let targetCol = -1;
+      for (const row of rows) {
+        if (!Array.isArray(row)) continue;
+        for (let c = 0; c < row.length; c++) {
+          const h = normalizeText(row[c]);
+          if (
+            h === 'destinationwarehouse' ||
+            h === 'destination warehouse' ||
+            h === 'armazem destino' ||
+            h === 'armazemdestino' ||
+            h === 'destino'
+          ) {
+            targetCol = c;
+            break;
+          }
+        }
+        if (targetCol >= 0) break;
+      }
+      if (targetCol < 0) return null;
+      for (const row of rows) {
+        if (!Array.isArray(row) || targetCol >= row.length) continue;
+        const raw = String(row[targetCol] || '').trim();
+        if (!raw) continue;
+        const m = /^([A-Z]\d*|V\d+)\b/i.exec(raw);
+        if (m && m[1]) return String(m[1]).toUpperCase();
+      }
+      return null;
+    };
+
     const resolveArmazemDestinoFromSheet = async (sheet) => {
+      const codigoPorColuna = scanCodigoArmazemFromWarehouseColumn(sheet);
       const codigoV = scanCodigoV(sheet);
-      if (codigoV) {
+      const codigoPreferido = codigoPorColuna || codigoV;
+      if (codigoPreferido) {
         const byCode = await pool.query(
           'SELECT id, tipo, codigo FROM armazens WHERE UPPER(codigo) = $1 AND ativo = true LIMIT 1',
-          [codigoV.toUpperCase()]
+          [codigoPreferido.toUpperCase()]
         );
         if (byCode.rows.length > 0) {
           return byCode.rows[0];
@@ -4647,7 +4681,13 @@ router.post(
         const descNorm = normalizeText(arm.descricao || '');
         let score = 0;
 
-        if (codigoNorm && tokenSet.has(codigoNorm)) score = Math.max(score, 100);
+        // Códigos de 1 caractere (ex.: "A"): só considerar quando aparecem com delimitador de código.
+        if (codigoNorm && codigoNorm.length <= 1) {
+          const codeRegex = new RegExp(`(^|\\s)${codigoNorm}(\\s*-|\\s+wh\\b|\\s+warehouse\\b|\\s*$)`, 'i');
+          if (codeRegex.test(normalizedText)) score = Math.max(score, 110);
+        } else if (codigoNorm && tokenSet.has(codigoNorm)) {
+          score = Math.max(score, 100);
+        }
         if (codigoNorm && normalizedText.includes(` ${codigoNorm} `)) score = Math.max(score, 95);
         if (codigoNorm && descNorm && normalizedText.includes(` ${codigoNorm} ${descNorm} `)) score = Math.max(score, 90);
         if (descNorm && normalizedText.includes(` ${descNorm} `)) score = Math.max(score, 75);
