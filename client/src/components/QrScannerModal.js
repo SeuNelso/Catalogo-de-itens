@@ -30,12 +30,42 @@ const QrScannerModal = ({
   const scannerRef = useRef(null);
   const lastScanRef = useRef({ text: '', at: 0 });
   const [erro, setErro] = useState(null);
+  const [torchSupported, setTorchSupported] = useState(false);
+  const [torchOn, setTorchOn] = useState(false);
+  const [zoomSupported, setZoomSupported] = useState(false);
+  const [zoomValue, setZoomValue] = useState(1);
+  const [zoomRange, setZoomRange] = useState({ min: 1, max: 1, step: 0.1 });
 
   useEffect(() => {
     if (!open) return;
     lastScanRef.current = { text: '', at: 0 };
+    setTorchSupported(false);
+    setTorchOn(false);
+    setZoomSupported(false);
+    setZoomValue(1);
+    setZoomRange({ min: 1, max: 1, step: 0.1 });
 
     let mounted = true;
+    const readTrackCapabilities = (instance) => {
+      if (!instance || typeof instance.getRunningTrackCapabilities !== 'function') return;
+      try {
+        const caps = instance.getRunningTrackCapabilities() || {};
+        const hasTorch = caps.torch === true;
+        if (mounted) setTorchSupported(Boolean(hasTorch));
+        if (caps.zoom && typeof caps.zoom === 'object') {
+          const min = Number.isFinite(Number(caps.zoom.min)) ? Number(caps.zoom.min) : 1;
+          const max = Number.isFinite(Number(caps.zoom.max)) ? Number(caps.zoom.max) : min;
+          const step = Number.isFinite(Number(caps.zoom.step)) ? Number(caps.zoom.step) : 0.1;
+          if (max > min && mounted) {
+            setZoomSupported(true);
+            setZoomRange({ min, max, step });
+            setZoomValue(min);
+          }
+        }
+      } catch {
+        // Alguns browsers não expõem capabilities completas.
+      }
+    };
     const startScanner = async () => {
       try {
         setErro(null);
@@ -43,19 +73,28 @@ const QrScannerModal = ({
         scannerRef.current = html5Qr;
 
         const cameras = await Html5Qrcode.getCameras();
-        const backCamera = cameras.find(c => c.label.toLowerCase().includes('back') || c.label.toLowerCase().includes('trás'));
-        const cameraId = backCamera?.id || (cameras.length > 0 ? cameras[0].id : null);
-        if (!cameraId) {
+        if (!cameras || cameras.length === 0) {
           setErro('Nenhuma câmera encontrada.');
           return;
         }
 
         await html5Qr.start(
-          cameraId,
           {
-            fps: 10,
-            qrbox: { width: 250, height: 250 },
+            facingMode: { ideal: 'environment' },
+            // Forca tentativa de stream em alta resolução para melhorar leitura de QR pequeno.
+            width: { ideal: 1920 },
+            height: { ideal: 1080 },
+            advanced: [{ focusMode: 'continuous' }]
+          },
+          {
+            fps: 15,
+            // Área de leitura maior ajuda quando o QR é pequeno no enquadramento.
+            qrbox: (viewfinderWidth, viewfinderHeight) => {
+              const side = Math.floor(Math.min(viewfinderWidth, viewfinderHeight) * 0.85);
+              return { width: side, height: side };
+            },
             aspectRatio: 1,
+            disableFlip: true,
             ...(Array.isArray(formatsToSupport) && formatsToSupport.length > 0
               ? { formatsToSupport }
               : {})
@@ -81,6 +120,7 @@ const QrScannerModal = ({
           },
           () => {}
         );
+        readTrackCapabilities(html5Qr);
       } catch (e) {
         if (mounted) {
           setErro(e?.message || 'Não foi possível aceder à câmera. Verifique as permissões.');
@@ -104,6 +144,31 @@ const QrScannerModal = ({
     onClose();
   };
 
+  const toggleTorch = async () => {
+    const s = scannerRef.current;
+    if (!s || typeof s.applyVideoConstraints !== 'function') return;
+    try {
+      const next = !torchOn;
+      await s.applyVideoConstraints({ advanced: [{ torch: next }] });
+      setTorchOn(next);
+    } catch {
+      // Ignorar falha em dispositivos sem suporte real ao torch.
+    }
+  };
+
+  const handleZoomChange = async (nextRaw) => {
+    const s = scannerRef.current;
+    if (!s || typeof s.applyVideoConstraints !== 'function') return;
+    const next = Number(nextRaw);
+    if (!Number.isFinite(next)) return;
+    try {
+      await s.applyVideoConstraints({ advanced: [{ zoom: next }] });
+      setZoomValue(next);
+    } catch {
+      // Ignorar falha para dispositivos que reportam zoom mas não aplicam.
+    }
+  };
+
   if (!open) return null;
 
   return (
@@ -124,7 +189,44 @@ const QrScannerModal = ({
           {erro ? (
             <p className="text-red-600 text-sm">{erro}</p>
           ) : (
-            <div id={readerId} className="rounded-lg overflow-hidden" />
+            <>
+              <div className="relative rounded-lg overflow-hidden">
+                <div id={readerId} className="rounded-lg overflow-hidden" />
+                {/* Guia visual da área lida: cruz central sobre o vídeo */}
+                <div className="pointer-events-none absolute inset-0">
+                  <div className="absolute top-1/2 left-0 w-full h-[2px] -translate-y-1/2 bg-red-500/70 shadow-[0_0_6px_rgba(239,68,68,0.6)]" />
+                </div>
+              </div>
+              {(torchSupported || zoomSupported) && (
+                <div className="mt-3 flex flex-col gap-3">
+                  {torchSupported && (
+                    <button
+                      type="button"
+                      onClick={toggleTorch}
+                      className="w-full py-2 px-3 border border-gray-300 rounded-lg text-sm text-gray-700 hover:bg-gray-50"
+                    >
+                      {torchOn ? 'Desligar lanterna' : 'Ligar lanterna'}
+                    </button>
+                  )}
+                  {zoomSupported && (
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-1">
+                        Zoom ({zoomValue.toFixed(1)}x)
+                      </label>
+                      <input
+                        type="range"
+                        min={zoomRange.min}
+                        max={zoomRange.max}
+                        step={zoomRange.step}
+                        value={zoomValue}
+                        onChange={(e) => handleZoomChange(e.target.value)}
+                        className="w-full"
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
+            </>
           )}
         </div>
         <div className="p-4 border-t border-gray-200">
