@@ -35,6 +35,7 @@ import PrepararRequisicao from './pages/PrepararRequisicao';
 import Armazens from './pages/Armazens';
 import ConsultaLocalizacoesEstoque from './pages/ConsultaLocalizacoesEstoque';
 import TransferenciaLocalizacao from './pages/TransferenciaLocalizacao';
+import ConsultaMovimentos from './pages/ConsultaMovimentos';
 import './App.css';
 import { ROLES_COM_ACESSO_REQUISICOES } from './utils/roles';
 
@@ -271,6 +272,14 @@ function App() {
                       requireControloStock
                     >
                       <ConsultaLocalizacoesEstoque />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/movimentos"
+                  element={
+                    <ProtectedRoute requireConsultaMovimentos>
+                      <ConsultaMovimentos />
                     </ProtectedRoute>
                   }
                 />

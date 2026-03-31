@@ -19,14 +19,17 @@ function createAuthenticateToken(jwtSecret) {
         // usar sempre o valor atual da BD (ou false em fallback).
         let mergedUser = {
           ...user,
-          pode_controlo_stock: false
+          pode_controlo_stock: false,
+          pode_consulta_movimentos: false
         };
         try {
           const uid = Number(user && user.id);
           if (Number.isFinite(uid)) {
             try {
               const r = await pool.query(
-                `SELECT id, role, COALESCE(pode_controlo_stock, false) AS pode_controlo_stock
+                `SELECT id, role,
+                        COALESCE(pode_controlo_stock, false) AS pode_controlo_stock,
+                        COALESCE(pode_consulta_movimentos, false) AS pode_consulta_movimentos
                  FROM usuarios
                  WHERE id = $1
                  LIMIT 1`,
@@ -41,7 +44,11 @@ function createAuthenticateToken(jwtSecret) {
                   pode_controlo_stock:
                     dbu.pode_controlo_stock === true ||
                     dbu.pode_controlo_stock === 't' ||
-                    dbu.pode_controlo_stock === 1
+                    dbu.pode_controlo_stock === 1,
+                  pode_consulta_movimentos:
+                    dbu.pode_consulta_movimentos === true ||
+                    dbu.pode_consulta_movimentos === 't' ||
+                    dbu.pode_consulta_movimentos === 1
                 };
               }
             } catch (e) {
@@ -60,7 +67,8 @@ function createAuthenticateToken(jwtSecret) {
                     ...user,
                     id: dbu.id,
                     role: dbu.role || user.role,
-                    pode_controlo_stock: false
+                    pode_controlo_stock: false,
+                    pode_consulta_movimentos: false
                   };
                 }
               }

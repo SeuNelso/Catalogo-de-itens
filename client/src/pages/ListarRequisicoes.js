@@ -13,7 +13,7 @@ import {
 import { desenharPaginaNotaEntregaDigi } from '../utils/notaEntregaPdf';
 import { operadorPodeDocsELogisticaAposSeparacao, isAdmin } from '../utils/roles';
 import { getRequisicoesArmazemOrigemIds } from '../utils/requisicoesArmazemOrigem';
-import { podeUsarControloStock } from '../utils/controloStock';
+import { podeUsarConsultaMovimentos, podeUsarControloStock } from '../utils/controloStock';
 
 const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
   const RECEBIMENTO_TRANSFERENCIA_MARKER = 'RECEBIMENTO_TRANSFERENCIA_V1';
@@ -41,6 +41,8 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
     rows: []
   });
   const [reporteLoading, setReporteLoading] = useState(false);
+  const [traNumeroByReqId, setTraNumeroByReqId] = useState({});
+  const [savingTraReqId, setSavingTraReqId] = useState(null);
   /** Só requisições criadas pelo utilizador atual */
   const [somenteMinhas, setSomenteMinhas] = useState(false);
   const [armazensById, setArmazensById] = useState({});
@@ -72,6 +74,7 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
   );
   const podeCriarOuImportarRequisicao = canCreateOrEdit && !semArmazemOrigemAtribuido;
   const podeTransferenciaLocalizacao = Boolean(user && podeUsarControloStock(user));
+  const podeConsultarMovimentos = Boolean(user && podeUsarConsultaMovimentos(user));
 
   useEffect(() => {
     fetchRequisicoes();
@@ -561,6 +564,9 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
         `TRA_requisicao_${reqId}_${new Date().toISOString().slice(0, 10)}.xlsx`,
         isRedownload ? 'TRA baixada novamente.' : 'TRA gerada com sucesso.'
       );
+      if (!isRedownload && !String(req?.tra_numero || '').trim()) {
+        setToast({ type: 'success', message: 'TRA gerada. Preencha o Nº TRA diretamente na card para poder finalizar.' });
+      }
 
       await fetchRequisicoes();
     } catch (error) {
@@ -660,6 +666,39 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
     }
   };
 
+  const handleTraNumeroChange = (reqId, value) => {
+    setTraNumeroByReqId((prev) => ({ ...prev, [reqId]: value }));
+  };
+
+  const handleGuardarTraNumero = async (req) => {
+    const reqId = Number(req?.id);
+    if (!Number.isFinite(reqId)) return;
+    const valor = String(traNumeroByReqId[reqId] ?? req?.tra_numero ?? '').trim();
+    if (!valor) {
+      setToast({ type: 'error', message: 'Número da TRA é obrigatório.' });
+      return;
+    }
+    try {
+      setSavingTraReqId(reqId);
+      const token = localStorage.getItem('token');
+      const response = await fetch(`/api/requisicoes/${reqId}/tra-numero`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tra_numero: valor })
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || 'Erro ao guardar número da TRA');
+      }
+      await fetchRequisicoes();
+      setToast({ type: 'success', message: `Nº TRA guardado: ${valor}` });
+    } catch (error) {
+      setToast({ type: 'error', message: error.message || 'Erro ao guardar número da TRA' });
+    } finally {
+      setSavingTraReqId(null);
+    }
+  };
+
   const handleReceberStockRecebimento = async (reqId) => {
     try {
       const token = localStorage.getItem('token');
@@ -682,16 +721,19 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
     const uniqueIds = Array.from(new Set(ids || [])).map(x => parseInt(x, 10)).filter(Boolean);
     if (uniqueIds.length === 0) return;
 
-    // Finalizar apenas as que estão Entregue e já tiveram TRA gerada ao menos 1x
+    // Finalizar apenas as que estão Entregue, já tiveram TRA gerada e com Nº TRA preenchido
     const byId = new Map((requisicoes || []).map(r => [r.id, r]));
     const elegiveis = uniqueIds.filter(id => {
       const r = byId.get(id);
-      return r?.status === 'Entregue' && Boolean(r?.tra_gerada_em);
+      return r?.status === 'Entregue' && Boolean(r?.tra_gerada_em) && Boolean(String(r?.tra_numero || '').trim());
     });
     const ignoradas = uniqueIds.filter(id => !elegiveis.includes(id));
 
     if (elegiveis.length === 0) {
-      setToast({ type: 'error', message: 'Nenhuma requisição selecionada está elegível para finalizar (precisa estar Entregue e ter TRA gerada).' });
+      setToast({
+        type: 'error',
+        message: 'Nenhuma requisição selecionada está elegível para finalizar (precisa estar Entregue, ter TRA gerada e Nº TRA preenchido).'
+      });
       return;
     }
 
@@ -947,6 +989,10 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
       setToast({ type: 'error', message: 'Requisição inválida' });
       return;
     }
+    if (!String(req?.tra_numero || '').trim()) {
+      setToast({ type: 'error', message: 'Guarde o Nº TRA antes de abrir o Clog.' });
+      return;
+    }
     try {
       setReporteLoading(true);
       const token = localStorage.getItem('token');
@@ -979,6 +1025,12 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
     const ids = Array.from(new Set(idsArg || selectedIds)).map(x => parseInt(x, 10)).filter(Boolean);
     if (ids.length < 2) {
       setToast({ type: 'error', message: 'Selecione pelo menos 2 requisições para o Clog combinado.' });
+      return;
+    }
+    const targets = ids.map(id => requisicoes.find(x => x.id === id)).filter(Boolean);
+    const semNumeroTra = targets.some((r) => !String(r?.tra_numero || '').trim());
+    if (semNumeroTra) {
+      setToast({ type: 'error', message: 'Preencha e guarde o Nº TRA em todas as requisições antes de abrir o Clog combinado.' });
       return;
     }
     try {
@@ -1488,6 +1540,18 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
                     </div>
                   </button>
                 )}
+                {podeConsultarMovimentos && (
+                  <button
+                    type="button"
+                    onClick={() => navigate('/movimentos')}
+                    className="w-full text-left rounded-lg border px-4 py-3 transition-colors border-gray-300 bg-white hover:border-[#0915FF] hover:bg-blue-50/40"
+                  >
+                    <div className="text-sm font-semibold text-gray-900">Consulta de movimentos</div>
+                    <div className="mt-0.5 text-xs text-gray-600">
+                      Histórico de abastecimentos no formato Clog com filtros avançados
+                    </div>
+                  </button>
+                )}
               </div>
             </div>
 
@@ -1757,6 +1821,31 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
                           <div><strong>Criado por:</strong> {formatCriadorRequisicao(req)}</div>
                           <div><strong>Data:</strong> {new Date(req.created_at).toLocaleDateString('pt-BR')}</div>
                         </div>
+                        {!isFluxoRecebimentoMercadoria(req) && req.tra_gerada_em && (
+                          <div className="mt-3 flex items-end gap-2 flex-wrap" onClick={(e) => e.stopPropagation()}>
+                            <div className="flex flex-col">
+                              <label className="text-xs font-semibold text-gray-700 mb-1">Nº TRA</label>
+                              <input
+                                type="text"
+                                value={String(traNumeroByReqId[req.id] ?? req.tra_numero ?? '')}
+                                onChange={(e) => handleTraNumeroChange(req.id, e.target.value)}
+                                placeholder="Digite o número da TRA"
+                                disabled={savingTraReqId === req.id || req.status === 'FINALIZADO'}
+                                className="px-3 py-2 border border-gray-300 rounded-lg text-sm w-[220px] focus:ring-2 focus:ring-[#0915FF] focus:border-transparent disabled:bg-gray-100 disabled:text-gray-500"
+                              />
+                            </div>
+                            {req.status !== 'FINALIZADO' && (
+                              <button
+                                type="button"
+                                onClick={() => handleGuardarTraNumero(req)}
+                                disabled={savingTraReqId === req.id}
+                                className="px-3 py-2 rounded-lg border border-indigo-300 text-indigo-700 text-sm hover:bg-indigo-50 disabled:opacity-50"
+                              >
+                                {savingTraReqId === req.id ? 'A guardar...' : 'Guardar Nº TRA'}
+                              </button>
+                            )}
+                          </div>
+                        )}
                       </div>
                     </div>
                   <div className="flex gap-2 mt-4 sm:mt-0 flex-wrap" onClick={(e) => e.stopPropagation()}>
@@ -1869,7 +1958,8 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
                     {canDocsELogisticaPosSeparacao &&
                     !isFluxoRecebimentoMercadoria(req) &&
                     ((req.status === 'Entregue' && req.tra_gerada_em) ||
-                      (isFluxoCentralApeadoSemTrfl(req) && req.status === 'separado' && req.tra_gerada_em)) && (
+                      (isFluxoCentralApeadoSemTrfl(req) && req.status === 'separado' && req.tra_gerada_em)) &&
+                    String(req.tra_numero || '').trim() && (
                       <button
                         type="button"
                         disabled={prepBloqueio}
@@ -2016,10 +2106,16 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
               const canGerarTRA = all(r => r.status === 'Entregue' && !r.tra_gerada_em);
               const canBaixarTRA = all(r => (r.status === 'Entregue' && r.tra_gerada_em) || r.status === 'FINALIZADO');
               const canGerarReporte = all(r => (r.status === 'Entregue' && r.tra_gerada_em) || r.status === 'FINALIZADO');
-              const canGerarClog = all(r => (r.status === 'Entregue' && r.tra_gerada_em) || r.status === 'FINALIZADO');
+              const canGerarClog = all(
+                (r) =>
+                  ((r.status === 'Entregue' && r.tra_gerada_em) || r.status === 'FINALIZADO') &&
+                  String(r.tra_numero || '').trim()
+              );
 
               const canBaixarComprovativo = all(r => ['Entregue', 'FINALIZADO'].includes(r.status));
-              const canFinalizar = all(r => r.status === 'Entregue' && r.tra_gerada_em);
+              const canFinalizar = all(
+                (r) => r.status === 'Entregue' && r.tra_gerada_em && String(r.tra_numero || '').trim()
+              );
 
               const ctxTrflGerarBloqueado = Boolean(canGerarTRFL && algumaPrepBloqueio);
               const ctxTraGerarBloqueado = Boolean(canGerarTRA && algumaPrepBloqueio);

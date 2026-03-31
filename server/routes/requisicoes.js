@@ -23,7 +23,7 @@ const {
   requisicaoPerfilNegadoMiddleware,
   isFluxoDevolucaoViaturaCentral,
 } = require('../middleware/requisicoesScope');
-const { usuarioTemPermissaoControloStock } = require('../utils/usuarioDbColumns');
+const { usuarioTemPermissaoControloStock, usuarioTemPermissaoConsultaMovimentos } = require('../utils/usuarioDbColumns');
 
 const SQL_CRIADOR_COM_EMAIL = `${SQL_CRIADOR_NOME} AS usuario_nome,
         u.email AS usuario_email,
@@ -93,6 +93,13 @@ function quantidadeNecessariaStockPreparacao({
     return serialsNormalizados.length;
   }
   return Number(quantidade_preparada) || 0;
+}
+
+function serialsNormalizadosList(value) {
+  return String(value || '')
+    .split(/\r?\n|;|\|/)
+    .map((s) => String(s || '').trim())
+    .filter(Boolean);
 }
 
 /** Armazém central + armazens_localizacao_item: exige quantidade na localização de saída (só chamada se o utilizador tiver controlo de stock). */
@@ -1401,6 +1408,15 @@ function podeExportarReporteOuClog(requisicao) {
   return false;
 }
 
+/** Clog permite também devolução em APEADOS após DEV + Nº DEV guardado. */
+function podeExportarClog(requisicao) {
+  if (podeExportarReporteOuClog(requisicao)) return true;
+  const st = String(requisicao?.status || '');
+  if (st !== 'APEADOS') return false;
+  if (!requisicao?.devolucao_tra_gerada_em) return false;
+  return Boolean(String(requisicao?.tra_numero || '').trim());
+}
+
 function formatDateBR(dateObj) {
   const d = dateObj instanceof Date ? dateObj : new Date(dateObj);
   if (Number.isNaN(d.getTime())) return '';
@@ -1748,6 +1764,26 @@ router.get('/:id/export-trfl', ...requisicaoAuth, denyOperador, async (req, res)
 
       const qty = parseInt(ri.quantidade_preparada ?? ri.quantidade, 10) || 0;
       if (qty <= 0) continue;
+      if (tipoControlo === 'S/N') {
+        const serials = serialsNormalizadosList(ri.serialnumber);
+        if (serials.length > 0) {
+          for (const sn of serials) {
+            rows.push({
+              Date: dateStr,
+              OriginWarehouse: codigoOrigem,
+              OriginLocation: ri.localizacao_origem || '',
+              Article: String(ri.item_codigo || ''),
+              Quatity: 1,
+              SerialNumber1: sn, SerialNumber2: '', MacAddress: '', CentroCusto: '',
+              DestinationWarehouse: codigoOrigem,
+              DestinationLocation: localizacaoExpedicao,
+              ProjectCode: '',
+              Batch: ri.lote || ''
+            });
+          }
+          continue;
+        }
+      }
       rows.push({
         Date: dateStr,
         OriginWarehouse: codigoOrigem,
@@ -1879,6 +1915,26 @@ router.post('/export-trfl-multi', ...requisicaoAuth, denyOperador, async (req, r
         if (tipoControlo === 'LOTE' && temBobinas) continue;
         const qty = parseInt(ri.quantidade_preparada ?? ri.quantidade, 10) || 0;
         if (qty <= 0) continue;
+        if (tipoControlo === 'S/N') {
+          const serials = serialsNormalizadosList(ri.serialnumber);
+          if (serials.length > 0) {
+            for (const sn of serials) {
+              rows.push({
+                Date: dateStr,
+                OriginWarehouse: codigoOrigem,
+                OriginLocation: ri.localizacao_origem || '',
+                Article: String(ri.item_codigo || ''),
+                Quatity: 1,
+                SerialNumber1: sn, SerialNumber2: '', MacAddress: '', CentroCusto: '',
+                DestinationWarehouse: codigoOrigem,
+                DestinationLocation: localizacaoExpedicao,
+                ProjectCode: '',
+                Batch: ri.lote || ''
+              });
+            }
+            continue;
+          }
+        }
 
         rows.push({
           Date: dateStr,
@@ -2017,6 +2073,26 @@ router.get('/:id/export-tra', ...requisicaoAuth, denyOperador, async (req, res) 
           : ri.quantidade;
         const qty = parseInt(qtyBase, 10) || 0;
         if (qty <= 0) continue;
+        if (tipoControlo === 'S/N') {
+          const serials = serialsNormalizadosList(ri.serialnumber);
+          if (serials.length > 0) {
+            for (const sn of serials) {
+              rows.push({
+                Date: dateStr,
+                OriginWarehouse: codigoViatura,
+                OriginLocation: ri.localizacao_origem || '',
+                Article: String(ri.item_codigo || ''),
+                Quatity: 1,
+                SerialNumber1: sn, SerialNumber2: '', MacAddress: '', CentroCusto: '',
+                DestinationWarehouse: codigoCentral,
+                DestinationLocation: locRec,
+                ProjectCode: '',
+                Batch: ri.lote || ''
+              });
+            }
+            continue;
+          }
+        }
 
         rows.push({
           Date: dateStr,
@@ -2067,10 +2143,7 @@ router.get('/:id/export-tra', ...requisicaoAuth, denyOperador, async (req, res) 
         await cDev.query(
           `UPDATE requisicoes
            SET devolucao_tra_gerada_em = COALESCE(devolucao_tra_gerada_em, CURRENT_TIMESTAMP),
-               status = CASE
-                 WHEN status = 'EM EXPEDICAO' THEN 'APEADOS'
-                 ELSE status
-               END
+               updated_at = CURRENT_TIMESTAMP
            WHERE id = $1`,
           [id]
         );
@@ -2215,6 +2288,29 @@ router.get('/:id/export-tra', ...requisicaoAuth, denyOperador, async (req, res) 
         : ri.quantidade;
       const qty = parseInt(qtyBase, 10) || 0;
       if (qty <= 0) continue;
+      if (tipoControlo === 'S/N') {
+        const serials = serialsNormalizadosList(ri.serialnumber);
+        if (serials.length > 0) {
+          for (const sn of serials) {
+            rows.push({
+              Date: dateStr,
+              OriginWarehouse: codigoOrigem,
+              OriginLocation: fluxoCentralApeado ? (ri.localizacao_origem || '') : localizacaoOrigemTRA,
+              Article: String(ri.item_codigo || ''),
+              Quatity: 1,
+              SerialNumber1: sn, SerialNumber2: '', MacAddress: '', CentroCusto: '',
+              DestinationWarehouse: codigoDestino,
+              DestinationLocation:
+                tipoDestNorm === 'central'
+                  ? localizacaoDestinoRecebimento
+                  : (ri.is_ferramenta ? localizacaoFERR : localizacaoNormal),
+              ProjectCode: '',
+              Batch: ri.lote || ''
+            });
+          }
+          continue;
+        }
+      }
 
       rows.push({
         Date: dateStr,
@@ -2319,7 +2415,7 @@ router.get('/:id/export-tra-apeados', ...requisicaoAuth, denyOperador, async (re
       return res.status(400).json({ error: 'Destino deve ser um armazém do tipo APEADO.' });
     }
 
-    // Origem no stock / Excel: recebimento antes da TRFL interna; zona FERR depois (quantidades APEADOS).
+    // Origem no stock / Excel: sempre da localização de recebimento do central que recebeu a devolução.
     const centralId = requisicao.armazem_id;
     if (!centralId) return res.status(400).json({ error: 'Requisição sem armazém central (destino da devolução).' });
 
@@ -2340,8 +2436,8 @@ router.get('/:id/export-tra-apeados', ...requisicaoAuth, denyOperador, async (re
     const codigoCentral =
       codigoCentralPre || (await pool.query('SELECT codigo FROM armazens WHERE id = $1', [centralId])).rows[0]?.codigo || 'E';
     const { localizacaoFERR } = computeDestLocFerrNormal(codigoCentral, locCentralRowsFerr);
-    /** Stock dos APEADOS: após TRFL interna ficam na zona FERR; antes disso ainda no recebimento. */
-    const locOrigemApeados = requisicao.devolucao_trfl_gerada_em ? localizacaoFERR : locRecCentral;
+    /** Regra operacional: APEADOS saem sempre da localização de recebimento do central. */
+    const locOrigemApeados = locRecCentral;
 
     // Localização destino: recebimento do armazém APEADO (fallback para código do armazém).
     let locRecApeado = await localizacaoArmazemPorTipoConn(pool, destinoApeadoId, 'recebimento');
@@ -2400,23 +2496,37 @@ router.get('/:id/export-tra-apeados', ...requisicaoAuth, denyOperador, async (re
           });
         }
       } else if (tipoControlo === 'S/N') {
-        const serials = String(it.serialnumber || '')
-          .split(/\r?\n|;|\|/)
-          .map((s) => String(s || '').trim())
-          .filter(Boolean);
+        const serials = serialsNormalizadosList(it.serialnumber);
         const apeadosSerials = serials.slice(0, apeadosQty);
-        rows.push({
-          Date: dateStr,
-          OriginWarehouse: codigoCentral,
-          OriginLocation: locOrigemApeados,
-          Article: String(it.item_codigo || ''),
-          Quatity: apeadosQty,
-          SerialNumber1: apeadosSerials.join('\n'), SerialNumber2: '', MacAddress: '', CentroCusto: '',
-          DestinationWarehouse: codigoApeado,
-          DestinationLocation: locRecApeado,
-          ProjectCode: '',
-          Batch: it.lote || ''
-        });
+        if (apeadosSerials.length > 0) {
+          for (const sn of apeadosSerials) {
+            rows.push({
+              Date: dateStr,
+              OriginWarehouse: codigoCentral,
+              OriginLocation: locOrigemApeados,
+              Article: String(it.item_codigo || ''),
+              Quatity: 1,
+              SerialNumber1: sn, SerialNumber2: '', MacAddress: '', CentroCusto: '',
+              DestinationWarehouse: codigoApeado,
+              DestinationLocation: locRecApeado,
+              ProjectCode: '',
+              Batch: it.lote || ''
+            });
+          }
+        } else {
+          rows.push({
+            Date: dateStr,
+            OriginWarehouse: codigoCentral,
+            OriginLocation: locOrigemApeados,
+            Article: String(it.item_codigo || ''),
+            Quatity: apeadosQty,
+            SerialNumber1: '', SerialNumber2: '', MacAddress: '', CentroCusto: '',
+            DestinationWarehouse: codigoApeado,
+            DestinationLocation: locRecApeado,
+            ProjectCode: '',
+            Batch: it.lote || ''
+          });
+        }
       } else {
         rows.push({
           Date: dateStr,
@@ -2463,7 +2573,7 @@ router.get('/:id/export-tra-apeados', ...requisicaoAuth, denyOperador, async (re
         cApe.release();
         return res.status(400).json({ error: 'Gere primeiro a TRA de devolução.' });
       }
-      const locOrigemStock = lockApe.rows[0]?.devolucao_trfl_gerada_em ? localizacaoFERR : locRecCentral;
+      const locOrigemStock = locRecCentral;
       if (!lockApe.rows[0]?.devolucao_tra_apeados_gerada_em && usuarioTemPermissaoControloStock(req)) {
         try {
           await aplicarStockTraApeadosDevolucao(cApe, {
@@ -2481,9 +2591,10 @@ router.get('/:id/export-tra-apeados', ...requisicaoAuth, denyOperador, async (re
       await cApe.query(
         `UPDATE requisicoes
          SET devolucao_tra_apeados_gerada_em = COALESCE(devolucao_tra_apeados_gerada_em, CURRENT_TIMESTAMP),
+             devolucao_apeado_destino_id = COALESCE(devolucao_apeado_destino_id, $2),
              tra_gerada_em = COALESCE(tra_gerada_em, CURRENT_TIMESTAMP)
          WHERE id = $1`,
-        [id]
+        [id, destinoApeadoId]
       );
       await cApe.query('COMMIT');
     } catch (eApe) {
@@ -2953,6 +3064,7 @@ function clogRowsFromItemData(
   dateStr,
   codigoDestino,
   colaboradorObs,
+  traNumero,
   localizacaoOrigemTRA,
   localizacaoFERR,
   localizacaoNormal,
@@ -2961,13 +3073,23 @@ function clogRowsFromItemData(
   opts = {}
 ) {
   const isDevolucao = Boolean(opts?.isDevolucao);
-  const tipoMovimento = isDevolucao ? 'Devolucao de carrinha' : 'Saida de Armazem';
+  const isApeados = Boolean(opts?.isApeados);
+  const tipoMovimentoBase = isDevolucao ? 'Devolucao de carrinha' : 'Saida de Armazem';
+  const tipoMovimento = tipoMovimentoBase;
   const qtySign = isDevolucao ? 1 : -1;
+  const traDev = String(traNumero || '').trim();
   const devolucaoDestinoLoc = String(opts?.devolucaoDestinoLoc || '').trim();
   const newLocDevolucao = devolucaoDestinoLoc || LOCALIZACAO_RECEBIMENTO_FALLBACK;
+  const apeadoDestinoCodigo = String(opts?.apeadoDestinoCodigo || '').trim();
+  const apeadoDestinoLoc = String(opts?.apeadoDestinoLoc || '').trim();
+  const apeadosOrigemLoc = String(opts?.apeadosOrigemLoc || '').trim();
   const rows = [];
   const itemByItemId = new Map(itensComFerramenta.map((it) => [it.item_id, it]));
   const itemIdsComBobina = new Set(bobinas.map((b) => b.item_id));
+  const apeadosQtyByItemId = new Map(
+    (itensComFerramenta || []).map((it) => [Number(it.item_id), Math.max(0, parseInt(it.quantidade_apeados ?? 0, 10) || 0)])
+  );
+  const apeadosCountByItemId = new Map();
 
   for (const b of bobinas) {
     const itemMeta = itemByItemId.get(b.item_id) || {};
@@ -2975,6 +3097,7 @@ function clogRowsFromItemData(
     if (qty === 0) continue;
 
     rows.push({
+      __ordem_movimento: 1,
       'Tipo de Movimento': tipoMovimento,
       'Dt_Recepção': dateStr,
       'REF.': String(b.item_codigo || ''),
@@ -2984,11 +3107,37 @@ function clogRowsFromItemData(
       'S/N': b.serialnumber || '',
       Lote: b.lote || '',
       'Novo Armazém': codigoDestino,
-      'TRA / DEV': '',
+      'TRA / DEV': traDev,
       'New Localização': isDevolucao ? newLocDevolucao : (itemMeta.is_ferramenta ? localizacaoFERR : localizacaoNormal),
       DEP: '',
       Observações: colaboradorObs
     });
+
+    if (isApeados && isDevolucao) {
+      const itemId = Number(b.item_id);
+      const apeadosQty = apeadosQtyByItemId.get(itemId) ?? 0;
+      const current = apeadosCountByItemId.get(itemId) ?? 0;
+      const next = current + 1;
+      apeadosCountByItemId.set(itemId, next);
+      if (next <= apeadosQty) {
+        rows.push({
+          __ordem_movimento: 2,
+          'Tipo de Movimento': 'APEADOS',
+          'Dt_Recepção': dateStr,
+          'REF.': String(b.item_codigo || ''),
+          DESCRIPTION: String(b.item_descricao || ''),
+          QTY: -Math.abs(qty),
+          Loc_Inicial: apeadosOrigemLoc || clogLocInicial(isDevolucao, localizacaoOrigemTRA, itemMeta),
+          'S/N': b.serialnumber || '',
+          Lote: b.lote || '',
+          'Novo Armazém': apeadoDestinoCodigo || codigoDestino,
+          'TRA / DEV': traDev,
+          'New Localização': apeadoDestinoLoc || apeadoDestinoCodigo || '',
+          DEP: '',
+          Observações: colaboradorObs
+        });
+      }
+    }
   }
 
   for (const ri of itensComFerramenta) {
@@ -3002,6 +3151,7 @@ function clogRowsFromItemData(
     if (qty === 0) continue;
 
     rows.push({
+      __ordem_movimento: 1,
       'Tipo de Movimento': tipoMovimento,
       'Dt_Recepção': dateStr,
       'REF.': String(ri.item_codigo || ''),
@@ -3011,11 +3161,34 @@ function clogRowsFromItemData(
       'S/N': ri.serialnumber || '',
       Lote: ri.lote || '',
       'Novo Armazém': codigoDestino,
-      'TRA / DEV': '',
+      'TRA / DEV': traDev,
       'New Localização': isDevolucao ? newLocDevolucao : (ri.is_ferramenta ? localizacaoFERR : localizacaoNormal),
       DEP: '',
       Observações: colaboradorObs
     });
+
+    if (isApeados && isDevolucao) {
+      const apeadosQtyRaw = Math.max(0, parseInt(ri.quantidade_apeados ?? 0, 10) || 0);
+      const apeadosQty = Math.max(0, Math.min(Math.abs(Number(qtyBase) || 0), apeadosQtyRaw));
+      if (apeadosQty > 0) {
+        rows.push({
+          __ordem_movimento: 2,
+          'Tipo de Movimento': 'APEADOS',
+          'Dt_Recepção': dateStr,
+          'REF.': String(ri.item_codigo || ''),
+          DESCRIPTION: String(ri.item_descricao || ''),
+          QTY: -Math.abs(apeadosQty),
+          Loc_Inicial: apeadosOrigemLoc || clogLocInicial(isDevolucao, localizacaoOrigemTRA, ri),
+          'S/N': ri.serialnumber || '',
+          Lote: ri.lote || '',
+          'Novo Armazém': apeadoDestinoCodigo || codigoDestino,
+          'TRA / DEV': traDev,
+          'New Localização': apeadoDestinoLoc || apeadoDestinoCodigo || '',
+          DEP: '',
+          Observações: colaboradorObs
+        });
+      }
+    }
   }
 
   return rows;
@@ -3032,16 +3205,18 @@ async function buildClogRowsForRequisicaoIds(idsClean, dateStr) {
       a.descricao as armazem_destino_descricao,
       a.tipo as armazem_destino_tipo,
       ao.codigo as armazem_origem_codigo,
-      ao.tipo as armazem_origem_tipo
+      ao.tipo as armazem_origem_tipo,
+      aa.codigo as devolucao_apeado_destino_codigo
     FROM requisicoes r
     INNER JOIN armazens a ON r.armazem_id = a.id
     LEFT JOIN armazens ao ON r.armazem_origem_id = ao.id
+    LEFT JOIN armazens aa ON r.devolucao_apeado_destino_id = aa.id
     WHERE r.id = ANY($1::int[])
   `, [idsUnique]);
 
   const byId = new Map(reqRes.rows.map((r) => [r.id, r]));
   const candidatas = idsClean.map((id) => byId.get(id)).filter(Boolean)
-    .filter((r) => podeExportarReporteOuClog(r) && r.armazem_origem_id);
+    .filter((r) => podeExportarClog(r) && r.armazem_origem_id && String(r.tra_numero || '').trim());
   if (candidatas.length === 0) return [];
 
   const origemIds = [...new Set(candidatas.map((r) => r.armazem_origem_id))];
@@ -3051,21 +3226,21 @@ async function buildClogRowsForRequisicaoIds(idsClean, dateStr) {
   );
   const armById = new Map(armRes.rows.map((a) => [a.id, a]));
 
-  const elegiveis = candidatas.filter((r) => {
-    const a = armById.get(r.armazem_origem_id);
-    if (!a) return false;
-    const tipoO = String(a.tipo || '').toLowerCase();
-    const tipoD = String(r.armazem_destino_tipo || '').toLowerCase();
-    if (tipoO === 'central') return true;
-    return isFluxoDevolucaoViaturaCentral(tipoO, tipoD);
-  });
+  const elegiveis = candidatas.filter((r) => Boolean(armById.get(r.armazem_origem_id)));
   if (elegiveis.length === 0) return [];
 
   const requisicaoIdsCentral = [...new Set(elegiveis.map((r) => r.id))];
   const origemIdsCentral = [...new Set(elegiveis.map((r) => r.armazem_origem_id))];
   const destArmIds = [...new Set(elegiveis.map((r) => r.armazem_id))];
+  const apeadoDestinoIds = [
+    ...new Set(
+      elegiveis
+        .map((r) => Number(r.devolucao_apeado_destino_id))
+        .filter(Number.isFinite)
+    ),
+  ];
 
-  const [expRes, allLocsRes, itensRes, bobRes] = await Promise.all([
+  const [expRes, allLocsRes, itensRes, bobRes, locApeadoRes] = await Promise.all([
     pool.query(
       `SELECT DISTINCT ON (al.armazem_id) al.armazem_id, al.localizacao
        FROM armazens_localizacoes al
@@ -3106,6 +3281,17 @@ async function buildClogRowsForRequisicaoIds(idsClean, dateStr) {
       INNER JOIN itens i ON ri.item_id = i.id
       WHERE ri.requisicao_id = ANY($1::int[])
     `, [requisicaoIdsCentral])
+    ,
+    apeadoDestinoIds.length > 0
+      ? pool.query(
+          `SELECT DISTINCT ON (armazem_id) armazem_id, localizacao
+           FROM armazens_localizacoes
+           WHERE armazem_id = ANY($1::int[])
+             AND LOWER(COALESCE(tipo_localizacao, '')) = 'recebimento'
+           ORDER BY armazem_id, id`,
+          [apeadoDestinoIds]
+        )
+      : Promise.resolve({ rows: [] })
   ]);
 
   const expByArm = new Map(expRes.rows.map((row) => [row.armazem_id, row.localizacao]));
@@ -3122,6 +3308,9 @@ async function buildClogRowsForRequisicaoIds(idsClean, dateStr) {
       recByDestArm.set(row.armazem_id, String(row.localizacao).trim());
     }
   }
+  const recByApeadoId = new Map(
+    (locApeadoRes.rows || []).map((r) => [Number(r.armazem_id), String(r.localizacao || '').trim()])
+  );
 
   const itensByReq = new Map();
   for (const row of itensRes.rows) {
@@ -3140,6 +3329,9 @@ async function buildClogRowsForRequisicaoIds(idsClean, dateStr) {
   for (const id of idsClean) {
     const r = elegiveisById.get(id);
     if (!r) continue;
+    const dateForReq = typeof dateStr === 'function'
+      ? String(dateStr(r) || '')
+      : String(dateStr || '');
     const codigoDestino = r.armazem_destino_codigo || '';
     const localizacaoOrigemTRA = expByArm.get(r.armazem_origem_id) || LOCALIZACAO_EXPEDICAO_FALLBACK;
     const locRows = locsByDestArm.get(r.armazem_id) || [];
@@ -3151,9 +3343,10 @@ async function buildClogRowsForRequisicaoIds(idsClean, dateStr) {
       r.armazem_destino_tipo
     );
     const rows = clogRowsFromItemData(
-      dateStr,
+      dateForReq || formatDateBR(new Date()),
       codigoDestino,
       r.observacoes || '',
+      r.tra_numero || '',
       localizacaoOrigemTRA,
       localizacaoFERR,
       localizacaoNormal,
@@ -3161,6 +3354,13 @@ async function buildClogRowsForRequisicaoIds(idsClean, dateStr) {
       bobinas,
       {
         isDevolucao,
+        isApeados:
+          String(r.status || '') === 'APEADOS' &&
+          Boolean(r.devolucao_tra_apeados_gerada_em) &&
+          Boolean(String(r.devolucao_tra_apeados_numero || '').trim()),
+        apeadoDestinoCodigo: String(r.devolucao_apeado_destino_codigo || '').trim(),
+        apeadoDestinoLoc: recByApeadoId.get(Number(r.devolucao_apeado_destino_id)) || '',
+        apeadosOrigemLoc: recByDestArm.get(r.armazem_id) || LOCALIZACAO_RECEBIMENTO_FALLBACK,
         devolucaoDestinoLoc: recByDestArm.get(r.armazem_id) || LOCALIZACAO_RECEBIMENTO_FALLBACK
       }
     );
@@ -3170,8 +3370,210 @@ async function buildClogRowsForRequisicaoIds(idsClean, dateStr) {
   return allRows;
 }
 
+router.get('/movimentos-clog/consulta', ...requisicaoAuth, denyOperador, async (req, res) => {
+  try {
+    if (!usuarioTemPermissaoConsultaMovimentos(req)) {
+      return res.status(403).json({ error: 'Sem permissão para consultar movimentos.' });
+    }
+    const q = String(req.query?.q || '').trim().toLowerCase();
+    const dataInicio = String(req.query?.data_inicio || '').trim();
+    const dataFim = String(req.query?.data_fim || '').trim();
+    const tipoMovimento = String(req.query?.tipo_movimento || '').trim().toLowerCase();
+    const traNumero = String(req.query?.tra_numero || '').trim().toLowerCase();
+    const ref = String(req.query?.ref || '').trim().toLowerCase();
+    const description = String(req.query?.description || '').trim().toLowerCase();
+    const serial = String(req.query?.serial || '').trim().toLowerCase();
+    const lote = String(req.query?.lote || '').trim().toLowerCase();
+    const armazem = String(req.query?.armazem || '').trim().toLowerCase();
+    const localizacao = String(req.query?.localizacao || '').trim().toLowerCase();
+    const apenasMinhas = String(req.query?.minhas || '').trim() === '1';
+    const pageSizeRaw = parseInt(String(req.query?.page_size || '200'), 10);
+    const pageSize = Number.isFinite(pageSizeRaw) ? Math.max(50, Math.min(pageSizeRaw, 500)) : 200;
+    const startOffsetRaw = parseInt(String(req.query?.offset || '0'), 10);
+    const startOffset = Number.isFinite(startOffsetRaw) ? Math.max(0, startOffsetRaw) : 0;
+    const reqBatchSize = 200;
+    const maxBatches = 25;
+    const columns = ['Tipo de Movimento', 'Dt_Recepção', 'REF.', 'DESCRIPTION', 'QTY', 'Loc_Inicial', 'S/N', 'Lote', 'Novo Armazém', 'TRA / DEV', 'New Localização', 'DEP', 'Observações'];
+
+    const where = [];
+    const params = [];
+    let idx = 1;
+    const add = (sqlPart, value) => {
+      where.push(sqlPart.replace('?', `$${idx}`));
+      params.push(value);
+      idx += 1;
+    };
+
+    // Requisições aptas para Clog na consulta.
+    where.push(`COALESCE(TRIM(r.tra_numero), '') <> ''`);
+    where.push(`(
+      r.status = 'FINALIZADO'
+      OR (r.status = 'Entregue' AND (r.tra_gerada_em IS NOT NULL OR r.devolucao_tra_gerada_em IS NOT NULL))
+      OR (
+        r.status = 'APEADOS'
+        AND r.devolucao_tra_gerada_em IS NOT NULL
+        AND r.devolucao_tra_apeados_gerada_em IS NOT NULL
+        AND COALESCE(TRIM(r.devolucao_tra_apeados_numero), '') <> ''
+      )
+    )`);
+
+    if (apenasMinhas && Number.isFinite(Number(req.user?.id))) {
+      add('r.usuario_id = ?', Number(req.user.id));
+    }
+    if (dataInicio) {
+      add(`COALESCE(r.tra_gerada_em, r.updated_at, r.created_at)::date >= ?::date`, dataInicio);
+    }
+    if (dataFim) {
+      add(`COALESCE(r.tra_gerada_em, r.updated_at, r.created_at)::date <= ?::date`, dataFim);
+    }
+    if (traNumero) {
+      add(`LOWER(COALESCE(r.tra_numero, '')) LIKE ?`, `%${traNumero}%`);
+    }
+
+    if (!isAdmin(req.user?.role)) {
+      const allowed = Array.isArray(req.requisicaoArmazemOrigemIds) ? req.requisicaoArmazemOrigemIds : [];
+      if (allowed.length === 0) {
+        return res.json({
+          columns,
+          rows: [],
+          total: 0,
+          offset: startOffset,
+          next_offset: null,
+          has_more: false,
+        });
+      }
+      // Mesmo scope das listagens de requisições:
+      // - regra base: armazém de origem atribuído ao utilizador
+      // - devolução viatura->central: scope pelo armazém central destino (r.armazem_id)
+      where.push(`(
+        (r.armazem_origem_id IS NOT NULL AND r.armazem_origem_id = ANY($${idx}::int[]))
+        OR (
+          EXISTS (SELECT 1 FROM armazens ao WHERE ao.id = r.armazem_origem_id AND LOWER(TRIM(COALESCE(ao.tipo, ''))) = 'viatura')
+          AND EXISTS (SELECT 1 FROM armazens ad WHERE ad.id = r.armazem_id AND LOWER(TRIM(COALESCE(ad.tipo, ''))) = 'central')
+          AND r.armazem_id = ANY($${idx + 1}::int[])
+        )
+      )`);
+      params.push(allowed, allowed);
+      idx += 2;
+    }
+
+    const passesRowFilter = (row) => {
+      const tipoOk = !tipoMovimento || String(row['Tipo de Movimento'] || '').toLowerCase().includes(tipoMovimento);
+      const refOk = !ref || String(row['REF.'] || '').toLowerCase().includes(ref);
+      const descOk = !description || String(row.DESCRIPTION || '').toLowerCase().includes(description);
+      const serialOk = !serial || String(row['S/N'] || '').toLowerCase().includes(serial);
+      const loteOk = !lote || String(row.Lote || '').toLowerCase().includes(lote);
+      const armOk = !armazem || String(row['Novo Armazém'] || '').toLowerCase().includes(armazem);
+      const locOk =
+        !localizacao ||
+        String(row.Loc_Inicial || '').toLowerCase().includes(localizacao) ||
+        String(row['New Localização'] || '').toLowerCase().includes(localizacao);
+      const qOk =
+        !q ||
+        [
+          row['Tipo de Movimento'],
+          row['Dt_Recepção'],
+          row['REF.'],
+          row.DESCRIPTION,
+          row.QTY,
+          row.Loc_Inicial,
+          row['S/N'],
+          row.Lote,
+          row['Novo Armazém'],
+          row['TRA / DEV'],
+          row['New Localização'],
+          row.DEP,
+          row.Observações,
+        ].some((v) => String(v || '').toLowerCase().includes(q));
+      return Boolean(tipoOk && refOk && descOk && serialOk && loteOk && armOk && locOk && qOk);
+    };
+
+    const outRows = [];
+    let reqOffset = startOffset;
+    let reachedEnd = false;
+    let batches = 0;
+
+    while (outRows.length < pageSize && !reachedEnd && batches < maxBatches) {
+      const reqSql = `
+        SELECT r.id, r.tra_gerada_em, r.updated_at, r.created_at
+        FROM requisicoes r
+        ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+        ORDER BY COALESCE(r.tra_gerada_em, r.updated_at, r.created_at) DESC, r.id DESC
+        LIMIT ${reqBatchSize} OFFSET ${reqOffset}
+      `;
+      const reqRows = await pool.query(reqSql, params);
+      const reqBatch = Array.isArray(reqRows.rows) ? reqRows.rows : [];
+      if (reqBatch.length === 0) {
+        reachedEnd = true;
+        break;
+      }
+
+      const ids = reqBatch.map((r) => Number(r.id)).filter(Number.isFinite);
+      const dateById = new Map(
+        reqBatch.map((r) => [
+          Number(r.id),
+          formatDateBR(new Date(r.tra_gerada_em || r.updated_at || r.created_at || Date.now())),
+        ])
+      );
+
+      let rows = await buildClogRowsForRequisicaoIds(ids, (r) => dateById.get(Number(r?.id)) || formatDateBR(new Date()));
+      rows = (rows || []).map((r) => ({ ...r, Observações: '' }));
+      for (const row of rows) {
+        if (!passesRowFilter(row)) continue;
+        outRows.push(row);
+        if (outRows.length >= pageSize) break;
+      }
+
+      reqOffset += reqBatch.length;
+      if (reqBatch.length < reqBatchSize) reachedEnd = true;
+      batches += 1;
+    }
+
+    const parseDateBr = (v) => {
+      const s = String(v || '').trim();
+      const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(s);
+      if (!m) return 0;
+      const dt = new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1]));
+      return Number.isNaN(dt.getTime()) ? 0 : dt.getTime();
+    };
+    outRows.sort((a, b) => {
+      const dA = parseDateBr(a['Dt_Recepção']);
+      const dB = parseDateBr(b['Dt_Recepção']);
+      if (dA !== dB) return dB - dA;
+      const traA = String(a['TRA / DEV'] || '');
+      const traB = String(b['TRA / DEV'] || '');
+      const traCmp = traB.localeCompare(traA);
+      if (traCmp !== 0) return traCmp;
+      const refA = String(a['REF.'] || '');
+      const refB = String(b['REF.'] || '');
+      const refCmp = refA.localeCompare(refB);
+      if (refCmp !== 0) return refCmp;
+      const ordA = Number(a.__ordem_movimento || 9);
+      const ordB = Number(b.__ordem_movimento || 9);
+      return ordA - ordB;
+    });
+    const outRowsClean = outRows.map(({ __ordem_movimento, ...rest }) => rest);
+
+    const nextOffset = reachedEnd || outRows.length < pageSize ? null : reqOffset;
+    return res.json({
+      columns,
+      rows: outRowsClean,
+      total: outRowsClean.length,
+      offset: startOffset,
+      next_offset: nextOffset,
+      has_more: nextOffset !== null,
+    });
+  } catch (error) {
+    console.error('Erro ao consultar movimentos Clog:', error);
+    return res.status(500).json({ error: 'Erro ao consultar movimentos', details: error.message });
+  }
+});
+
 async function buildClogRowsFromRequisicao(requisicao, dateStr) {
   if (!requisicao?.armazem_origem_id) return { rows: [], eligible: false, reason: 'Requisição sem armazém de origem.' };
+  if (!String(requisicao?.tra_numero || '').trim()) {
+    return { rows: [], eligible: false, reason: 'Guarde o Nº TRA antes de gerar/abrir o Clog.' };
+  }
 
   const armazemOrigem = await pool.query('SELECT id, codigo, tipo FROM armazens WHERE id = $1', [requisicao.armazem_origem_id]);
   if (armazemOrigem.rows.length === 0) {
@@ -3180,13 +3582,6 @@ async function buildClogRowsFromRequisicao(requisicao, dateStr) {
   const tipoOrigem = (armazemOrigem.rows[0].tipo || '').toLowerCase();
   const tipoDestino = String(requisicao.armazem_destino_tipo || '').toLowerCase();
   const fluxoDevolucao = isFluxoDevolucaoViaturaCentral(tipoOrigem, tipoDestino);
-  if (tipoOrigem !== 'central' && !fluxoDevolucao) {
-    return {
-      rows: [],
-      eligible: false,
-      reason: 'Clog só é gerado com origem armazém central ou com devolução viatura → central.',
-    };
-  }
 
   const codigoDestino = requisicao.armazem_destino_codigo || '';
   const armazemDestinoId = requisicao.armazem_id;
@@ -3263,11 +3658,23 @@ async function buildClogRowsFromRequisicao(requisicao, dateStr) {
   }
 
   const colaboradorObs = requisicao.observacoes || '';
+  let apeadoDestinoCodigoClog = '';
+  let apeadoDestinoLocClog = '';
+  try {
+    const apeadoDestinoId = Number(requisicao?.devolucao_apeado_destino_id);
+    if (Number.isFinite(apeadoDestinoId)) {
+      const apeQ = await pool.query('SELECT codigo FROM armazens WHERE id = $1', [apeadoDestinoId]);
+      apeadoDestinoCodigoClog = String(apeQ.rows?.[0]?.codigo || '').trim();
+      const locApe = await localizacaoArmazemPorTipoConn(pool, apeadoDestinoId, 'recebimento');
+      apeadoDestinoLocClog = String(locApe || '').trim();
+    }
+  } catch (_) {}
 
   const rows = clogRowsFromItemData(
     dateStr,
     codigoDestino,
     colaboradorObs,
+    requisicao.tra_numero || '',
     localizacaoOrigemTRA,
     localizacaoFERR,
     localizacaoNormal,
@@ -3275,6 +3682,13 @@ async function buildClogRowsFromRequisicao(requisicao, dateStr) {
     bobinas,
     {
       isDevolucao: fluxoDevolucao,
+      isApeados:
+        String(requisicao?.status || '') === 'APEADOS' &&
+        Boolean(requisicao?.devolucao_tra_apeados_gerada_em) &&
+        Boolean(String(requisicao?.devolucao_tra_apeados_numero || '').trim()),
+      apeadoDestinoCodigo: apeadoDestinoCodigoClog,
+      apeadoDestinoLoc: apeadoDestinoLocClog,
+      apeadosOrigemLoc: localizacaoRecebimentoDestino || LOCALIZACAO_RECEBIMENTO_FALLBACK,
       devolucaoDestinoLoc: localizacaoRecebimentoDestino || LOCALIZACAO_RECEBIMENTO_FALLBACK
     }
   );
@@ -3290,8 +3704,8 @@ router.get('/:id/export-clog', ...requisicaoAuth, denyOperador, async (req, res)
     if (!requisicaoArmazemOrigemAcessoPermitido(req, requisicao.armazem_origem_id, { requisicao })) {
       return res.status(403).json({ error: 'Sem acesso a esta requisição.' });
     }
-    if (!podeExportarReporteOuClog(requisicao)) {
-      return res.status(400).json({ error: 'Clog só está disponível após gerar a TRA (Entregue) ou quando a requisição estiver finalizada.' });
+    if (!podeExportarClog(requisicao)) {
+      return res.status(400).json({ error: 'Clog disponível após TRA/DEV (Entregue), em Finalizado, ou em APEADOS quando DEV + Nº DEV estiverem guardados.' });
     }
 
     const dateStr = formatDateBR(new Date());
@@ -3328,7 +3742,7 @@ router.post('/export-clog-multi', ...requisicaoAuth, denyOperador, async (req, r
     if (allRows.length === 0) {
       return res.status(400).json({
         error:
-          'Nenhuma requisição elegível para gerar Clog (origem central ou devolução viatura→central; TRA/DEV em Entregue ou requisição finalizada).',
+          'Nenhuma requisição elegível para gerar Clog (requer TRA/DEV em Entregue ou requisição finalizada).',
       });
     }
 
@@ -3347,8 +3761,8 @@ router.get('/:id/clog-dados', ...requisicaoAuth, denyOperador, async (req, res) 
     if (!requisicaoArmazemOrigemAcessoPermitido(req, requisicao.armazem_origem_id, { requisicao })) {
       return res.status(403).json({ error: 'Sem acesso a esta requisição.' });
     }
-    if (!podeExportarReporteOuClog(requisicao)) {
-      return res.status(400).json({ error: 'Clog só está disponível após gerar a TRA (Entregue) ou quando a requisição estiver finalizada.' });
+    if (!podeExportarClog(requisicao)) {
+      return res.status(400).json({ error: 'Clog disponível após TRA/DEV (Entregue), em Finalizado, ou em APEADOS quando DEV + Nº DEV estiverem guardados.' });
     }
 
     const dateStr = formatDateBR(new Date());
@@ -3387,7 +3801,7 @@ router.post('/clog-dados-multi', ...requisicaoAuth, denyOperador, async (req, re
     if (allRows.length === 0) {
       return res.status(400).json({
         error:
-          'Nenhuma requisição elegível para Clog (origem central ou devolução viatura→central; TRA/DEV em Entregue ou requisição finalizada).',
+          'Nenhuma requisição elegível para Clog (requer TRA/DEV em Entregue ou requisição finalizada).',
       });
     }
 
@@ -4182,6 +4596,75 @@ router.post(
       return codigoArmazemDestino;
     };
 
+    const scanTextSnapshot = (sheet) => {
+      const range = XLSX.utils.decode_range(sheet['!ref']);
+      const cells = [];
+      for (let R = range.s.r; R <= range.e.r; R++) {
+        for (let C = range.s.c; C <= range.e.c; C++) {
+          const cellAddr = XLSX.utils.encode_cell({ r: R, c: C });
+          const cell = sheet[cellAddr];
+          if (!cell || cell.v == null) continue;
+          const raw = String(cell.v || '').trim();
+          if (!raw) continue;
+          cells.push(raw);
+        }
+      }
+      const normalizedCells = cells.map((v) => normalizeText(v));
+      const normalizedText = ` ${normalizedCells.join(' ')} `;
+      const tokenSet = new Set(
+        normalizedText
+          .split(/[^a-z0-9]+/)
+          .map((t) => t.trim())
+          .filter(Boolean)
+      );
+      return { normalizedText, tokenSet };
+    };
+
+    const resolveArmazemDestinoFromSheet = async (sheet) => {
+      const codigoV = scanCodigoV(sheet);
+      if (codigoV) {
+        const byCode = await pool.query(
+          'SELECT id, tipo, codigo FROM armazens WHERE UPPER(codigo) = $1 AND ativo = true LIMIT 1',
+          [codigoV.toUpperCase()]
+        );
+        if (byCode.rows.length > 0) {
+          return byCode.rows[0];
+        }
+      }
+
+      // Fallback para transferências entre centrais: tentar reconhecer central por código/descrição no texto do Excel.
+      const centrais = await pool.query(
+        `SELECT id, tipo, codigo, descricao
+         FROM armazens
+         WHERE ativo = true AND LOWER(TRIM(COALESCE(tipo, ''))) = 'central'`
+      );
+      if (!centrais.rows.length) return null;
+
+      const { normalizedText, tokenSet } = scanTextSnapshot(sheet);
+      let best = null;
+      for (const arm of centrais.rows) {
+        const codigoNorm = normalizeText(arm.codigo || '');
+        const descNorm = normalizeText(arm.descricao || '');
+        let score = 0;
+
+        if (codigoNorm && tokenSet.has(codigoNorm)) score = Math.max(score, 100);
+        if (codigoNorm && normalizedText.includes(` ${codigoNorm} `)) score = Math.max(score, 95);
+        if (codigoNorm && descNorm && normalizedText.includes(` ${codigoNorm} ${descNorm} `)) score = Math.max(score, 90);
+        if (descNorm && normalizedText.includes(` ${descNorm} `)) score = Math.max(score, 75);
+
+        if (!score) continue;
+        if (!best || score > best.score) {
+          best = { ...arm, score };
+        } else if (best && score === best.score) {
+          // empate: evita escolher armazém errado
+          best = { ...best, tie: true };
+        }
+      }
+
+      if (!best || best.tie) return null;
+      return best;
+    };
+
     const parseItensFromSheet = (sheet, { tolerarSemCabecalho }) => {
       const range = XLSX.utils.decode_range(sheet['!ref']);
 
@@ -4318,22 +4801,14 @@ router.post(
         return { itens };
       }
 
-      // Página 1 (requisição): Vxxx no Excel determina o armazém destino.
-      const codigoArmazemDestino = scanCodigoV(sheet);
-      if (!codigoArmazemDestino) {
-        throw new Error('Não foi possível identificar o armazém destino no Excel (código Vxxx).');
+      // Página 1 (requisição): reconhecer destino por Vxxx (viaturas) e também por código/descrição de central.
+      const armazemDestino = await resolveArmazemDestinoFromSheet(sheet);
+      if (!armazemDestino) {
+        throw new Error('Não foi possível identificar o armazém destino no Excel (código/descrição de central ou Vxxx).');
       }
 
-      const armazemRes = await pool.query(
-        'SELECT id, tipo FROM armazens WHERE UPPER(codigo) = $1',
-        [codigoArmazemDestino.toUpperCase()]
-      );
-      if (armazemRes.rows.length === 0) {
-        throw new Error(`Armazém destino ${codigoArmazemDestino} não encontrado no sistema.`);
-      }
-
-      const armazemDestinoId = armazemRes.rows[0].id;
-      const armazemDestinoTipo = armazemRes.rows[0].tipo;
+      const armazemDestinoId = armazemDestino.id;
+      const armazemDestinoTipo = armazemDestino.tipo;
 
       const parsed = parseItensFromSheet(sheet, { tolerarSemCabecalho: false });
       if (!parsed || !Array.isArray(parsed.itens) && !parsed.codigosUnicos) {
@@ -5402,9 +5877,11 @@ router.patch('/:id/finalizar', ...requisicaoAuth, denyOperador, async (req, res)
          r.armazem_origem_id,
          r.separador_usuario_id,
          r.tra_gerada_em,
+         r.tra_numero,
          r.devolucao_tra_gerada_em,
          r.devolucao_trfl_gerada_em,
          r.devolucao_tra_apeados_gerada_em,
+         r.devolucao_tra_apeados_numero,
          r.devolucao_trfl_pendente_gerada_em,
          ao.tipo AS origem_tipo,
          ad.tipo AS destino_tipo
@@ -5437,10 +5914,10 @@ router.patch('/:id/finalizar', ...requisicaoAuth, denyOperador, async (req, res)
       String(row.origem_tipo || '').trim().toLowerCase() === 'central' &&
       String(row.destino_tipo || '').trim().toLowerCase() === 'apeado';
     if (fluxoDevolucao) {
-      if (!['EM EXPEDICAO', 'APEADOS'].includes(row.status) || !row.devolucao_tra_gerada_em) {
+      if (row.status !== 'APEADOS' || !row.devolucao_tra_gerada_em) {
         return res.status(400).json({
           error:
-            'No fluxo de devolução, só é possível finalizar com status Em expedição ou APEADOS e após gerar o DEV.',
+            'No fluxo de devolução, só é possível finalizar após Transferências pendentes (status APEADOS) e com DEV gerado.',
         });
       }
       let temApeados = false;
@@ -5483,14 +5960,24 @@ router.patch('/:id/finalizar', ...requisicaoAuth, denyOperador, async (req, res)
             'No fluxo de devolução, conclua os documentos em falta: sem APEADOS — TRFL interna ou TRFL PENDENTE; só APEADOS — TRA APEADOS; misto — TRA APEADOS e TRFL PENDENTE.',
         });
       }
+      if (temApeados && !String(row.devolucao_tra_apeados_numero || '').trim()) {
+        return res.status(400).json({
+          error: 'Preencha e guarde o número da TRA APEADOS antes de finalizar a devolução.',
+        });
+      }
     } else if (fluxoCentralApeado) {
       if (!(['separado', 'Entregue'].includes(row.status) && Boolean(row.tra_gerada_em))) {
         return res.status(400).json({
           error: 'Para transferência Central -> APEADO, finalize apenas após gerar a TRA.'
         });
       }
+      if (!String(row.tra_numero || '').trim()) {
+        return res.status(400).json({ error: 'Preencha o número da TRA antes de finalizar a requisição.' });
+      }
     } else if (row.status !== 'Entregue') {
       return res.status(400).json({ error: 'Só é possível finalizar requisições com status Entregue.' });
+    } else if (!String(row.tra_numero || '').trim()) {
+      return res.status(400).json({ error: 'Preencha o número da TRA antes de finalizar a requisição.' });
     }
 
     await pool.query('UPDATE requisicoes SET status = $1 WHERE id = $2', ['FINALIZADO', id]);
@@ -5498,6 +5985,135 @@ router.patch('/:id/finalizar', ...requisicaoAuth, denyOperador, async (req, res)
   } catch (error) {
     console.error('Erro ao finalizar requisição:', error);
     res.status(500).json({ error: 'Erro ao finalizar requisição', details: error.message });
+  }
+});
+
+router.patch('/:id/tra-numero', ...requisicaoAuth, denyOperador, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const traNumero = String(req.body?.tra_numero || '').trim();
+    if (!traNumero) {
+      return res.status(400).json({ error: 'Número da TRA é obrigatório.' });
+    }
+    const check = await pool.query(
+      `SELECT r.id, r.status, r.armazem_origem_id, r.armazem_id, r.separador_usuario_id, r.tra_gerada_em,
+              r.devolucao_tra_gerada_em, r.tra_numero,
+              ao.tipo AS armazem_origem_tipo, a.tipo AS armazem_destino_tipo
+       FROM requisicoes r
+       LEFT JOIN armazens ao ON r.armazem_origem_id = ao.id
+       INNER JOIN armazens a ON r.armazem_id = a.id
+       WHERE r.id = $1`,
+      [id]
+    );
+    if (check.rows.length === 0) return res.status(404).json({ error: 'Requisição não encontrada' });
+    const row = check.rows[0];
+    if (
+      !requisicaoArmazemOrigemAcessoPermitido(req, row.armazem_origem_id, {
+        requisicao: row,
+      })
+    ) {
+      return res.status(403).json({ error: 'Sem acesso a esta requisição.' });
+    }
+    if (separadorImpedeAcao(row, req)) {
+      return respostaBloqueioSeparador(res);
+    }
+    if (!row.tra_gerada_em && !row.devolucao_tra_gerada_em) {
+      return res.status(400).json({ error: 'Gere a TRA/DEV antes de informar o número.' });
+    }
+    const isDevolucaoFluxo = Boolean(row.devolucao_tra_gerada_em);
+    const traJaDefinida = Boolean(String(row.tra_numero || '').trim());
+    if (isDevolucaoFluxo && traJaDefinida && ['APEADOS', 'Entregue', 'FINALIZADO'].includes(String(row.status || ''))) {
+      return res.status(400).json({ error: 'Número da DEV não pode ser alterado após mover para Transferências pendentes.' });
+    }
+
+    const statusDestino = isDevolucaoFluxo && String(row.status || '') === 'EM EXPEDICAO'
+      ? 'APEADOS'
+      : row.status;
+    const up = await pool.query(
+      `UPDATE requisicoes
+       SET tra_numero = $1,
+           status = $2,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = $3
+       RETURNING id, tra_numero, status`,
+      [traNumero, statusDestino, id]
+    );
+    return res.json({
+      ok: true,
+      id: up.rows[0].id,
+      tra_numero: up.rows[0].tra_numero,
+      status: up.rows[0].status,
+    });
+  } catch (error) {
+    if (error && error.code === '42703') {
+      return res.status(503).json({
+        error: 'Coluna tra_numero em falta na base de dados.',
+        details: 'Execute a migração que adiciona o número da TRA em requisicoes.'
+      });
+    }
+    console.error('Erro ao guardar número da TRA:', error);
+    return res.status(500).json({ error: 'Erro ao guardar número da TRA', details: error.message });
+  }
+});
+
+router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperador, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const valor = String(req.body?.devolucao_tra_apeados_numero || '').trim();
+    if (!valor) {
+      return res.status(400).json({ error: 'Número da TRA APEADOS é obrigatório.' });
+    }
+    const check = await pool.query(
+      `SELECT r.id, r.status, r.armazem_origem_id, r.armazem_id, r.separador_usuario_id,
+              r.devolucao_tra_apeados_gerada_em, r.devolucao_tra_apeados_numero
+       FROM requisicoes r
+       WHERE r.id = $1`,
+      [id]
+    );
+    if (check.rows.length === 0) return res.status(404).json({ error: 'Requisição não encontrada' });
+    const row = check.rows[0];
+    if (
+      !requisicaoArmazemOrigemAcessoPermitido(req, row.armazem_origem_id, {
+        requisicao: row,
+      })
+    ) {
+      return res.status(403).json({ error: 'Sem acesso a esta requisição.' });
+    }
+    if (separadorImpedeAcao(row, req)) {
+      return respostaBloqueioSeparador(res);
+    }
+    if (!row.devolucao_tra_apeados_gerada_em) {
+      return res.status(400).json({ error: 'Gere a TRA APEADOS antes de informar o número.' });
+    }
+    if (['Entregue', 'FINALIZADO'].includes(String(row.status || ''))) {
+      return res.status(400).json({ error: 'Não é possível alterar o número da TRA APEADOS após encerramento da devolução.' });
+    }
+    const jaDefinido = String(row.devolucao_tra_apeados_numero || '').trim();
+    if (jaDefinido) {
+      return res.status(400).json({ error: 'Número da TRA APEADOS já foi guardado e não pode ser alterado.' });
+    }
+    const up = await pool.query(
+      `UPDATE requisicoes
+       SET devolucao_tra_apeados_numero = $1,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = $2
+       RETURNING id, devolucao_tra_apeados_numero`,
+      [valor, id]
+    );
+    return res.json({
+      ok: true,
+      id: up.rows[0].id,
+      devolucao_tra_apeados_numero: up.rows[0].devolucao_tra_apeados_numero,
+    });
+  } catch (error) {
+    if (error && error.code === '42703') {
+      return res.status(503).json({
+        error: 'Coluna devolucao_tra_apeados_numero em falta na base de dados.',
+        details: 'Execute a migração que adiciona o número da TRA APEADOS em requisicoes.'
+      });
+    }
+    console.error('Erro ao guardar número da TRA APEADOS:', error);
+    return res.status(500).json({ error: 'Erro ao guardar número da TRA APEADOS', details: error.message });
   }
 });
 

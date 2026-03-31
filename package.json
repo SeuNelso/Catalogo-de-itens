@@ -39,6 +39,7 @@
     "db:migrate:integrations-v1": "node server/run-migration.js integrations-v1",
     "db:migrate:localizacao-estoque": "node server/run-migration.js localizacao-estoque",
     "db:migrate:usuarios-pode-controlo-stock": "node server/run-migration.js usuarios-pode-controlo-stock",
+    "db:migrate:usuarios-pode-consulta-movimentos": "node server/run-migration.js usuarios-pode-consulta-movimentos",
     "db:migrate:movimentacao-interna": "node server/run-migration.js movimentacao-interna",
     "db:migrate:requisicoes-trfl-tra-estoque": "node server/run-migration.js requisicoes-trfl-tra-estoque",
     "db:migrate:usuario-id1": "node server/run-usuario-para-id1.js",

@@ -21,6 +21,18 @@ function textoObservacaoItem(it) {
   return String(v ?? '').trim();
 }
 
+function serialsNormalizadosList(value) {
+  return String(value || '')
+    .split(/\r?\n|;|\|/)
+    .map((s) => String(s || '').trim())
+    .filter(Boolean);
+}
+
+function quantidadeComoDigitada(value) {
+  if (value == null) return '';
+  return String(value).trim();
+}
+
 export function buildLinhasProdutoTableBody(req) {
   const itens = Array.isArray(req?.itens) ? req.itens : [];
   const body = [];
@@ -36,7 +48,7 @@ export function buildLinhasProdutoTableBody(req) {
           String(linha),
           codigo,
           desc,
-          String(b.metros ?? ''),
+          quantidadeComoDigitada(b.metros),
           String(b.serialnumber ?? ''),
           String(b.lote ?? ''),
           obs
@@ -45,11 +57,30 @@ export function buildLinhasProdutoTableBody(req) {
       }
     } else {
       const qtyBase = it.quantidade_preparada ?? it.quantidade ?? 0;
+      const tipoControlo = String(it.tipocontrolo || '').toUpperCase();
+      if (tipoControlo === 'S/N') {
+        const serials = serialsNormalizadosList(it.serialnumber);
+        if (serials.length > 0) {
+          for (const sn of serials) {
+            body.push([
+              String(linha),
+              codigo,
+              desc,
+              '1',
+              sn,
+              String(it.lote ?? ''),
+              obs
+            ]);
+            linha += 1;
+          }
+          continue;
+        }
+      }
       body.push([
         String(linha),
         codigo,
         desc,
-        String(Number(qtyBase) || 0),
+        quantidadeComoDigitada(qtyBase),
         String(it.serialnumber ?? ''),
         String(it.lote ?? ''),
         obs
@@ -204,15 +235,13 @@ export function desenharPaginaNotaEntregaDigi(doc, req, opts = {}) {
     theme: 'grid',
     margin: { left: MARGIN, right: MARGIN },
     tableWidth: pageWidth - 2 * MARGIN,
-    // Larguras (soma ≈ largura útil A4) para cabeçalhos numa linha + coluna de observações
+    // Larguras mistas: colunas técnicas fixas e descrição/observações fluídas para layout mais orgânico.
     columnStyles: {
       0: { cellWidth: 30, halign: 'center' },
       1: { cellWidth: 46, halign: 'left' },
-      2: { cellWidth: 118, halign: 'left' },
       3: { cellWidth: 32, halign: 'right' },
       4: { cellWidth: 58, halign: 'center' },
-      5: { cellWidth: 42, halign: 'left' },
-      6: { cellWidth: 189, halign: 'left' }
+      5: { cellWidth: 42, halign: 'left' }
     },
     didParseCell: (hookData) => {
       if (hookData.section === 'head') {

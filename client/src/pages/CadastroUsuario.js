@@ -14,7 +14,8 @@ const CadastroUsuario = () => {
     username: '',
     senha: '',
     senha2: '',
-    pode_controlo_stock: false
+    pode_controlo_stock: false,
+    pode_consulta_movimentos: false
   });
   const [status, setStatus] = useState('');
   const [message, setMessage] = useState('');
@@ -77,7 +78,8 @@ const CadastroUsuario = () => {
         email: form.email.trim() || undefined,
         username: form.username.trim() || undefined,
         senha: pwd,
-        pode_controlo_stock: Boolean(form.pode_controlo_stock)
+        pode_controlo_stock: Boolean(form.pode_controlo_stock),
+        pode_consulta_movimentos: Boolean(form.pode_consulta_movimentos)
       };
 
       const token = localStorage.getItem('token');
@@ -182,6 +184,18 @@ const CadastroUsuario = () => {
               <span>
                 Conceder acesso a <strong>controlo de stock</strong> (consulta e gestão por localização em armazéns
                 centrais). Pode alterar mais tarde em Utilizadores.
+              </span>
+            </label>
+            <label className="flex items-start gap-2 text-sm text-gray-700 text-left">
+              <input
+                type="checkbox"
+                checked={Boolean(form.pode_consulta_movimentos)}
+                onChange={(e) => setForm((f) => ({ ...f, pode_consulta_movimentos: e.target.checked }))}
+                className="mt-1 rounded border-gray-300 text-[#0915FF] focus:ring-[#0915FF]"
+              />
+              <span>
+                Conceder acesso à <strong>lista de movimentos</strong> (consulta Clog com filtros). Pode alterar mais
+                tarde em Utilizadores.
               </span>
             </label>
             <button type="submit" disabled={loading} className="bg-[#0915FF] text-white font-bold rounded-lg py-2 sm:py-3 text-base sm:text-lg border-none shadow-md mt-2 transition-all disabled:opacity-60 disabled:cursor-not-allowed">

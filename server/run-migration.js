@@ -67,6 +67,8 @@ const migrationFile = path.join(
                         ? 'migrate-armazens-localizacao-item.sql'
                       : arg === 'usuarios-pode-controlo-stock' || arg === 'pode-controlo-stock'
                         ? 'migrate-usuarios-pode-controlo-stock.sql'
+                      : arg === 'usuarios-pode-consulta-movimentos' || arg === 'pode-consulta-movimentos'
+                        ? 'migrate-usuarios-pode-consulta-movimentos.sql'
                       : arg === 'movimentacao-interna' || arg === 'armazem-movimentacao-interna'
                         ? 'migrate-armazem-movimentacao-interna.sql'
                       : arg === 'requisicoes-trfl-tra-estoque' || arg === 'trfl-tra-estoque'

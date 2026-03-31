@@ -50,7 +50,9 @@ const {
 } = require('./middleware/requisicoesScope');
 const {
   usuariosTemColunaPodeControloStock,
+  usuariosTemColunaPodeConsultaMovimentos,
   usuarioTemPermissaoControloStock,
+  usuarioTemPermissaoConsultaMovimentos,
   armazemMovimentacaoInternaTableExists,
 } = require('./utils/usuarioDbColumns');
 const { buildExcelTransferencia } = require('./utils/buildExcelTransferencia');
@@ -1359,13 +1361,17 @@ app.post('/api/login', async (req, res) => {
 
     const reqArmIds = await fetchRequisicoesArmazemIdsForUser(user.id);
     const podeControloStockJwt =
-      user.role === 'admin'
-        ? true
-        : Boolean(
-            user.pode_controlo_stock === true ||
-              user.pode_controlo_stock === 't' ||
-              user.pode_controlo_stock === 1
-          );
+      Boolean(
+        user.pode_controlo_stock === true ||
+          user.pode_controlo_stock === 't' ||
+          user.pode_controlo_stock === 1
+      );
+    const podeConsultaMovimentosJwt =
+      Boolean(
+        user.pode_consulta_movimentos === true ||
+          user.pode_consulta_movimentos === 't' ||
+          user.pode_consulta_movimentos === 1
+      );
 
     try {
       const token = jwt.sign(
@@ -1375,7 +1381,8 @@ app.post('/api/login', async (req, res) => {
           role: user.role,
           requisicoes_armazem_origem_ids: reqArmIds,
           requisicoes_armazem_origem_id: reqArmIds.length === 1 ? reqArmIds[0] : null,
-          pode_controlo_stock: podeControloStockJwt
+          pode_controlo_stock: podeControloStockJwt,
+          pode_consulta_movimentos: podeConsultaMovimentosJwt
         },
         JWT_SECRET,
         { expiresIn: '24h' }
@@ -1396,7 +1403,8 @@ app.post('/api/login', async (req, res) => {
           role: user.role,
           requisicoes_armazem_origem_ids: reqArmIds,
           requisicoes_armazem_origem_id: reqArmIds.length === 1 ? reqArmIds[0] : null,
-          pode_controlo_stock: podeControloStockJwt
+          pode_controlo_stock: podeControloStockJwt,
+          pode_consulta_movimentos: podeConsultaMovimentosJwt
         }
       });
     } catch (jwtErr) {
@@ -1413,17 +1421,19 @@ app.post('/api/login', async (req, res) => {
 app.get('/api/verify-token', authenticateToken, async (req, res) => {
   try {
     const hasStockCol = await usuariosTemColunaPodeControloStock();
+    const hasMovCol = await usuariosTemColunaPodeConsultaMovimentos();
     const stockSql = hasStockCol ? ', COALESCE(pode_controlo_stock, false) AS pode_controlo_stock' : '';
+    const movSql = hasMovCol ? ', COALESCE(pode_consulta_movimentos, false) AS pode_consulta_movimentos' : '';
     let r;
     try {
       r = await pool.query(
-        `SELECT id, username, nome, sobrenome, telemovel, email, numero_colaborador, role${stockSql} FROM usuarios WHERE id = $1`,
+        `SELECT id, username, nome, sobrenome, telemovel, email, numero_colaborador, role${stockSql}${movSql} FROM usuarios WHERE id = $1`,
         [req.user.id]
       );
     } catch (colErr) {
       if (colErr.code !== '42703') throw colErr;
       r = await pool.query(
-        `SELECT id, username, nome, email, numero_colaborador, role${stockSql} FROM usuarios WHERE id = $1`,
+        `SELECT id, username, nome, email, numero_colaborador, role${stockSql}${movSql} FROM usuarios WHERE id = $1`,
         [req.user.id]
       );
     }
@@ -1433,11 +1443,13 @@ app.get('/api/verify-token', authenticateToken, async (req, res) => {
     const u = r.rows[0];
     const reqArmIds = await fetchRequisicoesArmazemIdsForUser(u.id);
     const podeControloStockUser =
-      u.role === 'admin'
-        ? true
-        : Boolean(
-            u.pode_controlo_stock === true || u.pode_controlo_stock === 't' || u.pode_controlo_stock === 1
-          );
+      Boolean(
+        u.pode_controlo_stock === true || u.pode_controlo_stock === 't' || u.pode_controlo_stock === 1
+      );
+    const podeConsultaMovimentosUser =
+      Boolean(
+        u.pode_consulta_movimentos === true || u.pode_consulta_movimentos === 't' || u.pode_consulta_movimentos === 1
+      );
     res.json({
       valid: true,
       user: {
@@ -1452,7 +1464,8 @@ app.get('/api/verify-token', authenticateToken, async (req, res) => {
         role: u.role,
         requisicoes_armazem_origem_ids: reqArmIds,
         requisicoes_armazem_origem_id: reqArmIds.length === 1 ? reqArmIds[0] : null,
-        pode_controlo_stock: podeControloStockUser
+        pode_controlo_stock: podeControloStockUser,
+        pode_consulta_movimentos: podeConsultaMovimentosUser
       }
     });
   } catch (e) {
@@ -2940,6 +2953,17 @@ app.post('/api/cadastrar-usuario', authenticateToken, async (req, res) => {
         [username, numero_colaborador]
       );
     }
+    const marcarConsultaMovimentos =
+      req.body.pode_consulta_movimentos === true ||
+      req.body.pode_consulta_movimentos === 'true' ||
+      req.body.pode_consulta_movimentos === 1 ||
+      req.body.pode_consulta_movimentos === '1';
+    if (marcarConsultaMovimentos && (await usuariosTemColunaPodeConsultaMovimentos())) {
+      await pool.query(
+        `UPDATE usuarios SET pode_consulta_movimentos = true WHERE LOWER(TRIM(username)) = LOWER(TRIM($1)) AND TRIM(numero_colaborador::text) = TRIM($2)`,
+        [username, numero_colaborador]
+      );
+    }
 
     res.status(201).json({ message: 'Usuário cadastrado com sucesso!' });
   } catch (err) {
@@ -2955,13 +2979,15 @@ app.get('/api/usuarios', authenticateToken, async (req, res) => {
   const isAdmin = req.user.role === 'admin';
   try {
     const hasStockCol = await usuariosTemColunaPodeControloStock();
+    const hasMovCol = await usuariosTemColunaPodeConsultaMovimentos();
     const stockSel = hasStockCol ? ', COALESCE(u.pode_controlo_stock, false) AS pode_controlo_stock' : '';
+    const movSel = hasMovCol ? ', COALESCE(u.pode_consulta_movimentos, false) AS pode_consulta_movimentos' : '';
     const hasJunc = await usuarioRequisicaoArmazemJunctionTableExists();
     const hasCol = await usuariosTemColunaRequisicoesArmazemOrigem();
     let sql;
     if (hasJunc) {
       sql = `
-      SELECT u.id, u.username, u.numero_colaborador, u.nome, u.sobrenome, u.telemovel, u.role, u.email, u.data_criacao${stockSel},
+      SELECT u.id, u.username, u.numero_colaborador, u.nome, u.sobrenome, u.telemovel, u.role, u.email, u.data_criacao${stockSel}${movSel},
         COALESCE(
           (SELECT json_agg(ura.armazem_id ORDER BY ura.armazem_id)
            FROM usuario_requisicoes_armazens ura WHERE ura.usuario_id = u.id),
@@ -2980,7 +3006,7 @@ app.get('/api/usuarios', authenticateToken, async (req, res) => {
     `;
     } else if (hasCol) {
       sql = `
-      SELECT u.id, u.username, u.numero_colaborador, u.nome, u.sobrenome, u.telemovel, u.role, u.email, u.data_criacao${stockSel}, u.requisicoes_armazem_origem_id,
+      SELECT u.id, u.username, u.numero_colaborador, u.nome, u.sobrenome, u.telemovel, u.role, u.email, u.data_criacao${stockSel}${movSel}, u.requisicoes_armazem_origem_id,
         a.codigo as requisicoes_armazem_origem_codigo,
         a.descricao as requisicoes_armazem_origem_descricao,
         CASE WHEN u.requisicoes_armazem_origem_id IS NOT NULL
@@ -2995,7 +3021,7 @@ app.get('/api/usuarios', authenticateToken, async (req, res) => {
     `;
     } else {
       sql = `
-      SELECT u.id, u.username, u.numero_colaborador, u.nome, u.sobrenome, u.telemovel, u.role, u.email, u.data_criacao${stockSel || ', false AS pode_controlo_stock'},
+      SELECT u.id, u.username, u.numero_colaborador, u.nome, u.sobrenome, u.telemovel, u.role, u.email, u.data_criacao${stockSel || ', false AS pode_controlo_stock'}${movSel || ', false AS pode_consulta_movimentos'},
         NULL::integer AS requisicoes_armazem_origem_id,
         NULL::text AS requisicoes_armazem_origem_codigo,
         NULL::text AS requisicoes_armazem_origem_descricao,
@@ -3029,7 +3055,16 @@ app.get('/api/usuarios', authenticateToken, async (req, res) => {
         row.pode_controlo_stock === true ||
         row.pode_controlo_stock === 't' ||
         row.pode_controlo_stock === 1;
-      return { ...row, requisicoes_armazem_origem_ids: ids, pode_controlo_stock: Boolean(podeStockRow) };
+      const podeMovRow =
+        row.pode_consulta_movimentos === true ||
+        row.pode_consulta_movimentos === 't' ||
+        row.pode_consulta_movimentos === 1;
+      return {
+        ...row,
+        requisicoes_armazem_origem_ids: ids,
+        pode_controlo_stock: Boolean(podeStockRow),
+        pode_consulta_movimentos: Boolean(podeMovRow),
+      };
     });
     res.json(rows);
   } catch (error) {
@@ -3231,10 +3266,26 @@ app.patch('/api/usuarios/:id', authenticateToken, async (req, res) => {
     updates.push(`pode_controlo_stock = $${pi++}`);
     params.push(ps);
   }
+  if (isAdmin && Object.prototype.hasOwnProperty.call(req.body, 'pode_consulta_movimentos')) {
+    if (!(await usuariosTemColunaPodeConsultaMovimentos())) {
+      return res.status(400).json({
+        error: 'Coluna pode_consulta_movimentos em falta na base de dados.',
+        detalhes: 'Execute: npm run db:migrate:usuarios-pode-consulta-movimentos',
+      });
+    }
+    const pm = Boolean(
+      req.body.pode_consulta_movimentos === true ||
+        req.body.pode_consulta_movimentos === 'true' ||
+        req.body.pode_consulta_movimentos === 1 ||
+        req.body.pode_consulta_movimentos === '1'
+    );
+    updates.push(`pode_consulta_movimentos = $${pi++}`);
+    params.push(pm);
+  }
 
   if (updates.length === 0 && (idsPayload === undefined || !isAdmin)) {
     return res.status(400).json({
-      error: 'Nada a atualizar. Envie dados do perfil, nova palavra-passe, ou (admin) role/armazéns/controlo de stock.'
+      error: 'Nada a atualizar. Envie dados do perfil, nova palavra-passe, ou (admin) role/armazéns/permissões.'
     });
   }
 
@@ -3255,6 +3306,7 @@ app.patch('/api/usuarios/:id', authenticateToken, async (req, res) => {
           'sobrenome/telemovel: npm run db:migrate:usuarios-dados-pessoais. ' +
           'requisicoes_armazem_origem_id: npm run db:migrate:usuarios-req-armazem. ' +
           'pode_controlo_stock: npm run db:migrate:usuarios-pode-controlo-stock. ' +
+          'pode_consulta_movimentos: npm run db:migrate:usuarios-pode-consulta-movimentos. ' +
           'numero_colaborador: ver migrações / init-db.'
       });
     }

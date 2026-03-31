@@ -113,6 +113,10 @@ const ListarDevolucoes = () => {
     rows: []
   });
   const [reporteLoading, setReporteLoading] = useState(false);
+  const [traNumeroByReqId, setTraNumeroByReqId] = useState({});
+  const [savingTraReqId, setSavingTraReqId] = useState(null);
+  const [traApeadosNumeroByReqId, setTraApeadosNumeroByReqId] = useState({});
+  const [savingTraApeadosReqId, setSavingTraApeadosReqId] = useState(null);
 
   const fetchDevolucoes = async () => {
     try {
@@ -472,6 +476,39 @@ const ListarDevolucoes = () => {
     }
   };
 
+  const handleTraNumeroChange = (reqId, value) => {
+    setTraNumeroByReqId((prev) => ({ ...prev, [reqId]: value }));
+  };
+
+  const handleGuardarTraNumero = async (req) => {
+    const reqId = Number(req?.id);
+    if (!Number.isFinite(reqId)) return;
+    const valor = String(traNumeroByReqId[reqId] ?? req?.tra_numero ?? '').trim();
+    if (!valor) {
+      setToast({ type: 'error', message: 'Número da TRA é obrigatório.' });
+      return;
+    }
+    try {
+      setSavingTraReqId(reqId);
+      const token = localStorage.getItem('token');
+      const response = await fetch(`/api/requisicoes/${reqId}/tra-numero`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tra_numero: valor })
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || 'Erro ao guardar número da TRA');
+      }
+      await fetchDevolucoes();
+      setToast({ type: 'success', message: `Nº TRA guardado: ${valor}` });
+    } catch (error) {
+      setToast({ type: 'error', message: error.message || 'Erro ao guardar número da TRA' });
+    } finally {
+      setSavingTraReqId(null);
+    }
+  };
+
   const handleExportTRADevolucaoApeados = async (reqId, destinoApeadoId, opts = {}) => {
     try {
       if (!reqId) throw new Error('Requisição inválida');
@@ -508,6 +545,40 @@ const ListarDevolucoes = () => {
     } catch (error) {
       console.error('Erro ao exportar TRA APEADOS:', error);
       setToast({ type: 'error', message: error.message || 'Erro ao exportar TRA APEADOS' });
+    }
+  };
+
+  const handleTraApeadosNumeroChange = (reqId, value) => {
+    setTraApeadosNumeroByReqId((prev) => ({ ...prev, [reqId]: value }));
+  };
+
+  const handleGuardarTraApeadosNumero = async (req) => {
+    const reqId = Number(req?.id);
+    if (!Number.isFinite(reqId)) return;
+    const valor = String(traApeadosNumeroByReqId[reqId] ?? req?.devolucao_tra_apeados_numero ?? '').trim();
+    if (!valor) {
+      setToast({ type: 'error', message: 'Número da TRA APEADOS é obrigatório.' });
+      return;
+    }
+    try {
+      setSavingTraApeadosReqId(reqId);
+      const token = localStorage.getItem('token');
+      const response = await fetch(`/api/requisicoes/${reqId}/devolucao-tra-apeados-numero`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ devolucao_tra_apeados_numero: valor })
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || 'Erro ao guardar número da TRA APEADOS');
+      }
+      await fetchDevolucoes();
+      setToast({ type: 'success', message: `Nº TRA APEADOS guardado: ${valor}` });
+      navigate('/movimentos');
+    } catch (error) {
+      setToast({ type: 'error', message: error.message || 'Erro ao guardar número da TRA APEADOS' });
+    } finally {
+      setSavingTraApeadosReqId(null);
     }
   };
 
@@ -1225,7 +1296,9 @@ const ListarDevolucoes = () => {
       const r = byId.get(id);
       if (!r) return false;
       const docsOk = devolucaoPodeFinalizarTransferenciasPendentes(r);
-      if ((r.status === 'EM EXPEDICAO' || r.status === 'APEADOS') && docsOk) return true;
+      const traApeadosNumeroOk =
+        !r.devolucao_tra_apeados_gerada_em || Boolean(String(r.devolucao_tra_apeados_numero || '').trim());
+      if (r.status === 'APEADOS' && docsOk && traApeadosNumeroOk) return true;
       if (r.status === 'Entregue' && (Boolean(r.devolucao_tra_gerada_em) || Boolean(r.tra_gerada_em))) {
         return true;
       }
@@ -1564,7 +1637,35 @@ const ListarDevolucoes = () => {
                               <div>
                                 <strong>Data:</strong> {createdBr}
                               </div>
+                              <div>
+                                <strong>Nº de DEV:</strong> {String(r.tra_numero || '').trim() || '—'}
+                              </div>
                             </div>
+                            {r.status === 'EM EXPEDICAO' && Boolean(r.devolucao_tra_gerada_em || r.tra_gerada_em) && (
+                              <div className="mt-3 flex items-end gap-2 flex-wrap" onClick={(e) => e.stopPropagation()}>
+                                <div className="flex flex-col">
+                                  <label className="text-xs font-semibold text-gray-700 mb-1">Nº DEV</label>
+                                  <input
+                                    type="text"
+                                    value={String(traNumeroByReqId[r.id] ?? r.tra_numero ?? '')}
+                                    onChange={(e) => handleTraNumeroChange(r.id, e.target.value)}
+                                    placeholder="Digite o número da DEV"
+                                    disabled={savingTraReqId === r.id || String(r.tra_numero || '').trim()}
+                                    className="px-3 py-2 border border-gray-300 rounded-lg text-sm w-[220px] focus:ring-2 focus:ring-[#0915FF] focus:border-transparent disabled:bg-gray-100 disabled:text-gray-500"
+                                  />
+                                </div>
+                                {!String(r.tra_numero || '').trim() && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleGuardarTraNumero(r)}
+                                    disabled={savingTraReqId === r.id}
+                                    className="px-3 py-2 rounded-lg border border-indigo-300 text-indigo-700 text-sm hover:bg-indigo-50 disabled:opacity-50"
+                                  >
+                                    {savingTraReqId === r.id ? 'A guardar...' : 'Guardar DEV'}
+                                  </button>
+                                )}
+                              </div>
+                            )}
                           </div>
 
                           <div className="flex gap-2 mt-2 xl:mt-0 flex-wrap content-start" onClick={(e) => e.stopPropagation()}>
@@ -1650,7 +1751,7 @@ const ListarDevolucoes = () => {
                               </button>
                             )}
 
-                            {(r.status === 'EM EXPEDICAO' || r.status === 'APEADOS') && canEntregar && !!r.devolucao_tra_gerada_em && (
+                            {r.status === 'APEADOS' && canEntregar && !!r.devolucao_tra_gerada_em && (
                               <button
                                 type="button"
                                 onClick={() => handleFinalizarDevolucao(r.id)}
@@ -1735,6 +1836,33 @@ const ListarDevolucoes = () => {
 
                                   {apeadosItens.length > 0 ? (
                                     <div className="mt-4">
+                                      {Boolean(r.devolucao_tra_apeados_gerada_em) && (
+                                        <div className="mb-3 flex items-end gap-2 flex-wrap">
+                                          <div className="flex flex-col">
+                                            <label className="block text-[11px] font-medium text-purple-900 mb-1.5">
+                                              Nº TRA APEADOS
+                                            </label>
+                                            <input
+                                              type="text"
+                                              value={String(traApeadosNumeroByReqId[r.id] ?? r.devolucao_tra_apeados_numero ?? '')}
+                                              onChange={(e) => handleTraApeadosNumeroChange(r.id, e.target.value)}
+                                              placeholder="Digite o número da TRA APEADOS"
+                                              disabled={savingTraApeadosReqId === r.id || Boolean(String(r.devolucao_tra_apeados_numero || '').trim())}
+                                              className="w-full sm:w-[280px] px-3 py-2 border border-purple-300 rounded-lg bg-white text-sm focus:ring-2 focus:ring-[#0915FF] disabled:bg-gray-100 disabled:text-gray-500"
+                                            />
+                                          </div>
+                                          {!String(r.devolucao_tra_apeados_numero || '').trim() && (
+                                            <button
+                                              type="button"
+                                              onClick={() => handleGuardarTraApeadosNumero(r)}
+                                              disabled={savingTraApeadosReqId === r.id}
+                                              className="px-3 py-2 rounded-lg border border-purple-300 text-purple-800 text-sm hover:bg-purple-100 disabled:opacity-50"
+                                            >
+                                              {savingTraApeadosReqId === r.id ? 'A guardar...' : 'Guardar TRA APEADOS'}
+                                            </button>
+                                          )}
+                                        </div>
+                                      )}
                                       <div className="text-[11px] font-semibold text-purple-900 mb-2">
                                         Itens APEADOS na separação
                                       </div>
@@ -2000,8 +2128,10 @@ const ListarDevolucoes = () => {
                   Boolean(canDocsELogisticaPosSeparacao) &&
                   complete &&
                   all((x) => {
-                    if (x.status === 'EM EXPEDICAO' || x.status === 'APEADOS') {
-                      return podeFin(x);
+                    if (x.status === 'APEADOS') {
+                      const numeroTraApeadosOk =
+                        !x.devolucao_tra_apeados_gerada_em || Boolean(String(x.devolucao_tra_apeados_numero || '').trim());
+                      return podeFin(x) && numeroTraApeadosOk;
                     }
                     if (x.status === 'Entregue') {
                       return Boolean(x.devolucao_tra_gerada_em || x.tra_gerada_em);
@@ -2014,7 +2144,14 @@ const ListarDevolucoes = () => {
                     x.status === 'FINALIZADO' ||
                     (x.status === 'Entregue' && Boolean(x.tra_gerada_em || x.devolucao_tra_gerada_em))
                 );
-                const canGerarClog = canGerarReporte;
+                const canGerarClog = all(
+                  (x) =>
+                    x.status === 'FINALIZADO' ||
+                    (x.status === 'Entregue' && Boolean(x.tra_gerada_em || x.devolucao_tra_gerada_em)) ||
+                    (x.status === 'APEADOS' &&
+                      Boolean(x.devolucao_tra_gerada_em) &&
+                      Boolean(String(x.tra_numero || '').trim()))
+                );
 
                 const canBaixarComprovativo = all((x) => ['Entregue', 'FINALIZADO'].includes(x.status));
 

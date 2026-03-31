@@ -3,7 +3,7 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { ChevronDown, Settings, Database, Users, User, FileText, Download, Plus, Trash2, Image, RefreshCw, Menu, X, AlertTriangle, Package, ShoppingCart, Archive, RotateCcw, Truck, MapPin, Share2 } from 'react-feather';
 import { podeAcederRequisicoes } from '../utils/roles';
-import { podeUsarControloStock } from '../utils/controloStock';
+import { podeUsarConsultaMovimentos, podeUsarControloStock } from '../utils/controloStock';
 
 const Navbar = () => {
   const { isAuthenticated, logout, user } = useAuth();
@@ -44,11 +44,22 @@ const Navbar = () => {
   /** Conta autenticada que não é admin: acede a /admin-usuarios só para o próprio perfil */
   const showMeuPerfil = isAuthenticated && !isAdmin;
   const podeStockMenu = user && podeUsarControloStock(user);
-  const displayName =
-    [user?.nome, user?.sobrenome].filter(Boolean).join(' ').trim() ||
-    user?.username ||
-    user?.email ||
-    '';
+  const podeMovimentosMenu = user && podeUsarConsultaMovimentos(user);
+  const normalizeName = (v) =>
+    String(v || '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .trim();
+  const nome = String(user?.nome || '').trim();
+  const sobrenome = String(user?.sobrenome || '').trim();
+  const nomeNormalizado = normalizeName(nome);
+  const sobrenomeNormalizado = normalizeName(sobrenome);
+  const nomeCompleto =
+    nome && sobrenome && nomeNormalizado.includes(sobrenomeNormalizado)
+      ? nome
+      : [nome, sobrenome].filter(Boolean).join(' ').trim();
+  const displayName = nomeCompleto || user?.username || user?.email || '';
 
   // Fechar menu mobile ao navegar
   const handleNavigation = () => {
@@ -278,6 +289,16 @@ const Navbar = () => {
                             <Truck size={14} className="lg:w-4 lg:h-4" />
                             Transferências
                           </Link>
+                          {podeMovimentosMenu && (
+                            <Link
+                              to="/movimentos"
+                              onClick={(e) => { e.preventDefault(); e.stopPropagation(); setClogOpen(false); setTimeout(() => navigate('/movimentos'), 100); }}
+                              className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded"
+                            >
+                              <FileText size={14} className="lg:w-4 lg:h-4" />
+                              Movimentos
+                            </Link>
+                          )}
                           {podeStockMenu && (
                             <Link
                               to="/transferencias/localizacao"
@@ -695,6 +716,12 @@ const Navbar = () => {
                             <Truck size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" />
                             Transferências
                           </Link>
+                          {podeMovimentosMenu && (
+                            <Link to="/movimentos" onClick={(e) => handleMobileNavigation('/movimentos', e)} className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10">
+                              <FileText size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" />
+                              Movimentos
+                            </Link>
+                          )}
                           {podeStockMenu && (
                             <Link
                               to="/transferencias/localizacao"
