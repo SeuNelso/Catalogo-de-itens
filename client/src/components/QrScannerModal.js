@@ -102,6 +102,7 @@ const QrScannerModal = ({
         }
         const html5Qr = new Html5Qrcode(readerId);
         scannerRef.current = html5Qr;
+        const isMobileUa = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || '');
 
         const qrConfig = {
           fps: 15,
@@ -141,7 +142,6 @@ const QrScannerModal = ({
         // Alguns dispositivos falham ao listar câmeras (getCameras) antes de iniciar stream.
         // Primeiro tentamos por facingMode; só depois tentamos ids concretos.
         const sourcesToTry = [
-          ...(probe?.deviceId ? [probe.deviceId] : []),
           {
             facingMode: { exact: 'environment' },
             width: { ideal: 1920 },
@@ -157,6 +157,7 @@ const QrScannerModal = ({
           { facingMode: { ideal: 'environment' } },
           { facingMode: 'environment' }
         ];
+        let backCameraIdFromList = null;
         try {
           const cameras = await Html5Qrcode.getCameras();
           if (Array.isArray(cameras) && cameras.length > 0) {
@@ -164,11 +165,22 @@ const QrScannerModal = ({
               const lbl = String(c.label || '').toLowerCase();
               return lbl.includes('back') || lbl.includes('trás') || lbl.includes('rear') || lbl.includes('environment');
             });
-            const fallbackCameraId = backCamera?.id || cameras[0].id;
-            if (fallbackCameraId) sourcesToTry.push(fallbackCameraId);
+            backCameraIdFromList = backCamera?.id || null;
+            if (backCameraIdFromList) {
+              // No telemóvel, priorizar sempre traseira.
+              sourcesToTry.unshift(backCameraIdFromList);
+            } else if (cameras[0]?.id) {
+              sourcesToTry.push(cameras[0].id);
+            }
           }
         } catch {
           // ignorar: alguns browsers bloqueiam enumeração antes de stream.
+        }
+        if (probe?.deviceId) {
+          // Em mobile, só usar deviceId do probe se ele já for a traseira identificada.
+          if (!isMobileUa || (backCameraIdFromList && probe.deviceId === backCameraIdFromList)) {
+            sourcesToTry.push(probe.deviceId);
+          }
         }
 
         let started = false;
