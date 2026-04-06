@@ -1445,7 +1445,21 @@ async function getRequisicaoComItens(id, includeItens = true) {
 function isDestinoEPI(requisicao) {
   const codigo = String(requisicao?.armazem_destino_codigo || '').toUpperCase();
   const descricao = String(requisicao?.armazem_destino_descricao || '').toUpperCase();
-  return codigo.includes('EPI') || descricao.includes('EPI');
+  const tipo = String(requisicao?.armazem_destino_tipo || '').toLowerCase();
+  return tipo === 'epi' || codigo.includes('EPI') || descricao.includes('EPI');
+}
+
+/** Coluna Observações no Clog / lista de movimentos: só nome e nº do colaborador (import EPI), sem declaração nem resto. */
+function observacoesClogEpiSomenteColaborador(obsRaw) {
+  const s = String(obsRaw || '').trim();
+  if (!s) return '';
+  const iDecl = s.search(/\bDeclaração\s*:/i);
+  const semDeclaracao = iDecl >= 0 ? s.slice(0, iDecl).trim() : s;
+  const parts = semDeclaracao.split('|').map((p) => p.trim()).filter(Boolean);
+  const colabParts = parts.filter(
+    (p) => /^colaborador\s*:/i.test(p) || /^nr\.\s*colab\.?\s*:/i.test(p)
+  );
+  return colabParts.join(' | ');
 }
 
 /** Reporte/Clog: em Entregue exige TRA (`tra_gerada_em`); em FINALIZADO permite mesmo sem data (dados antigos / fluxo sem registo). */
@@ -3330,6 +3344,43 @@ async function applyMovimentosOverrides(rows) {
   return out;
 }
 
+/**
+ * Igual a applyMovimentosOverrides, mas mantém alinhamento 1:1 com a lista de entrada:
+ * entradas null ou linhas marcadas como apagadas em overrides → null na mesma posição.
+ * Usado na paginação do histórico (cursor = OFFSET na tabela, por linha persistida).
+ */
+async function applyMovimentosOverridesPreserveLength(rowsMaybeNull) {
+  if (!Array.isArray(rowsMaybeNull) || rowsMaybeNull.length === 0) return rowsMaybeNull || [];
+  if (!(await movimentosOverridesTableExists())) {
+    return rowsMaybeNull.map((r) => (r && typeof r === 'object' ? r : null));
+  }
+  const keys = [
+    ...new Set(
+      rowsMaybeNull
+        .map((r) => (r && typeof r === 'object' ? String(r.mov_id || '').trim() : ''))
+        .filter(Boolean)
+    ),
+  ];
+  let byKey = new Map();
+  if (keys.length > 0) {
+    const ov = await pool.query(
+      `SELECT mov_key, patch, deleted
+       FROM requisicoes_movimentos_overrides
+       WHERE mov_key = ANY($1::text[])`,
+      [keys]
+    );
+    byKey = new Map(ov.rows.map((x) => [String(x.mov_key), x]));
+  }
+  return rowsMaybeNull.map((row) => {
+    if (!row || typeof row !== 'object') return null;
+    const key = String(row.mov_id || '').trim();
+    const hit = key ? byKey.get(key) : null;
+    if (hit?.deleted) return null;
+    const patch = hit && hit.patch && typeof hit.patch === 'object' ? hit.patch : null;
+    return patch ? { ...row, ...patch } : row;
+  });
+}
+
 async function movimentosHistoricoTableExists() {
   if (_cacheMovimentosHistoricoTable === true) return true;
   try {
@@ -3568,10 +3619,13 @@ async function buildClogRowsForRequisicaoIds(idsClean, dateStr, opts = {}) {
       r.armazem_origem_tipo,
       r.armazem_destino_tipo
     );
+    const obsClog = isDestinoEPI(r)
+      ? observacoesClogEpiSomenteColaborador(r.observacoes)
+      : r.observacoes || '';
     const rows = clogRowsFromItemData(
       dateForReq || formatDateBR(new Date()),
       codigoDestino,
-      r.observacoes || '',
+      obsClog,
       r.tra_numero || '',
       localizacaoOrigemTRA,
       localizacaoFERR,
@@ -3634,8 +3688,8 @@ router.get('/movimentos-clog/consulta', ...requisicaoAuth, denyOperador, async (
     const armazem = String(req.query?.armazem || '').trim().toLowerCase();
     const localizacao = String(req.query?.localizacao || '').trim().toLowerCase();
     const apenasMinhas = String(req.query?.minhas || '').trim() === '1';
-    const pageSizeRaw = parseInt(String(req.query?.page_size || '200'), 10);
-    const pageSize = Number.isFinite(pageSizeRaw) ? Math.max(50, Math.min(pageSizeRaw, 500)) : 200;
+    const pageSizeRaw = parseInt(String(req.query?.page_size || '40'), 10);
+    const pageSize = Number.isFinite(pageSizeRaw) ? Math.max(1, Math.min(pageSizeRaw, 40)) : 40;
     const startOffsetRaw = parseInt(String(req.query?.offset || '0'), 10);
     const startOffset = Number.isFinite(startOffsetRaw) ? Math.max(0, startOffsetRaw) : 0;
     const reqBatchSize = 200;
@@ -3722,18 +3776,28 @@ router.get('/movimentos-clog/consulta', ...requisicaoAuth, denyOperador, async (
           reachedEnd = true;
           break;
         }
-        const rawRows = batch
-          .map((x) => (x.row_data && typeof x.row_data === 'object' ? x.row_data : null))
-          .filter(Boolean);
-        const rows = await applyMovimentosOverrides(rawRows);
-        for (const row of rows) {
+        const parsedSlots = batch.map((x) =>
+          x.row_data && typeof x.row_data === 'object' ? x.row_data : null
+        );
+        const mergedSlots = await applyMovimentosOverridesPreserveLength(parsedSlots);
+        const batchStart = histOffset;
+        let filledPageThisBatch = false;
+        for (let i = 0; i < mergedSlots.length; i++) {
+          const row = mergedSlots[i];
+          if (!row) continue;
           if (!passesScopeHistorico(row)) continue;
           if (!passesRowFilter(row)) continue;
           outRows.push(row);
-          if (outRows.length >= pageSize) break;
+          if (outRows.length >= pageSize) {
+            histOffset = batchStart + i + 1;
+            filledPageThisBatch = true;
+            break;
+          }
         }
-        histOffset += batch.length;
-        if (batch.length < histBatchSize) reachedEnd = true;
+        if (!filledPageThisBatch) {
+          histOffset = batchStart + batch.length;
+          if (batch.length < histBatchSize) reachedEnd = true;
+        }
         batches += 1;
       }
 
@@ -3761,11 +3825,29 @@ router.get('/movimentos-clog/consulta', ...requisicaoAuth, denyOperador, async (
         return ordA - ordB;
       });
       const outRowsClean = outRows.map(
-        ({ __ordem_movimento, mov_id, requisicao_id, usuario_id, armazem_origem_id, armazem_id, armazem_origem_tipo, armazem_destino_tipo, ...rest }) => ({
-          ...rest,
+        ({
+          __ordem_movimento,
           mov_id,
           requisicao_id,
-        })
+          usuario_id,
+          armazem_origem_id,
+          armazem_id,
+          armazem_origem_tipo,
+          armazem_destino_tipo,
+          Observações,
+          ...rest
+        }) => {
+          const tipoEpi =
+            String(armazem_destino_tipo || '').toLowerCase() === 'epi' ||
+            String(rest['Novo Armazém'] || '').toUpperCase().includes('EPI');
+          const obs = tipoEpi ? observacoesClogEpiSomenteColaborador(Observações) : Observações;
+          return {
+            ...rest,
+            Observações: obs,
+            mov_id,
+            requisicao_id,
+          };
+        }
       );
       const nextOffset = reachedEnd || outRows.length < pageSize ? null : histOffset;
       return res.json({
@@ -3952,7 +4034,13 @@ router.get('/movimentos-clog/consulta', ...requisicaoAuth, denyOperador, async (
       const ordB = Number(b.__ordem_movimento || 9);
       return ordA - ordB;
     });
-    const outRowsClean = outRows.map(({ __ordem_movimento, ...rest }) => rest);
+    const outRowsClean = outRows.map(({ __ordem_movimento, ...rest }) => {
+      const tipoEpi =
+        String(rest.armazem_destino_tipo || '').toLowerCase() === 'epi' ||
+        String(rest['Novo Armazém'] || '').toUpperCase().includes('EPI');
+      const obs = tipoEpi ? observacoesClogEpiSomenteColaborador(rest.Observações) : rest.Observações;
+      return { ...rest, Observações: obs };
+    });
 
     const nextOffset = reachedEnd || outRows.length < pageSize ? null : reqOffset;
     return res.json({
@@ -4189,7 +4277,9 @@ async function buildClogRowsFromRequisicao(requisicao, dateStr) {
     bobinas = [];
   }
 
-  const colaboradorObs = requisicao.observacoes || '';
+  const colaboradorObs = isDestinoEPI(requisicao)
+    ? observacoesClogEpiSomenteColaborador(requisicao.observacoes)
+    : requisicao.observacoes || '';
   let apeadoDestinoCodigoClog = '';
   let apeadoDestinoLocClog = '';
   try {
