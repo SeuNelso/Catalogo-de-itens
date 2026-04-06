@@ -5,7 +5,7 @@ alwaysApply: true
 
 # Catálogo de itens
 
-Monorepo Node: API **Express** em `server/` (CommonJS) e SPA **React 18** (Create React App) em `client/`. Postgres via `pg` (`server/db/pool.js`). Funcionalidades: catálogo, importações Excel, requisições/armazéns, reconhecimento de imagem (AWS Rekognition / Google Vision), uploads (R2).
+Monorepo Node: API **Express** em `server/` (CommonJS) e SPA **React 18** (Create React App) em `client/`. Postgres via `pg` (`server/db/pool.js`). Funcionalidades: catálogo, importações Excel, requisições/armazéns, uploads (R2).
 
 ## Como desenvolver
 

@@ -106,7 +106,7 @@ Thumbs.db
 *.tmp
 *.temp
 
-# Google Drive credentials
+# Credenciais locais (não versionar)
 credentials.json
 token.json
 

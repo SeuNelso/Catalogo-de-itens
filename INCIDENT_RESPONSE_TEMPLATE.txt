@@ -1,0 +1,39 @@
+PLANO DE RESPOSTA A INCIDENTES (TEMPLATE)
+=========================================
+
+1. IDENTIFICACAO
+- Data/hora deteccao:
+- Fonte da deteccao:
+- Responsavel pela abertura:
+- Severidade inicial: baixa / media / alta / critica
+
+2. ESCOPO
+- Sistemas afetados:
+- Dados potencialmente afetados:
+- Ambientes afetados: dev / hml / prod
+
+3. CONTENCAO IMEDIATA
+- Acao 1:
+- Acao 2:
+- Credenciais rotacionadas? sim/nao
+- Acesso bloqueado? sim/nao
+
+4. ANALISE
+- Causa raiz:
+- Vetor de ataque/falha:
+- Evidencias tecnicas:
+
+5. REMEDIACAO
+- Correcao aplicada:
+- Validacao pos-correcao:
+- Data de conclusao:
+
+6. COMUNICACAO
+- Stakeholders notificados:
+- Juridico/DPO acionado:
+- Necessidade de notificacao externa:
+
+7. LIÇÕES APRENDIDAS
+- Controle que falhou:
+- Controle novo proposto:
+- Prazo e responsavel:

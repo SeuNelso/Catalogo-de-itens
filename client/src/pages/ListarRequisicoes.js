@@ -315,6 +315,49 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
     doc.text('Nome / assinatura', (rightX1 + rightX2) / 2, topY + 52, { align: 'center' });
   };
 
+  const EPI_DISCLAIMER_TITULO = 'Declaração (DL 348/93 de 1 de Outubro)';
+  const EPI_DISCLAIMER_TEXTO =
+    'Declaro(a) que recebi os Equipamentos de Proteção Individual (EPI) acima mencionados e que fui informado(a) dos respetivos riscos que pretendem proteger, comprometendo-me a utilizá-los corretamene de acordo com as instruções recebidas, a conservá-los e mantê-los em bom estado, e a participar ao meu superior hierárquico todas as avarias ou deficiências de que tenha conhecimento.';
+
+  const isNotaEpi = (reqObj) => {
+    const destinoTipo = String(reqObj?.armazem_destino_tipo || '').trim().toLowerCase();
+    const obsNorm = String(reqObj?.observacoes || '').toUpperCase();
+    return destinoTipo === 'epi' || obsNorm.includes('IMPORTADA DE EXCEL (EPI)');
+  };
+
+  const desenharDisclaimerEpiAcimaAssinaturas = (doc) => {
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const pageHeight = doc.internal.pageSize.getHeight();
+    const marginX = 40;
+    const bottomMargin = 60;
+    const signaturesBlockHeight = 70;
+    const topYSignatures = pageHeight - bottomMargin - signaturesBlockHeight;
+    const availableHeight = Math.max(0, topYSignatures - 70);
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(10);
+    doc.setTextColor(45, 45, 45);
+
+    const textWidth = pageWidth - 2 * marginX;
+    const lines = doc.splitTextToSize(EPI_DISCLAIMER_TEXTO, textWidth);
+    const titleHeight = 13;
+    const lineHeight = 10;
+    const bodyHeight = lines.length * lineHeight;
+    const blockHeight = titleHeight + bodyHeight + 4;
+
+    let yStart = topYSignatures - blockHeight - 12;
+    const minY = 60;
+    if (yStart < minY) yStart = minY;
+    if (yStart + blockHeight > availableHeight + 60) {
+      yStart = Math.max(minY, availableHeight + 60 - blockHeight);
+    }
+
+    doc.text(EPI_DISCLAIMER_TITULO, pageWidth / 2, yStart, { align: 'center' });
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(9);
+    doc.text(lines, pageWidth / 2, yStart + titleHeight, { align: 'center' });
+  };
+
   const baixarPdfEntregaMultiRespeitandoDestino = (reqs) => {
     const arr = (Array.isArray(reqs) ? reqs : []).filter(Boolean);
     if (arr.length === 0) return;
@@ -348,8 +391,13 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
 
     const sigTop = pageHeight - 60 - 70;
     const lastY = doc.lastAutoTable?.finalY ?? 0;
-    if (lastY + 30 > sigTop) {
+    const hasEpiReq = arr.some((r) => isNotaEpi(r));
+    const disclaimerReserve = hasEpiReq ? 95 : 0;
+    if (lastY + 30 + disclaimerReserve > sigTop) {
       doc.addPage();
+    }
+    if (hasEpiReq) {
+      desenharDisclaimerEpiAcimaAssinaturas(doc);
     }
     desenharAssinaturasRodape(doc);
 
@@ -1268,6 +1316,20 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
     return origem === 'central' && destino === 'apeado';
   };
 
+  const getEpiColaboradorFromObs = (reqObj) => {
+    const destinoTipo = String(reqObj?.armazem_destino_tipo || '').trim().toLowerCase();
+    if (destinoTipo !== 'epi') return { nome: '', numero: '' };
+    const obs = String(reqObj?.observacoes || '');
+    if (!obs) return { nome: '', numero: '' };
+
+    const nomeMatch = /(?:^|\|)\s*Colaborador:\s*([^|]+)/i.exec(obs);
+    const numeroMatch = /(?:^|\|)\s*Nr\.?\s*Colab\.?:\s*([^|]+)/i.exec(obs);
+    return {
+      nome: (nomeMatch?.[1] || '').trim(),
+      numero: (numeroMatch?.[1] || '').trim(),
+    };
+  };
+
   const normalize = (v) => String(v || '')
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
@@ -1811,6 +1873,20 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
                           )}
                         </div>
                         <div className="text-sm text-gray-600 space-y-1">
+                          {(() => {
+                            const epiColab = getEpiColaboradorFromObs(req);
+                            if (!epiColab.nome && !epiColab.numero) return null;
+                            return (
+                              <>
+                                {epiColab.nome && (
+                                  <div><strong>Colaborador:</strong> {epiColab.nome}</div>
+                                )}
+                                {epiColab.numero && (
+                                  <div><strong>Nr. Colab.:</strong> {epiColab.numero}</div>
+                                )}
+                              </>
+                            );
+                          })()}
                           {req.armazem_origem_descricao && (
                             <div><strong>Origem:</strong> {req.armazem_origem_descricao}</div>
                           )}

@@ -1,0 +1,40 @@
+TERMO DE APROVACAO DE GO-LIVE
+=============================
+
+Sistema: Catalogo de Itens
+Versao/Release: ______________________
+Data prevista de entrada em producao: ___/___/____
+
+Checklist validado:
+[ ] COMPLIANCE_CHECKLIST.txt concluido
+[ ] Inventario de licencas atualizado
+[ ] Verificacao de segredos executada
+[ ] Backup e restore testados
+[ ] Plano de incidente revisado
+
+Classificacao de licencas (inventario atual):
+- VERDE: ______
+- AMARELO: ______
+- VERMELHO: ______
+
+Parecer padrao de licencas:
+Com base no inventario de licencas de terceiros da release, a distribuicao foi
+classificada em Verde/Amarelo/Vermelho. Nao havendo itens Vermelho, a release
+fica apta para operacao interna, mantendo monitoramento continuo e revisao de
+itens Amarelo. Havendo itens Vermelho, a release fica bloqueada ate parecer
+formal do Juridico/Compliance.
+
+Decisao:
+[ ] APROVADO
+[ ] APROVADO COM RESSALVAS
+[ ] REPROVADO
+
+Ressalvas e acoes pendentes:
+__________________________________________________________
+__________________________________________________________
+
+Assinaturas:
+TI: ___________________________ Data: ___/___/____
+Seguranca da Informacao: ______ Data: ___/___/____
+Juridico/DPO: _________________ Data: ___/___/____
+Gestor de Negocio: ____________ Data: ___/___/____

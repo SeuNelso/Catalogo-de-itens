@@ -1,0 +1,4 @@
+modulo,rota_ou_tela,categoria_dado,finalidade,base_legal,retencao,destino,compartilhado_com,observacoes
+autenticacao,/api/login,dado_cadastral,autenticar_usuario,execucao_de_contrato,definir_politica,banco_postgresql,nao,preencher
+catalogo,/api/itens,dado_operacional,gestao_de_itens,legitimo_interesse,definir_politica,banco_postgresql,nao,preencher
+imagens,/api/imagem/*,imagem_item,consulta_operacional,legitimo_interesse,definir_politica,storage_r2,provedor_storage,preencher

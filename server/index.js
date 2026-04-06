@@ -58,31 +58,87 @@ const {
 const { buildExcelTransferencia } = require('./utils/buildExcelTransferencia');
 const { quantidadeStockNacionalNoArmazem } = require('./utils/stockNacionalMatch');
 const { createRequisicoesRouter } = require('./routes/requisicoes');
+const { createInventarioRouter } = require('./routes/inventario');
 const { createIntegrationRouter } = require('./routes/integrations');
-
-const vision = require('@google-cloud/vision');
-const { detectLabelsFromS3 } = require('./rekognition');
-const AWS = require('aws-sdk');
-const https = require('https');
 
 const compression = require('compression');
 
 const app = express();
 const authenticateToken = createAuthenticateToken(JWT_SECRET);
 const requisicaoAuth = createRequisicaoAuth(authenticateToken);
+const requestLogsEnabled = process.env.REQUEST_LOG_ENABLED === '1' || process.env.REQUEST_LOG_ENABLED === 'true';
+const loginRateLimitWindowMs = Math.max(10000, parseInt(process.env.RATE_LIMIT_LOGIN_WINDOW_MS || '60000', 10));
+const loginRateLimitMax = Math.max(5, parseInt(process.env.RATE_LIMIT_LOGIN_MAX || '20', 10));
+
+function createSimpleRateLimiter({ windowMs, max, keyPrefix }) {
+  const buckets = new Map();
+  return (req, res, next) => {
+    const ip = req.ip || req.connection?.remoteAddress || 'unknown';
+    const now = Date.now();
+    const windowId = Math.floor(now / windowMs);
+    const key = `${keyPrefix}:${ip}:${windowId}`;
+    const current = (buckets.get(key) || 0) + 1;
+    buckets.set(key, current);
+
+    if (current > max) {
+      return res.status(429).json({
+        error: 'Muitas tentativas. Aguarde e tente novamente.',
+      });
+    }
+    return next();
+  };
+}
+
+const loginRateLimiter = createSimpleRateLimiter({
+  windowMs: loginRateLimitWindowMs,
+  max: loginRateLimitMax,
+  keyPrefix: 'login',
+});
 
 if (process.env.TRUST_PROXY === '1' || process.env.TRUST_PROXY === 'true') {
   app.set('trust proxy', 1);
 }
 
 // Middleware
+const corsOrigin = process.env.CORS_ORIGIN || '*';
+// Compliance/security: não usar credenciais com origin wildcard.
 app.use(cors({
-  origin: '*',
-  credentials: true
+  origin: corsOrigin,
+  credentials: false
 }));
+
+// Hardening básico (headers) para reduzir superfície de ataque.
+app.disable('x-powered-by');
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  next();
+});
 app.use(compression({ threshold: '1kb' }));
 app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || '12mb' }));
 app.use('/uploads', express.static('uploads'));
+
+app.use((req, res, next) => {
+  const startedAt = Date.now();
+  res.on('finish', () => {
+    const elapsed = Date.now() - startedAt;
+    if (requestLogsEnabled) {
+      console.log(
+        `[REQ] ${req.method} ${req.originalUrl} status=${res.statusCode} duration_ms=${elapsed}`
+      );
+    }
+  });
+  next();
+});
+
+app.get('/api/health', (_req, res) => {
+  res.json({
+    status: 'ok',
+    uptimeSeconds: Math.floor(process.uptime()),
+    timestamp: new Date().toISOString(),
+  });
+});
 
 // Servir arquivos estáticos do React quando o build existir (independente de NODE_ENV).
 const clientBuildPath = path.join(__dirname, '../client/build');
@@ -1306,7 +1362,7 @@ app.get('/api/importar-dados-itens-status/:id', authenticateToken, (req, res) =>
 // Rotas da API
 
 // Autenticação
-app.post('/api/login', async (req, res) => {
+app.post('/api/login', loginRateLimiter, async (req, res) => {
   const loginIdRaw = req.body.username ?? req.body.login ?? req.body.numero_colaborador;
   const { password } = req.body;
   const loginId = loginIdRaw != null ? String(loginIdRaw).trim() : '';
@@ -2072,7 +2128,7 @@ app.post('/api/reconhecer', upload.single('imagem'), async (req, res) => {
     for (const row of result.rows) {
       if (!row.img_caminho) continue;
       try {
-        // Baixar imagem do Google Drive se for URL
+        // Baixar imagem remota se o caminho for URL
         let localPath = row.img_caminho;
         if (row.img_caminho.startsWith('http')) {
           // Baixar temporariamente
@@ -2384,55 +2440,30 @@ app.put('/api/itens/:id', authenticateToken, upload.fields([
 // Função para deletar imagem do S3
 async function deleteFromS3(key) {
   console.log('🔧 [DELETE] Iniciando deleteFromS3 com key:', key);
-  
-  // Valores padrão para desenvolvimento local
+
+  // Compliance: nunca manter credenciais hardcoded no código.
   const bucket = process.env.R2_BUCKET || 'catalogo-imagens';
-  const endpoint = process.env.R2_ENDPOINT || 'https://d18863b1a98e7a9ca8875305179ad718.r2.cloudflarestorage.com';
-  const accessKeyId = process.env.R2_ACCESS_KEY || '32f0b3b31955b3878e1c2c107ef33fd5';
-  const secretAccessKey = process.env.R2_SECRET_KEY || '580539e25b1580ce1c37425fb3eeb45be831ec029b352f6375614399e7ab714f';
-  
-  console.log('🔧 [DELETE] Usando bucket:', bucket);
-  console.log('🔧 [DELETE] Usando endpoint:', endpoint);
-  
-  // Verificar se as credenciais estão configuradas
-  if (!accessKeyId || !secretAccessKey || accessKeyId === '32f0b3b31955b3878e1c2c107ef33fd5') {
+  const s3 = createS3Client();
+  if (!s3) {
     console.log('⚠️ [DELETE] Credenciais R2 não configuradas, pulando exclusão de imagem');
     return Promise.resolve();
   }
-  
-  const s3 = new AWS.S3({
-    endpoint: endpoint,
-    accessKeyId: accessKeyId,
-    secretAccessKey: secretAccessKey,
-    signatureVersion: 'v4',
-    region: 'auto', // Voltando para 'auto' para Cloudflare R2
-    s3ForcePathStyle: true,
-    maxRetries: 3,
-    httpOptions: {
-      timeout: 30000,
-      agent: new https.Agent({
-        keepAlive: true,
-        maxSockets: 50,
-        rejectUnauthorized: false
-      })
-    }
-  });
-  
-  return new Promise((resolve, reject) => {
-    s3.deleteObject({
-      Bucket: bucket,
-      Key: key
-    }, (err, data) => {
-      if (err) {
-        console.error('❌ [DELETE] Erro ao deletar do R2:', err);
-        // Não rejeitar o erro, apenas logar
-        console.log('⚠️ [DELETE] Continuando sem deletar imagem do R2');
-        resolve();
-      } else {
-        console.log('✅ [DELETE] Imagem deletada do R2 com sucesso:', key);
-        resolve(data);
+
+  return new Promise((resolve) => {
+    s3.deleteObject(
+      { Bucket: bucket, Key: key },
+      (err, data) => {
+        if (err) {
+          console.error('❌ [DELETE] Erro ao deletar do R2:', err);
+          // Não rejeitar o erro: continuar fluxo e evitar falha em cascata.
+          console.log('⚠️ [DELETE] Continuando sem deletar imagem do R2');
+          resolve();
+        } else {
+          console.log('✅ [DELETE] Imagem deletada do R2 com sucesso:', key);
+          resolve(data);
+        }
       }
-    });
+    );
   });
 }
 
@@ -2583,19 +2614,19 @@ app.post('/api/test-upload', upload.single('imagem'), async (req, res) => {
   }
 
   try {
-    console.log('Iniciando teste de upload para Google Drive...');
+    console.log('Iniciando teste de upload para armazenamento...');
     console.log('Arquivo:', req.file.originalname);
     console.log('Tamanho:', req.file.size);
     console.log('Tipo:', req.file.mimetype);
 
-    // Upload para Google Drive
-    const driveResult = await uploadToS3(
+    // Upload para armazenamento configurado (R2/S3 compatível)
+    const uploadResult = await uploadToS3(
       req.file.path,
       `test_${Date.now()}_${req.file.originalname}`,
       req.file.mimetype
     );
 
-    console.log('Upload bem-sucedido:', driveResult);
+    console.log('Upload bem-sucedido:', uploadResult);
 
     // Remover arquivo local
     fs.unlink(req.file.path, (err) => {
@@ -2604,9 +2635,9 @@ app.post('/api/test-upload', upload.single('imagem'), async (req, res) => {
 
     res.json({
       message: 'Teste de upload bem-sucedido!',
-      fileId: driveResult.url, // Assuming the S3 URL is the fileId for this test
-      publicUrl: driveResult.url,
-      webViewLink: null // No direct webViewLink for S3 URL
+      fileId: uploadResult.url,
+      publicUrl: uploadResult.url,
+      webViewLink: null
     });
 
   } catch (error) {
@@ -3364,8 +3395,8 @@ app.post('/api/fotos-reconhecimento', authenticateToken, fotoReconhecimentoUploa
   }
   try {
     const { nome, descricao } = req.body;
-    // Upload para Google Drive
-    const driveResult = await uploadToS3(
+    // Upload para armazenamento configurado (R2/S3 compatível)
+    const uploadResult = await uploadToS3(
       req.file.path,
       `reconhecimento_${Date.now()}_${req.file.originalname}`,
       req.file.mimetype
@@ -3373,7 +3404,7 @@ app.post('/api/fotos-reconhecimento', authenticateToken, fotoReconhecimentoUploa
     // Salvar no banco
     await pool.query(
       'INSERT INTO fotos_reconhecimento (nome, descricao, caminho) VALUES ($1, $2, $3)',
-      [nome, descricao, driveResult.url]
+      [nome, descricao, uploadResult.url]
     );
     // Remover arquivo local
     fs.unlink(req.file.path, () => {});
@@ -3403,53 +3434,16 @@ app.delete('/api/fotos-reconhecimento/:id', authenticateToken, async (req, res) 
   }
   const id = req.params.id;
   try {
-    // Buscar caminho para possível remoção do arquivo do Google Drive (opcional)
+    // Buscar caminho para possível remoção do arquivo no armazenamento (opcional)
     const result = await pool.query('SELECT caminho FROM fotos_reconhecimento WHERE id = $1', [id]);
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Foto não encontrada.' });
     }
-    // Opcional: deletar do Google Drive usando deleteFromGoogleDrive se salvar o fileId
+    // Opcional: deletar do armazenamento remoto se guardar o identificador do objeto
     await pool.query('DELETE FROM fotos_reconhecimento WHERE id = $1', [id]);
     res.json({ message: 'Foto deletada com sucesso.' });
   } catch (error) {
     res.status(500).json({ error: 'Erro ao deletar foto.', details: error.message });
-  }
-});
-
-// Endpoint para upload e reconhecimento de imagem
-app.post('/vision', upload.single('imagem'), async (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ error: 'Nenhuma imagem enviada.' });
-    }
-    const filePath = req.file.path;
-    const visionClient = new vision.ImageAnnotatorClient();
-    const [result] = await visionClient.labelDetection(filePath);
-    const labels = result.labelAnnotations.map(label => label.description);
-    res.json({ labels });
-  } catch (error) {
-    console.error('Erro no Vision:', error);
-    res.status(500).json({ error: 'Erro ao processar a imagem.' });
-  }
-});
-
-// Endpoint protegido para análise de imagem no S3 com Rekognition
-app.post('/api/rekognition-labels', authenticateToken, async (req, res) => {
-  const { key } = req.body;
-  const userRole = req.user && req.user.role;
-  if (!key) {
-    return res.status(400).json({ error: 'O campo key é obrigatório.' });
-  }
-  if (userRole !== 'admin' && userRole !== 'controller') {
-    return res.status(403).json({ error: 'Acesso restrito a administradores ou controllers.' });
-  }
-  try {
-    const bucket = process.env.R2_BUCKET;
-    const labels = await detectLabelsFromS3(bucket, key);
-    res.json({ labels });
-  } catch (error) {
-    console.error('Erro no Rekognition:', error);
-    res.status(500).json({ error: 'Erro ao analisar imagem no Rekognition.' });
   }
 });
 
@@ -5842,7 +5836,7 @@ app.post('/api/armazens', authenticateToken, async (req, res) => {
       return res.status(403).json({ error: 'Apenas administradores podem criar armazéns' });
     }
 
-    const { codigo, descricao, localizacao, localizacoes, tipo } = req.body;
+    const { codigo, descricao, localizacao, localizacoes, tipo, armazem_central_vinculado_id } = req.body;
 
     if (!codigo || !codigo.toString().trim()) {
       return res.status(400).json({ error: 'Código é obrigatório (ex: V848 ou E)' });
@@ -5895,16 +5889,45 @@ app.post('/api/armazens', authenticateToken, async (req, res) => {
     if (tipoArmazem === 'apeado' || tipoArmazem === 'epi') {
       locsWithTipo = [{ localizacao: codigoNorm, tipo_localizacao: 'normal' }];
     }
+    let armazemCentralVinculadoId = null;
+    if (armazem_central_vinculado_id !== undefined && armazem_central_vinculado_id !== null && String(armazem_central_vinculado_id).trim() !== '') {
+      const parsedCentral = parseInt(armazem_central_vinculado_id, 10);
+      if (Number.isNaN(parsedCentral)) {
+        return res.status(400).json({ error: 'Armazém central vinculado inválido.' });
+      }
+      armazemCentralVinculadoId = parsedCentral;
+    }
+    if (tipoArmazem === 'apeado' || tipoArmazem === 'epi') {
+      if (!armazemCentralVinculadoId) {
+        return res.status(400).json({ error: 'Armazéns APEADO/EPI devem estar vinculados a um armazém central.' });
+      }
+      const centralCheck = await pool.query(
+        `SELECT id FROM armazens
+         WHERE id = $1 AND ativo = true AND LOWER(TRIM(COALESCE(tipo, ''))) = 'central'`,
+        [armazemCentralVinculadoId]
+      );
+      if (centralCheck.rows.length === 0) {
+        return res.status(400).json({ error: 'Armazém central vinculado não encontrado, inativo ou tipo inválido.' });
+      }
+    } else {
+      armazemCentralVinculadoId = null;
+    }
 
     let result;
     try {
       result = await pool.query(`
-        INSERT INTO armazens (codigo, descricao, localizacao, tipo)
-        VALUES ($1, $2, $3, $4)
+        INSERT INTO armazens (codigo, descricao, localizacao, tipo, armazem_central_vinculado_id)
+        VALUES ($1, $2, $3, $4, $5)
         RETURNING *
-      `, [codigoNorm, descricaoTrim, (locsWithTipo[0] && locsWithTipo[0].localizacao) || null, tipoArmazem]);
+      `, [codigoNorm, descricaoTrim, (locsWithTipo[0] && locsWithTipo[0].localizacao) || null, tipoArmazem, armazemCentralVinculadoId]);
     } catch (insertError) {
       if (insertError.code === '42703') {
+        if (armazemCentralVinculadoId) {
+          return res.status(503).json({
+            error: 'A base de dados não suporta vínculo central para APEADO/EPI.',
+            details: 'Execute a migração: server/migrate-armazens-vinculo-central.sql'
+          });
+        }
         try {
           result = await pool.query(`
             INSERT INTO armazens (codigo, descricao, localizacao)
@@ -6063,7 +6086,7 @@ app.put('/api/armazens/:id', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'ID de armazém inválido' });
     }
 
-    const { codigo, descricao, localizacao, localizacoes, ativo, tipo } = req.body;
+    const { codigo, descricao, localizacao, localizacoes, ativo, tipo, armazem_central_vinculado_id } = req.body;
 
     const updates = [];
     const params = [];
@@ -6111,6 +6134,20 @@ app.put('/api/armazens/:id', authenticateToken, async (req, res) => {
         params.push(tipoNormPut);
       } catch (_) {}
     }
+    let armazemCentralVinculadoIdPut;
+    if (armazem_central_vinculado_id !== undefined) {
+      if (armazem_central_vinculado_id === null || String(armazem_central_vinculado_id).trim() === '') {
+        armazemCentralVinculadoIdPut = null;
+      } else {
+        const parsedCentralPut = parseInt(armazem_central_vinculado_id, 10);
+        if (Number.isNaN(parsedCentralPut)) {
+          return res.status(400).json({ error: 'Armazém central vinculado inválido.' });
+        }
+        armazemCentralVinculadoIdPut = parsedCentralPut;
+      }
+      updates.push(`armazem_central_vinculado_id = $${paramCount++}`);
+      params.push(armazemCentralVinculadoIdPut);
+    }
 
     const temLocalizacoesParaAtualizar = localizacoes !== undefined && Array.isArray(localizacoes);
     if (updates.length === 0 && !temLocalizacoesParaAtualizar) {
@@ -6118,9 +6155,22 @@ app.put('/api/armazens/:id', authenticateToken, async (req, res) => {
     }
 
     let tipoParaValidacao = tipoNormPut;
-    if (temLocalizacoesParaAtualizar && tipoParaValidacao === undefined) {
-      const arm = await pool.query('SELECT tipo FROM armazens WHERE id = $1', [id]);
-      tipoParaValidacao = arm.rows[0]?.tipo || 'viatura';
+    let armazemAtualSnapshot = null;
+    if (temLocalizacoesParaAtualizar || tipoParaValidacao === undefined || armazem_central_vinculado_id !== undefined) {
+      try {
+        const arm = await pool.query('SELECT tipo, armazem_central_vinculado_id FROM armazens WHERE id = $1', [id]);
+        armazemAtualSnapshot = arm.rows[0] || null;
+      } catch (armErr) {
+        if (armErr.code === '42703') {
+          const arm = await pool.query('SELECT tipo FROM armazens WHERE id = $1', [id]);
+          armazemAtualSnapshot = arm.rows[0] || null;
+        } else {
+          throw armErr;
+        }
+      }
+      if (tipoParaValidacao === undefined) {
+        tipoParaValidacao = armazemAtualSnapshot?.tipo || 'viatura';
+      }
     }
     if (temLocalizacoesParaAtualizar && tipoParaValidacao === 'central') {
       const hasRecebimento = locsWithTipo.some(l => l.tipo_localizacao === 'recebimento');
@@ -6129,10 +6179,32 @@ app.put('/api/armazens/:id', authenticateToken, async (req, res) => {
         return res.status(400).json({ error: 'Armazém central deve ter pelo menos uma localização de Recebimento e uma ou mais de Expedição.' });
       }
     }
+    const tipoFinalUpdate = (tipoParaValidacao || '').toLowerCase();
+    const centralVinculadoFinal =
+      armazem_central_vinculado_id !== undefined
+        ? armazemCentralVinculadoIdPut
+        : (armazemAtualSnapshot?.armazem_central_vinculado_id ?? null);
+    if (tipoFinalUpdate === 'apeado' || tipoFinalUpdate === 'epi') {
+      if (!centralVinculadoFinal) {
+        return res.status(400).json({ error: 'Armazéns APEADO/EPI devem estar vinculados a um armazém central.' });
+      }
+      const centralCheck = await pool.query(
+        `SELECT id FROM armazens
+         WHERE id = $1 AND ativo = true AND LOWER(TRIM(COALESCE(tipo, ''))) = 'central'`,
+        [centralVinculadoFinal]
+      );
+      if (centralCheck.rows.length === 0) {
+        return res.status(400).json({ error: 'Armazém central vinculado não encontrado, inativo ou tipo inválido.' });
+      }
+    } else if (centralVinculadoFinal != null) {
+      updates.push(`armazem_central_vinculado_id = $${paramCount++}`);
+      params.push(null);
+    }
 
     if (updates.length > 0) {
       params.push(id);
       const tipoIdx = updates.findIndex(u => u.startsWith('tipo ='));
+      const armCentralIdx = updates.findIndex(u => u.startsWith('armazem_central_vinculado_id ='));
       try {
         await pool.query(`
           UPDATE armazens 
@@ -6140,9 +6212,15 @@ app.put('/api/armazens/:id', authenticateToken, async (req, res) => {
           WHERE id = $${paramCount}
         `, params);
       } catch (updE) {
-        if (updE.code === '42703' && tipoIdx !== -1) {
-          const cleanUpdates = updates.filter((_, i) => i !== tipoIdx);
-          const cleanParams = params.slice(0, -1).filter((_, i) => i !== tipoIdx);
+        if (updE.code === '42703' && (tipoIdx !== -1 || armCentralIdx !== -1)) {
+          const cleanUpdates = updates.filter((_, i) => i !== tipoIdx && i !== armCentralIdx);
+          const cleanParams = params.slice(0, -1).filter((_, i) => i !== tipoIdx && i !== armCentralIdx);
+          if (armCentralIdx !== -1) {
+            return res.status(503).json({
+              error: 'A base de dados não suporta vínculo central para APEADO/EPI.',
+              details: 'Execute a migração: server/migrate-armazens-vinculo-central.sql'
+            });
+          }
           cleanParams.push(id);
           if (cleanUpdates.length > 0) await pool.query(`UPDATE armazens SET ${cleanUpdates.join(', ')}, updated_at = CURRENT_TIMESTAMP WHERE id = $${cleanParams.length}`, cleanParams);
         } else throw updE;
@@ -6243,6 +6321,7 @@ app.delete('/api/armazens/:id', authenticateToken, async (req, res) => {
 
     let reqDestino = 0;
     let reqOrigem = 0;
+    let vinculadosCount = 0;
     try {
       const chk = await pool.query(
         `SELECT
@@ -6264,6 +6343,26 @@ app.delete('/api/armazens/:id', authenticateToken, async (req, res) => {
           'Altere o armazém de destino nessas requisições ou aguarde que deixem de o usar antes de eliminar.',
         code: 'ARMAZEM_REQUISICOES_DESTINO',
         counts: { requisicoes_destino: reqDestino, requisicoes_origem: reqOrigem }
+      });
+    }
+    try {
+      const vinc = await pool.query(
+        `SELECT COUNT(*)::int AS total
+         FROM armazens
+         WHERE armazem_central_vinculado_id = $1`,
+        [idNum]
+      );
+      vinculadosCount = vinc.rows[0]?.total ?? 0;
+    } catch (vincErr) {
+      if (vincErr.code !== '42703') throw vincErr;
+    }
+    if (vinculadosCount > 0) {
+      return res.status(409).json({
+        error: 'Não é possível eliminar este armazém central.',
+        details:
+          `Existem ${vinculadosCount} armazém(ns) APEADO/EPI vinculados a este central. ` +
+          'Remova ou altere os vínculos antes de eliminar.',
+        code: 'ARMAZEM_CENTRAL_COM_VINCULOS'
       });
     }
 
@@ -6296,6 +6395,14 @@ app.use(
     requisicaoArmazemOrigemAcessoPermitido,
     assertIdsRequisicoesPermitidas,
     excelUploadRequisicoes,
+  })
+);
+
+app.use(
+  '/api/inventario',
+  createInventarioRouter({
+    pool,
+    requisicaoAuth,
   })
 );
 

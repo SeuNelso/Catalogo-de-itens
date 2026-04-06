@@ -71,7 +71,8 @@ const Armazens = () => {
     codigo: '',
     descricao: '',
     tipo: 'viatura', // 'central' | 'viatura' | 'apeado' | 'epi'
-    localizacoes: []  // central: [{ localizacao, tipo_localizacao }]; viatura: preenchido com 2 (normal, FERR)
+    localizacoes: [],  // central: [{ localizacao, tipo_localizacao }]; viatura: preenchido com 2 (normal, FERR)
+    armazem_central_vinculado_id: ''
   });
   const [submitting, setSubmitting] = useState(false);
   const [loadingEdit, setLoadingEdit] = useState(false);
@@ -697,6 +698,10 @@ const Armazens = () => {
       codigo: formData.codigo.trim(),
       descricao: formData.descricao.trim(),
       tipo: formData.tipo,
+      armazem_central_vinculado_id:
+        formData.tipo === 'apeado' || formData.tipo === 'epi'
+          ? (formData.armazem_central_vinculado_id ? parseInt(formData.armazem_central_vinculado_id, 10) : null)
+          : null,
       localizacoes:
         formData.tipo === 'viatura'
           ? [
@@ -707,6 +712,10 @@ const Armazens = () => {
             ? [{ localizacao: codigoU, tipo_localizacao: 'normal' }]
             : locsCentrais
     };
+    if ((formData.tipo === 'apeado' || formData.tipo === 'epi') && !payload.armazem_central_vinculado_id) {
+      setToast({ type: 'error', message: 'Selecione o armazém central vinculado.' });
+      return;
+    }
     if (formData.tipo === 'central') {
       const hasRecebimento = payload.localizacoes.some(l => l.tipo_localizacao === 'recebimento');
       const hasExpedicao = payload.localizacoes.some(l => l.tipo_localizacao === 'expedicao');
@@ -737,7 +746,7 @@ const Armazens = () => {
         });
       }
 
-      setFormData({ codigo: '', descricao: '', tipo: 'viatura', localizacoes: [] });
+      setFormData({ codigo: '', descricao: '', tipo: 'viatura', localizacoes: [], armazem_central_vinculado_id: '' });
       setCentralBulkText('');
       setEditandoId(null);
       setMostrarForm(false);
@@ -759,7 +768,7 @@ const Armazens = () => {
       return;
     }
     setEditandoId(null);
-    setFormData({ codigo: '', descricao: '', tipo: 'viatura', localizacoes: [] });
+    setFormData({ codigo: '', descricao: '', tipo: 'viatura', localizacoes: [], armazem_central_vinculado_id: '' });
     setCentralBulkText('');
     setLoadingEdit(true);
     setMostrarForm(true);
@@ -823,7 +832,9 @@ const Armazens = () => {
         codigo: data.codigo || '',
         descricao: data.descricao || '',
         tipo,
-        localizacoes: locsForForm
+        localizacoes: locsForForm,
+        armazem_central_vinculado_id:
+          data.armazem_central_vinculado_id != null ? String(data.armazem_central_vinculado_id) : ''
       });
       if (tipo === 'central') {
         setCentralBulkText(buildCentralBulkText(locs));
@@ -843,7 +854,7 @@ const Armazens = () => {
   };
 
   const handleCancel = () => {
-    setFormData({ codigo: '', descricao: '', tipo: 'viatura', localizacoes: [] });
+    setFormData({ codigo: '', descricao: '', tipo: 'viatura', localizacoes: [], armazem_central_vinculado_id: '' });
     setCentralBulkText('');
     setEditingLocIdx(null);
     setEditingLocValue('');
@@ -996,6 +1007,18 @@ const Armazens = () => {
     () => (armazens || []).filter((a) => a.tipo === 'epi').length,
     [armazens]
   );
+  const armazensCentrais = useMemo(
+    () =>
+      (armazens || [])
+        .filter((a) => a.tipo === 'central' && a.ativo !== false)
+        .sort((a, b) => String(a?.codigo || '').localeCompare(String(b?.codigo || ''), 'pt', { numeric: true, sensitivity: 'base' })),
+    [armazens]
+  );
+  const centralById = useMemo(() => {
+    const m = new Map();
+    for (const a of armazensCentrais) m.set(String(a.id), a);
+    return m;
+  }, [armazensCentrais]);
 
   const listaTotalPages = Math.max(1, Math.ceil(armazensFiltrados.length / LIST_PAGE_SIZE));
   const listaPage = Math.min(listPage, listaTotalPages);
@@ -1110,7 +1133,7 @@ const Armazens = () => {
                       name="tipo"
                       value="viatura"
                       checked={formData.tipo === 'viatura'}
-                      onChange={() => setFormData(prev => ({ ...prev, tipo: 'viatura', localizacoes: [] }))}
+                      onChange={() => setFormData(prev => ({ ...prev, tipo: 'viatura', localizacoes: [], armazem_central_vinculado_id: '' }))}
                       className="text-[#0915FF]"
                     />
                     <span>Viatura</span>
@@ -1124,7 +1147,8 @@ const Armazens = () => {
                       onChange={() => setFormData(prev => ({
                         ...prev,
                         tipo: 'central',
-                        localizacoes: prev.localizacoes.length ? prev.localizacoes : [{ localizacao: '', tipo_localizacao: 'normal' }]
+                        localizacoes: prev.localizacoes.length ? prev.localizacoes : [{ localizacao: '', tipo_localizacao: 'normal' }],
+                        armazem_central_vinculado_id: ''
                       }))}
                       className="text-[#0915FF]"
                     />
@@ -1229,6 +1253,25 @@ const Armazens = () => {
                       {formData.codigo ? formData.codigo.trim().toUpperCase() : '—'}
                     </span>
                     <span className="text-xs text-gray-500">(normal)</span>
+                  </div>
+                  <div className="mt-3">
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Armazém central vinculado <span className="text-red-500">*</span>
+                    </label>
+                    <select
+                      name="armazem_central_vinculado_id"
+                      value={formData.armazem_central_vinculado_id || ''}
+                      onChange={handleChange}
+                      required
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0915FF] focus:border-transparent bg-white"
+                    >
+                      <option value="">Selecione o armazém central</option>
+                      {armazensCentrais.map((c) => (
+                        <option key={c.id} value={String(c.id)}>
+                          {c.codigo ? `${c.codigo} - ${c.descricao}` : c.descricao}
+                        </option>
+                      ))}
+                    </select>
                   </div>
                 </div>
               )}
@@ -1536,6 +1579,9 @@ const Armazens = () => {
                     locPreview = `${locPreview.slice(0, MAX_LOC_PREVIEW_LEN)}…`;
                   }
                   const titulo = armazem.codigo ? `${armazem.codigo} — ${armazem.descricao}` : armazem.descricao;
+                  const centralVinculado = (armazem.tipo === 'apeado' || armazem.tipo === 'epi')
+                    ? centralById.get(String(armazem.armazem_central_vinculado_id || ''))
+                    : null;
                   return (
                     <li key={armazem.id} className="px-3 py-2 sm:py-2.5 hover:bg-gray-50">
                       <div className="flex items-start gap-2 min-w-0">
@@ -1579,6 +1625,16 @@ const Armazens = () => {
                               <span className="text-gray-400"> · {locPreview}{numLocs > 2 ? '…' : ''}</span>
                             ) : null}
                           </p>
+                          {(armazem.tipo === 'apeado' || armazem.tipo === 'epi') && (
+                            <p className="text-[11px] text-gray-500 mt-0.5 truncate">
+                              Central vinculada:{' '}
+                              <span className="text-gray-700">
+                                {centralVinculado
+                                  ? (centralVinculado.codigo ? `${centralVinculado.codigo} — ${centralVinculado.descricao}` : centralVinculado.descricao)
+                                  : '—'}
+                              </span>
+                            </p>
+                          )}
                         </div>
                         <div className="flex shrink-0 gap-0.5" onClick={(e) => e.stopPropagation()}>
                           {podeGerirEstoqueLocal && armazem.tipo === 'central' && locacoesComId(armazem).length > 0 && (

@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import Toast from '../components/Toast';
+import { useAuth } from '../contexts/AuthContext';
 
 const DEFAULT_COLUMNS = [
   'Tipo de Movimento',
@@ -18,6 +19,8 @@ const DEFAULT_COLUMNS = [
 ];
 
 const ConsultaMovimentos = () => {
+  const { user } = useAuth();
+  const isAdmin = user?.role === 'admin';
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState(null);
   const [rows, setRows] = useState([]);
@@ -27,6 +30,8 @@ const ConsultaMovimentos = () => {
   const [offset, setOffset] = useState(0);
   const [nextOffset, setNextOffset] = useState(null);
   const [offsetHistory, setOffsetHistory] = useState([]);
+  const [editingMovId, setEditingMovId] = useState('');
+  const [editingDraft, setEditingDraft] = useState({});
   const pageSize = 200;
   const [filtros, setFiltros] = useState({
     q: '',
@@ -111,6 +116,78 @@ const ConsultaMovimentos = () => {
     setOffsetHistory((prev) => prev.slice(0, -1));
     setOffset(prevOffset);
     fetchMovimentos(appliedFiltros, prevOffset);
+  };
+
+  const iniciarEdicaoLinha = (row) => {
+    if (!isAdmin) return;
+    const movId = String(row?.mov_id || '').trim();
+    if (!movId) {
+      setToast({ type: 'error', message: 'Linha sem identificador de movimento.' });
+      return;
+    }
+    const draft = {};
+    for (const c of columns) {
+      draft[c] = String(row?.[c] ?? '');
+    }
+    setEditingMovId(movId);
+    setEditingDraft(draft);
+  };
+
+  const cancelarEdicaoLinha = () => {
+    setEditingMovId('');
+    setEditingDraft({});
+  };
+
+  const guardarEdicaoLinha = async () => {
+    if (!isAdmin) return;
+    const movId = String(editingMovId || '').trim();
+    if (!movId) return;
+    const patch = { ...editingDraft };
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch('/api/requisicoes/movimentos-clog/linha', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ mov_id: movId, patch }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || data.details || 'Erro ao editar linha');
+      setToast({ type: 'success', message: 'Linha atualizada.' });
+      cancelarEdicaoLinha();
+      if (appliedFiltros) await fetchMovimentos(appliedFiltros, offset);
+    } catch (e) {
+      setToast({ type: 'error', message: e.message || 'Erro ao editar linha' });
+    }
+  };
+
+  const apagarLinhaMovimento = async (row) => {
+    if (!isAdmin) return;
+    const movId = String(row?.mov_id || '').trim();
+    if (!movId) {
+      setToast({ type: 'error', message: 'Linha sem identificador de movimento.' });
+      return;
+    }
+    if (!window.confirm('Deseja apagar esta linha de movimento da consulta?')) return;
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch('/api/requisicoes/movimentos-clog/linha', {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ mov_id: movId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || data.details || 'Erro ao apagar linha');
+      setToast({ type: 'success', message: 'Linha apagada.' });
+      if (appliedFiltros) await fetchMovimentos(appliedFiltros, offset);
+    } catch (e) {
+      setToast({ type: 'error', message: e.message || 'Erro ao apagar linha' });
+    }
   };
 
   return (
@@ -251,12 +328,17 @@ const ConsultaMovimentos = () => {
                     {c}
                   </th>
                 ))}
+                {isAdmin && (
+                  <th className="px-3 py-2 border-b border-gray-200 text-left text-gray-700 whitespace-nowrap">
+                    Ações
+                  </th>
+                )}
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
               {visibleRows.length === 0 && (
                 <tr>
-                  <td className="px-3 py-6 text-center text-gray-500" colSpan={columns.length}>
+                  <td className="px-3 py-6 text-center text-gray-500" colSpan={columns.length + (isAdmin ? 1 : 0)}>
                     Nenhum movimento encontrado.
                   </td>
                 </tr>
@@ -265,9 +347,56 @@ const ConsultaMovimentos = () => {
                 <tr key={`${row['TRA / DEV'] || ''}-${row['REF.'] || ''}-${idx}`} className="hover:bg-gray-50">
                   {columns.map((c) => (
                     <td key={`${c}-${idx}`} className="px-3 py-2 text-gray-800 whitespace-nowrap">
-                      {String(row?.[c] ?? '')}
+                      {editingMovId === String(row?.mov_id || '').trim() ? (
+                        <input
+                          value={editingDraft[c] ?? ''}
+                          onChange={(e) => setEditingDraft((p) => ({ ...p, [c]: e.target.value }))}
+                          className="px-2 py-1 border border-gray-300 rounded text-xs min-w-[120px]"
+                        />
+                      ) : (
+                        String(row?.[c] ?? '')
+                      )}
                     </td>
                   ))}
+                  {isAdmin && (
+                    <td className="px-3 py-2 text-gray-800 whitespace-nowrap">
+                      {editingMovId === String(row?.mov_id || '').trim() ? (
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={guardarEdicaoLinha}
+                            className="px-2 py-1 text-xs rounded border border-emerald-300 text-emerald-700 hover:bg-emerald-50"
+                          >
+                            Guardar
+                          </button>
+                          <button
+                            type="button"
+                            onClick={cancelarEdicaoLinha}
+                            className="px-2 py-1 text-xs rounded border border-gray-300 hover:bg-gray-50"
+                          >
+                            Cancelar
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => iniciarEdicaoLinha(row)}
+                            className="px-2 py-1 text-xs rounded border border-gray-300 hover:bg-gray-50"
+                          >
+                            Editar
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => apagarLinhaMovimento(row)}
+                            className="px-2 py-1 text-xs rounded border border-red-300 text-red-700 hover:bg-red-50"
+                          >
+                            Apagar
+                          </button>
+                        </div>
+                      )}
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>

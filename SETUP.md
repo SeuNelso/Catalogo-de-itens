@@ -143,17 +143,6 @@ npm run client
 
 ## 🔧 Configurações Opcionais
 
-### Google Drive (Armazenamento Alternativo)
-
-1. Siga o guia em `GOOGLE_DRIVE_SETUP.md`
-2. Coloque o arquivo `credentials.json` na raiz do projeto
-3. Configure `GOOGLE_DRIVE_FOLDER_ID` no `.env`
-
-### Google Cloud Vision (Reconhecimento de Imagens)
-
-1. Configure as credenciais do Google Cloud
-2. Configure `GOOGLE_APPLICATION_CREDENTIALS` no `.env`
-
 ## 🐛 Solução de Problemas
 
 ### Erro: "npm não é reconhecido como comando"
@@ -185,7 +174,7 @@ npm run client
 1. ✅ Ambiente configurado
 2. ⏭️ Criar primeiro usuário administrador
 3. ⏭️ Começar a cadastrar itens
-4. ⏭️ Configurar armazenamento de imagens (R2 ou Google Drive)
+4. ⏭️ Configurar armazenamento de imagens (R2)
 
 ## 🔒 Segurança
 

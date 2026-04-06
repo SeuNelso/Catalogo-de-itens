@@ -82,6 +82,22 @@ Um sistema completo de catálogo de itens com funcionalidade de reconhecimento p
 - PostgreSQL
 - npm ou yarn
 
+## ⚖️ Copyright e Compliance
+
+- Copyright do sistema: `COPYRIGHT.txt`
+- Avisos de terceiros (dependências): `THIRD_PARTY_NOTICES.txt`
+- Fontes de licenças de dependências: `package-lock.json` e `client/package-lock.json`
+- Inventário de licenças (gerado): `THIRD_PARTY_LICENSE_INVENTORY.csv`
+- Planilha de licenças com coluna de cor: `THIRD_PARTY_LICENSE_INVENTORY.xlsx`
+- Checklist operacional de compliance: `COMPLIANCE_CHECKLIST.txt`
+- Kit de auditoria: `COMPLIANCE_EVIDENCE_PACK_TEMPLATE.txt`, `COMPLIANCE_RACI_TEMPLATE.csv`, `GO_LIVE_APPROVAL_TEMPLATE.txt`
+
+Comandos úteis:
+```bash
+npm run compliance:licenses
+npm run compliance:secrets
+```
+
 ### Passos para instalação
 
 1. **Clone o repositório**

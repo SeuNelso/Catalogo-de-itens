@@ -1,0 +1,7 @@
+atividade,ti,seguranca_informacao,juridico_dpo,gestor_negocio
+inventario_dados,R,C,A,I
+inventario_licencas,R,A,C,I
+rotacao_segredos,R,A,I,I
+resposta_incidentes,R,A,C,I
+validacao_go_live,R,C,A,A
+auditoria_trimestral,R,A,C,I

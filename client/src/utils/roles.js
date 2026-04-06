@@ -60,6 +60,17 @@ export function podeGerarTrflMovimentacaoInterna(role) {
   return Boolean(role && ROLES_GERAR_TRFL_MOV_INTERN.includes(role));
 }
 
+export const ROLES_ACESSO_INVENTARIO = Object.freeze([
+  ROLES.ADMIN,
+  ROLES.BACKOFFICE_ARMAZEM,
+  ROLES.SUPERVISOR_ARMAZEM,
+  ROLES.OPERADOR,
+]);
+
+export function podeAcederInventario(role) {
+  return Boolean(role && ROLES_ACESSO_INVENTARIO.includes(role));
+}
+
 /** Opções do select em AdminUsuarios (valor = coluna role). */
 export const ROLE_OPTIONS = [
   { value: ROLES.ADMIN, label: 'Administrador (ADMIN)' },

@@ -71,7 +71,6 @@ npm run build
 
 - **SETUP.md** - Guia completo de configuração
 - **README.md** - Documentação geral do projeto
-- **GOOGLE_DRIVE_SETUP.md** - Configuração do Google Drive
 - **DEPLOYMENT_ENV_SETUP.md** - Configuração para deploy
 
 ## ✅ Checklist de Ambiente

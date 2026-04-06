@@ -1,0 +1,9 @@
+Copyright (c) 2026 Catalogo de Itens
+Todos os direitos reservados.
+
+Este software e sua documentacao sao propriedade DIGI portugal.
+O uso interno corporativo e permitido conforme a politica interna da organizacao
+e as licencas de terceiros aplicaveis.
+
+Proibida a distribuicao nao autorizada de codigo-fonte, artefatos, marcas,
+layout, textos e demais ativos protegidos.

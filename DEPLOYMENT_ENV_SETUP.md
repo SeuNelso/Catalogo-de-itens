@@ -25,9 +25,9 @@
 
 ```
 R2_BUCKET=catalogo-imagens
-R2_ENDPOINT=https://d18863b1a98e7a9ca8875305179ad718.r2.cloudflarestorage.com
-R2_ACCESS_KEY=32f0b3b31955b3878e1c2c107ef33fd5
-R2_SECRET_KEY=580539e25b1580ce1c37425fb3eeb45be831ec029b352f6375614399e7ab714f
+R2_ENDPOINT=https://seu-endpoint.r2.cloudflarestorage.com
+R2_ACCESS_KEY=SEU_ACCESS_KEY
+R2_SECRET_KEY=SEU_SECRET_KEY
 ```
 
 ### Para Heroku:

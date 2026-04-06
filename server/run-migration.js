@@ -75,6 +75,18 @@ const migrationFile = path.join(
                         ? 'migrate-armazem-movimentacao-interna.sql'
                       : arg === 'requisicoes-trfl-tra-estoque' || arg === 'trfl-tra-estoque'
                         ? 'migrate-requisicoes-trfl-tra-estoque.sql'
+                      : arg === 'requisicoes-movimentos-overrides' || arg === 'movimentos-overrides'
+                        ? 'migrate-requisicoes-movimentos-overrides.sql'
+                      : arg === 'requisicoes-movimentos-historico' || arg === 'movimentos-historico'
+                        ? 'migrate-requisicoes-movimentos-historico.sql'
+                      : arg === 'requisicoes-movimentos-historico-no-fk' || arg === 'movimentos-historico-no-fk'
+                        ? 'migrate-requisicoes-movimentos-historico-no-fk.sql'
+                      : arg === 'inventario-tarefas'
+                        ? 'migrate-inventario-tarefas.sql'
+                      : arg === 'requisicoes-itens-observacoes' || arg === 'itens-observacoes'
+                        ? 'migrate-requisicoes-itens-observacoes.sql'
+                      : arg === 'armazens-vinculo-central' || arg === 'vinculo-central'
+                        ? 'migrate-armazens-vinculo-central.sql'
                       : 'migrate-requisicoes-itens-preparacao.sql'
 );
 
@@ -90,20 +102,27 @@ async function run() {
     await ensureSchemaMigrationsTable(client);
 
     const sql = fs.readFileSync(migrationFile, 'utf8');
-    // Remove comentários de linha (-- ...) e divide por ; para executar cada comando
-    const statements = sql
-      .split('\n')
-      .filter(line => !line.trim().startsWith('--'))
-      .join('\n')
-      .split(';')
-      .map(s => s.trim())
-      .filter(Boolean);
+    try {
+      // Executa o ficheiro completo para suportar blocos DO $$...$$ e transações.
+      await client.query(sql);
+      console.log('OK: script completo executado.');
+    } catch (fullErr) {
+      // Fallback legado: quando a conexão/proxy não aceitar multi-statement num único query.
+      const statements = sql
+        .split('\n')
+        .filter(line => !line.trim().startsWith('--'))
+        .join('\n')
+        .split(';')
+        .map(s => s.trim())
+        .filter(Boolean);
 
-    for (const statement of statements) {
-      if (statement) {
-        await client.query(statement + ';');
-        console.log('OK:', statement.substring(0, 60) + '...');
+      for (const statement of statements) {
+        if (statement) {
+          await client.query(statement + ';');
+          console.log('OK:', statement.substring(0, 60) + '...');
+        }
       }
+      console.warn('AVISO: execução completa falhou; migração aplicada em modo compatibilidade:', fullErr.message);
     }
     try {
       await recordSchemaMigration(client, {

@@ -36,6 +36,7 @@ import Armazens from './pages/Armazens';
 import ConsultaLocalizacoesEstoque from './pages/ConsultaLocalizacoesEstoque';
 import TransferenciaLocalizacao from './pages/TransferenciaLocalizacao';
 import ConsultaMovimentos from './pages/ConsultaMovimentos';
+import Inventario from './pages/Inventario';
 import './App.css';
 import { ROLES_COM_ACESSO_REQUISICOES } from './utils/roles';
 
@@ -54,6 +55,8 @@ function RouteTracker() {
 }
 
 function App() {
+  const currentYear = new Date().getFullYear();
+
   return (
     <ImportProgressProvider>
       <AuthProvider>
@@ -276,6 +279,17 @@ function App() {
                   }
                 />
                 <Route
+                  path="/inventario"
+                  element={
+                    <ProtectedRoute
+                      allowedRoles={['admin', 'backoffice_armazem', 'supervisor_armazem', 'operador']}
+                      requireControloStock
+                    >
+                      <Inventario />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
                   path="/movimentos"
                   element={
                     <ProtectedRoute requireConsultaMovimentos>
@@ -285,6 +299,9 @@ function App() {
                 />
               </Routes>
             </div>
+            <footer className="border-t border-gray-200 bg-white/90 px-4 py-3 text-center text-xs text-gray-600">
+              {`Copyright (c) ${currentYear} Catalogo de Itens. Todos os direitos reservados.`}
+            </footer>
             {/* Renderizar a barra de progresso global */}
             <ImportProgressBar />
           </div>

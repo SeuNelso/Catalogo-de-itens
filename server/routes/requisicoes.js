@@ -69,6 +69,9 @@ const SQL_LISTA_CRIADOR_E_SEPARADOR = `${SQL_CRIADOR_COM_EMAIL},
         r.separador_usuario_id,
         ${SQL_SEPARADOR_NOME} AS separador_nome`;
 
+const EPI_DISCLAIMER_PADRAO =
+  'Declaração (DL 348/93 de 1 de Outubro): Declaro(a) que recebi os Equipamentos de Proteção Individual (EPI) acima mencionados e que fui informado(a) dos respetivos riscos que pretendem proteger, comprometendo-me a utilizá-los corretamene de acordo com as instruções recebidas, a conservá-los e mantê-los em bom estado, e a participar ao meu superior hierárquico todas as avarias ou deficiências de que tenha conhecimento.';
+
 function makeStockPrepBizError(status, error, code, extra) {
   const err = new Error(error);
   err.isStockPrepBiz = true;
@@ -213,6 +216,54 @@ function computeDestLocFerrNormal(codigoDestino, locResultRows) {
     if (semFerr) localizacaoNormal = semFerr;
   }
   return { localizacaoFERR, localizacaoNormal };
+}
+
+async function validarVinculoTransferenciaCentral(client, { armazemOrigemId, armazemDestinoId }) {
+  const origemId = parseInt(armazemOrigemId, 10);
+  const destinoId = parseInt(armazemDestinoId, 10);
+  if (!Number.isFinite(origemId) || !Number.isFinite(destinoId)) return;
+
+  let armRows;
+  try {
+    const arm = await client.query(
+      `SELECT id, LOWER(TRIM(COALESCE(tipo, ''))) AS tipo, armazem_central_vinculado_id
+       FROM armazens
+       WHERE id = ANY($1::int[])`,
+      [[origemId, destinoId]]
+    );
+    armRows = arm.rows || [];
+  } catch (e) {
+    if (e.code !== '42703') throw e;
+    const arm = await client.query(
+      `SELECT id, LOWER(TRIM(COALESCE(tipo, ''))) AS tipo
+       FROM armazens
+       WHERE id = ANY($1::int[])`,
+      [[origemId, destinoId]]
+    );
+    armRows = (arm.rows || []).map((r) => ({ ...r, armazem_central_vinculado_id: null }));
+  }
+
+  const byId = new Map(armRows.map((r) => [Number(r.id), r]));
+  const origem = byId.get(origemId);
+  const destino = byId.get(destinoId);
+  if (!origem || !destino) return;
+
+  const tipoOrigem = String(origem.tipo || '').toLowerCase();
+  const tipoDestino = String(destino.tipo || '').toLowerCase();
+  if (tipoOrigem !== 'central') return;
+  if (tipoDestino !== 'apeado' && tipoDestino !== 'epi') return;
+
+  const centralVinculadoDestino = destino.armazem_central_vinculado_id == null
+    ? null
+    : Number(destino.armazem_central_vinculado_id);
+  if (!centralVinculadoDestino || centralVinculadoDestino !== origemId) {
+    throw makeStockPrepBizError(
+      400,
+      'Transferência inválida: este armazém APEADO/EPI não está vinculado ao armazém central de origem.',
+      'TRANSFERENCIA_CENTRAL_VINCULO_INVALIDO',
+      { armazem_origem_id: origemId, armazem_destino_id: destinoId }
+    );
+  }
 }
 
 async function subtrairQtyArmazemLocalizacaoItem(client, localizacaoId, itemId, qty, itemCodigo) {
@@ -3080,9 +3131,18 @@ function clogRowsFromItemData(
   const traDev = String(traNumero || '').trim();
   const devolucaoDestinoLoc = String(opts?.devolucaoDestinoLoc || '').trim();
   const newLocDevolucao = devolucaoDestinoLoc || LOCALIZACAO_RECEBIMENTO_FALLBACK;
+  const destinoTipo = String(opts?.destinoTipo || '').trim().toLowerCase();
+  const destinoTraLoc = String(opts?.destinoTraLoc || '').trim();
+  const isDestinoCentral = destinoTipo === 'central';
   const apeadoDestinoCodigo = String(opts?.apeadoDestinoCodigo || '').trim();
   const apeadoDestinoLoc = String(opts?.apeadoDestinoLoc || '').trim();
   const apeadosOrigemLoc = String(opts?.apeadosOrigemLoc || '').trim();
+  const reqId = Number(opts?.reqId) || 0;
+  const reqUserId = Number(opts?.reqUserId) || 0;
+  const armazemOrigemId = Number(opts?.armazemOrigemId) || 0;
+  const armazemDestinoId = Number(opts?.armazemDestinoId) || 0;
+  const origemTipo = String(opts?.origemTipo || '').trim().toLowerCase();
+  const destinoTipoNorm = String(opts?.destinoTipo || '').trim().toLowerCase();
   const rows = [];
   const itemByItemId = new Map(itensComFerramenta.map((it) => [it.item_id, it]));
   const itemIdsComBobina = new Set(bobinas.map((b) => b.item_id));
@@ -3097,6 +3157,13 @@ function clogRowsFromItemData(
     if (qty === 0) continue;
 
     rows.push({
+      requisicao_id: reqId,
+      usuario_id: reqUserId,
+      armazem_origem_id: armazemOrigemId,
+      armazem_id: armazemDestinoId,
+      armazem_origem_tipo: origemTipo,
+      armazem_destino_tipo: destinoTipoNorm,
+      mov_id: `req:${reqId}:bob:${Number(b.id || 0)}:item:${Number(b.item_id || 0)}:base`,
       __ordem_movimento: 1,
       'Tipo de Movimento': tipoMovimento,
       'Dt_Recepção': dateStr,
@@ -3108,7 +3175,9 @@ function clogRowsFromItemData(
       Lote: b.lote || '',
       'Novo Armazém': codigoDestino,
       'TRA / DEV': traDev,
-      'New Localização': isDevolucao ? newLocDevolucao : (itemMeta.is_ferramenta ? localizacaoFERR : localizacaoNormal),
+      'New Localização': isDevolucao
+        ? newLocDevolucao
+        : (isDestinoCentral ? (destinoTraLoc || localizacaoNormal) : (itemMeta.is_ferramenta ? localizacaoFERR : localizacaoNormal)),
       DEP: '',
       Observações: colaboradorObs
     });
@@ -3121,6 +3190,13 @@ function clogRowsFromItemData(
       apeadosCountByItemId.set(itemId, next);
       if (next <= apeadosQty) {
         rows.push({
+          requisicao_id: reqId,
+          usuario_id: reqUserId,
+          armazem_origem_id: armazemOrigemId,
+          armazem_id: armazemDestinoId,
+          armazem_origem_tipo: origemTipo,
+          armazem_destino_tipo: destinoTipoNorm,
+          mov_id: `req:${reqId}:bob:${Number(b.id || 0)}:item:${Number(b.item_id || 0)}:apeados:${next}`,
           __ordem_movimento: 2,
           'Tipo de Movimento': 'APEADOS',
           'Dt_Recepção': dateStr,
@@ -3151,6 +3227,13 @@ function clogRowsFromItemData(
     if (qty === 0) continue;
 
     rows.push({
+      requisicao_id: reqId,
+      usuario_id: reqUserId,
+      armazem_origem_id: armazemOrigemId,
+      armazem_id: armazemDestinoId,
+      armazem_origem_tipo: origemTipo,
+      armazem_destino_tipo: destinoTipoNorm,
+      mov_id: `req:${reqId}:ri:${Number(ri.id || 0)}:item:${Number(ri.item_id || 0)}:base`,
       __ordem_movimento: 1,
       'Tipo de Movimento': tipoMovimento,
       'Dt_Recepção': dateStr,
@@ -3162,7 +3245,9 @@ function clogRowsFromItemData(
       Lote: ri.lote || '',
       'Novo Armazém': codigoDestino,
       'TRA / DEV': traDev,
-      'New Localização': isDevolucao ? newLocDevolucao : (ri.is_ferramenta ? localizacaoFERR : localizacaoNormal),
+      'New Localização': isDevolucao
+        ? newLocDevolucao
+        : (isDestinoCentral ? (destinoTraLoc || localizacaoNormal) : (ri.is_ferramenta ? localizacaoFERR : localizacaoNormal)),
       DEP: '',
       Observações: colaboradorObs
     });
@@ -3172,6 +3257,13 @@ function clogRowsFromItemData(
       const apeadosQty = Math.max(0, Math.min(Math.abs(Number(qtyBase) || 0), apeadosQtyRaw));
       if (apeadosQty > 0) {
         rows.push({
+          requisicao_id: reqId,
+          usuario_id: reqUserId,
+          armazem_origem_id: armazemOrigemId,
+          armazem_id: armazemDestinoId,
+          armazem_origem_tipo: origemTipo,
+          armazem_destino_tipo: destinoTipoNorm,
+          mov_id: `req:${reqId}:ri:${Number(ri.id || 0)}:item:${Number(ri.item_id || 0)}:apeados`,
           __ordem_movimento: 2,
           'Tipo de Movimento': 'APEADOS',
           'Dt_Recepção': dateStr,
@@ -3194,8 +3286,142 @@ function clogRowsFromItemData(
   return rows;
 }
 
+let _cacheMovimentosOverridesTable = null;
+let _cacheMovimentosHistoricoTable = null;
+let _cacheMovimentosHistoricoDetachedSchema = null;
+async function movimentosOverridesTableExists() {
+  if (_cacheMovimentosOverridesTable === true) return true;
+  try {
+    const r = await pool.query(
+      `SELECT 1
+       FROM information_schema.tables
+       WHERE table_schema = 'public'
+         AND table_name = 'requisicoes_movimentos_overrides'
+       LIMIT 1`
+    );
+    if (r.rows.length > 0) {
+      _cacheMovimentosOverridesTable = true;
+      return true;
+    }
+  } catch (_) {}
+  return false;
+}
+
+async function applyMovimentosOverrides(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) return rows || [];
+  if (!(await movimentosOverridesTableExists())) return rows;
+  const keys = [...new Set(rows.map((r) => String(r.mov_id || '').trim()).filter(Boolean))];
+  if (!keys.length) return rows;
+  const ov = await pool.query(
+    `SELECT mov_key, patch, deleted
+     FROM requisicoes_movimentos_overrides
+     WHERE mov_key = ANY($1::text[])`,
+    [keys]
+  );
+  const byKey = new Map(ov.rows.map((x) => [String(x.mov_key), x]));
+  const out = [];
+  for (const row of rows) {
+    const key = String(row.mov_id || '').trim();
+    const hit = key ? byKey.get(key) : null;
+    if (hit?.deleted) continue;
+    const patch = hit && hit.patch && typeof hit.patch === 'object' ? hit.patch : null;
+    out.push(patch ? { ...row, ...patch } : row);
+  }
+  return out;
+}
+
+async function movimentosHistoricoTableExists() {
+  if (_cacheMovimentosHistoricoTable === true) return true;
+  try {
+    const r = await pool.query(
+      `SELECT 1
+       FROM information_schema.tables
+       WHERE table_schema = 'public'
+         AND table_name = 'requisicoes_movimentos_historico'
+       LIMIT 1`
+    );
+    if (r.rows.length > 0) {
+      _cacheMovimentosHistoricoTable = true;
+      return true;
+    }
+  } catch (_) {}
+  return false;
+}
+
+async function ensureMovimentosHistoricoDetachedSchema() {
+  if (_cacheMovimentosHistoricoDetachedSchema === true) return;
+  if (!(await movimentosHistoricoTableExists())) return;
+  try {
+    // Remove qualquer FK de historico -> requisicoes (independente do nome da constraint).
+    const fks = await pool.query(
+      `SELECT c.conname AS name
+       FROM pg_constraint c
+       WHERE c.contype = 'f'
+         AND c.conrelid = 'requisicoes_movimentos_historico'::regclass
+         AND c.confrelid = 'requisicoes'::regclass`
+    );
+    for (const row of fks.rows || []) {
+      const name = String(row?.name || '').trim();
+      if (!name) continue;
+      await pool.query(`ALTER TABLE requisicoes_movimentos_historico DROP CONSTRAINT IF EXISTS "${name}"`);
+    }
+    // Permite manter histórico mesmo sem referência à requisição original.
+    await pool.query(
+      `ALTER TABLE requisicoes_movimentos_historico
+       ALTER COLUMN requisicao_id DROP NOT NULL`
+    );
+    _cacheMovimentosHistoricoDetachedSchema = true;
+  } catch (e) {
+    console.warn('[movimentos_historico] não foi possível garantir schema detached:', e.message);
+  }
+}
+
+async function upsertMovimentosHistorico(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) return;
+  if (!(await movimentosHistoricoTableExists())) return;
+  const valid = rows.filter((r) => String(r?.mov_id || '').trim() && Number.isFinite(Number(r?.requisicao_id)));
+  if (!valid.length) return;
+  for (const row of valid) {
+    const movKey = String(row.mov_id).trim();
+    const reqId = Number(row.requisicao_id);
+    const payload = { ...row };
+    await pool.query(
+      `INSERT INTO requisicoes_movimentos_historico (mov_key, requisicao_id, row_data, updated_at)
+       VALUES ($1, $2, $3::jsonb, CURRENT_TIMESTAMP)
+       ON CONFLICT (mov_key)
+       DO UPDATE SET
+         requisicao_id = EXCLUDED.requisicao_id,
+         row_data = EXCLUDED.row_data,
+         updated_at = CURRENT_TIMESTAMP`,
+      [movKey, reqId, JSON.stringify(payload)]
+    );
+  }
+}
+
+async function fetchMovimentosHistoricoByReqIds(reqIds) {
+  if (!Array.isArray(reqIds) || reqIds.length === 0) return [];
+  if (!(await movimentosHistoricoTableExists())) return [];
+  const r = await pool.query(
+    `SELECT mov_key, requisicao_id, row_data
+     FROM requisicoes_movimentos_historico
+     WHERE requisicao_id = ANY($1::int[])`,
+    [reqIds]
+  );
+  return (r.rows || [])
+    .map((x) => {
+      const data = x.row_data && typeof x.row_data === 'object' ? x.row_data : null;
+      if (!data) return null;
+      return {
+        ...data,
+        mov_id: String(data.mov_id || x.mov_key || '').trim(),
+        requisicao_id: Number(data.requisicao_id || x.requisicao_id || 0),
+      };
+    })
+    .filter(Boolean);
+}
+
 /** Várias requisições: ~4–5 queries em vez de ~5N (muito mais rápido para Clog multi). */
-async function buildClogRowsForRequisicaoIds(idsClean, dateStr) {
+async function buildClogRowsForRequisicaoIds(idsClean, dateStr, opts = {}) {
   if (!idsClean.length) return [];
 
   const idsUnique = [...new Set(idsClean)];
@@ -3353,6 +3579,12 @@ async function buildClogRowsForRequisicaoIds(idsClean, dateStr) {
       itens,
       bobinas,
       {
+        reqId: r.id,
+        reqUserId: r.usuario_id,
+        armazemOrigemId: r.armazem_origem_id,
+        armazemDestinoId: r.armazem_id,
+        origemTipo: r.armazem_origem_tipo,
+        destinoTipo: r.armazem_destino_tipo,
         isDevolucao,
         isApeados:
           String(r.status || '') === 'APEADOS' &&
@@ -3361,13 +3593,28 @@ async function buildClogRowsForRequisicaoIds(idsClean, dateStr) {
         apeadoDestinoCodigo: String(r.devolucao_apeado_destino_codigo || '').trim(),
         apeadoDestinoLoc: recByApeadoId.get(Number(r.devolucao_apeado_destino_id)) || '',
         apeadosOrigemLoc: recByDestArm.get(r.armazem_id) || LOCALIZACAO_RECEBIMENTO_FALLBACK,
-        devolucaoDestinoLoc: recByDestArm.get(r.armazem_id) || LOCALIZACAO_RECEBIMENTO_FALLBACK
+        devolucaoDestinoLoc: recByDestArm.get(r.armazem_id) || LOCALIZACAO_RECEBIMENTO_FALLBACK,
+        destinoTipo: r.armazem_destino_tipo,
+        destinoTraLoc: recByDestArm.get(r.armazem_id) || localizacaoNormal
       }
     );
     allRows.push(...rows);
   }
 
-  return allRows;
+  if (opts?.withOverrides === false) return allRows;
+  return applyMovimentosOverrides(allRows);
+}
+
+async function persistMovimentosHistoricoForRequisicoes(ids) {
+  const idsClean = [...new Set((ids || []).map((x) => parseInt(x, 10)).filter(Boolean))];
+  if (!idsClean.length) return;
+  if (!(await movimentosHistoricoTableExists())) return;
+  const rows = await buildClogRowsForRequisicaoIds(
+    idsClean,
+    (r) => formatDateBR(new Date(r.tra_gerada_em || r.updated_at || r.created_at || Date.now())),
+    { withOverrides: false }
+  );
+  await upsertMovimentosHistorico(rows);
 }
 
 router.get('/movimentos-clog/consulta', ...requisicaoAuth, denyOperador, async (req, res) => {
@@ -3394,6 +3641,142 @@ router.get('/movimentos-clog/consulta', ...requisicaoAuth, denyOperador, async (
     const reqBatchSize = 200;
     const maxBatches = 25;
     const columns = ['Tipo de Movimento', 'Dt_Recepção', 'REF.', 'DESCRIPTION', 'QTY', 'Loc_Inicial', 'S/N', 'Lote', 'Novo Armazém', 'TRA / DEV', 'New Localização', 'DEP', 'Observações'];
+
+    // Histórico persistido (independente da tabela requisicoes) é a fonte primária quando existir.
+    if (await movimentosHistoricoTableExists()) {
+      const passesScopeHistorico = (row) => {
+        if (isAdmin(req.user?.role)) return true;
+        const allowed = Array.isArray(req.requisicaoArmazemOrigemIds) ? req.requisicaoArmazemOrigemIds : [];
+        if (allowed.length === 0) return false;
+        const origemId = Number(row?.armazem_origem_id);
+        const destinoId = Number(row?.armazem_id);
+        const origemTipo = String(row?.armazem_origem_tipo || '').toLowerCase();
+        const destinoTipo = String(row?.armazem_destino_tipo || '').toLowerCase();
+        if (isFluxoDevolucaoViaturaCentral(origemTipo, destinoTipo)) {
+          return Number.isFinite(destinoId) && allowed.includes(destinoId);
+        }
+        if (Number.isFinite(origemId)) return allowed.includes(origemId);
+        // Compatibilidade com snapshots antigos (sem metadados de escopo):
+        // não bloquear para evitar "sumir" após apagar a requisição original.
+        return true;
+      };
+
+      const passesRowFilter = (row) => {
+        const tipoOk = !tipoMovimento || String(row['Tipo de Movimento'] || '').toLowerCase().includes(tipoMovimento);
+        const refOk = !ref || String(row['REF.'] || '').toLowerCase().includes(ref);
+        const descOk = !description || String(row.DESCRIPTION || '').toLowerCase().includes(description);
+        const serialOk = !serial || String(row['S/N'] || '').toLowerCase().includes(serial);
+        const loteOk = !lote || String(row.Lote || '').toLowerCase().includes(lote);
+        const armOk = !armazem || String(row['Novo Armazém'] || '').toLowerCase().includes(armazem);
+        const locOk =
+          !localizacao ||
+          String(row.Loc_Inicial || '').toLowerCase().includes(localizacao) ||
+          String(row['New Localização'] || '').toLowerCase().includes(localizacao);
+        const traOk = !traNumero || String(row['TRA / DEV'] || '').toLowerCase().includes(traNumero);
+        const dtOk = (() => {
+          if (!dataInicio && !dataFim) return true;
+          const s = String(row['Dt_Recepção'] || '').trim();
+          const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(s);
+          if (!m) return false;
+          const iso = `${m[3]}-${m[2]}-${m[1]}`;
+          if (dataInicio && iso < dataInicio) return false;
+          if (dataFim && iso > dataFim) return false;
+          return true;
+        })();
+        const minhasOk = !apenasMinhas || Number(row?.usuario_id) === Number(req.user?.id);
+        const qOk =
+          !q ||
+          [
+            row['Tipo de Movimento'],
+            row['Dt_Recepção'],
+            row['REF.'],
+            row.DESCRIPTION,
+            row.QTY,
+            row.Loc_Inicial,
+            row['S/N'],
+            row.Lote,
+            row['Novo Armazém'],
+            row['TRA / DEV'],
+            row['New Localização'],
+            row.DEP,
+            row.Observações,
+          ].some((v) => String(v || '').toLowerCase().includes(q));
+        return Boolean(tipoOk && refOk && descOk && serialOk && loteOk && armOk && locOk && traOk && dtOk && minhasOk && qOk);
+      };
+
+      const outRows = [];
+      let histOffset = startOffset;
+      let reachedEnd = false;
+      let batches = 0;
+      const histBatchSize = 1200;
+      while (outRows.length < pageSize && !reachedEnd && batches < maxBatches) {
+        const hr = await pool.query(
+          `SELECT row_data
+           FROM requisicoes_movimentos_historico
+           ORDER BY id DESC
+           LIMIT $1 OFFSET $2`,
+          [histBatchSize, histOffset]
+        );
+        const batch = Array.isArray(hr.rows) ? hr.rows : [];
+        if (!batch.length) {
+          reachedEnd = true;
+          break;
+        }
+        const rawRows = batch
+          .map((x) => (x.row_data && typeof x.row_data === 'object' ? x.row_data : null))
+          .filter(Boolean);
+        const rows = await applyMovimentosOverrides(rawRows);
+        for (const row of rows) {
+          if (!passesScopeHistorico(row)) continue;
+          if (!passesRowFilter(row)) continue;
+          outRows.push(row);
+          if (outRows.length >= pageSize) break;
+        }
+        histOffset += batch.length;
+        if (batch.length < histBatchSize) reachedEnd = true;
+        batches += 1;
+      }
+
+      const parseDateBr = (v) => {
+        const s = String(v || '').trim();
+        const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(s);
+        if (!m) return 0;
+        const dt = new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1]));
+        return Number.isNaN(dt.getTime()) ? 0 : dt.getTime();
+      };
+      outRows.sort((a, b) => {
+        const dA = parseDateBr(a['Dt_Recepção']);
+        const dB = parseDateBr(b['Dt_Recepção']);
+        if (dA !== dB) return dB - dA;
+        const traA = String(a['TRA / DEV'] || '');
+        const traB = String(b['TRA / DEV'] || '');
+        const traCmp = traB.localeCompare(traA);
+        if (traCmp !== 0) return traCmp;
+        const refA = String(a['REF.'] || '');
+        const refB = String(b['REF.'] || '');
+        const refCmp = refA.localeCompare(refB);
+        if (refCmp !== 0) return refCmp;
+        const ordA = Number(a.__ordem_movimento || 9);
+        const ordB = Number(b.__ordem_movimento || 9);
+        return ordA - ordB;
+      });
+      const outRowsClean = outRows.map(
+        ({ __ordem_movimento, mov_id, requisicao_id, usuario_id, armazem_origem_id, armazem_id, armazem_origem_tipo, armazem_destino_tipo, ...rest }) => ({
+          ...rest,
+          mov_id,
+          requisicao_id,
+        })
+      );
+      const nextOffset = reachedEnd || outRows.length < pageSize ? null : histOffset;
+      return res.json({
+        columns,
+        rows: outRowsClean,
+        total: outRowsClean.length,
+        offset: startOffset,
+        next_offset: nextOffset,
+        has_more: nextOffset !== null,
+      });
+    }
 
     const where = [];
     const params = [];
@@ -3516,8 +3899,25 @@ router.get('/movimentos-clog/consulta', ...requisicaoAuth, denyOperador, async (
         ])
       );
 
-      let rows = await buildClogRowsForRequisicaoIds(ids, (r) => dateById.get(Number(r?.id)) || formatDateBR(new Date()));
-      rows = (rows || []).map((r) => ({ ...r, Observações: '' }));
+      const histRows = await fetchMovimentosHistoricoByReqIds(ids);
+      const histReqIds = new Set(histRows.map((x) => Number(x.requisicao_id)).filter(Number.isFinite));
+      const missingIds = ids.filter((rid) => !histReqIds.has(Number(rid)));
+
+      let rowsMissing = [];
+      if (missingIds.length > 0) {
+        rowsMissing = await buildClogRowsForRequisicaoIds(
+          missingIds,
+          (r) => dateById.get(Number(r?.id)) || formatDateBR(new Date()),
+          { withOverrides: false }
+        );
+        await upsertMovimentosHistorico(rowsMissing);
+      }
+
+      let rows = [...histRows, ...rowsMissing];
+      rows = (await applyMovimentosOverrides(rows)).map((r) => ({
+        ...r,
+        Observações: r?.Observações == null ? '' : r.Observações
+      }));
       for (const row of rows) {
         if (!passesRowFilter(row)) continue;
         outRows.push(row);
@@ -3566,6 +3966,138 @@ router.get('/movimentos-clog/consulta', ...requisicaoAuth, denyOperador, async (
   } catch (error) {
     console.error('Erro ao consultar movimentos Clog:', error);
     return res.status(500).json({ error: 'Erro ao consultar movimentos', details: error.message });
+  }
+});
+
+router.patch('/movimentos-clog/linha', ...requisicaoAuth, denyOperador, async (req, res) => {
+  try {
+    if (!isAdmin(req.user?.role)) {
+      return res.status(403).json({ error: 'Apenas admin pode editar linhas de movimento.' });
+    }
+    if (!(await movimentosOverridesTableExists())) {
+      return res.status(503).json({
+        error: 'Tabela de overrides de movimentos em falta.',
+        details: 'Execute: npm run db:migrate:requisicoes-movimentos-overrides'
+      });
+    }
+    const movId = String(req.body?.mov_id || '').trim();
+    const patchIn = req.body?.patch;
+    if (!movId) return res.status(400).json({ error: 'mov_id é obrigatório.' });
+    if (!patchIn || typeof patchIn !== 'object' || Array.isArray(patchIn)) {
+      return res.status(400).json({ error: 'patch inválido.' });
+    }
+    const allowed = new Set([
+      'Tipo de Movimento', 'Dt_Recepção', 'REF.', 'DESCRIPTION', 'QTY', 'Loc_Inicial', 'S/N',
+      'Lote', 'Novo Armazém', 'TRA / DEV', 'New Localização', 'DEP', 'Observações'
+    ]);
+    const cleanPatch = {};
+    for (const [k, v] of Object.entries(patchIn)) {
+      if (!allowed.has(k)) continue;
+      cleanPatch[k] = v == null ? '' : v;
+    }
+    await pool.query(
+      `INSERT INTO requisicoes_movimentos_overrides (mov_key, patch, deleted, updated_by, updated_at)
+       VALUES ($1, $2::jsonb, false, $3, CURRENT_TIMESTAMP)
+       ON CONFLICT (mov_key)
+       DO UPDATE SET
+         patch = COALESCE(requisicoes_movimentos_overrides.patch, '{}'::jsonb) || EXCLUDED.patch,
+         deleted = false,
+         updated_by = EXCLUDED.updated_by,
+         updated_at = CURRENT_TIMESTAMP`,
+      [movId, JSON.stringify(cleanPatch), req.user?.id || null]
+    );
+    return res.json({ ok: true });
+  } catch (error) {
+    return res.status(500).json({ error: 'Erro ao editar linha de movimento', details: error.message });
+  }
+});
+
+router.delete('/movimentos-clog/linha', ...requisicaoAuth, denyOperador, async (req, res) => {
+  try {
+    if (!isAdmin(req.user?.role)) {
+      return res.status(403).json({ error: 'Apenas admin pode apagar linhas de movimento.' });
+    }
+    if (!(await movimentosOverridesTableExists())) {
+      return res.status(503).json({
+        error: 'Tabela de overrides de movimentos em falta.',
+        details: 'Execute: npm run db:migrate:requisicoes-movimentos-overrides'
+      });
+    }
+    const movId = String(req.body?.mov_id || '').trim();
+    if (!movId) return res.status(400).json({ error: 'mov_id é obrigatório.' });
+    await pool.query(
+      `INSERT INTO requisicoes_movimentos_overrides (mov_key, patch, deleted, updated_by, updated_at)
+       VALUES ($1, '{}'::jsonb, true, $2, CURRENT_TIMESTAMP)
+       ON CONFLICT (mov_key)
+       DO UPDATE SET
+         deleted = true,
+         updated_by = EXCLUDED.updated_by,
+         updated_at = CURRENT_TIMESTAMP`,
+      [movId, req.user?.id || null]
+    );
+    return res.json({ ok: true });
+  } catch (error) {
+    return res.status(500).json({ error: 'Erro ao apagar linha de movimento', details: error.message });
+  }
+});
+
+router.post('/movimentos-clog/backfill-historico', ...requisicaoAuth, denyOperador, async (req, res) => {
+  try {
+    if (!isAdmin(req.user?.role)) {
+      return res.status(403).json({ error: 'Apenas admin pode executar backfill de movimentos.' });
+    }
+    if (!(await movimentosHistoricoTableExists())) {
+      return res.status(503).json({
+        error: 'Tabela de histórico de movimentos em falta.',
+        details: 'Execute: npm run db:migrate:requisicoes-movimentos-historico'
+      });
+    }
+
+    const mesesRaw = parseInt(String(req.body?.meses || '12'), 10);
+    const meses = Number.isFinite(mesesRaw) ? Math.max(1, Math.min(mesesRaw, 24)) : 12;
+    const batchSize = 400;
+    let offset = 0;
+    let totalReq = 0;
+    let lotes = 0;
+
+    while (true) {
+      const r = await pool.query(
+        `
+        SELECT r.id
+        FROM requisicoes r
+        WHERE COALESCE(r.tra_numero, '') <> ''
+          AND (
+            r.status = 'FINALIZADO'
+            OR (r.status = 'Entregue' AND (r.tra_gerada_em IS NOT NULL OR r.devolucao_tra_gerada_em IS NOT NULL))
+            OR (
+              r.status = 'APEADOS'
+              AND r.devolucao_tra_gerada_em IS NOT NULL
+              AND r.devolucao_tra_apeados_gerada_em IS NOT NULL
+              AND COALESCE(TRIM(r.devolucao_tra_apeados_numero), '') <> ''
+            )
+          )
+          AND COALESCE(r.tra_gerada_em, r.updated_at, r.created_at) >= (CURRENT_TIMESTAMP - ($1::int * INTERVAL '1 month'))
+        ORDER BY r.id DESC
+        LIMIT $2 OFFSET $3
+        `,
+        [meses, batchSize, offset]
+      );
+      const ids = (r.rows || []).map((x) => Number(x.id)).filter(Number.isFinite);
+      if (!ids.length) break;
+      await persistMovimentosHistoricoForRequisicoes(ids);
+      totalReq += ids.length;
+      lotes += 1;
+      offset += batchSize;
+    }
+
+    return res.json({
+      ok: true,
+      meses,
+      requisicoes_processadas: totalReq,
+      lotes
+    });
+  } catch (error) {
+    return res.status(500).json({ error: 'Erro no backfill do histórico de movimentos', details: error.message });
   }
 });
 
@@ -3681,6 +4213,11 @@ async function buildClogRowsFromRequisicao(requisicao, dateStr) {
     itensComFerramenta,
     bobinas,
     {
+      reqId: requisicao.id,
+      reqUserId: requisicao.usuario_id,
+      armazemOrigemId: requisicao.armazem_origem_id,
+      armazemDestinoId: requisicao.armazem_id,
+      origemTipo: requisicao.armazem_origem_tipo,
       isDevolucao: fluxoDevolucao,
       isApeados:
         String(requisicao?.status || '') === 'APEADOS' &&
@@ -3689,11 +4226,12 @@ async function buildClogRowsFromRequisicao(requisicao, dateStr) {
       apeadoDestinoCodigo: apeadoDestinoCodigoClog,
       apeadoDestinoLoc: apeadoDestinoLocClog,
       apeadosOrigemLoc: localizacaoRecebimentoDestino || LOCALIZACAO_RECEBIMENTO_FALLBACK,
-      devolucaoDestinoLoc: localizacaoRecebimentoDestino || LOCALIZACAO_RECEBIMENTO_FALLBACK
+      devolucaoDestinoLoc: localizacaoRecebimentoDestino || LOCALIZACAO_RECEBIMENTO_FALLBACK,
+      destinoTipo: requisicao.armazem_destino_tipo,
+      destinoTraLoc: localizacaoRecebimentoDestino || localizacaoNormal
     }
   );
-
-  return { rows, eligible: true };
+  return { rows: await applyMovimentosOverrides(rows), eligible: true };
 }
 
 router.get('/:id/export-clog', ...requisicaoAuth, denyOperador, async (req, res) => {
@@ -4509,6 +5047,9 @@ router.post('/', ...requisicaoAuth, denyOperador, async (req, res) => {
     res.status(201).json(requisicao);
   } catch (error) {
     await client.query('ROLLBACK');
+    if (error.isStockPrepBiz) {
+      return res.status(error.status).json(error.payload);
+    }
     console.error('Erro ao criar requisição:', error);
     res.status(500).json({ error: 'Erro ao criar requisição', details: error.message });
   } finally {
@@ -4620,6 +5161,93 @@ router.post(
       return { normalizedText, tokenSet };
     };
 
+    const looksLikeEpiSheet = (sheet) => {
+      const { normalizedText } = scanTextSnapshot(sheet);
+      if (!normalizedText) return false;
+      const hasEpiTitle =
+        normalizedText.includes(' distribuicao de epi ') ||
+        normalizedText.includes(' distribuicao epi ');
+      const hasDecl =
+        normalizedText.includes(' declaracao ') ||
+        normalizedText.includes(' equipamentos de protecao individual ');
+      const hasColaborador = normalizedText.includes(' colaborador ');
+      return hasEpiTitle || (hasDecl && hasColaborador);
+    };
+
+    const extractEpiMetadata = (sheet) => {
+      const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false, defval: '' });
+      if (!Array.isArray(rows) || rows.length === 0) {
+        return { colaboradorNome: '', colaboradorNumero: '' };
+      }
+
+      const get = (r, c) => String((rows[r] && rows[r][c]) || '').trim();
+      let colaboradorNome = '';
+      let colaboradorNumero = '';
+
+      for (let r = 0; r < rows.length; r++) {
+        const row = Array.isArray(rows[r]) ? rows[r] : [];
+        const normalizedCells = row.map((v) => normalizeText(v));
+        for (let c = 0; c < row.length; c++) {
+          const cellNorm = normalizedCells[c] || '';
+          if (!colaboradorNome && (cellNorm.includes('colaborador') || cellNorm.includes('colaborador(a)'))) {
+            const maybeName = get(r, c + 2) || get(r, c + 1);
+            if (maybeName) colaboradorNome = maybeName;
+          }
+          if (!colaboradorNumero && (cellNorm.includes('nr. colab') || cellNorm === 'nr' || cellNorm.includes('numero colab'))) {
+            const maybeNr = get(r, c + 1) || get(r + 1, c) || get(r + 1, c + 1);
+            if (maybeNr) colaboradorNumero = maybeNr;
+          }
+        }
+      }
+
+      return { colaboradorNome, colaboradorNumero };
+    };
+
+    const resolveEpiDestinoVinculado = async (armazemOrigemIdValue) => {
+      const origemArm = await pool.query(
+        `SELECT id, LOWER(TRIM(COALESCE(tipo, ''))) AS tipo
+         FROM armazens
+         WHERE id = $1 AND ativo = true`,
+        [armazemOrigemIdValue]
+      );
+      if (origemArm.rows.length === 0) {
+        throw new Error('Armazém de origem não encontrado ou inativo.');
+      }
+      if (origemArm.rows[0].tipo !== 'central') {
+        throw new Error('Para importação de EPI, o armazém de origem selecionado deve ser do tipo central.');
+      }
+
+      let destinos;
+      try {
+        destinos = await pool.query(
+          `SELECT id, tipo
+           FROM armazens
+           WHERE ativo = true
+             AND LOWER(TRIM(COALESCE(tipo, ''))) = 'epi'
+             AND armazem_central_vinculado_id = $1
+           ORDER BY id ASC`,
+          [armazemOrigemIdValue]
+        );
+      } catch (e) {
+        if (e.code === '42703') {
+          throw new Error(
+            'A base de dados não suporta vínculo central para EPI. Execute: npm run db:migrate:armazens-vinculo-central'
+          );
+        }
+        throw e;
+      }
+
+      if (destinos.rows.length === 0) {
+        throw new Error('Não existe armazém EPI ativo vinculado ao armazém central de origem selecionado.');
+      }
+      if (destinos.rows.length > 1) {
+        throw new Error(
+          'Existem múltiplos armazéns EPI vinculados a este central. Mantenha apenas um vínculo EPI por central para importar este modelo.'
+        );
+      }
+      return destinos.rows[0];
+    };
+
     const scanCodigoArmazemFromWarehouseColumn = (sheet) => {
       const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false, defval: '' });
       if (!Array.isArray(rows) || rows.length === 0) return null;
@@ -4712,6 +5340,7 @@ router.post(
       let headerRowNumber = null;
       let colArtigo = null;
       let colQuantidade = null;
+      let colRisco = null;
 
       for (let R = range.s.r; R <= range.e.r; R++) {
         let hasArtigo = false;
@@ -4719,6 +5348,7 @@ router.post(
         let hasDescricao = false;
         let detectedColArtigo = null;
         let detectedColQtd = null;
+        let detectedColRisco = null;
 
         for (let C = range.s.c; C <= range.e.c; C++) {
           const cellAddr = XLSX.utils.encode_cell({ r: R, c: C });
@@ -4730,12 +5360,15 @@ router.post(
             hasArtigo = true;
             detectedColArtigo = C;
           }
-          if (text === 'quantidade') {
+          if (text === 'quantidade' || text === 'qtd' || text === 'qtde') {
             hasQuantidade = true;
             detectedColQtd = C;
           }
           if (text.includes('descr')) {
             hasDescricao = true;
+          }
+          if (text.includes('risco')) {
+            detectedColRisco = C;
           }
         }
 
@@ -4743,6 +5376,7 @@ router.post(
           headerRowNumber = R;
           colArtigo = detectedColArtigo;
           colQuantidade = detectedColQtd;
+          colRisco = detectedColRisco;
           break;
         }
       }
@@ -4756,16 +5390,22 @@ router.post(
 
       // Ler linhas de itens
       const quantidadePorCodigo = new Map();
+      const riscoPorCodigo = new Map();
       for (let R = headerRowNumber + 1; R <= range.e.r; R++) {
         const cellArtigo = sheet[XLSX.utils.encode_cell({ r: R, c: colArtigo })];
         const cellQtd = sheet[XLSX.utils.encode_cell({ r: R, c: colQuantidade })];
+        const cellRisco = colRisco != null ? sheet[XLSX.utils.encode_cell({ r: R, c: colRisco })] : null;
         const codigo = cellArtigo && cellArtigo.v != null ? String(cellArtigo.v).trim() : '';
         const qtdStr = cellQtd && cellQtd.v != null ? String(cellQtd.v).trim() : '';
+        const riscoStr = cellRisco && cellRisco.v != null ? String(cellRisco.v).trim() : '';
         if (!codigo || !qtdStr) continue;
 
-        const quantidade = parseInt(qtdStr, 10);
+        const quantidade = parseInt(String(qtdStr).replace(',', '.'), 10);
         if (!quantidade || quantidade <= 0) continue;
         quantidadePorCodigo.set(codigo, quantidade);
+        if (riscoStr) {
+          riscoPorCodigo.set(codigo, riscoStr);
+        }
       }
 
       const codigosUnicos = [...quantidadePorCodigo.keys()];
@@ -4773,7 +5413,7 @@ router.post(
         return { itens: [] };
       }
 
-      return { quantidadePorCodigo, codigosUnicos };
+      return { quantidadePorCodigo, codigosUnicos, riscoPorCodigo };
     };
 
     const criarRequisicao = async ({
@@ -4783,6 +5423,10 @@ router.post(
       armazemDestinoId,
       observacoes
     }) => {
+      await validarVinculoTransferenciaCentral(client, {
+        armazemOrigemId: armazemOrigemIdReq,
+        armazemDestinoId,
+      });
       const reqResult = await client.query(
         `
           INSERT INTO requisicoes (armazem_origem_id, armazem_id, observacoes, usuario_id, status)
@@ -4796,16 +5440,60 @@ router.post(
 
       const itemIds = itens.map((i) => i.item_id);
       const quantidades = itens.map((i) => i.quantidade);
-      await client.query(
-        `
-          INSERT INTO requisicoes_itens (requisicao_id, item_id, quantidade)
-          SELECT $1::int, x.item_id, x.quantidade
-          FROM unnest($2::int[], $3::int[]) AS x(item_id, quantidade)
-          ON CONFLICT (requisicao_id, item_id)
-          DO UPDATE SET quantidade = EXCLUDED.quantidade
-        `,
-        [requisicaoId, itemIds, quantidades]
-      );
+      const observacoesItens = itens.map((i) => String(i?.observacoes || '').trim() || null);
+      const hasObsItens = observacoesItens.some(Boolean);
+      if (hasObsItens) {
+        await client.query('SAVEPOINT sp_requisicoes_itens_obs');
+        try {
+          await client.query(
+            `
+              INSERT INTO requisicoes_itens (requisicao_id, item_id, quantidade, observacoes)
+              SELECT
+                $1::int,
+                x.item_id,
+                x.quantidade,
+                NULLIF(TRIM(COALESCE(x.observacoes, '')), '')
+              FROM unnest($2::int[], $3::int[], $4::text[]) AS x(item_id, quantidade, observacoes)
+              ON CONFLICT (requisicao_id, item_id)
+              DO UPDATE SET
+                quantidade = EXCLUDED.quantidade,
+                observacoes = COALESCE(EXCLUDED.observacoes, requisicoes_itens.observacoes)
+            `,
+            [requisicaoId, itemIds, quantidades, observacoesItens]
+          );
+          await client.query('RELEASE SAVEPOINT sp_requisicoes_itens_obs');
+        } catch (insObsErr) {
+          if (insObsErr.code === '42703') {
+            await client.query('ROLLBACK TO SAVEPOINT sp_requisicoes_itens_obs');
+            await client.query(
+              `
+                INSERT INTO requisicoes_itens (requisicao_id, item_id, quantidade)
+                SELECT $1::int, x.item_id, x.quantidade
+                FROM unnest($2::int[], $3::int[]) AS x(item_id, quantidade)
+                ON CONFLICT (requisicao_id, item_id)
+                DO UPDATE SET quantidade = EXCLUDED.quantidade
+              `,
+              [requisicaoId, itemIds, quantidades]
+            );
+            await client.query('RELEASE SAVEPOINT sp_requisicoes_itens_obs');
+          } else {
+            await client.query('ROLLBACK TO SAVEPOINT sp_requisicoes_itens_obs');
+            await client.query('RELEASE SAVEPOINT sp_requisicoes_itens_obs');
+            throw insObsErr;
+          }
+        }
+      } else {
+        await client.query(
+          `
+            INSERT INTO requisicoes_itens (requisicao_id, item_id, quantidade)
+            SELECT $1::int, x.item_id, x.quantidade
+            FROM unnest($2::int[], $3::int[]) AS x(item_id, quantidade)
+            ON CONFLICT (requisicao_id, item_id)
+            DO UPDATE SET quantidade = EXCLUDED.quantidade
+          `,
+          [requisicaoId, itemIds, quantidades]
+        );
+      }
 
       return requisicaoId;
     };
@@ -4841,10 +5529,20 @@ router.post(
         return { itens };
       }
 
-      // Página 1 (requisição): reconhecer destino por Vxxx (viaturas) e também por código/descrição de central.
-      const armazemDestino = await resolveArmazemDestinoFromSheet(sheet);
+      // Página 1 (requisição): modelo normal (TRFL/TRA) ou modelo EPI (destino vinculado ao central escolhido).
+      const isEpiImport = looksLikeEpiSheet(sheet);
+      let armazemDestino;
+      if (isEpiImport) {
+        armazemDestino = await resolveEpiDestinoVinculado(armazemOrigemId);
+      } else {
+        armazemDestino = await resolveArmazemDestinoFromSheet(sheet);
+      }
       if (!armazemDestino) {
-        throw new Error('Não foi possível identificar o armazém destino no Excel (código/descrição de central ou Vxxx).');
+        throw new Error(
+          isEpiImport
+            ? 'Não foi possível resolver o armazém EPI vinculado ao central selecionado.'
+            : 'Não foi possível identificar o armazém destino no Excel (código/descrição de central ou Vxxx).'
+        );
       }
 
       const armazemDestinoId = armazemDestino.id;
@@ -4859,7 +5557,7 @@ router.post(
         return { itens: [], armazemDestinoId, armazemDestinoTipo };
       }
 
-      const { quantidadePorCodigo, codigosUnicos } = parsed;
+      const { quantidadePorCodigo, codigosUnicos, riscoPorCodigo } = parsed;
       if (!codigosUnicos || codigosUnicos.length === 0) {
         return { itens: [], armazemDestinoId, armazemDestinoTipo };
       }
@@ -4874,10 +5572,22 @@ router.post(
       for (const codigo of codigosUnicos) {
         const itemId = idPorCodigo.get(codigo);
         if (itemId == null) continue;
-        itens.push({ item_id: itemId, quantidade: quantidadePorCodigo.get(codigo) });
+        const risco = (riscoPorCodigo && riscoPorCodigo.get(codigo)) || '';
+        itens.push({
+          item_id: itemId,
+          quantidade: quantidadePorCodigo.get(codigo),
+          observacoes: isEpiImport && risco ? `Risco associado: ${risco}` : null,
+        });
       }
 
-      return { itens, armazemDestinoId, armazemDestinoTipo };
+      const epiMeta = isEpiImport ? extractEpiMetadata(sheet) : null;
+      return {
+        itens,
+        armazemDestinoId,
+        armazemDestinoTipo,
+        isEpiImport,
+        epiMeta
+      };
     };
 
     let parsedReq = null;
@@ -4901,7 +5611,15 @@ router.post(
         itens: parsedReq.itens,
         armazemOrigemIdReq: armazemOrigemId,
         armazemDestinoId: parsedReq.armazemDestinoId,
-        observacoes: 'Importada de Excel (página 1)'
+        observacoes:
+          parsedReq.isEpiImport
+            ? [
+                'Importada de Excel (EPI)',
+                parsedReq.epiMeta?.colaboradorNome ? `Colaborador: ${parsedReq.epiMeta.colaboradorNome}` : null,
+                parsedReq.epiMeta?.colaboradorNumero ? `Nr. Colab.: ${parsedReq.epiMeta.colaboradorNumero}` : null,
+                `Declaração: ${EPI_DISCLAIMER_PADRAO}`
+              ].filter(Boolean).join(' | ')
+            : 'Importada de Excel (página 1)'
       });
 
       // Criar devolução (página 2) apenas se houver artigos listados
@@ -6021,6 +6739,11 @@ router.patch('/:id/finalizar', ...requisicaoAuth, denyOperador, async (req, res)
     }
 
     await pool.query('UPDATE requisicoes SET status = $1 WHERE id = $2', ['FINALIZADO', id]);
+    try {
+      await persistMovimentosHistoricoForRequisicoes([id]);
+    } catch (e) {
+      console.warn('[movimentos_historico] falha ao persistir snapshot no finalizar:', e.message);
+    }
     res.json({ ok: true, id: parseInt(id, 10), status: 'FINALIZADO' });
   } catch (error) {
     console.error('Erro ao finalizar requisição:', error);
@@ -6786,6 +7509,11 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
            WHERE id = $1`,
           [reqId]
         );
+        try {
+          await persistMovimentosHistoricoForRequisicoes([reqId]);
+        } catch (eh) {
+          console.warn('[movimentos_historico] falha ao persistir snapshot no finalizar recebimento:', eh.message);
+        }
         const updated = await getRequisicaoComItens(reqId);
         return res.json(updated);
       } catch (e) {
@@ -6823,6 +7551,25 @@ router.delete('/:id', ...requisicaoAuth, denyOperador, async (req, res) => {
       return res.status(403).json({
         error: 'A exclusão de requisições em separação, separadas, em expedição ou entregues é permitida apenas para ADMIN.'
       });
+    }
+
+    // Garantir snapshot no histórico antes de apagar.
+    try {
+      await ensureMovimentosHistoricoDetachedSchema();
+      await persistMovimentosHistoricoForRequisicoes([Number(id)]);
+    } catch (eh) {
+      console.warn('[movimentos_historico] falha ao persistir snapshot no delete:', eh.message);
+    }
+    try {
+      // Se a coluna já estiver nullable, desprende do FK antes do DELETE.
+      await pool.query(
+        `UPDATE requisicoes_movimentos_historico
+         SET requisicao_id = NULL, updated_at = CURRENT_TIMESTAMP
+         WHERE requisicao_id = $1`,
+        [id]
+      );
+    } catch (ed) {
+      console.warn('[movimentos_historico] falha ao desprender requisicao_id no delete:', ed.message);
     }
 
     // Deletar requisição (itens serão deletados automaticamente por CASCADE)

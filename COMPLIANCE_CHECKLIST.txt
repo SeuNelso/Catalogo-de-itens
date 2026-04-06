@@ -1,0 +1,71 @@
+CHECKLIST DE BLINDAGEM - OPERACAO INTERNA
+=========================================
+
+Projeto: Catalogo de Itens
+Data: ____/____/____
+Responsavel tecnico: ______________________
+Responsavel juridico/DPO: _________________
+
+1) JURIDICO E LGPD
+------------------
+[ ] Base legal definida para cada tipo de dado tratado
+[ ] Inventario de tratamento concluido por modulo/rota
+[ ] Politica de retencao e descarte aprovada
+[ ] Processo de atendimento ao titular documentado
+[ ] Fluxo de incidente e notificacao aprovado
+[ ] DPA/termos com provedores assinados/aceitos
+
+2) LICENCAS E PROPRIEDADE INTELECTUAL
+-------------------------------------
+[ ] COPYRIGHT.txt revisado com titularidade oficial
+[ ] THIRD_PARTY_NOTICES.txt atualizado
+[ ] Inventario de licencas gerado e arquivado
+[ ] Dependencias novas revisadas por compliance
+
+3) SEGREDOS E ACESSO
+--------------------
+[ ] Credenciais apenas em variaveis de ambiente/secret manager
+[ ] Chaves expostas historicamente foram rotacionadas
+[ ] Ambientes dev/hml/prod isolados por credenciais
+[ ] MFA habilitado em contas administrativas
+[ ] Menor privilegio aplicado em banco e storage
+
+4) SEGURANCA DA APLICACAO
+-------------------------
+[ ] CORS restrito em producao
+[ ] Headers de seguranca ativos
+[ ] Rate limit em endpoints criticos
+[ ] Revisao de autorizacao por perfil concluida
+[ ] Logs sem dados sensiveis
+
+5) BANCO E CONTINUIDADE
+-----------------------
+[ ] Backup automatico configurado
+[ ] Teste de restauracao validado no periodo
+[ ] RPO e RTO definidos
+[ ] Procedimento de desastre documentado
+[ ] Auditoria de permissoes SQL concluida
+
+6) INFRA E OPERACAO
+-------------------
+[ ] Monitoramento de uptime, erro e latencia ativo
+[ ] Alertas e responsaveis de plantao definidos
+[ ] Procedimento de deploy e rollback formalizado
+[ ] Trilha de auditoria de alteracoes ativa
+
+7) EVIDENCIAS
+-------------
+[ ] Pacote trimestral de evidencias montado
+[ ] RACI de responsaveis aprovado
+[ ] Aprovacao final TI + Juridico + Seguranca registrada
+
+STATUS FINAL
+------------
+[ ] APROVADO PARA PRODUCAO INTERNA
+[ ] APROVADO COM RESSALVAS
+[ ] REPROVADO
+
+Observacoes:
+__________________________________________________________
+__________________________________________________________
+__________________________________________________________

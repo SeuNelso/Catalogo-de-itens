@@ -1,0 +1,20 @@
+THIRD PARTY NOTICES
+===================
+
+Este projeto utiliza dependencias de terceiros distribuidas via npm no backend e frontend.
+As licencas dessas dependencias estao refletidas principalmente em:
+
+- package-lock.json
+- client/package-lock.json
+
+Licenca do projeto:
+- MIT (ver package.json)
+
+Observacoes de compliance:
+- O uso interno deve respeitar os termos das bibliotecas de terceiros.
+- Em caso de distribuicao para terceiros, reavaliar obrigacoes de notices e copyleft.
+- Manter este arquivo atualizado sempre que novas dependencias forem adicionadas.
+
+Inventario de licencas:
+- Comando: npm run compliance:licenses
+- Saida gerada: THIRD_PARTY_LICENSE_INVENTORY.csv

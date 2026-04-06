@@ -16,6 +16,17 @@ export const NOTA_DEVOLUCAO_PDF_OPTS = Object.freeze({
 
 const MARGIN = 40;
 
+function extrairColaboradorDeObservacoesReq(req) {
+  const obs = String(req?.observacoes || '');
+  if (!obs) return { nome: '', numero: '' };
+  const nomeMatch = /(?:^|\|)\s*Colaborador:\s*([^|]+)/i.exec(obs);
+  const numeroMatch = /(?:^|\|)\s*Nr\.?\s*Colab\.?:\s*([^|]+)/i.exec(obs);
+  return {
+    nome: String(nomeMatch?.[1] || '').trim(),
+    numero: String(numeroMatch?.[1] || '').trim(),
+  };
+}
+
 function textoObservacaoItem(it) {
   const v = it.observacoes ?? it.observacao ?? it.obs ?? '';
   return String(v ?? '').trim();
@@ -30,7 +41,25 @@ function serialsNormalizadosList(value) {
 
 function quantidadeComoDigitada(value) {
   if (value == null) return '';
-  return String(value).trim();
+  const raw = String(value).trim();
+  if (!raw) return '';
+
+  // Evita exibir sufixo automático ".000" em itens por metros.
+  // Ex.: "2068.000" -> "2068", "2068.500" -> "2068.5".
+  if (/^-?\d+(?:\.\d+)?$/.test(raw)) {
+    return raw
+      .replace(/(\.\d*?[1-9])0+$/, '$1')
+      .replace(/\.0+$/, '');
+  }
+
+  // Também suporta valores com vírgula decimal.
+  if (/^-?\d+(?:,\d+)?$/.test(raw)) {
+    return raw
+      .replace(/(,\d*?[1-9])0+$/, '$1')
+      .replace(/,0+$/, '');
+  }
+
+  return raw;
 }
 
 export function buildLinhasProdutoTableBody(req) {
@@ -199,7 +228,17 @@ export function desenharPaginaNotaEntregaDigi(doc, req, opts = {}) {
   doc.text(`${rotuloDataNota} ${dataStr}`, pageWidth / 2 + 6, y);
   y += 14;
   doc.text(`Separado por: ${formatSeparadorRequisicao(req)}`, MARGIN, y);
-  y += 18;
+  y += 14;
+  const colaboradorReq = extrairColaboradorDeObservacoesReq(req);
+  if (colaboradorReq.nome) {
+    doc.text(`Colaborador: ${colaboradorReq.nome}`, MARGIN, y);
+    y += 14;
+  }
+  if (colaboradorReq.numero) {
+    doc.text(`Nr. Colab.: ${colaboradorReq.numero}`, MARGIN, y);
+    y += 14;
+  }
+  y += 4;
 
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(10);

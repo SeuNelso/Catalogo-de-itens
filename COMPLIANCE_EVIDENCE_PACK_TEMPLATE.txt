@@ -1,0 +1,43 @@
+PACOTE TRIMESTRAL DE EVIDENCIAS - TEMPLATE
+==========================================
+
+Periodo de referencia: __________________________
+Data de fechamento: _____________________________
+Responsavel pela consolidacao: __________________
+
+1. INVENTARIO DE DADOS E TRATAMENTO
+- Arquivo anexado: LGPD_DATA_INVENTORY_TEMPLATE.csv (versao preenchida)
+- Responsavel: __________________
+- Data: __________________
+
+2. INVENTARIO DE LICENCAS OSS
+- Arquivo anexado: THIRD_PARTY_LICENSE_INVENTORY.csv
+- Comando executado: npm run compliance:licenses
+- Responsavel: __________________
+- Data: __________________
+
+3. VERIFICACAO DE SEGREDOS
+- Evidencia de execucao: npm run compliance:secrets
+- Resultado: aprovado / reprovado
+- Acoes corretivas (se houver):
+  ______________________________________________
+
+4. BACKUP E RESTORE
+- Backup automatizado ativo: sim / nao
+- Ultimo teste de restore:
+- Evidencia (link/caminho):
+
+5. INCIDENTES E TRATATIVAS
+- Incidentes no periodo: sim / nao
+- Referencia dos registros:
+- Acao preventiva implementada:
+
+6. ACESSOS PRIVILEGIADOS
+- Revisao de acessos realizada: sim / nao
+- Perfis ajustados:
+- Aprovador:
+
+7. APROVACAO
+- TI: __________________  Data: ___/___/____
+- Seguranca da Informacao: __________________  Data: ___/___/____
+- Juridico/DPO: __________________  Data: ___/___/____
