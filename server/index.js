@@ -5922,10 +5922,19 @@ app.post('/api/armazens', authenticateToken, async (req, res) => {
       `, [codigoNorm, descricaoTrim, (locsWithTipo[0] && locsWithTipo[0].localizacao) || null, tipoArmazem, armazemCentralVinculadoId]);
     } catch (insertError) {
       if (insertError.code === '42703') {
-        if (armazemCentralVinculadoId) {
+        const missingColMsg = String(insertError.message || '').toLowerCase();
+        const missingVinculoCol = missingColMsg.includes('armazem_central_vinculado_id');
+        const missingTipoCol = missingColMsg.includes('tipo');
+        if (armazemCentralVinculadoId && missingVinculoCol) {
           return res.status(503).json({
             error: 'A base de dados não suporta vínculo central para APEADO/EPI.',
             details: 'Execute a migração: server/migrate-armazens-vinculo-central.sql'
+          });
+        }
+        if (missingTipoCol) {
+          return res.status(503).json({
+            error: 'A base de dados não suporta tipos de armazém (central/viatura/APEADO/EPI).',
+            details: 'Execute a migração: server/migrate-armazens-tipo-central-viatura.sql'
           });
         }
         try {
@@ -6213,12 +6222,21 @@ app.put('/api/armazens/:id', authenticateToken, async (req, res) => {
         `, params);
       } catch (updE) {
         if (updE.code === '42703' && (tipoIdx !== -1 || armCentralIdx !== -1)) {
+          const missingColMsg = String(updE.message || '').toLowerCase();
+          const missingVinculoCol = missingColMsg.includes('armazem_central_vinculado_id');
+          const missingTipoCol = missingColMsg.includes('tipo');
           const cleanUpdates = updates.filter((_, i) => i !== tipoIdx && i !== armCentralIdx);
           const cleanParams = params.slice(0, -1).filter((_, i) => i !== tipoIdx && i !== armCentralIdx);
-          if (armCentralIdx !== -1) {
+          if (armCentralIdx !== -1 && missingVinculoCol) {
             return res.status(503).json({
               error: 'A base de dados não suporta vínculo central para APEADO/EPI.',
               details: 'Execute a migração: server/migrate-armazens-vinculo-central.sql'
+            });
+          }
+          if (tipoIdx !== -1 && missingTipoCol) {
+            return res.status(503).json({
+              error: 'A base de dados não suporta tipos de armazém (central/viatura/APEADO/EPI).',
+              details: 'Execute a migração: server/migrate-armazens-tipo-central-viatura.sql'
             });
           }
           cleanParams.push(id);
