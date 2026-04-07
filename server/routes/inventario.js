@@ -79,8 +79,17 @@ function createInventarioRouter(deps = {}) {
   router.use(...requisicaoAuth);
 
   router.use((req, res, next) => {
+    const isContagemSemanalRoute = String(req.path || '').startsWith('/contagem-semanal');
+    if (isContagemSemanalRoute) {
+      // As permissões específicas da contagem semanal são validadas endpoint a endpoint
+      // (ex.: criar tarefa, listar apenas tarefas atribuídas/criadas, editar linha).
+      return next();
+    }
     const isAdminUser = isAdmin(req.user?.role);
-    if (!canAccessInventario(req.user?.role) || (!isAdminUser && req.user?.pode_controlo_stock !== true)) {
+    if (
+      !canAccessInventario(req.user?.role) ||
+      (!isAdminUser && req.user?.pode_controlo_stock !== true)
+    ) {
       return res.status(403).json({ error: 'Sem acesso ao módulo de inventário.' });
     }
     return next();
@@ -226,6 +235,27 @@ function createInventarioRouter(deps = {}) {
     } catch (e) {
       console.error('Erro no preview de contagem semanal:', e);
       return res.status(500).json({ error: 'Erro ao gerar preview da contagem semanal', details: e.message });
+    }
+  });
+
+  router.get('/contagem-semanal/armazens', async (req, res) => {
+    try {
+      const params = [];
+      let idx = 1;
+      const scopeSql = allowedArmazensClause(req, params, idx);
+      if (scopeSql.includes(`$${idx}`)) idx += 1;
+      const q = await pool.query(
+        `SELECT a.id, a.codigo, a.descricao
+         FROM armazens a
+         WHERE LOWER(TRIM(COALESCE(a.tipo, ''))) = 'central'
+           ${scopeSql}
+         ORDER BY a.codigo, a.descricao`,
+        params
+      );
+      return res.json(q.rows || []);
+    } catch (e) {
+      console.error('Erro ao listar armazéns da contagem semanal:', e);
+      return res.status(500).json({ error: 'Erro ao listar armazéns', details: e.message });
     }
   });
 

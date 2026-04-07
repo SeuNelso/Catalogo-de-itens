@@ -52,7 +52,7 @@ const ContagemSemanal = () => {
       try {
         setLoading(true);
         const [armazensRes, usersRes] = await Promise.all([
-          fetch('/api/inventario/armazens', { headers: { Authorization: `Bearer ${token}` } }),
+          fetch('/api/inventario/contagem-semanal/armazens', { headers: { Authorization: `Bearer ${token}` } }),
           fetch('/api/inventario/contagem-semanal/utilizadores', { headers: { Authorization: `Bearer ${token}` } }),
         ]);
         const armazensData = await armazensRes.json().catch(() => []);

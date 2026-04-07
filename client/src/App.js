@@ -295,7 +295,6 @@ function App() {
                   element={
                     <ProtectedRoute
                       allowedRoles={['admin', 'backoffice_armazem', 'supervisor_armazem', 'operador']}
-                      requireControloStock
                     >
                       <ContagemSemanal />
                     </ProtectedRoute>

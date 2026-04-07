@@ -46,6 +46,8 @@ const Navbar = () => {
   const podeStockMenu = user && podeUsarControloStock(user);
   const podeMovimentosMenu = user && podeUsarConsultaMovimentos(user);
   const podeInventarioMenu = user && podeAcederInventario(user.role) && podeUsarControloStock(user);
+  const podeContagemSemanalMenu = user && podeAcederInventario(user.role);
+  const canSeeClogMenu = Boolean(canSeeRequisicoes || podeContagemSemanalMenu || podeMovimentosMenu || podeStockMenu);
   const normalizeName = (v) =>
     String(v || '')
       .normalize('NFD')
@@ -248,7 +250,7 @@ const Navbar = () => {
                   Catálogo
                 </Link>
               </div>
-              {canSeeRequisicoes && (
+              {canSeeClogMenu && (
                 <div className="flex items-center gap-1 lg:gap-2">
                   <div
                     className="relative inline-block clog-dropdown"
@@ -266,30 +268,36 @@ const Navbar = () => {
                     {clogOpen && (
                       <div className="absolute top-full left-0 bg-[#0915FF] border border-gray-200 rounded-lg shadow-lg min-w-48 lg:min-w-56 z-50 p-2 -mt-1 pt-2">
                         <div className="flex flex-col gap-1">
-                          <Link
-                            to="/requisicoes"
-                            onClick={(e) => { e.preventDefault(); e.stopPropagation(); setClogOpen(false); setTimeout(() => navigate('/requisicoes'), 100); }}
-                            className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded"
-                          >
-                            <ShoppingCart size={14} className="lg:w-4 lg:h-4" />
-                            Requisições
-                          </Link>
-                          <Link
-                            to="/devolucoes"
-                            onClick={(e) => { e.preventDefault(); e.stopPropagation(); setClogOpen(false); setTimeout(() => navigate('/devolucoes'), 100); }}
-                            className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded"
-                          >
-                            <RotateCcw size={14} className="lg:w-4 lg:h-4" />
-                            Devoluções
-                          </Link>
-                          <Link
-                            to="/transferencias"
-                            onClick={(e) => { e.preventDefault(); e.stopPropagation(); setClogOpen(false); setTimeout(() => navigate('/transferencias'), 100); }}
-                            className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded"
-                          >
-                            <Truck size={14} className="lg:w-4 lg:h-4" />
-                            Transferências
-                          </Link>
+                          {canSeeRequisicoes && (
+                            <Link
+                              to="/requisicoes"
+                              onClick={(e) => { e.preventDefault(); e.stopPropagation(); setClogOpen(false); setTimeout(() => navigate('/requisicoes'), 100); }}
+                              className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded"
+                            >
+                              <ShoppingCart size={14} className="lg:w-4 lg:h-4" />
+                              Requisições
+                            </Link>
+                          )}
+                          {canSeeRequisicoes && (
+                            <Link
+                              to="/devolucoes"
+                              onClick={(e) => { e.preventDefault(); e.stopPropagation(); setClogOpen(false); setTimeout(() => navigate('/devolucoes'), 100); }}
+                              className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded"
+                            >
+                              <RotateCcw size={14} className="lg:w-4 lg:h-4" />
+                              Devoluções
+                            </Link>
+                          )}
+                          {canSeeRequisicoes && (
+                            <Link
+                              to="/transferencias"
+                              onClick={(e) => { e.preventDefault(); e.stopPropagation(); setClogOpen(false); setTimeout(() => navigate('/transferencias'), 100); }}
+                              className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded"
+                            >
+                              <Truck size={14} className="lg:w-4 lg:h-4" />
+                              Transferências
+                            </Link>
+                          )}
                           {podeInventarioMenu && (
                             <Link
                               to="/inventario"
@@ -300,7 +308,7 @@ const Navbar = () => {
                               Inventário
                             </Link>
                           )}
-                          {podeInventarioMenu && (
+                          {podeContagemSemanalMenu && (
                             <Link
                               to="/inventario/contagem-semanal"
                               onClick={(e) => { e.preventDefault(); e.stopPropagation(); setClogOpen(false); setTimeout(() => navigate('/inventario/contagem-semanal'), 100); }}
@@ -709,7 +717,7 @@ const Navbar = () => {
                   Catálogo
                 </Link>
               </div>
-              {canSeeRequisicoes && (
+              {canSeeClogMenu && (
                 <>
                   <div className="relative w-full clog-dropdown">
                     <button
@@ -725,25 +733,31 @@ const Navbar = () => {
                     {clogOpen && (
                       <div className="static shadow-none border-none bg-white/5 m-0 p-0 rounded-none">
                         <div className="flex flex-col">
-                          <Link to="/requisicoes" onClick={(e) => handleMobileNavigation('/requisicoes', e)} className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10">
-                            <ShoppingCart size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" />
-                            Requisições
-                          </Link>
-                          <Link to="/devolucoes" onClick={(e) => handleMobileNavigation('/devolucoes', e)} className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10">
-                            <RotateCcw size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" />
-                            Devoluções
-                          </Link>
-                          <Link to="/transferencias" onClick={(e) => handleMobileNavigation('/transferencias', e)} className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10">
-                            <Truck size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" />
-                            Transferências
-                          </Link>
+                          {canSeeRequisicoes && (
+                            <Link to="/requisicoes" onClick={(e) => handleMobileNavigation('/requisicoes', e)} className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10">
+                              <ShoppingCart size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" />
+                              Requisições
+                            </Link>
+                          )}
+                          {canSeeRequisicoes && (
+                            <Link to="/devolucoes" onClick={(e) => handleMobileNavigation('/devolucoes', e)} className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10">
+                              <RotateCcw size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" />
+                              Devoluções
+                            </Link>
+                          )}
+                          {canSeeRequisicoes && (
+                            <Link to="/transferencias" onClick={(e) => handleMobileNavigation('/transferencias', e)} className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10">
+                              <Truck size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" />
+                              Transferências
+                            </Link>
+                          )}
                           {podeInventarioMenu && (
                             <Link to="/inventario" onClick={(e) => handleMobileNavigation('/inventario', e)} className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10">
                               <FileText size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" />
                               Inventário
                             </Link>
                           )}
-                          {podeInventarioMenu && (
+                          {podeContagemSemanalMenu && (
                             <Link to="/inventario/contagem-semanal" onClick={(e) => handleMobileNavigation('/inventario/contagem-semanal', e)} className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10">
                               <FileText size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" />
                               Contagem semanal
