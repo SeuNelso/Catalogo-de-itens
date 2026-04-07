@@ -37,6 +37,7 @@ import ConsultaLocalizacoesEstoque from './pages/ConsultaLocalizacoesEstoque';
 import TransferenciaLocalizacao from './pages/TransferenciaLocalizacao';
 import ConsultaMovimentos from './pages/ConsultaMovimentos';
 import Inventario from './pages/Inventario';
+import ContagemSemanal from './pages/ContagemSemanal';
 import './App.css';
 import { ROLES_COM_ACESSO_REQUISICOES } from './utils/roles';
 
@@ -286,6 +287,17 @@ function App() {
                       requireControloStock
                     >
                       <Inventario />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/inventario/contagem-semanal"
+                  element={
+                    <ProtectedRoute
+                      allowedRoles={['admin', 'backoffice_armazem', 'supervisor_armazem', 'operador']}
+                      requireControloStock
+                    >
+                      <ContagemSemanal />
                     </ProtectedRoute>
                   }
                 />
