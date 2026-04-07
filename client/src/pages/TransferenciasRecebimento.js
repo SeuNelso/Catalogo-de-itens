@@ -73,6 +73,7 @@ const TransferenciasRecebimento = () => {
   const [importing, setImporting] = useState(false);
   const [creating, setCreating] = useState(false);
   const [confirming, setConfirming] = useState(false);
+  const [confirmingEntrega, setConfirmingEntrega] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [recebendoStock, setRecebendoStock] = useState(false);
   const [reportGerado, setReportGerado] = useState(false);
@@ -384,6 +385,30 @@ const TransferenciasRecebimento = () => {
     }
   }, [recebimentoReqId]);
 
+  const confirmarEntregaRecebimento = useCallback(async () => {
+    if (!recebimentoReqId) return;
+    try {
+      setConfirmingEntrega(true);
+      setToast(null);
+      const token = localStorage.getItem('token');
+      const res = await fetch(`/api/requisicoes/transferencias/recebimento/${recebimentoReqId}/confirmar-entrega`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        throw new Error(d.error || d.message || 'Erro ao confirmar entrega.');
+      }
+      const data = await res.json();
+      setRecebimentoReq(data);
+      setToast({ type: 'success', message: 'Entrega confirmada. Status alterado para Entregue.' });
+    } catch (e) {
+      setToast({ type: 'error', message: e.message || 'Erro ao confirmar entrega.' });
+    } finally {
+      setConfirmingEntrega(false);
+    }
+  }, [recebimentoReqId]);
+
   const receberStock = useCallback(async () => {
     if (!recebimentoReqId) return;
     try {
@@ -596,6 +621,14 @@ const TransferenciasRecebimento = () => {
                     {recebendoStock ? 'A receber stock…' : 'Receber stock'}
                   </button>
                 )}
+                <button
+                  type="button"
+                  onClick={confirmarEntregaRecebimento}
+                  disabled={confirmingEntrega || !recebimentoReqId}
+                  className="px-3 py-2 rounded-lg bg-amber-600 text-white text-sm font-bold hover:bg-amber-700 disabled:opacity-50"
+                >
+                  {confirmingEntrega ? 'A confirmar entrega…' : 'Confirmar entrega'}
+                </button>
                 {recebimentoReq?.tra_baixa_expedicao_aplicada_em && (
                   <span className="text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded px-2 py-1">
                     Stock já recebido na localização de recebimento.

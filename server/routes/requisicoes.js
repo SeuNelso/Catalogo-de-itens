@@ -808,6 +808,25 @@ function createRequisicoesRouter(deps) {
     return obs.toUpperCase().startsWith(RECEBIMENTO_TRANSFERENCIA_MARKER);
   }
 
+  function getAutoFromReqId(requisicao) {
+    const m = /AUTO_FROM_REQ:\s*(\d+)/i.exec(String(requisicao?.observacoes || ''));
+    const id = m ? parseInt(String(m[1] || ''), 10) : NaN;
+    return Number.isFinite(id) ? id : null;
+  }
+
+  function markerFlagAtivo(obsRaw, markerKey) {
+    return new RegExp(`${markerKey}:\\s*1`, 'i').test(String(obsRaw || ''));
+  }
+
+  function upsertMarkerFlag(obsRaw, markerKey, flag) {
+    const obs = String(obsRaw || '').trim();
+    const next = `${markerKey}:${flag ? 1 : 0}`;
+    if (!obs) return next;
+    const re = new RegExp(`${markerKey}:\\s*[01]`, 'i');
+    if (re.test(obs)) return obs.replace(re, next);
+    return `${obs} | ${next}`;
+  }
+
   async function extractPdfText(buffer) {
     // Compatível com API nova (classe PDFParse) e legado (função default).
     if (pdfParseLib && typeof pdfParseLib.PDFParse === 'function') {
@@ -1081,6 +1100,169 @@ router.get('/', ...requisicaoAuth, async (req, res) => {
 
       for (const req of requisicoes) {
         req.itens = itensPorRequisicao.get(req.id) || [];
+      }
+    }
+
+    // Enriquecer fluxo central->central com estado de receção no destino.
+    if (requisicoes.length > 0) {
+      const recebimentoByOrigemReqId = new Map();
+      const origemReqIdsDosRecebimentos = new Set();
+      const origemReqIdsVisiveis = new Set();
+      for (const reqRow of requisicoes) {
+        if (hasRecebimentoMarker(reqRow)) {
+          const origemReqId = getAutoFromReqId(reqRow);
+          if (!origemReqId) continue;
+          origemReqIdsDosRecebimentos.add(Number(origemReqId));
+          const prev = recebimentoByOrigemReqId.get(origemReqId);
+          if (!prev || Number(reqRow.id) > Number(prev.id)) {
+            recebimentoByOrigemReqId.set(origemReqId, reqRow);
+          }
+          continue;
+        }
+        origemReqIdsVisiveis.add(Number(reqRow.id));
+      }
+
+      // Garante vínculo origem->recebimento mesmo quando o recebimento não está no scope da listagem atual.
+      if (origemReqIdsVisiveis.size > 0) {
+        const linkedRows = await pool.query(
+          `SELECT
+             r.id,
+             r.status,
+             r.observacoes,
+             ((regexp_match(r.observacoes, 'AUTO_FROM_REQ:\\s*([0-9]+)'))[1])::int AS origem_req_id
+           FROM requisicoes r
+           WHERE UPPER(COALESCE(r.observacoes, '')) LIKE UPPER($2)
+             AND regexp_match(r.observacoes, 'AUTO_FROM_REQ:\\s*([0-9]+)') IS NOT NULL
+             AND ((regexp_match(r.observacoes, 'AUTO_FROM_REQ:\\s*([0-9]+)'))[1])::int = ANY($1::int[])
+           ORDER BY r.id DESC`,
+          [[...origemReqIdsVisiveis], `${RECEBIMENTO_TRANSFERENCIA_MARKER}%`]
+        );
+        for (const row of linkedRows.rows || []) {
+          const origemReqId = Number(row.origem_req_id);
+          if (!Number.isFinite(origemReqId)) continue;
+          if (!origemReqIdsDosRecebimentos.has(origemReqId)) origemReqIdsDosRecebimentos.add(origemReqId);
+          const prev = recebimentoByOrigemReqId.get(origemReqId);
+          if (!prev || Number(row.id) > Number(prev.id)) {
+            recebimentoByOrigemReqId.set(origemReqId, {
+              ...row,
+              itens: [],
+            });
+          }
+        }
+      }
+
+      const origemById = new Map();
+      if (origemReqIdsDosRecebimentos.size > 0) {
+        const origemRows = await pool.query(
+          `SELECT id, status, tra_numero
+           FROM requisicoes
+           WHERE id = ANY($1::int[])`,
+          [[...origemReqIdsDosRecebimentos]]
+        );
+        for (const r of origemRows.rows || []) {
+          origemById.set(Number(r.id), r);
+        }
+      }
+
+      const linkedReqIds = [...new Set(
+        [...recebimentoByOrigemReqId.values()]
+          .map((x) => Number(x?.id))
+          .filter(Number.isFinite)
+      )];
+      if (linkedReqIds.length > 0) {
+        const linkedItens = await pool.query(
+          `SELECT requisicao_id, item_id, quantidade, quantidade_preparada
+           FROM requisicoes_itens
+           WHERE requisicao_id = ANY($1::int[])`,
+          [linkedReqIds]
+        );
+        const itensByLinkedId = new Map();
+        for (const it of linkedItens.rows || []) {
+          const k = Number(it.requisicao_id);
+          const arr = itensByLinkedId.get(k) || [];
+          arr.push(it);
+          itensByLinkedId.set(k, arr);
+        }
+        for (const [origemReqId, linked] of recebimentoByOrigemReqId.entries()) {
+          recebimentoByOrigemReqId.set(origemReqId, {
+            ...linked,
+            itens: Array.isArray(linked?.itens) && linked.itens.length > 0
+              ? linked.itens
+              : (itensByLinkedId.get(Number(linked.id)) || []),
+          });
+        }
+      }
+
+      const qtyByItem = (reqRow) => {
+        const map = new Map();
+        for (const it of reqRow?.itens || []) {
+          const itemId = Number(it.item_id);
+          if (!Number.isFinite(itemId)) continue;
+          const q = Number(it.quantidade_preparada ?? it.quantidade ?? 0) || 0;
+          map.set(itemId, q);
+        }
+        return map;
+      };
+
+      for (const reqRow of requisicoes) {
+        if (hasRecebimentoMarker(reqRow)) {
+          const origemReqId = getAutoFromReqId(reqRow);
+          reqRow.requisicao_origem_id = origemReqId || null;
+          const entregaConfirmada = markerFlagAtivo(reqRow.observacoes, 'DELIVERY_CONFIRMED');
+          const traConfirmada = markerFlagAtivo(reqRow.observacoes, 'TRA_CONFIRMED');
+          reqRow.recebimento_entrega_confirmada = entregaConfirmada;
+          reqRow.recebimento_tra_confirmada = traConfirmada;
+          if (origemReqId) {
+            const origemReq = origemById.get(Number(origemReqId));
+            reqRow.requisicao_origem_tra_numero = String(origemReq?.tra_numero || '').trim();
+          } else {
+            reqRow.requisicao_origem_tra_numero = '';
+          }
+          reqRow.aguardando_tra_origem =
+            Boolean(entregaConfirmada) &&
+            !String(reqRow.requisicao_origem_tra_numero || '').trim();
+          reqRow.pode_confirmar_tra =
+            Boolean(entregaConfirmada) &&
+            Boolean(String(reqRow.requisicao_origem_tra_numero || '').trim()) &&
+            !Boolean(traConfirmada);
+          reqRow.pode_finalizar_recebimento =
+            Boolean(entregaConfirmada) &&
+            Boolean(traConfirmada) &&
+            String(reqRow.status || '') === 'EM EXPEDICAO';
+          continue;
+        }
+        const linked = recebimentoByOrigemReqId.get(Number(reqRow.id));
+        if (!linked) continue;
+        reqRow.recepcao_req_id = Number(linked.id);
+
+        const linkedStatus = String(linked.status || '');
+        if (
+          ['pendente', 'EM EXPEDICAO'].includes(linkedStatus) &&
+          String(reqRow.status || '') === 'EM EXPEDICAO' &&
+          !markerFlagAtivo(linked.observacoes, 'DELIVERY_CONFIRMED')
+        ) {
+          reqRow.recepcao_status = 'AGUARDANDO_RECECAO';
+          continue;
+        }
+
+        if (
+          ['Entregue', 'FINALIZADO'].includes(String(reqRow.status || '')) &&
+          ['Entregue', 'FINALIZADO'].includes(linkedStatus)
+        ) {
+          const origemQty = qtyByItem(reqRow);
+          const recQty = qtyByItem(linked);
+          const itemIds = new Set([...origemQty.keys(), ...recQty.keys()]);
+          let allMatch = itemIds.size > 0;
+          for (const itemId of itemIds) {
+            const qOrig = Number(origemQty.get(itemId) ?? 0);
+            const qRec = Number(recQty.get(itemId) ?? 0);
+            if (Math.abs(qOrig - qRec) > 1e-9) {
+              allMatch = false;
+              break;
+            }
+          }
+          reqRow.recepcao_status = allMatch ? 'RECECIONADA_TOTAL' : 'RECECIONADA_PARCIAL';
+        }
       }
     }
 
@@ -2040,10 +2222,6 @@ router.get('/:id/export-tra', ...requisicaoAuth, denyOperador, async (req, res) 
     if (!requisicaoArmazemOrigemAcessoPermitido(req, requisicao.armazem_origem_id, { requisicao })) {
       return res.status(403).json({ error: 'Sem acesso a esta requisição.' });
     }
-    if (!requisicao.separacao_confirmada) {
-      return res.status(400).json({ error: 'TRA só está disponível após confirmar a separação da requisição.' });
-    }
-
     let tipoOrigemArm = '';
     let tipoDestArm = '';
     if (requisicao.armazem_origem_id) {
@@ -2058,6 +2236,30 @@ router.get('/:id/export-tra', ...requisicaoAuth, denyOperador, async (req, res) 
     const tipoDestNorm = String(tipoDestArm || '').trim().toLowerCase();
     const fluxoDevolucaoTra = isFluxoDevolucaoViaturaCentral(tipoOrigNorm, tipoDestNorm);
     const fluxoCentralApeado = tipoOrigNorm === 'central' && tipoDestNorm === 'apeado';
+    const fluxoCentralCentral = tipoOrigNorm === 'central' && tipoDestNorm === 'central';
+
+    if (!requisicao.separacao_confirmada) {
+      if (!fluxoCentralCentral) {
+        return res.status(400).json({ error: 'TRA só está disponível após confirmar a separação da requisição.' });
+      }
+      // Fluxo central->central: após confirmar receção no destino, a origem pode gerar TRA
+      // mesmo sem separacao_confirmada clássica.
+      const recebQ = await pool.query(
+        `SELECT id
+         FROM requisicoes
+         WHERE UPPER(COALESCE(observacoes, '')) LIKE UPPER($1)
+           AND UPPER(COALESCE(observacoes, '')) LIKE UPPER($2)
+         ORDER BY id DESC
+         LIMIT 1`,
+        [`${RECEBIMENTO_TRANSFERENCIA_MARKER}%`, `%AUTO_FROM_REQ:${Number(id)}% | DELIVERY_CONFIRMED:1%`]
+      );
+      if (!recebQ.rows.length) {
+        return res.status(400).json({
+          error:
+            'TRA da transferência central só está disponível após confirmar o recebimento no armazém destino.'
+        });
+      }
+    }
 
     if (fluxoDevolucaoTra) {
       if (!['separado', 'EM EXPEDICAO', 'APEADOS', 'Entregue', 'FINALIZADO'].includes(requisicao.status)) {
@@ -3652,7 +3854,12 @@ async function buildClogRowsForRequisicaoIds(idsClean, dateStr, opts = {}) {
         destinoTraLoc: recByDestArm.get(r.armazem_id) || localizacaoNormal
       }
     );
-    allRows.push(...rows);
+    const reqSortTs = (() => {
+      const d = new Date(r.updated_at || r.tra_gerada_em || r.created_at || Date.now());
+      const t = d.getTime();
+      return Number.isNaN(t) ? 0 : t;
+    })();
+    allRows.push(...rows.map((row) => ({ ...row, __req_sort_ts: reqSortTs })));
   }
 
   if (opts?.withOverrides === false) return allRows;
@@ -3812,6 +4019,12 @@ router.get('/movimentos-clog/consulta', ...requisicaoAuth, denyOperador, async (
         const dA = parseDateBr(a['Dt_Recepção']);
         const dB = parseDateBr(b['Dt_Recepção']);
         if (dA !== dB) return dB - dA;
+        const tsA = Number(a.__req_sort_ts || 0);
+        const tsB = Number(b.__req_sort_ts || 0);
+        if (tsA !== tsB) return tsB - tsA;
+        const reqA = Number(a.requisicao_id || 0);
+        const reqB = Number(b.requisicao_id || 0);
+        if (reqA !== reqB) return reqB - reqA;
         const traA = String(a['TRA / DEV'] || '');
         const traB = String(b['TRA / DEV'] || '');
         const traCmp = traB.localeCompare(traA);
@@ -3834,6 +4047,7 @@ router.get('/movimentos-clog/consulta', ...requisicaoAuth, denyOperador, async (
           armazem_id,
           armazem_origem_tipo,
           armazem_destino_tipo,
+          __req_sort_ts,
           Observações,
           ...rest
         }) => {
@@ -4022,6 +4236,12 @@ router.get('/movimentos-clog/consulta', ...requisicaoAuth, denyOperador, async (
       const dA = parseDateBr(a['Dt_Recepção']);
       const dB = parseDateBr(b['Dt_Recepção']);
       if (dA !== dB) return dB - dA;
+      const tsA = Number(a.__req_sort_ts || 0);
+      const tsB = Number(b.__req_sort_ts || 0);
+      if (tsA !== tsB) return tsB - tsA;
+      const reqA = Number(a.requisicao_id || 0);
+      const reqB = Number(b.requisicao_id || 0);
+      if (reqA !== reqB) return reqB - reqA;
       const traA = String(a['TRA / DEV'] || '');
       const traB = String(b['TRA / DEV'] || '');
       const traCmp = traB.localeCompare(traA);
@@ -4034,7 +4254,7 @@ router.get('/movimentos-clog/consulta', ...requisicaoAuth, denyOperador, async (
       const ordB = Number(b.__ordem_movimento || 9);
       return ordA - ordB;
     });
-    const outRowsClean = outRows.map(({ __ordem_movimento, ...rest }) => {
+    const outRowsClean = outRows.map(({ __ordem_movimento, __req_sort_ts, ...rest }) => {
       const tipoEpi =
         String(rest.armazem_destino_tipo || '').toLowerCase() === 'epi' ||
         String(rest['Novo Armazém'] || '').toUpperCase().includes('EPI');
@@ -6671,45 +6891,145 @@ router.patch('/:id/marcar-em-expedicao', ...requisicaoAuth, denyOperador, async 
 
 // Marcar como Entregue (após baixar o ficheiro TRA)
 router.patch('/:id/marcar-entregue', ...requisicaoAuth, async (req, res) => {
+  const client = await pool.connect();
   try {
     const { id } = req.params;
-    const check = await pool.query(
-      `SELECT r.id, r.status, r.armazem_origem_id, r.armazem_id, r.separador_usuario_id,
-              ao.tipo AS armazem_origem_tipo, a.tipo AS armazem_destino_tipo
+    const reqId = parseInt(String(id || ''), 10);
+    if (!Number.isFinite(reqId)) {
+      return res.status(400).json({ error: 'ID inválido.' });
+    }
+
+    await client.query('BEGIN');
+
+    // Lock apenas da linha da requisição (evita erro em LEFT JOIN + FOR UPDATE).
+    const lock = await client.query(
+      `SELECT r.id, r.status, r.armazem_origem_id, r.armazem_id, r.separador_usuario_id
+       FROM requisicoes r
+       WHERE r.id = $1
+       FOR UPDATE`,
+      [reqId]
+    );
+    if (lock.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Requisição não encontrada' });
+    }
+
+    const meta = await client.query(
+      `SELECT
+         r.id,
+         r.status,
+         r.armazem_origem_id,
+         r.armazem_id,
+         r.separador_usuario_id,
+         ao.tipo AS armazem_origem_tipo,
+         a.tipo AS armazem_destino_tipo
        FROM requisicoes r
        LEFT JOIN armazens ao ON r.armazem_origem_id = ao.id
        INNER JOIN armazens a ON r.armazem_id = a.id
        WHERE r.id = $1`,
-      [id]
+      [reqId]
     );
-    if (check.rows.length === 0) {
-      return res.status(404).json({ error: 'Requisição não encontrada' });
-    }
-    if (
-      !requisicaoArmazemOrigemAcessoPermitido(req, check.rows[0].armazem_origem_id, {
-        requisicao: check.rows[0],
-      })
-    ) {
+    const row = meta.rows[0];
+
+    if (!requisicaoArmazemOrigemAcessoPermitido(req, row.armazem_origem_id, { requisicao: row })) {
+      await client.query('ROLLBACK');
       return res.status(403).json({ error: 'Sem acesso a esta requisição.' });
     }
-    if (separadorImpedeAcao(check.rows[0], req)) {
+    if (separadorImpedeAcao(row, req)) {
+      await client.query('ROLLBACK');
       return respostaBloqueioSeparador(res);
     }
-    if (!['EM EXPEDICAO', 'APEADOS'].includes(check.rows[0].status)) {
-      return res.status(400).json({ error: 'Só pode marcar como entregue quando a requisição está em expedição (EM EXPEDICAO) ou APEADOS.' });
+    if (!['EM EXPEDICAO', 'APEADOS'].includes(String(row.status || ''))) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({
+        error: 'Só pode marcar como entregue quando a requisição está em expedição (EM EXPEDICAO) ou APEADOS.'
+      });
     }
-    await pool.query(
-      'UPDATE requisicoes SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
-      ['Entregue', id]
-    );
-    const updated = await pool.query('SELECT * FROM requisicoes WHERE id = $1', [id]);
-    res.json(updated.rows[0]);
+
+    let recebimentoTransferenciaId = null;
+    const origemTipo = String(row.armazem_origem_tipo || '').trim().toLowerCase();
+    const destinoTipo = String(row.armazem_destino_tipo || '').trim().toLowerCase();
+    const isCentralParaCentral = origemTipo === 'central' && destinoTipo === 'central';
+
+    // Entregar central->central: criar recebimento no destino e manter origem em EM_EXPEDICAO (aguardando receção).
+    if (isCentralParaCentral) {
+      const marker = `${RECEBIMENTO_TRANSFERENCIA_MARKER}: AUTO_FROM_REQ:${reqId} | DELIVERY_CONFIRMED:0 | TRA_CONFIRMED:0`;
+      // convenção do recebimento existente:
+      // armazem_origem_id = armazém de recebimento (destino da original)
+      // armazem_id = armazém origem (origem da original)
+      const recebimentoArmId = Number(row.armazem_id);
+      const origemArmId = Number(row.armazem_origem_id);
+
+      const existing = await client.query(
+        `SELECT id
+         FROM requisicoes
+         WHERE armazem_origem_id = $1
+           AND armazem_id = $2
+           AND UPPER(COALESCE(observacoes, '')) LIKE UPPER($3)
+         ORDER BY id DESC
+         LIMIT 1`,
+        [recebimentoArmId, origemArmId, `%AUTO_FROM_REQ:${reqId}%`]
+      );
+
+      if (existing.rows.length > 0) {
+        recebimentoTransferenciaId = Number(existing.rows[0].id);
+      } else {
+        const created = await client.query(
+          `INSERT INTO requisicoes (armazem_origem_id, armazem_id, observacoes, usuario_id, status)
+           VALUES ($1, $2, $3, $4, 'pendente')
+           RETURNING id`,
+          [recebimentoArmId, origemArmId, marker, req.user.id]
+        );
+        recebimentoTransferenciaId = Number(created.rows[0]?.id || 0) || null;
+
+        if (recebimentoTransferenciaId) {
+          await client.query(
+            `INSERT INTO requisicoes_itens (requisicao_id, item_id, quantidade)
+             SELECT
+               $1 AS requisicao_id,
+               ri.item_id,
+               GREATEST(0, COALESCE(NULLIF(ri.quantidade_preparada, 0), ri.quantidade, 0))::numeric AS quantidade
+             FROM requisicoes_itens ri
+             WHERE ri.requisicao_id = $2
+               AND GREATEST(0, COALESCE(NULLIF(ri.quantidade_preparada, 0), ri.quantidade, 0)) > 0
+             ON CONFLICT (requisicao_id, item_id)
+             DO UPDATE SET quantidade = EXCLUDED.quantidade`,
+            [recebimentoTransferenciaId, reqId]
+          );
+        }
+      }
+      await client.query(
+        `UPDATE requisicoes
+         SET status = 'EM EXPEDICAO',
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = $1`,
+        [reqId]
+      );
+    } else {
+      await client.query(
+        `UPDATE requisicoes
+         SET status = 'Entregue', updated_at = CURRENT_TIMESTAMP
+         WHERE id = $1`,
+        [reqId]
+      );
+    }
+
+    await client.query('COMMIT');
+    const updated = await pool.query('SELECT * FROM requisicoes WHERE id = $1', [reqId]);
+    return res.json({
+      ...updated.rows[0],
+      recebimento_transferencia_id: recebimentoTransferenciaId,
+      aguardando_recepcao: Boolean(isCentralParaCentral),
+    });
   } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
     if (error.code === '23514') {
       return res.status(400).json({ error: 'Status inválido. Execute a migração: server/migrate-requisicoes-status-fases.sql' });
     }
     console.error('Erro ao marcar como entregue:', error);
-    res.status(500).json({ error: 'Erro ao marcar como entregue', details: error.message });
+    return res.status(500).json({ error: 'Erro ao marcar como entregue', details: error.message });
+  } finally {
+    client.release();
   }
 });
 
@@ -7411,6 +7731,197 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
     }
   );
 
+  // Confirma entrega no recebimento e coloca destino em stand by de TRA da origem.
+  router.patch(
+    '/transferencias/recebimento/:id/confirmar-entrega',
+    ...requisicaoAuth,
+    async (req, res) => {
+      const client = await pool.connect();
+      try {
+        const reqId = parseInt(String(req.params.id || ''), 10);
+        if (!Number.isFinite(reqId)) return res.status(400).json({ error: 'ID inválido.' });
+
+        await client.query('BEGIN');
+        const lock = await client.query(
+          `SELECT r.id, r.status, r.observacoes, r.armazem_origem_id
+           FROM requisicoes r
+           WHERE r.id = $1
+           FOR UPDATE`,
+          [reqId]
+        );
+        if (!lock.rows.length) {
+          await client.query('ROLLBACK');
+          return res.status(404).json({ error: 'Requisição não encontrada.' });
+        }
+        const row = lock.rows[0];
+        if (!hasRecebimentoMarker(row)) {
+          await client.query('ROLLBACK');
+          return res.status(400).json({ error: 'Requisição não é do fluxo de recebimento de mercadoria.' });
+        }
+        if (!isAdmin(req.user?.role)) {
+          const allowed = req.requisicaoArmazemOrigemIds || [];
+          if (!allowed.includes(row.armazem_origem_id)) {
+            await client.query('ROLLBACK');
+            return res.status(403).json({ error: 'Sem acesso a este recebimento.' });
+          }
+        }
+        if (String(row.status || '') !== 'EM EXPEDICAO') {
+          await client.query('ROLLBACK');
+          return res.status(400).json({ error: 'Só é possível confirmar entrega quando estiver Em processo.' });
+        }
+
+        const observacoesComEntrega = upsertMarkerFlag(row.observacoes, 'DELIVERY_CONFIRMED', true);
+        const observacoesSemTraConfirmada = upsertMarkerFlag(observacoesComEntrega, 'TRA_CONFIRMED', false);
+        await client.query(
+          `UPDATE requisicoes
+           SET status = 'EM EXPEDICAO',
+               observacoes = $2,
+               updated_at = CURRENT_TIMESTAMP
+           WHERE id = $1`,
+          [reqId, observacoesSemTraConfirmada]
+        );
+
+        // Se for recebimento automático ligado a transferência central->central,
+        // reforça "Entregue" também na requisição de origem para permitir geração de TRA.
+        const reqOrigemId = getAutoFromReqId(row);
+        if (Number.isFinite(reqOrigemId)) {
+          // Sincroniza as quantidades rececionadas no destino para a requisição de origem,
+          // para que a TRA do armazém de origem use os valores efetivamente rececionados.
+          const itensRecebQ = await client.query(
+            `SELECT item_id, COALESCE(quantidade_preparada, quantidade, 0) AS quantidade_rececionada
+             FROM requisicoes_itens
+             WHERE requisicao_id = $1`,
+            [reqId]
+          );
+          for (const it of itensRecebQ.rows || []) {
+            const itemId = Number(it.item_id);
+            const qRec = Number(it.quantidade_rececionada);
+            if (!Number.isFinite(itemId) || !Number.isFinite(qRec)) continue;
+            await client.query(
+              `UPDATE requisicoes_itens
+               SET quantidade_preparada = $1
+               WHERE requisicao_id = $2 AND item_id = $3`,
+              [qRec, reqOrigemId, itemId]
+            );
+          }
+
+          await client.query(
+            `UPDATE requisicoes
+             SET status = 'Entregue',
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE id = $1`,
+            [reqOrigemId]
+          );
+        }
+
+        await client.query('COMMIT');
+        const updated = await getRequisicaoComItens(reqId);
+        return res.json({
+          ...updated,
+          requisicao_origem_id: Number.isFinite(reqOrigemId) ? reqOrigemId : null,
+          aguardando_tra_origem: true,
+        });
+      } catch (e) {
+        await client.query('ROLLBACK').catch(() => {});
+        console.error('Erro ao confirmar entrega de recebimento:', e);
+        return res.status(500).json({ error: 'Erro ao confirmar entrega', details: e.message });
+      } finally {
+        client.release();
+      }
+    }
+  );
+
+  // Confirma que o Nº TRA da origem foi validado no destino (libera finalização do recebimento).
+  router.patch(
+    '/transferencias/recebimento/:id/confirmar-tra',
+    ...requisicaoAuth,
+    async (req, res) => {
+      const client = await pool.connect();
+      try {
+        const reqId = parseInt(String(req.params.id || ''), 10);
+        if (!Number.isFinite(reqId)) return res.status(400).json({ error: 'ID inválido.' });
+
+        await client.query('BEGIN');
+        const lock = await client.query(
+          `SELECT r.id, r.status, r.observacoes, r.armazem_origem_id
+           FROM requisicoes r
+           WHERE r.id = $1
+           FOR UPDATE`,
+          [reqId]
+        );
+        if (!lock.rows.length) {
+          await client.query('ROLLBACK');
+          return res.status(404).json({ error: 'Requisição não encontrada.' });
+        }
+        const row = lock.rows[0];
+        if (!hasRecebimentoMarker(row)) {
+          await client.query('ROLLBACK');
+          return res.status(400).json({ error: 'Requisição não é do fluxo de recebimento de mercadoria.' });
+        }
+        if (String(row.status || '') !== 'EM EXPEDICAO') {
+          await client.query('ROLLBACK');
+          return res.status(400).json({ error: 'Só é possível confirmar TRA quando o recebimento estiver Em processo.' });
+        }
+        if (!isAdmin(req.user?.role)) {
+          const allowed = req.requisicaoArmazemOrigemIds || [];
+          if (!allowed.includes(row.armazem_origem_id)) {
+            await client.query('ROLLBACK');
+            return res.status(403).json({ error: 'Sem acesso a este recebimento.' });
+          }
+        }
+        if (!markerFlagAtivo(row.observacoes, 'DELIVERY_CONFIRMED')) {
+          await client.query('ROLLBACK');
+          return res.status(400).json({ error: 'Confirme primeiro a entrega no recebimento.' });
+        }
+        const reqOrigemId = getAutoFromReqId(row);
+        if (!Number.isFinite(reqOrigemId)) {
+          await client.query('ROLLBACK');
+          return res.status(400).json({ error: 'Recebimento sem vínculo com requisição de origem.' });
+        }
+        const origemQ = await client.query(
+          `SELECT id, tra_numero
+           FROM requisicoes
+           WHERE id = $1`,
+          [reqOrigemId]
+        );
+        if (!origemQ.rows.length) {
+          await client.query('ROLLBACK');
+          return res.status(404).json({ error: 'Requisição de origem não encontrada.' });
+        }
+        const traNumeroOrigem = String(origemQ.rows[0].tra_numero || '').trim();
+        if (!traNumeroOrigem) {
+          await client.query('ROLLBACK');
+          return res.status(400).json({ error: 'Aguardando Nº TRA do armazém de origem.' });
+        }
+
+        const obsComTraConfirmada = upsertMarkerFlag(row.observacoes, 'TRA_CONFIRMED', true);
+        await client.query(
+          `UPDATE requisicoes
+           SET observacoes = $2,
+               tra_numero = COALESCE(NULLIF(TRIM(COALESCE(tra_numero, '')), ''), $3),
+               updated_at = CURRENT_TIMESTAMP
+           WHERE id = $1`,
+          [reqId, obsComTraConfirmada, traNumeroOrigem]
+        );
+
+        await client.query('COMMIT');
+        const updated = await getRequisicaoComItens(reqId);
+        return res.json({
+          ...updated,
+          requisicao_origem_id: reqOrigemId,
+          requisicao_origem_tra_numero: traNumeroOrigem,
+          recebimento_tra_confirmada: true,
+        });
+      } catch (e) {
+        await client.query('ROLLBACK').catch(() => {});
+        console.error('Erro ao confirmar TRA do recebimento:', e);
+        return res.status(500).json({ error: 'Erro ao confirmar TRA', details: e.message });
+      } finally {
+        client.release();
+      }
+    }
+  );
+
   // Exportar report de material recebido
   router.get(
     '/transferencias/recebimento/:id/export-reporte',
@@ -7590,6 +8101,17 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
         }
         if (String(row.status || '') !== 'EM EXPEDICAO') {
           return res.status(400).json({ error: 'Só é possível finalizar quando estiver Em processo.' });
+        }
+        if (!markerFlagAtivo(row.observacoes, 'TRA_CONFIRMED')) {
+          return res.status(400).json({ error: 'Confirme a TRA do armazém de origem antes de finalizar.' });
+        }
+        const reqOrigemId = getAutoFromReqId(row);
+        if (Number.isFinite(reqOrigemId)) {
+          const origemQ = await pool.query('SELECT tra_numero FROM requisicoes WHERE id = $1', [reqOrigemId]);
+          const traNumeroOrigem = String(origemQ.rows?.[0]?.tra_numero || '').trim();
+          if (!traNumeroOrigem) {
+            return res.status(400).json({ error: 'Aguardando Nº TRA do armazém de origem para finalizar.' });
+          }
         }
 
         await pool.query(

@@ -426,7 +426,24 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
       const detalhe = await fetchRequisicaoDetalhe(reqId);
       gerarPdfEntrega([detalhe || req]);
       await marcarEntregue(reqId);
-      setToast({ type: 'success', message: 'Requisição marcada como Entregue.' });
+      const isCentralCentral =
+        String(req?.armazem_origem_tipo || '').toLowerCase() === 'central' &&
+        String(req?.armazem_destino_tipo || '').toLowerCase() === 'central';
+      if (isCentralCentral) {
+        setRequisicoes((prev) =>
+          (prev || []).map((r) =>
+            Number(r?.id) === Number(reqId)
+              ? { ...r, recepcao_status: 'AGUARDANDO_RECECAO', status: 'EM EXPEDICAO' }
+              : r
+          )
+        );
+      }
+      setToast({
+        type: 'success',
+        message: isCentralCentral
+          ? 'Encaminhada para recebimento no destino. A origem fica em Em expedição (Aguardando receção).'
+          : 'Requisição marcada como Entregue.'
+      });
       await fetchRequisicoes();
     } catch (error) {
       setToast({ type: 'error', message: error.message || 'Erro ao entregar' });
@@ -437,7 +454,7 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
     const uniqueIds = Array.from(new Set(ids || [])).map(x => parseInt(x, 10)).filter(Boolean);
     const entregaveis = uniqueIds.filter(id => {
       const r = requisicoes.find(x => x.id === id);
-      return r?.status === 'EM EXPEDICAO';
+      return r?.status === 'EM EXPEDICAO' && !isAguardandoRececao(r);
     });
     if (entregaveis.length === 0) {
       setToast({ type: 'error', message: 'Selecione requisições em expedição para entregar.' });
@@ -469,6 +486,23 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
       for (const id of entregaveis) {
         // eslint-disable-next-line no-await-in-loop
         await marcarEntregue(id);
+      }
+      const centraisIds = entregaveis.filter((id) => {
+        const r = requisicoes.find((x) => Number(x?.id) === Number(id));
+        return (
+          String(r?.armazem_origem_tipo || '').toLowerCase() === 'central' &&
+          String(r?.armazem_destino_tipo || '').toLowerCase() === 'central'
+        );
+      });
+      if (centraisIds.length > 0) {
+        const idSet = new Set(centraisIds.map((x) => Number(x)));
+        setRequisicoes((prev) =>
+          (prev || []).map((r) =>
+            idSet.has(Number(r?.id))
+              ? { ...r, recepcao_status: 'AGUARDANDO_RECECAO', status: 'EM EXPEDICAO' }
+              : r
+          )
+        );
       }
       setToast({ type: 'success', message: 'Requisições marcadas como Entregue.' });
       await fetchRequisicoes();
@@ -711,6 +745,54 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
       setToast({ type: 'success', message: 'Recebimento finalizado.' });
     } catch (error) {
       setToast({ type: 'error', message: error.message || 'Erro ao finalizar recebimento' });
+    }
+  };
+
+  const handleConfirmarEntregaRecebimento = async (reqId) => {
+    try {
+      const ok = await confirm({
+        title: 'Confirmar entrega',
+        message: 'Deseja confirmar a entrega deste recebimento?',
+        confirmLabel: 'Confirmar',
+      });
+      if (!ok) return;
+      const token = localStorage.getItem('token');
+      const response = await fetch(`/api/requisicoes/transferencias/recebimento/${reqId}/confirmar-entrega`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || 'Erro ao confirmar entrega');
+      }
+      await fetchRequisicoes();
+      setToast({ type: 'success', message: 'Entrega confirmada.' });
+    } catch (error) {
+      setToast({ type: 'error', message: error.message || 'Erro ao confirmar entrega' });
+    }
+  };
+
+  const handleConfirmarTraRecebimento = async (reqId) => {
+    try {
+      const ok = await confirm({
+        title: 'Confirmar TRA',
+        message: 'Deseja confirmar o Nº TRA da origem para liberar a finalização?',
+        confirmLabel: 'Confirmar TRA',
+      });
+      if (!ok) return;
+      const token = localStorage.getItem('token');
+      const response = await fetch(`/api/requisicoes/transferencias/recebimento/${reqId}/confirmar-tra`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || 'Erro ao confirmar TRA');
+      }
+      await fetchRequisicoes();
+      setToast({ type: 'success', message: 'TRA confirmada. Finalização liberada.' });
+    } catch (error) {
+      setToast({ type: 'error', message: error.message || 'Erro ao confirmar TRA' });
     }
   };
 
@@ -1307,13 +1389,55 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
 
   const isFluxoRecebimentoMercadoria = (reqObj) => {
     const obs = String(reqObj?.observacoes || '').toUpperCase();
-    return obs.startsWith(RECEBIMENTO_TRANSFERENCIA_MARKER);
+    if (!obs.startsWith(RECEBIMENTO_TRANSFERENCIA_MARKER)) return false;
+    // Apenas tarefas espelho do destino (recebimento) devem entrar no fluxo "Recebimento de mercadoria".
+    return /AUTO_FROM_REQ:\s*\d+/i.test(String(reqObj?.observacoes || ''));
+  };
+
+  const recebimentoEntregaConfirmada = (reqObj) => Boolean(reqObj?.recebimento_entrega_confirmada);
+  const recebimentoTraConfirmada = (reqObj) => Boolean(reqObj?.recebimento_tra_confirmada);
+  const recebimentoAguardandoTraOrigem = (reqObj) => Boolean(reqObj?.aguardando_tra_origem);
+  const recebimentoPodeConfirmarTra = (reqObj) => Boolean(reqObj?.pode_confirmar_tra);
+  const recebimentoPodeFinalizar = (reqObj) => Boolean(reqObj?.pode_finalizar_recebimento);
+
+  const getRecebimentoFase = (reqObj) => {
+    if (!isFluxoRecebimentoMercadoria(reqObj)) return '';
+    if (!recebimentoEntregaConfirmada(reqObj)) return 'Aguardando confirmação de entrega';
+    if (recebimentoAguardandoTraOrigem(reqObj)) return 'Aguardando TRA da origem';
+    if (recebimentoTraConfirmada(reqObj)) return 'TRA confirmada';
+    if (recebimentoPodeConfirmarTra(reqObj)) return 'Pronto para confirmar TRA';
+    return '';
   };
 
   const isFluxoCentralApeadoSemTrfl = (reqObj) => {
     const origem = String(reqObj?.armazem_origem_tipo || '').trim().toLowerCase();
     const destino = String(reqObj?.armazem_destino_tipo || '').trim().toLowerCase();
     return origem === 'central' && destino === 'apeado';
+  };
+
+  const isAguardandoRececao = (reqObj) =>
+    String(reqObj?.recepcao_status || '').toUpperCase() === 'AGUARDANDO_RECECAO';
+
+  const getRececaoLabel = (reqObj) => {
+    const st = String(reqObj?.recepcao_status || '').toUpperCase();
+    if (st === 'AGUARDANDO_RECECAO') return 'Aguardando receção';
+    if (st === 'RECECIONADA_TOTAL') return 'Rececionada: total';
+    if (st === 'RECECIONADA_PARCIAL') return 'Rececionada: parcial';
+    return '';
+  };
+
+  const rececaoConcluidaOrigem = (reqObj) => {
+    const st = String(reqObj?.recepcao_status || '').toUpperCase();
+    return st === 'RECECIONADA_TOTAL' || st === 'RECECIONADA_PARCIAL';
+  };
+
+  const podeGerarTraAposRececao = (reqObj) => {
+    if (!reqObj || isFluxoRecebimentoMercadoria(reqObj)) return false;
+    if (String(reqObj?.tra_gerada_em || '').trim()) return false;
+    const status = String(reqObj?.status || '');
+    if (status === 'Entregue') return true;
+    // Fluxo central->central: após receção confirmada no destino, pode gerar TRA mesmo em EM_EXPEDICAO.
+    return status === 'EM EXPEDICAO' && rececaoConcluidaOrigem(reqObj);
   };
 
   const getEpiColaboradorFromObs = (reqObj) => {
@@ -1420,7 +1544,11 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
 
   const requisicoesOrdenadas = [...filteredRequisicoes].sort((a, b) => {
     if (filtros.status) {
-      // FIFO por status: mais antigas primeiro.
+      if (String(filtros.status) === 'FINALIZADO') {
+        // Finalizados: mais recentes primeiro.
+        return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+      }
+      // FIFO nos demais status: mais antigas primeiro.
       return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
     }
     return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
@@ -1768,7 +1896,7 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
           </div>
         ) : (
           <div className="space-y-4">
-            {filtros.status && (
+            {filtros.status && String(filtros.status) !== 'FINALIZADO' && (
               <div className="text-xs text-gray-600 px-1">
                 FIFO ativo: listagem da mais antiga para a mais nova.
               </div>
@@ -1791,7 +1919,7 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
                 }`}
                 onContextMenu={(e) => handleContextMenu(e, req)}
               >
-                {filtros.status && (
+                {filtros.status && String(filtros.status) !== 'FINALIZADO' && (
                   <span className="absolute left-3 top-3 px-2 py-0.5 text-[10px] rounded-full bg-indigo-100 text-indigo-700 font-semibold">
                     FIFO #{idx + 1}
                   </span>
@@ -1850,6 +1978,32 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
                               Separação: {separadorNome}
                             </span>
                           )}
+                          {isFluxoRecebimentoMercadoria(req) && getRecebimentoFase(req) && (
+                            <span
+                              className={`px-2 py-0.5 text-[10px] font-semibold rounded-full uppercase tracking-wide ${
+                                recebimentoAguardandoTraOrigem(req)
+                                  ? 'bg-amber-100 text-amber-900'
+                                  : recebimentoTraConfirmada(req)
+                                    ? 'bg-emerald-100 text-emerald-900'
+                                    : 'bg-indigo-100 text-indigo-900'
+                              }`}
+                            >
+                              {getRecebimentoFase(req)}
+                            </span>
+                          )}
+                          {getRececaoLabel(req) && (
+                            <span
+                              className={`px-2 py-0.5 text-[10px] font-semibold rounded-full uppercase tracking-wide ${
+                                isAguardandoRececao(req)
+                                  ? 'bg-amber-100 text-amber-900'
+                                  : String(req?.recepcao_status || '').toUpperCase() === 'RECECIONADA_PARCIAL'
+                                    ? 'bg-orange-100 text-orange-900'
+                                    : 'bg-emerald-100 text-emerald-900'
+                              }`}
+                            >
+                              {getRececaoLabel(req)}
+                            </span>
+                          )}
                           {req.itens && req.itens.length > 0 && (
                             <span className="text-xs text-gray-500">
                               {req.itens.length} {req.itens.length === 1 ? 'item' : 'itens'}
@@ -1887,15 +2041,38 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
                               </>
                             );
                           })()}
-                          {req.armazem_origem_descricao && (
-                            <div><strong>Origem:</strong> {req.armazem_origem_descricao}</div>
-                          )}
-                          <div><strong>Destino:</strong> {req.armazem_descricao}</div>
+                          {(() => {
+                            const isReceb = isFluxoRecebimentoMercadoria(req);
+                            // No fluxo de recebimento, a modelagem usa:
+                            // - armazem_origem_* = armazém de recebimento (destino real)
+                            // - armazem_*        = armazém de envio (origem real)
+                            const origemLabel = isReceb ? req.armazem_descricao : req.armazem_origem_descricao;
+                            const destinoLabel = isReceb ? req.armazem_origem_descricao : req.armazem_descricao;
+                            return (
+                              <>
+                                {origemLabel && (
+                                  <div><strong>Origem:</strong> {origemLabel}</div>
+                                )}
+                                <div><strong>Destino:</strong> {destinoLabel}</div>
+                              </>
+                            );
+                          })()}
                           {req.localizacao && (
                             <div><strong>Localização:</strong> {req.localizacao}</div>
                           )}
                           <div><strong>Criado por:</strong> {formatCriadorRequisicao(req)}</div>
                           <div><strong>Data:</strong> {new Date(req.created_at).toLocaleDateString('pt-BR')}</div>
+                          {isFluxoRecebimentoMercadoria(req) && req.requisicao_origem_tra_numero && (
+                            <div><strong>Nº TRA (origem):</strong> {req.requisicao_origem_tra_numero}</div>
+                          )}
+                          {isFluxoRecebimentoMercadoria(req) && recebimentoAguardandoTraOrigem(req) && (
+                            <div><strong>TRA:</strong> Aguardando TRA da origem</div>
+                          )}
+                          {getRececaoLabel(req) && (
+                            <div>
+                              <strong>Receção:</strong> {getRececaoLabel(req)}
+                            </div>
+                          )}
                         </div>
                         {!isFluxoRecebimentoMercadoria(req) && req.tra_gerada_em && (
                           <div className="mt-3 flex items-end gap-2 flex-wrap" onClick={(e) => e.stopPropagation()}>
@@ -1925,17 +2102,36 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
                       </div>
                     </div>
                   <div className="flex gap-2 mt-4 sm:mt-0 flex-wrap" onClick={(e) => e.stopPropagation()}>
-                    {isFluxoRecebimentoMercadoria(req) && canDocsELogisticaPosSeparacao && req.status === 'EM EXPEDICAO' && (
+                    {isFluxoRecebimentoMercadoria(req) &&
+                      canDocsELogisticaPosSeparacao &&
+                      req.status === 'EM EXPEDICAO' &&
+                      !recebimentoEntregaConfirmada(req) && (
                       <button
                         type="button"
                         disabled={prepBloqueio}
-                        onClick={() => handleExportReporteRecebimento(req)}
-                        className={`px-3 py-2 text-indigo-700 rounded-lg border border-indigo-300 transition-colors ${
-                          prepBloqueio ? 'opacity-50 cursor-not-allowed' : 'hover:bg-indigo-50'
+                        onClick={() => handleConfirmarEntregaRecebimento(req.id)}
+                        className={`px-3 py-2 rounded-lg bg-amber-600 text-white transition-colors ${
+                          prepBloqueio ? 'opacity-50 cursor-not-allowed' : 'hover:bg-amber-700'
                         }`}
-                        title={prepBloqueio ? 'Reservada para separação a outro operador' : 'Gerar reporte de recebimento'}
+                        title={prepBloqueio ? 'Reservada para separação a outro operador' : 'Confirmar entrega no recebimento'}
                       >
-                        GERAR REPORTE
+                        CONFIRMAR ENTREGA
+                      </button>
+                    )}
+                    {isFluxoRecebimentoMercadoria(req) &&
+                      canDocsELogisticaPosSeparacao &&
+                      req.status === 'EM EXPEDICAO' &&
+                      recebimentoPodeConfirmarTra(req) && (
+                      <button
+                        type="button"
+                        disabled={prepBloqueio}
+                        onClick={() => handleConfirmarTraRecebimento(req.id)}
+                        className={`px-3 py-2 rounded-lg bg-indigo-600 text-white transition-colors ${
+                          prepBloqueio ? 'opacity-50 cursor-not-allowed' : 'hover:bg-indigo-700'
+                        }`}
+                        title={prepBloqueio ? 'Reservada para separação a outro operador' : 'Confirmar TRA da origem'}
+                      >
+                        CONFIRMAR TRA
                       </button>
                     )}
                     {isFluxoRecebimentoMercadoria(req) &&
@@ -1956,20 +2152,10 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
                         Receber stock
                       </button>
                     )}
-                    {isFluxoRecebimentoMercadoria(req) && canDocsELogisticaPosSeparacao && req.status === 'FINALIZADO' && (
-                      <button
-                        type="button"
-                        disabled={prepBloqueio}
-                        onClick={() => handleExportReporteRecebimento(req)}
-                        className={`px-3 py-2 text-indigo-700 rounded-lg border border-indigo-300 transition-colors ${
-                          prepBloqueio ? 'opacity-50 cursor-not-allowed' : 'hover:bg-indigo-50'
-                        }`}
-                        title={prepBloqueio ? 'Reservada para separação a outro operador' : 'Baixar reporte de recebimento'}
-                      >
-                        BAIXAR REPORTE
-                      </button>
-                    )}
-                    {isFluxoRecebimentoMercadoria(req) && canDocsELogisticaPosSeparacao && req.status === 'EM EXPEDICAO' && (
+                    {isFluxoRecebimentoMercadoria(req) &&
+                      canDocsELogisticaPosSeparacao &&
+                      req.status === 'EM EXPEDICAO' &&
+                      recebimentoPodeFinalizar(req) && (
                       <button
                         type="button"
                         disabled={prepBloqueio}
@@ -2005,19 +2191,25 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
                     {canPrepare && !isFluxoRecebimentoMercadoria(req) && req.status === 'EM EXPEDICAO' && (
                       <button
                         type="button"
-                        disabled={prepBloqueio}
+                        disabled={prepBloqueio || isAguardandoRececao(req)}
                         onClick={() => handleEntregar(req)}
                         className={`px-3 py-2 bg-amber-600 text-white rounded-lg transition-colors ${
-                          prepBloqueio ? 'opacity-50 cursor-not-allowed' : 'hover:bg-amber-700'
+                          prepBloqueio || isAguardandoRececao(req) ? 'opacity-50 cursor-not-allowed' : 'hover:bg-amber-700'
                         }`}
-                        title={prepBloqueio ? 'Reservada para separação a outro operador' : 'Alterar status para Entregue'}
+                        title={
+                          prepBloqueio
+                            ? 'Reservada para separação a outro operador'
+                            : isAguardandoRececao(req)
+                              ? 'Aguardando receção no armazém destino'
+                              : 'Encaminhar para recebimento no destino'
+                        }
                       >
-                        ENTREGAR
+                        {isAguardandoRececao(req) ? 'AGUARDANDO RECEÇÃO' : 'ENTREGAR'}
                       </button>
                     )}
                     {canDocsELogisticaPosSeparacao &&
                     !isFluxoRecebimentoMercadoria(req) &&
-                    (((req.status === 'Entregue' && !req.tra_gerada_em) ||
+                    ((podeGerarTraAposRececao(req) ||
                       (isFluxoCentralApeadoSemTrfl(req) && req.status === 'separado' && req.separacao_confirmada && !req.tra_gerada_em))) && (
                       <button
                         type="button"
@@ -2177,9 +2369,9 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
               const canGerarTRFL = all(r => r.status === 'separado' && r.separacao_confirmada);
               const canBaixarTRFL = all(r => ['EM EXPEDICAO', 'Entregue', 'FINALIZADO'].includes(r.status));
 
-              const canEntregar = all(r => r.status === 'EM EXPEDICAO');
+              const canEntregar = all(r => r.status === 'EM EXPEDICAO' && !isAguardandoRececao(r));
 
-              const canGerarTRA = all(r => r.status === 'Entregue' && !r.tra_gerada_em);
+              const canGerarTRA = all(r => podeGerarTraAposRececao(r));
               const canBaixarTRA = all(r => (r.status === 'Entregue' && r.tra_gerada_em) || r.status === 'FINALIZADO');
               const canGerarReporte = all(r => (r.status === 'Entregue' && r.tra_gerada_em) || r.status === 'FINALIZADO');
               const canGerarClog = all(

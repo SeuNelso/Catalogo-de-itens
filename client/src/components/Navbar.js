@@ -232,7 +232,7 @@ const Navbar = () => {
   return (
     <header className="w-full bg-[#0915FF] text-white fixed top-0 left-0 z-50 shadow-lg h-14 flex items-center">
       <div className="w-full max-w-7xl mx-auto flex items-center justify-between h-14 px-4 sm:px-6">
-        <div className="text-lg sm:text-xl md:text-2xl font-black tracking-wider text-white mr-2 sm:mr-4 md:mr-8 flex-shrink-0">CATÁLOGO</div>
+        <div className="text-lg sm:text-xl md:text-2xl font-black tracking-wider text-white mr-2 sm:mr-4 md:mr-8 flex-shrink-0">Clog</div>
         
         {/* Desktop Menu - Visível apenas em telas médias e grandes */}
         <nav className="hidden md:flex items-center gap-2 lg:gap-4 xl:gap-6 flex-1 justify-center transition-all duration-200">
