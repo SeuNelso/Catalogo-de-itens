@@ -476,6 +476,69 @@ const ListarDevolucoes = () => {
     }
   };
 
+  const handleExportDEVDevolucaoMulti = async (idsArg, opts = {}) => {
+    const ids = Array.from(new Set(idsArg || selectedIds)).map((x) => parseInt(x, 10)).filter(Boolean);
+    if (ids.length < 2) {
+      setToast({ type: 'error', message: 'Selecione pelo menos 2 devoluções para o DEV combinado.' });
+      return;
+    }
+    try {
+      const isRedownload = Boolean(opts.redownload);
+      if (isRedownload) {
+        const ok = await confirm({
+          title: 'Baixar DEV combinado',
+          message: `Deseja baixar novamente o DEV combinado de ${ids.length} devolução(ões)?`,
+          confirmLabel: 'Baixar novamente',
+          variant: 'warning'
+        });
+        if (!ok) return;
+      } else {
+        const ok = await confirm({
+          title: 'Gerar DEV combinado',
+          message: `Deseja gerar o DEV combinado de ${ids.length} devolução(ões)?`,
+          confirmLabel: 'Continuar'
+        });
+        if (!ok) return;
+      }
+
+      const token = localStorage.getItem('token');
+      const response = await fetch('/api/requisicoes/export-dev-multi', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ ids })
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || 'Erro ao exportar DEV combinado');
+      }
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `DEV_multi_${new Date().toISOString().slice(0, 10)}.xlsx`;
+      a.click();
+      window.URL.revokeObjectURL(url);
+      setToast({
+        type: 'success',
+        message: isRedownload ? 'DEV combinado baixado novamente.' : 'DEV combinado gerado com sucesso.'
+      });
+      if (!isRedownload) {
+        setReceberAtivoIds((prev) => {
+          const next = new Set(prev);
+          for (const id of ids) next.delete(id);
+          return next;
+        });
+      }
+      await fetchDevolucoes();
+    } catch (error) {
+      console.error('Erro ao exportar DEV combinado:', error);
+      setToast({ type: 'error', message: error.message || 'Erro ao exportar DEV combinado' });
+    }
+  };
+
   const handleTraNumeroChange = (reqId, value) => {
     setTraNumeroByReqId((prev) => ({ ...prev, [reqId]: value }));
   };
@@ -679,6 +742,26 @@ const ListarDevolucoes = () => {
 
   const computeDevolucaoCardDerived = (r) => {
     const itensCount = (r.itens || []).length || 0;
+    const rastreioItens = (r.itens || [])
+      .map((it) => {
+        const tipo = String(it?.tipocontrolo || '').toUpperCase();
+        const posicao = String(it?.localizacao_origem || '').trim();
+        const lote = String(it?.lote || '').trim();
+        const serial = String(it?.serialnumber || '').trim();
+        const isLoteOuSerial = tipo === 'LOTE' || tipo === 'S/N';
+        if (!isLoteOuSerial && !lote && !serial) return null;
+        return {
+          id: it?.id,
+          item_codigo: it?.item_codigo,
+          item_descricao: it?.item_descricao,
+          tipocontrolo: tipo || '—',
+          posicao: posicao || '—',
+          lote: lote || '—',
+          serial: serial || '—',
+          quantidade: Number(it?.quantidade_preparada ?? it?.quantidade ?? 0) || 0
+        };
+      })
+      .filter(Boolean);
     const apeadosItens = (r.itens || []).filter((it) => {
       const q = Number(it?.quantidade_apeados ?? 0) || 0;
       return q > 0;
@@ -692,10 +775,15 @@ const ListarDevolucoes = () => {
       })
       .filter(Boolean);
     const reqIdNum = Number(r.id);
-    const selectedApeadoId = apeadoDestinoByReqId[reqIdNum] ?? (apeadoArmazens[0]?.id ?? '');
     const podeFinalizarTransferenciasPendentes = devolucaoPodeFinalizarTransferenciasPendentes(r);
     const armazemCentralDestino =
       (armazensDestino || []).find((a) => Number(a?.id) === Number(r.armazem_id)) || null;
+    const apeadoVinculadoDefault = (apeadoArmazens || []).find(
+      (a) => Number(a?.armazem_central_vinculado_id) === Number(armazemCentralDestino?.id)
+    );
+    const selectedApeadoId =
+      apeadoDestinoByReqId[reqIdNum] ??
+      (apeadoVinculadoDefault?.id ?? (apeadoArmazens[0]?.id ?? ''));
     const locsCentralAll = Array.isArray(armazemCentralDestino?.localizacoes)
       ? armazemCentralDestino.localizacoes
           .map((l) => ({
@@ -721,6 +809,7 @@ const ListarDevolucoes = () => {
     });
     return {
       itensCount,
+      rastreioItens,
       apeadosItens,
       pendenteArmazenagemItens,
       reqIdNum,
@@ -831,7 +920,7 @@ const ListarDevolucoes = () => {
     } finally {
       setReceberAtivoIds((prev) => {
         const next = new Set(prev);
-        next.add(reqId);
+        next.add(Number(reqId));
         return next;
       });
     }
@@ -1434,6 +1523,13 @@ const ListarDevolucoes = () => {
                     <>
                       <button
                         type="button"
+                        onClick={() => handleExportDEVDevolucaoMulti(selectedIds)}
+                        className="inline-flex items-center gap-2 px-3 py-2 border border-gray-300 text-gray-800 rounded-lg hover:bg-gray-50 text-sm"
+                      >
+                        DEV (combinado)
+                      </button>
+                      <button
+                        type="button"
                         onClick={() => handleExportMultiReporte(selectedIds)}
                         className="inline-flex items-center gap-2 px-3 py-2 border border-gray-300 text-gray-800 rounded-lg hover:bg-gray-50 text-sm"
                       >
@@ -1503,6 +1599,7 @@ const ListarDevolucoes = () => {
                   const d = computeDevolucaoCardDerived(r);
                   const {
                     itensCount,
+                    rastreioItens,
                     apeadosItens,
                     pendenteArmazenagemItens,
                     reqIdNum,
@@ -1572,8 +1669,8 @@ const ListarDevolucoes = () => {
                           navigate(`/requisicoes/preparar/${r.id}`);
                         }}
                       >
-                        <div className="grid grid-cols-1 xl:grid-cols-[240px_minmax(0,1fr)] gap-4">
-                          <div className="flex-1">
+                        <div className="grid grid-cols-1 lg:grid-cols-[260px_minmax(0,1fr)] gap-3">
+                          <div className="min-w-0">
                             <div className="flex items-center gap-3 mb-2 flex-wrap">
                               <span className="text-lg font-bold text-gray-900">#{r.id}</span>
                               <span className={`px-2 py-1 text-xs font-semibold rounded-full ${getStatusBadge(r.status)}`}>
@@ -1582,7 +1679,7 @@ const ListarDevolucoes = () => {
 
                               {isRequisicaoDoUtilizadorAtual(r, user) && (
                                 <span className="px-2 py-0.5 text-[10px] font-semibold rounded-full bg-violet-100 text-violet-800 uppercase tracking-wide">
-                                  MINHA REQUISIÇÃO
+                                  Minha requisição
                                 </span>
                               )}
 
@@ -1619,26 +1716,32 @@ const ListarDevolucoes = () => {
                               </span>
                             )}
 
-                            <div className="text-sm text-gray-600 space-y-1">
-                              <div>
-                                <strong>Origem:</strong> {r.armazem_origem_descricao || r.armazem_origem_codigo}
+                            <div className="text-[13px] text-gray-700 space-y-1 leading-5">
+                              <div className="flex">
+                                <strong className="inline-block w-20 shrink-0 text-gray-800">Origem:</strong>
+                                <span className="break-words">{r.armazem_origem_descricao || r.armazem_origem_codigo}</span>
                               </div>
-                              <div>
-                                <strong>Destino:</strong> {r.armazem_descricao}
+                              <div className="flex">
+                                <strong className="inline-block w-20 shrink-0 text-gray-800">Destino:</strong>
+                                <span className="break-words">{r.armazem_descricao}</span>
                               </div>
                               {r.localizacao && (
-                                <div>
-                                  <strong>Localização:</strong> {r.localizacao}
+                                <div className="flex">
+                                  <strong className="inline-block w-20 shrink-0 text-gray-800">Localização:</strong>
+                                  <span className="break-words">{r.localizacao}</span>
                                 </div>
                               )}
-                              <div>
-                                <strong>Criado por:</strong> {formatCriadorRequisicao(r)}
+                              <div className="flex">
+                                <strong className="inline-block w-20 shrink-0 text-gray-800">Criado por:</strong>
+                                <span className="break-words">{formatCriadorRequisicao(r)}</span>
                               </div>
-                              <div>
-                                <strong>Data:</strong> {createdBr}
+                              <div className="flex">
+                                <strong className="inline-block w-20 shrink-0 text-gray-800">Data:</strong>
+                                <span>{createdBr}</span>
                               </div>
-                              <div>
-                                <strong>Nº de DEV:</strong> {String(r.tra_numero || '').trim() || '—'}
+                              <div className="flex">
+                                <strong className="inline-block w-20 shrink-0 text-gray-800">Nº de DEV:</strong>
+                                <span>{String(r.tra_numero || '').trim() || '—'}</span>
                               </div>
                             </div>
                             {r.status === 'EM EXPEDICAO' && Boolean(r.devolucao_tra_gerada_em || r.tra_gerada_em) && (
@@ -1668,7 +1771,8 @@ const ListarDevolucoes = () => {
                             )}
                           </div>
 
-                          <div className="flex gap-2 mt-2 xl:mt-0 flex-wrap content-start" onClick={(e) => e.stopPropagation()}>
+                          <div className="min-w-0 w-full lg:max-w-3xl lg:justify-self-end">
+                            <div className="flex gap-2 mt-2 lg:mt-0 flex-wrap content-start justify-start lg:justify-end" onClick={(e) => e.stopPropagation()}>
                             {podePrepararAqui &&
                               (r.status === 'pendente' || r.status === 'EM SEPARACAO' || r.status === 'separado') && (
                                 <button
@@ -1721,7 +1825,7 @@ const ListarDevolucoes = () => {
                               )}
 
                             {/* Fluxo devolução: EM EXPEDICAO */}
-                            {r.status === 'EM EXPEDICAO' && canEntregar && !r.devolucao_tra_gerada_em && !receberAtivoIds.has(r.id) && (
+                            {r.status === 'EM EXPEDICAO' && canEntregar && !r.devolucao_tra_gerada_em && !receberAtivoIds.has(reqIdNum) && (
                               <button
                                 type="button"
                                 onClick={() => handleReceberDevolucaoComPdf(r, prepBloqueio)}
@@ -1736,7 +1840,7 @@ const ListarDevolucoes = () => {
                               </button>
                             )}
 
-                            {r.status === 'EM EXPEDICAO' && canEntregar && !r.devolucao_tra_gerada_em && receberAtivoIds.has(r.id) && (
+                            {r.status === 'EM EXPEDICAO' && canEntregar && !r.devolucao_tra_gerada_em && receberAtivoIds.has(reqIdNum) && (
                               <button
                                 type="button"
                                 onClick={() => handleExportTRADevolucao(r.id)}
@@ -1771,6 +1875,16 @@ const ListarDevolucoes = () => {
                                 Finalizar
                               </button>
                             )}
+                            {r.status === 'APEADOS' && canDeleteDevolucao(r) && (
+                              <button
+                                type="button"
+                                onClick={() => handleDelete(r.id)}
+                                className="px-3 py-2 text-red-600 hover:bg-red-600 hover:text-white rounded-lg transition-colors"
+                                title="Excluir"
+                              >
+                                <FaTrash />
+                              </button>
+                            )}
 
                             {r.status === 'APEADOS' && canEntregar && !!r.devolucao_trfl_gerada_em && (
                               <button
@@ -1789,24 +1903,23 @@ const ListarDevolucoes = () => {
 
                             {r.status === 'APEADOS' &&
                               canEntregar &&
-                              !!r.devolucao_tra_gerada_em && (
-                                <div className="w-full mt-4 rounded-lg border border-purple-200 bg-purple-50 p-4">
-                                  <div className="text-[11px] font-semibold uppercase tracking-wide text-purple-800 mb-3">
+                              !!r.devolucao_tra_gerada_em &&
+                              apeadosItens.length > 0 && (
+                                <div className="w-full mt-3 rounded-lg border border-purple-200 bg-purple-50 p-3">
+                                  <div className="text-[11px] font-semibold uppercase tracking-wide text-purple-800 mb-2">
                                     Tarefa APEADOS (gerar TRA)
                                   </div>
 
-                                  <div className="flex flex-col sm:flex-row sm:items-end gap-3">
+                                  <div className="flex flex-col sm:flex-row sm:items-end gap-2">
                                     <div className="w-full sm:max-w-[560px]">
-                                      <label className="block text-[11px] font-medium text-purple-900 mb-1.5">
+                                      <label className="block text-[11px] font-medium text-purple-900 mb-1">
                                         Destino APEADO
                                       </label>
                                       <select
                                         value={selectedApeadoId}
-                                        onChange={(e) => {
-                                          const next = e.target.value ? Number(e.target.value) : '';
-                                          setApeadoDestinoByReqId((prev) => ({ ...prev, [reqIdNum]: next }));
-                                        }}
-                                        className="w-full px-3 py-2 border border-purple-300 rounded-lg bg-white text-sm focus:ring-2 focus:ring-[#0915FF]"
+                                        onChange={() => {}}
+                                        disabled
+                                        className="w-full px-3 py-2 border border-purple-300 rounded-lg bg-gray-100 text-sm text-gray-700 cursor-not-allowed"
                                       >
                                         <option value="">
                                           Selecione um armazém APEADO
@@ -1894,17 +2007,17 @@ const ListarDevolucoes = () => {
                             {r.status === 'APEADOS' &&
                               canEntregar &&
                               !!r.devolucao_tra_gerada_em && (
-                                <div className="w-full mt-4 rounded-lg border border-amber-200 bg-amber-50 p-4">
-                                  <div className="text-[11px] font-semibold uppercase tracking-wide text-amber-800 mb-3">
-                                    Pendente de armazenagem (gerar TRFL)
-                                  </div>
+                                <div className="w-full mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3">
+                                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-2">
+                                    <div className="text-[11px] font-semibold uppercase tracking-wide text-amber-800">
+                                      Pendente de armazenagem (gerar TRFL)
+                                    </div>
 
-                                  <div className="flex flex-col sm:flex-row sm:items-end gap-3">
                                     <button
                                       type="button"
                                       onClick={() => handleExportTRFLPendenteArmazenagem(r.id, pendenteItemLocMap)}
                                       disabled={prepBloqueio || pendenteArmazenagemItens.length === 0 || !todosPendentesComLoc}
-                                      className={`px-3 py-2 text-amber-800 hover:bg-amber-100 rounded-lg border border-amber-300 transition-colors flex items-center gap-2 whitespace-nowrap ${
+                                      className={`px-3 py-2 text-amber-800 hover:bg-amber-100 rounded-lg border border-amber-300 transition-colors flex items-center gap-2 whitespace-nowrap self-start ${
                                         prepBloqueio || pendenteArmazenagemItens.length === 0 || !todosPendentesComLoc
                                           ? 'opacity-50 cursor-not-allowed hover:bg-amber-50'
                                           : ''
@@ -1916,41 +2029,35 @@ const ListarDevolucoes = () => {
                                   </div>
 
                                   {pendenteArmazenagemItens.length > 0 ? (
-                                    <div className="mt-4">
-                                      <div className="text-[11px] font-semibold text-amber-900 mb-2">
-                                        Itens pendentes de armazenagem
-                                      </div>
-                                      <div className="space-y-1.5">
-                                        {pendenteArmazenagemItens.map((it) => (
-                                          <div
-                                            key={it.id}
-                                            className="grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_170px_80px] gap-2 items-center text-sm text-amber-900 leading-5"
-                                          >
-                                            <span className="truncate">
-                                              {it.item_codigo}
-                                              {it.item_descricao ? ` - ${it.item_descricao}` : ''}
-                                            </span>
+                                    <div className="space-y-1.5">
+                                      {pendenteArmazenagemItens.map((it) => (
+                                        <div key={it.id} className="rounded-md border border-amber-200 bg-white px-3 py-2.5">
+                                          <div className="text-sm text-amber-900 font-medium break-words">
+                                            {it.item_codigo}
+                                            {it.item_descricao ? ` - ${it.item_descricao}` : ''}
+                                          </div>
+                                          <div className="mt-2 grid grid-cols-1 sm:grid-cols-[90px_minmax(0,1fr)] gap-2 items-center">
+                                            <div className="text-xs font-semibold text-amber-800">
+                                              Qtd: {Number(it.quantidade_pendente_armazenagem) || 0}
+                                            </div>
                                             <select
                                               value={pendenteItemLocMap[String(it.id)] || ''}
                                               onChange={(e) => {
                                                 const mapKey = `${reqIdNum}:${it.id}`;
                                                 setPendenteLocByReqItemId((prev) => ({ ...prev, [mapKey]: e.target.value || '' }));
                                               }}
-                                              className="w-full px-2 py-1.5 border border-amber-300 rounded bg-white text-xs focus:ring-2 focus:ring-[#0915FF]"
+                                              className="w-full px-2.5 py-2 border border-amber-300 rounded bg-white text-xs focus:ring-2 focus:ring-[#0915FF]"
                                             >
-                                              <option value="">Localização</option>
+                                              <option value="">Selecionar localização destino</option>
                                               {locsCentralDestino.map((loc) => (
                                                 <option key={loc} value={loc}>
                                                   {loc}
                                                 </option>
                                               ))}
                                             </select>
-                                            <span className="font-semibold tabular-nums">
-                                              {Number(it.quantidade_pendente_armazenagem) || 0}
-                                            </span>
                                           </div>
-                                        ))}
-                                      </div>
+                                        </div>
+                                      ))}
                                     </div>
                                   ) : (
                                     <div className="mt-4 text-xs text-amber-900/80">
@@ -1987,7 +2094,7 @@ const ListarDevolucoes = () => {
                               </button>
                             )}
 
-                            {canDeleteDevolucao(r) && (
+                            {canDeleteDevolucao(r) && r.status !== 'APEADOS' && (
                               <button
                                 type="button"
                                 onClick={() => handleDelete(r.id)}
@@ -1997,6 +2104,7 @@ const ListarDevolucoes = () => {
                                 <FaTrash />
                               </button>
                             )}
+                            </div>
                           </div>
                         </div>
                       </div>
@@ -2082,6 +2190,21 @@ const ListarDevolucoes = () => {
                   receberAtivoIds.has(Number(r0.id));
                 const canBaixarDEV =
                   !isMulti && complete && r0 && Boolean(r0.devolucao_tra_gerada_em);
+                const canGerarDEVMulti =
+                  Boolean(canDocsELogisticaPosSeparacao) &&
+                  isMulti &&
+                  complete &&
+                  reqs.every(
+                    (x) =>
+                      x.status === 'EM EXPEDICAO' &&
+                      !x.devolucao_tra_gerada_em &&
+                      receberAtivoIds.has(Number(x.id))
+                  );
+                const canBaixarDEVMulti =
+                  Boolean(canDocsELogisticaPosSeparacao) &&
+                  isMulti &&
+                  complete &&
+                  reqs.every((x) => Boolean(x.devolucao_tra_gerada_em));
 
                 const canGerarTraApe =
                   Boolean(canDocsELogisticaPosSeparacao) &&
@@ -2099,6 +2222,8 @@ const ListarDevolucoes = () => {
                   !isMulti &&
                   complete &&
                   r0 &&
+                  dxSingle &&
+                  dxSingle.apeadosItens.length > 0 &&
                   Boolean(r0.devolucao_tra_apeados_gerada_em);
 
                 const canGerarTrflPend =
@@ -2152,6 +2277,13 @@ const ListarDevolucoes = () => {
                       Boolean(x.devolucao_tra_gerada_em) &&
                       Boolean(String(x.tra_numero || '').trim()))
                 );
+                const canGerarReporteReceberCtx =
+                  Boolean(canDocsELogisticaPosSeparacao) &&
+                  !isMulti &&
+                  complete &&
+                  r0 &&
+                  r0.status === 'EM EXPEDICAO' &&
+                  receberAtivoIds.has(Number(r0.id));
 
                 const canBaixarComprovativo = all((x) => ['Entregue', 'FINALIZADO'].includes(x.status));
 
@@ -2161,21 +2293,29 @@ const ListarDevolucoes = () => {
 
                 return (
                   <>
-                    {canDocsELogisticaPosSeparacao && (canGerarDEV || canBaixarDEV) && (
+                    {canDocsELogisticaPosSeparacao &&
+                      (canGerarDEV || canBaixarDEV || canGerarDEVMulti || canBaixarDEVMulti) && (
                       <button
                         type="button"
-                        disabled={Boolean(canGerarDEV && algumaPrepBloqueio)}
+                        disabled={Boolean((canGerarDEV || canGerarDEVMulti) && algumaPrepBloqueio)}
                         className={`block w-full text-left px-4 py-2 hover:bg-gray-100 ${
-                          canGerarDEV && algumaPrepBloqueio ? 'opacity-50 cursor-not-allowed' : ''
+                          (canGerarDEV || canGerarDEVMulti) && algumaPrepBloqueio ? 'opacity-50 cursor-not-allowed' : ''
                         }`}
-                        title={canGerarDEV && algumaPrepBloqueio ? 'Reservada para preparação a outro operador' : undefined}
+                        title={(canGerarDEV || canGerarDEVMulti) && algumaPrepBloqueio ? 'Reservada para preparação a outro operador' : undefined}
                         onClick={() => {
+                          if (isMulti) {
+                            handleExportDEVDevolucaoMulti(ids, { redownload: canBaixarDEVMulti && !canGerarDEVMulti });
+                            setContextMenu((prev) => ({ ...prev, visible: false }));
+                            return;
+                          }
                           if (!r0) return;
                           handleExportTRADevolucao(r0.id, { redownload: canBaixarDEV && !canGerarDEV });
                           setContextMenu((prev) => ({ ...prev, visible: false }));
                         }}
                       >
-                        {canGerarDEV ? 'GERAR DEV' : 'Baixar DEV'}
+                        {isMulti
+                          ? (canGerarDEVMulti ? 'GERAR DEV (MULTI)' : 'Baixar DEV (MULTI)')
+                          : (canGerarDEV ? 'GERAR DEV' : 'Baixar DEV')}
                       </button>
                     )}
 
@@ -2258,6 +2398,18 @@ const ListarDevolucoes = () => {
                         }}
                       >
                         Reporte
+                      </button>
+                    )}
+
+                    {canGerarReporteReceberCtx && (
+                      <button
+                        className="block w-full text-left px-4 py-2 hover:bg-gray-100"
+                        onClick={() => {
+                          handleExportReporte(contextMenu.req);
+                          setContextMenu((prev) => ({ ...prev, visible: false }));
+                        }}
+                      >
+                        Reporte da devolução
                       </button>
                     )}
 

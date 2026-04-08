@@ -1655,6 +1655,16 @@ function podeExportarReporteOuClog(requisicao) {
   return false;
 }
 
+/** Reporte de devolução em conferência: permitir em EM EXPEDICAO no fluxo viatura -> central. */
+function podeExportarReporteDevolucaoEmProcesso(requisicao) {
+  const st = String(requisicao?.status || '');
+  if (st !== 'EM EXPEDICAO') return false;
+  return isFluxoDevolucaoViaturaCentral(
+    requisicao?.armazem_origem_tipo,
+    requisicao?.armazem_destino_tipo
+  );
+}
+
 /** Clog permite também devolução em APEADOS após DEV + Nº DEV guardado. */
 function podeExportarClog(requisicao) {
   if (podeExportarReporteOuClog(requisicao)) return true;
@@ -3318,6 +3328,214 @@ router.post('/export-tra-multi', ...requisicaoAuth, denyOperador, async (req, re
   }
 });
 
+// DEV combinado — várias devoluções (viatura -> central) num único ficheiro
+router.post('/export-dev-multi', ...requisicaoAuth, denyOperador, async (req, res) => {
+  try {
+    const { ids } = req.body || {};
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ error: 'Envie um array de IDs de devoluções.' });
+    }
+
+    try {
+      await assertIdsRequisicoesPermitidas(req, ids);
+    } catch (e) {
+      if (e.statusCode === 403) return res.status(403).json({ error: e.message });
+      throw e;
+    }
+
+    let allRows = [];
+
+    for (const rawId of ids) {
+      const id = parseInt(rawId, 10);
+      if (!id) continue;
+
+      const requisicao = await getRequisicaoComItens(id);
+      if (!requisicao) continue;
+
+      const tipoOrigNorm = String(requisicao?.armazem_origem_tipo || '').trim().toLowerCase();
+      const tipoDestNorm = String(requisicao?.armazem_destino_tipo || '').trim().toLowerCase();
+      if (!isFluxoDevolucaoViaturaCentral(tipoOrigNorm, tipoDestNorm)) continue;
+      if (!['separado', 'EM EXPEDICAO', 'APEADOS', 'Entregue', 'FINALIZADO'].includes(requisicao.status)) continue;
+      if (!requisicao.armazem_id) continue;
+
+      let locRec = LOCALIZACAO_RECEBIMENTO_FALLBACK;
+      const locRecQ = await localizacaoArmazemPorTipoConn(pool, requisicao.armazem_id, 'recebimento');
+      if (locRecQ) locRec = locRecQ;
+
+      const codigoViatura = requisicao.armazem_origem_codigo || 'E';
+      const codigoCentral = requisicao.armazem_destino_codigo || '';
+
+      let itensComFerramenta = [];
+      try {
+        const itensResult = await pool.query(
+          `SELECT ri.*, i.codigo as item_codigo, i.tipocontrolo,
+            EXISTS (
+              SELECT 1 FROM itens_setores is2
+              WHERE is2.item_id = i.id AND UPPER(TRIM(is2.setor)) = 'FERRAMENTA'
+            ) as is_ferramenta
+          FROM requisicoes_itens ri
+          INNER JOIN itens i ON ri.item_id = i.id
+          WHERE ri.requisicao_id = $1
+          ORDER BY ri.id`,
+          [id]
+        );
+        itensComFerramenta = itensResult.rows;
+      } catch (_) {
+        itensComFerramenta = (requisicao.itens || []).map((ri) => ({ ...ri, is_ferramenta: false }));
+      }
+
+      let bobinas = [];
+      try {
+        const bobinasResult = await pool.query(
+          `SELECT b.*, ri.item_id, i.codigo as item_codigo
+          FROM requisicoes_itens_bobinas b
+          INNER JOIN requisicoes_itens ri ON b.requisicao_item_id = ri.id
+          INNER JOIN itens i ON ri.item_id = i.id
+          WHERE ri.requisicao_id = $1`,
+          [id]
+        );
+        bobinas = bobinasResult.rows;
+      } catch (_) {
+        bobinas = [];
+      }
+
+      const dataFormat = new Date(requisicao.created_at);
+      const dateStr = `${String(dataFormat.getDate()).padStart(2, '0')}/${String(dataFormat.getMonth() + 1).padStart(2, '0')}/${dataFormat.getFullYear()}`;
+      const rows = [];
+
+      for (const b of bobinas) {
+        const riMeta = itensComFerramenta.find((it) => it.item_id === b.item_id) || {};
+        rows.push({
+          Date: dateStr,
+          OriginWarehouse: codigoViatura,
+          OriginLocation: riMeta.localizacao_origem || '',
+          Article: String(b.item_codigo || ''),
+          Quatity: Number(b.metros) || 0,
+          SerialNumber1: b.serialnumber || '', SerialNumber2: '', MacAddress: '', CentroCusto: '',
+          DestinationWarehouse: codigoCentral,
+          DestinationLocation: locRec,
+          ProjectCode: '',
+          Batch: b.lote || ''
+        });
+      }
+
+      for (const ri of itensComFerramenta) {
+        const tipoControlo = (ri.tipocontrolo || '').toUpperCase();
+        const temBobinas = bobinas.some((b) => b.item_id === ri.item_id);
+        if (tipoControlo === 'LOTE' && temBobinas) continue;
+
+        const qtyBase = ri.quantidade_preparada !== null && ri.quantidade_preparada !== undefined
+          ? ri.quantidade_preparada
+          : ri.quantidade;
+        const qty = parseInt(qtyBase, 10) || 0;
+        if (qty <= 0) continue;
+
+        if (tipoControlo === 'S/N') {
+          const serials = serialsNormalizadosList(ri.serialnumber);
+          if (serials.length > 0) {
+            for (const sn of serials) {
+              rows.push({
+                Date: dateStr,
+                OriginWarehouse: codigoViatura,
+                OriginLocation: ri.localizacao_origem || '',
+                Article: String(ri.item_codigo || ''),
+                Quatity: 1,
+                SerialNumber1: sn, SerialNumber2: '', MacAddress: '', CentroCusto: '',
+                DestinationWarehouse: codigoCentral,
+                DestinationLocation: locRec,
+                ProjectCode: '',
+                Batch: ri.lote || ''
+              });
+            }
+            continue;
+          }
+        }
+
+        rows.push({
+          Date: dateStr,
+          OriginWarehouse: codigoViatura,
+          OriginLocation: ri.localizacao_origem || '',
+          Article: String(ri.item_codigo || ''),
+          Quatity: qty,
+          SerialNumber1: ri.serialnumber || '', SerialNumber2: '', MacAddress: '', CentroCusto: '',
+          DestinationWarehouse: codigoCentral,
+          DestinationLocation: locRec,
+          ProjectCode: '',
+          Batch: ri.lote || ''
+        });
+      }
+
+      if (!rows.length) continue;
+
+      const cDevM = await pool.connect();
+      try {
+        await cDevM.query('BEGIN');
+        let lockDev;
+        try {
+          lockDev = await cDevM.query(
+            'SELECT devolucao_tra_gerada_em FROM requisicoes WHERE id = $1 FOR UPDATE',
+            [id]
+          );
+        } catch (e) {
+          if (e.code === '42703') {
+            await cDevM.query('ROLLBACK');
+            return res.status(503).json({
+              error: 'Colunas de documentos de devolução em falta.',
+              details: 'Execute: npm run db:migrate:requisicoes-devolucao-docs'
+            });
+          }
+          throw e;
+        }
+
+        if (!lockDev.rows[0]?.devolucao_tra_gerada_em && usuarioTemPermissaoControloStock(req)) {
+          try {
+            await aplicarStockDevolucaoEntradaRecebimento(cDevM, {
+              centralId: requisicao.armazem_id,
+              locRec,
+              itensComFerramenta,
+              bobinas,
+            });
+          } catch (st) {
+            if (st.code !== '42P01') throw st;
+          }
+        }
+
+        await cDevM.query(
+          `UPDATE requisicoes
+           SET devolucao_tra_gerada_em = COALESCE(devolucao_tra_gerada_em, CURRENT_TIMESTAMP),
+               updated_at = CURRENT_TIMESTAMP
+           WHERE id = $1`,
+          [id]
+        );
+        await cDevM.query('COMMIT');
+      } catch (eDevM) {
+        await cDevM.query('ROLLBACK').catch(() => {});
+        if (eDevM.isStockPrepBiz) return res.status(eDevM.status).json(eDevM.payload);
+        if (eDevM.code === '42703') {
+          return res.status(503).json({
+            error: 'Colunas de documentos de devolução em falta.',
+            details: 'Execute: npm run db:migrate:requisicoes-devolucao-docs'
+          });
+        }
+        throw eDevM;
+      } finally {
+        cDevM.release();
+      }
+
+      allRows = allRows.concat(rows);
+    }
+
+    if (allRows.length === 0) {
+      return res.status(400).json({ error: 'Nenhuma devolução válida para exportar DEV combinado.' });
+    }
+
+    buildExcelTransferencia(allRows, res, `DEV_multi_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  } catch (error) {
+    console.error('Erro ao exportar DEV multi:', error);
+    res.status(500).json({ error: 'Erro ao exportar DEV combinado', details: error.message });
+  }
+});
+
 // Clog — saída de armazém (quantidades negativas) baseado na TRA gerada
 function clogLocInicial(isDevolucao, localizacaoOrigemTRA, rowMeta) {
   if (isDevolucao) {
@@ -4671,8 +4889,8 @@ router.get('/:id/export-reporte', ...requisicaoAuth, denyOperador, async (req, r
     if (!requisicaoArmazemOrigemAcessoPermitido(req, requisicao.armazem_origem_id, { requisicao })) {
       return res.status(403).json({ error: 'Sem acesso a esta requisição.' });
     }
-    if (!podeExportarReporteOuClog(requisicao)) {
-      return res.status(400).json({ error: 'Ficheiro de reporte só está disponível após gerar a TRA (Entregue) ou quando a requisição estiver finalizada.' });
+    if (!podeExportarReporteOuClog(requisicao) && !podeExportarReporteDevolucaoEmProcesso(requisicao)) {
+      return res.status(400).json({ error: 'Ficheiro de reporte só está disponível após gerar a TRA (Entregue), quando a requisição estiver finalizada, ou durante devolução em EM EXPEDICAO.' });
     }
 
     // Mesma origem/destino usados na TRA
@@ -4765,8 +4983,8 @@ router.get('/:id/reporte-dados', ...requisicaoAuth, denyOperador, async (req, re
     if (!requisicaoArmazemOrigemAcessoPermitido(req, requisicao.armazem_origem_id, { requisicao })) {
       return res.status(403).json({ error: 'Sem acesso a esta requisição.' });
     }
-    if (!podeExportarReporteOuClog(requisicao)) {
-      return res.status(400).json({ error: 'Dados do reporte só estão disponíveis após gerar a TRA (Entregue) ou quando a requisição estiver finalizada.' });
+    if (!podeExportarReporteOuClog(requisicao) && !podeExportarReporteDevolucaoEmProcesso(requisicao)) {
+      return res.status(400).json({ error: 'Dados do reporte só estão disponíveis após gerar a TRA (Entregue), quando a requisição estiver finalizada, ou durante devolução em EM EXPEDICAO.' });
     }
 
     const destinoEPI = isDestinoEPI(requisicao);
@@ -5643,6 +5861,33 @@ router.post(
       return best;
     };
 
+    const resolveViaturaOrigemFromSheet = async (sheet) => {
+      const codigoPorColuna = scanCodigoArmazemFromWarehouseColumn(sheet);
+      const codigoV = scanCodigoV(sheet);
+      const codigoPreferido = codigoPorColuna || codigoV;
+      if (!codigoPreferido) {
+        throw new Error(
+          'Página 2 tem artigos (devolução), mas não foi possível identificar a viatura de origem no Excel (código Vxxx).'
+        );
+      }
+      const byCode = await pool.query(
+        'SELECT id, tipo, codigo FROM armazens WHERE UPPER(codigo) = $1 AND ativo = true LIMIT 1',
+        [codigoPreferido.toUpperCase()]
+      );
+      if (!byCode.rows.length) {
+        throw new Error(
+          `Página 2 tem artigos (devolução), mas o armazém "${codigoPreferido}" não existe ou está inativo.`
+        );
+      }
+      const tipo = String(byCode.rows[0]?.tipo || '').toLowerCase();
+      if (tipo !== 'viatura') {
+        throw new Error(
+          `Página 2 tem artigos (devolução), mas o armazém identificado (${codigoPreferido}) não é do tipo viatura.`
+        );
+      }
+      return byCode.rows[0];
+    };
+
     const parseItensFromSheet = (sheet, { tolerarSemCabecalho }) => {
       const range = XLSX.utils.decode_range(sheet['!ref']);
 
@@ -5651,6 +5896,7 @@ router.post(
       let colArtigo = null;
       let colQuantidade = null;
       let colRisco = null;
+      let colPosicao = null;
 
       for (let R = range.s.r; R <= range.e.r; R++) {
         let hasArtigo = false;
@@ -5659,6 +5905,7 @@ router.post(
         let detectedColArtigo = null;
         let detectedColQtd = null;
         let detectedColRisco = null;
+        let detectedColPosicao = null;
 
         for (let C = range.s.c; C <= range.e.c; C++) {
           const cellAddr = XLSX.utils.encode_cell({ r: R, c: C });
@@ -5680,6 +5927,9 @@ router.post(
           if (text.includes('risco')) {
             detectedColRisco = C;
           }
+          if (text.includes('posicao') || text.includes('posição')) {
+            detectedColPosicao = C;
+          }
         }
 
         if (hasArtigo && hasQuantidade && hasDescricao) {
@@ -5687,6 +5937,7 @@ router.post(
           colArtigo = detectedColArtigo;
           colQuantidade = detectedColQtd;
           colRisco = detectedColRisco;
+          colPosicao = detectedColPosicao;
           break;
         }
       }
@@ -5701,13 +5952,16 @@ router.post(
       // Ler linhas de itens
       const quantidadePorCodigo = new Map();
       const riscoPorCodigo = new Map();
+      const posicaoPorCodigo = new Map();
       for (let R = headerRowNumber + 1; R <= range.e.r; R++) {
         const cellArtigo = sheet[XLSX.utils.encode_cell({ r: R, c: colArtigo })];
         const cellQtd = sheet[XLSX.utils.encode_cell({ r: R, c: colQuantidade })];
         const cellRisco = colRisco != null ? sheet[XLSX.utils.encode_cell({ r: R, c: colRisco })] : null;
+        const cellPosicao = colPosicao != null ? sheet[XLSX.utils.encode_cell({ r: R, c: colPosicao })] : null;
         const codigo = cellArtigo && cellArtigo.v != null ? String(cellArtigo.v).trim() : '';
         const qtdStr = cellQtd && cellQtd.v != null ? String(cellQtd.v).trim() : '';
         const riscoStr = cellRisco && cellRisco.v != null ? String(cellRisco.v).trim() : '';
+        const posicaoStr = cellPosicao && cellPosicao.v != null ? String(cellPosicao.v).trim() : '';
         if (!codigo || !qtdStr) continue;
 
         const quantidade = parseInt(String(qtdStr).replace(',', '.'), 10);
@@ -5716,6 +5970,9 @@ router.post(
         if (riscoStr) {
           riscoPorCodigo.set(codigo, riscoStr);
         }
+        if (posicaoStr) {
+          posicaoPorCodigo.set(codigo, posicaoStr);
+        }
       }
 
       const codigosUnicos = [...quantidadePorCodigo.keys()];
@@ -5723,7 +5980,7 @@ router.post(
         return { itens: [] };
       }
 
-      return { quantidadePorCodigo, codigosUnicos, riscoPorCodigo };
+      return { quantidadePorCodigo, codigosUnicos, riscoPorCodigo, posicaoPorCodigo };
     };
 
     const criarRequisicao = async ({
@@ -5751,25 +6008,32 @@ router.post(
       const itemIds = itens.map((i) => i.item_id);
       const quantidades = itens.map((i) => i.quantidade);
       const observacoesItens = itens.map((i) => String(i?.observacoes || '').trim() || null);
+      const lotesItens = itens.map((i) => String(i?.lote || '').trim() || null);
+      const seriaisItens = itens.map((i) => String(i?.serialnumber || '').trim() || null);
       const hasObsItens = observacoesItens.some(Boolean);
-      if (hasObsItens) {
+      const hasRastreioItens = lotesItens.some(Boolean) || seriaisItens.some(Boolean);
+      if (hasObsItens || hasRastreioItens) {
         await client.query('SAVEPOINT sp_requisicoes_itens_obs');
         try {
           await client.query(
             `
-              INSERT INTO requisicoes_itens (requisicao_id, item_id, quantidade, observacoes)
+              INSERT INTO requisicoes_itens (requisicao_id, item_id, quantidade, observacoes, lote, serialnumber)
               SELECT
                 $1::int,
                 x.item_id,
                 x.quantidade,
-                NULLIF(TRIM(COALESCE(x.observacoes, '')), '')
-              FROM unnest($2::int[], $3::int[], $4::text[]) AS x(item_id, quantidade, observacoes)
+                NULLIF(TRIM(COALESCE(x.observacoes, '')), ''),
+                NULLIF(TRIM(COALESCE(x.lote, '')), ''),
+                NULLIF(TRIM(COALESCE(x.serialnumber, '')), '')
+              FROM unnest($2::int[], $3::int[], $4::text[], $5::text[], $6::text[]) AS x(item_id, quantidade, observacoes, lote, serialnumber)
               ON CONFLICT (requisicao_id, item_id)
               DO UPDATE SET
                 quantidade = EXCLUDED.quantidade,
-                observacoes = COALESCE(EXCLUDED.observacoes, requisicoes_itens.observacoes)
+                observacoes = COALESCE(EXCLUDED.observacoes, requisicoes_itens.observacoes),
+                lote = COALESCE(EXCLUDED.lote, requisicoes_itens.lote),
+                serialnumber = COALESCE(EXCLUDED.serialnumber, requisicoes_itens.serialnumber)
             `,
-            [requisicaoId, itemIds, quantidades, observacoesItens]
+            [requisicaoId, itemIds, quantidades, observacoesItens, lotesItens, seriaisItens]
           );
           await client.query('RELEASE SAVEPOINT sp_requisicoes_itens_obs');
         } catch (insObsErr) {
@@ -5819,28 +6083,51 @@ router.post(
           return { itens: Array.isArray(parsed?.itens) ? parsed.itens : [] };
         }
 
-        const { quantidadePorCodigo, codigosUnicos } = parsed;
+        const { quantidadePorCodigo, codigosUnicos, posicaoPorCodigo } = parsed;
         if (!codigosUnicos || codigosUnicos.length === 0) {
           return { itens: [] };
         }
 
         const itensLookup = await pool.query(
-          'SELECT id, codigo FROM itens WHERE codigo = ANY($1::text[])',
+          'SELECT id, codigo, tipocontrolo FROM itens WHERE codigo = ANY($1::text[])',
           [codigosUnicos]
         );
-        const idPorCodigo = new Map(itensLookup.rows.map((row) => [row.codigo, row.id]));
+        const itemPorCodigo = new Map(itensLookup.rows.map((row) => [row.codigo, row]));
 
         const itens = [];
         for (const codigo of codigosUnicos) {
-          const itemId = idPorCodigo.get(codigo);
-          if (itemId == null) continue;
-          itens.push({ item_id: itemId, quantidade: quantidadePorCodigo.get(codigo) });
+          const item = itemPorCodigo.get(codigo);
+          if (!item || item.id == null) continue;
+          const tipoControlo = String(item.tipocontrolo || '').toUpperCase();
+          const posicao = String(posicaoPorCodigo?.get(codigo) || '').trim();
+          itens.push({
+            item_id: item.id,
+            quantidade: quantidadePorCodigo.get(codigo),
+            lote: tipoControlo === 'LOTE' && posicao ? posicao : null,
+            serialnumber: tipoControlo === 'S/N' && posicao ? posicao : null,
+          });
         }
         return { itens };
       }
 
       // Página 1 (requisição): modelo normal (TRFL/TRA) ou modelo EPI (destino vinculado ao central escolhido).
+      // IMPORTANTE: se a página 1 vier vazia (sem artigos), não tentar resolver armazém aqui;
+      // o fluxo pode seguir com devolução-only na página 2.
       const isEpiImport = looksLikeEpiSheet(sheet);
+      const parsed = parseItensFromSheet(sheet, { tolerarSemCabecalho: true });
+      if (!parsed || !Array.isArray(parsed.itens) && !parsed.codigosUnicos) {
+        return { itens: [] };
+      }
+
+      if (parsed.itens) {
+        return { itens: [] };
+      }
+
+      const { quantidadePorCodigo, codigosUnicos, riscoPorCodigo, posicaoPorCodigo } = parsed;
+      if (!codigosUnicos || codigosUnicos.length === 0) {
+        return { itens: [] };
+      }
+
       let armazemDestino;
       if (isEpiImport) {
         armazemDestino = await resolveEpiDestinoVinculado(armazemOrigemId);
@@ -5854,39 +6141,28 @@ router.post(
             : 'Não foi possível identificar o armazém destino no Excel (código/descrição de central ou Vxxx).'
         );
       }
-
       const armazemDestinoId = armazemDestino.id;
       const armazemDestinoTipo = armazemDestino.tipo;
 
-      const parsed = parseItensFromSheet(sheet, { tolerarSemCabecalho: false });
-      if (!parsed || !Array.isArray(parsed.itens) && !parsed.codigosUnicos) {
-        return { itens: [] };
-      }
-
-      if (parsed.itens) {
-        return { itens: [], armazemDestinoId, armazemDestinoTipo };
-      }
-
-      const { quantidadePorCodigo, codigosUnicos, riscoPorCodigo } = parsed;
-      if (!codigosUnicos || codigosUnicos.length === 0) {
-        return { itens: [], armazemDestinoId, armazemDestinoTipo };
-      }
-
       const itensLookup = await pool.query(
-        'SELECT id, codigo FROM itens WHERE codigo = ANY($1::text[])',
+        'SELECT id, codigo, tipocontrolo FROM itens WHERE codigo = ANY($1::text[])',
         [codigosUnicos]
       );
-      const idPorCodigo = new Map(itensLookup.rows.map((row) => [row.codigo, row.id]));
+      const itemPorCodigo = new Map(itensLookup.rows.map((row) => [row.codigo, row]));
 
       const itens = [];
       for (const codigo of codigosUnicos) {
-        const itemId = idPorCodigo.get(codigo);
-        if (itemId == null) continue;
+        const item = itemPorCodigo.get(codigo);
+        if (!item || item.id == null) continue;
         const risco = (riscoPorCodigo && riscoPorCodigo.get(codigo)) || '';
+        const posicao = String(posicaoPorCodigo?.get(codigo) || '').trim();
+        const tipoControlo = String(item.tipocontrolo || '').toUpperCase();
         itens.push({
-          item_id: itemId,
+          item_id: item.id,
           quantidade: quantidadePorCodigo.get(codigo),
           observacoes: isEpiImport && risco ? `Risco associado: ${risco}` : null,
+          lote: tipoControlo === 'LOTE' && posicao ? posicao : null,
+          serialnumber: tipoControlo === 'S/N' && posicao ? posicao : null,
         });
       }
 
@@ -5904,43 +6180,62 @@ router.post(
     try {
       parsedReq = await parseSheetForImport(sheet1, 'requisicao');
     } catch (e) {
-      return res.status(400).json({ error: e.message || 'Erro ao interpretar página 1 do Excel.' });
-    }
-    if (!parsedReq || !Array.isArray(parsedReq.itens) || parsedReq.itens.length === 0) {
-      return res.status(400).json({ error: 'Nenhum item válido encontrado na página 1 (requisição).' });
+      const msg = String(e?.message || '');
+      const headerNaoEncontrado = msg.includes('Cabeçalho Artigo/Descrição/Quantidade não encontrado');
+      if (!headerNaoEncontrado) {
+        return res.status(400).json({ error: e.message || 'Erro ao interpretar página 1 do Excel.' });
+      }
+      parsedReq = { itens: [] };
     }
 
-    // Criar requisição (página 1)
+    let parsedDev = { itens: [] };
+    if (sheet2) {
+      try {
+        parsedDev = await parseSheetForImport(sheet2, 'devolucao');
+      } catch (e) {
+        return res.status(400).json({ error: e.message || 'Erro ao interpretar página 2 do Excel (devolução).' });
+      }
+    }
+
+    const temItensReq = Boolean(parsedReq && Array.isArray(parsedReq.itens) && parsedReq.itens.length > 0);
+    const temItensDev = Boolean(parsedDev && Array.isArray(parsedDev.itens) && parsedDev.itens.length > 0);
+    if (!temItensReq && !temItensDev) {
+      return res.status(400).json({
+        error: 'Nenhum item válido encontrado no Excel (página 1 e página 2 sem artigos).'
+      });
+    }
+
+    // Criar requisição (página 1) e/ou devolução (página 2)
     const client = await pool.connect();
     let requisicaoId = null;
     let devolucaoId = null;
     try {
       await client.query('BEGIN');
-      requisicaoId = await criarRequisicao({
-        client,
-        itens: parsedReq.itens,
-        armazemOrigemIdReq: armazemOrigemId,
-        armazemDestinoId: parsedReq.armazemDestinoId,
-        observacoes:
-          parsedReq.isEpiImport
-            ? [
-                'Importada de Excel (EPI)',
-                parsedReq.epiMeta?.colaboradorNome ? `Colaborador: ${parsedReq.epiMeta.colaboradorNome}` : null,
-                parsedReq.epiMeta?.colaboradorNumero ? `Nr. Colab.: ${parsedReq.epiMeta.colaboradorNumero}` : null,
-                `Declaração: ${EPI_DISCLAIMER_PADRAO}`
-              ].filter(Boolean).join(' | ')
-            : 'Importada de Excel (página 1)'
-      });
+      if (temItensReq) {
+        requisicaoId = await criarRequisicao({
+          client,
+          itens: parsedReq.itens,
+          armazemOrigemIdReq: armazemOrigemId,
+          armazemDestinoId: parsedReq.armazemDestinoId,
+          observacoes:
+            parsedReq.isEpiImport
+              ? [
+                  'Importada de Excel (EPI)',
+                  parsedReq.epiMeta?.colaboradorNome ? `Colaborador: ${parsedReq.epiMeta.colaboradorNome}` : null,
+                  parsedReq.epiMeta?.colaboradorNumero ? `Nr. Colab.: ${parsedReq.epiMeta.colaboradorNumero}` : null,
+                  `Declaração: ${EPI_DISCLAIMER_PADRAO}`
+                ].filter(Boolean).join(' | ')
+              : 'Importada de Excel (página 1)'
+        });
+      }
 
       // Criar devolução (página 2) apenas se houver artigos listados
-      if (sheet2) {
-        const parsedDev = await parseSheetForImport(sheet2, 'devolucao');
-        const temItensDev = parsedDev?.itens && parsedDev.itens.length > 0;
-        if (temItensDev) {
-          // Regra pedida:
+      if (temItensDev) {
+        if (temItensReq) {
+          // Regra original:
           //   - devolução armazem_origem = destino da requisição (página 1)
           //   - devolução armazem_destino = origem da requisição (selecionada no frontend)
-          const armazemOrigemDevTipo = String(parsedReq.armazemDestinoTipo || '').toLowerCase();
+          const armazemOrigemDevTipo = String(parsedReq?.armazemDestinoTipo || '').toLowerCase();
           const armazemDestinoDevTipo = String(ao.rows[0]?.tipo || '').toLowerCase();
           if (armazemOrigemDevTipo !== 'viatura') {
             await client.query('ROLLBACK');
@@ -5963,6 +6258,26 @@ router.post(
             armazemOrigemIdReq: parsedReq.armazemDestinoId,
             armazemDestinoId: armazemOrigemId,
             observacoes: 'Importada de Excel (página 2 - Devolução)'
+          });
+        } else {
+          // Devolução-only (página 1 vazia):
+          //   - origem da devolução = viatura identificada na página 2 (Vxxx)
+          //   - destino da devolução = armazém origem selecionado no frontend (deve ser central)
+          const armazemDestinoDevTipo = String(ao.rows[0]?.tipo || '').toLowerCase();
+          if (armazemDestinoDevTipo !== 'central') {
+            await client.query('ROLLBACK');
+            return res.status(400).json({
+              error:
+                'Página 2 tem artigos (devolução), mas o armazém selecionado no import não é central (destino da devolução).'
+            });
+          }
+          const viaturaOrigem = await resolveViaturaOrigemFromSheet(sheet2);
+          devolucaoId = await criarRequisicao({
+            client,
+            itens: parsedDev.itens,
+            armazemOrigemIdReq: viaturaOrigem.id,
+            armazemDestinoId: armazemOrigemId,
+            observacoes: 'Importada de Excel (página 2 - Devolução sem página 1)'
           });
         }
       }
@@ -6521,6 +6836,109 @@ router.patch('/:id/atender-item', ...requisicaoAuth, async (req, res) => {
     res.status(500).json({ error: 'Erro ao preparar item', details: error.message });
   } finally {
     client.release();
+  }
+});
+
+// Adicionar linha de item na requisição (fluxo de preparação; útil para correções em devolução)
+router.post('/:id/requisicao-itens', ...requisicaoAuth, async (req, res) => {
+  try {
+    const requisicaoId = parseInt(req.params.id, 10);
+    const itemId = parseInt(req.body?.item_id, 10);
+    const quantidade = Number(req.body?.quantidade ?? 1);
+    if (!Number.isFinite(requisicaoId) || !Number.isFinite(itemId)) {
+      return res.status(400).json({ error: 'ID da requisição e item_id válidos são obrigatórios.' });
+    }
+    if (!Number.isFinite(quantidade) || quantidade < 0) {
+      return res.status(400).json({ error: 'Quantidade inválida.' });
+    }
+
+    const check = await pool.query(
+      `SELECT r.id, r.status, r.armazem_origem_id, r.armazem_id, r.separador_usuario_id,
+              ao.tipo AS armazem_origem_tipo, a.tipo AS armazem_destino_tipo
+       FROM requisicoes r
+       LEFT JOIN armazens ao ON r.armazem_origem_id = ao.id
+       INNER JOIN armazens a ON r.armazem_id = a.id
+       WHERE r.id = $1`,
+      [requisicaoId]
+    );
+    if (!check.rows.length) return res.status(404).json({ error: 'Requisição não encontrada.' });
+    const reqRow = check.rows[0];
+    if (
+      !requisicaoArmazemOrigemAcessoPermitido(req, reqRow.armazem_origem_id, {
+        requisicao: reqRow,
+      })
+    ) {
+      return res.status(403).json({ error: 'Sem acesso a esta requisição.' });
+    }
+    if (separadorImpedeAcao(reqRow, req)) {
+      return respostaBloqueioSeparador(res);
+    }
+    const st = String(reqRow.status || '');
+    const podeAlterarPreparacao =
+      ['pendente', 'EM SEPARACAO'].includes(st) ||
+      adminPodeCorrigirPreparacaoItemSeparada(st, req.user && req.user.role);
+    if (!podeAlterarPreparacao) {
+      return res.status(400).json({
+        error:
+          'Só é possível adicionar artigos quando a requisição está em preparação (pendente/EM SEPARACAO) ou por administrador em Separadas/Em expedição.',
+      });
+    }
+
+    const itemCheck = await pool.query(
+      `SELECT id, codigo, descricao, tipocontrolo FROM itens WHERE id = $1`,
+      [itemId]
+    );
+    if (!itemCheck.rows.length) {
+      return res.status(404).json({ error: 'Item não encontrado.' });
+    }
+    const exists = await pool.query(
+      `SELECT id FROM requisicoes_itens WHERE requisicao_id = $1 AND item_id = $2 LIMIT 1`,
+      [requisicaoId, itemId]
+    );
+    if (exists.rows.length) {
+      return res.status(400).json({ error: 'Este artigo já existe na requisição.' });
+    }
+
+    await pool.query(
+      `INSERT INTO requisicoes_itens
+         (requisicao_id, item_id, quantidade, quantidade_preparada, preparacao_confirmada)
+       VALUES ($1, $2, $3, 0, false)`,
+      [requisicaoId, itemId, quantidade]
+    );
+
+    const fullReq = await pool.query(
+      `
+      SELECT r.*,
+        (COALESCE(a.codigo, '') || CASE WHEN a.codigo IS NOT NULL AND a.codigo <> '' THEN ' - ' ELSE '' END || a.descricao) as armazem_descricao,
+        (COALESCE(ao.codigo, '') || CASE WHEN ao.codigo IS NOT NULL AND ao.codigo <> '' THEN ' - ' ELSE '' END || ao.descricao) as armazem_origem_descricao,
+        ${SQL_CRIADOR_NOME} AS usuario_nome
+      FROM requisicoes r
+      INNER JOIN armazens a ON r.armazem_id = a.id
+      LEFT JOIN armazens ao ON r.armazem_origem_id = ao.id
+      LEFT JOIN usuarios u ON r.usuario_id = u.id
+      WHERE r.id = $1
+    `,
+      [requisicaoId]
+    );
+    const requisicao = fullReq.rows[0];
+    const itensResult = await pool.query(
+      `
+      SELECT ri.*, i.codigo as item_codigo, i.descricao as item_descricao, i.tipocontrolo
+      FROM requisicoes_itens ri
+      INNER JOIN itens i ON ri.item_id = i.id
+      WHERE ri.requisicao_id = $1
+      ORDER BY ri.id
+    `,
+      [requisicaoId]
+    );
+    requisicao.itens = (itensResult.rows || []).map((it) => ({
+      ...it,
+      preparacao_confirmada: it.preparacao_confirmada === true,
+    }));
+    return res.status(201).json(requisicao);
+  } catch (error) {
+    console.error('Erro ao adicionar item na requisição:', error);
+    return res.status(500).json({ error: 'Erro ao adicionar item na requisição', details: error.message });
   }
 });
 

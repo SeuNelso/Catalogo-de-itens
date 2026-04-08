@@ -11,7 +11,8 @@ import {
   FaArrowRight,
   FaEdit,
   FaQrcode,
-  FaTrash
+  FaTrash,
+  FaPlus
 } from 'react-icons/fa';
 import axios from 'axios';
 import QrScannerModal from '../components/QrScannerModal';
@@ -94,6 +95,11 @@ const PrepararRequisicao = () => {
   const [serialScannerIdx, setSerialScannerIdx] = useState(null);
   const [serialScannerContinuous, setSerialScannerContinuous] = useState(false);
   const [stockNacionalPrep, setStockNacionalPrep] = useState({ loading: false, valor: null });
+  const [addItemSearch, setAddItemSearch] = useState('');
+  const [addItemResults, setAddItemResults] = useState([]);
+  const [addItemId, setAddItemId] = useState('');
+  const [addItemQuantidade, setAddItemQuantidade] = useState('1');
+  const [addingItem, setAddingItem] = useState(false);
   /** Stock por localização (armazém central + módulo) para filtrar saída na preparação */
   const [preparacaoStockLoc, setPreparacaoStockLoc] = useState({
     loading: false,
@@ -293,6 +299,71 @@ const PrepararRequisicao = () => {
       return null;
     } finally {
       setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    const isFluxoDevNow =
+      String(armazemOrigem?.tipo || requisicao?.armazem_origem_tipo || '').toLowerCase() === 'viatura' &&
+      String(armazemDestino?.tipo || requisicao?.armazem_destino_tipo || '').toLowerCase() === 'central';
+    if (!isFluxoDevNow) {
+      setAddItemResults([]);
+      return;
+    }
+    const q = String(addItemSearch || '').trim();
+    if (q.length < 2) {
+      setAddItemResults([]);
+      return;
+    }
+    const t = setTimeout(async () => {
+      try {
+        const token = localStorage.getItem('token');
+        const response = await fetch(`/api/itens?search=${encodeURIComponent(q)}&limit=20`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (!response.ok) return;
+        const data = await response.json().catch(() => ({}));
+        const itens = Array.isArray(data?.itens) ? data.itens : [];
+        setAddItemResults(itens);
+      } catch (_) {}
+    }, 250);
+    return () => clearTimeout(t);
+  }, [addItemSearch, armazemOrigem?.tipo, armazemDestino?.tipo, requisicao?.armazem_origem_tipo, requisicao?.armazem_destino_tipo]);
+
+  const handleAdicionarItemDevolucao = async () => {
+    const itemId = Number(addItemId);
+    const qtd = Number(addItemQuantidade || 0);
+    if (!Number.isFinite(itemId)) {
+      setToast({ type: 'error', message: 'Selecione o artigo correto para adicionar.' });
+      return;
+    }
+    if (!Number.isFinite(qtd) || qtd < 0) {
+      setToast({ type: 'error', message: 'Quantidade inválida.' });
+      return;
+    }
+    try {
+      setAddingItem(true);
+      const token = localStorage.getItem('token');
+      const { data } = await axios.post(
+        `/api/requisicoes/${id}/requisicao-itens`,
+        { item_id: itemId, quantidade: qtd },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      setRequisicao(data);
+      setAddItemSearch('');
+      setAddItemId('');
+      setAddItemQuantidade('1');
+      setAddItemResults([]);
+      setToast({
+        type: 'success',
+        message:
+          'Artigo adicionado. Se o artigo anterior estiver errado, defina quantidade preparada = 0 para desconsiderar.',
+      });
+    } catch (err) {
+      const msg = err.response?.data?.error || err.message || 'Erro ao adicionar artigo';
+      setToast({ type: 'error', message: msg });
+    } finally {
+      setAddingItem(false);
     }
   };
 
@@ -1335,6 +1406,61 @@ const PrepararRequisicao = () => {
           <h3 className="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2">
             <FaBox /> Itens a preparar
           </h3>
+          {isFluxoDevolucao && podeAgirSeparacao && podeEditarItensPreparacao && (
+            <div className="mb-4 rounded-lg border border-indigo-200 bg-indigo-50 p-3">
+              <div className="text-xs font-semibold text-indigo-900 mb-2">
+                Correção da devolução: adicionar artigo correto
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_120px_160px] gap-2 items-end">
+                <div>
+                  <label className="block text-xs text-indigo-900 mb-1">Pesquisar artigo (código/descrição)</label>
+                  <input
+                    type="text"
+                    value={addItemSearch}
+                    onChange={(e) => setAddItemSearch(e.target.value)}
+                    className="w-full px-3 py-2 border border-indigo-300 rounded-lg text-sm"
+                    placeholder="Ex.: 3000331"
+                  />
+                  {addItemResults.length > 0 && (
+                    <select
+                      value={addItemId}
+                      onChange={(e) => setAddItemId(e.target.value)}
+                      className="mt-2 w-full px-3 py-2 border border-indigo-300 rounded-lg text-sm bg-white"
+                    >
+                      <option value="">Selecione o artigo encontrado</option>
+                      {addItemResults.map((it) => (
+                        <option key={it.id} value={it.id}>
+                          {it.codigo} - {it.descricao}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+                <div>
+                  <label className="block text-xs text-indigo-900 mb-1">Quantidade</label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="1"
+                    value={addItemQuantidade}
+                    onChange={(e) => setAddItemQuantidade(e.target.value)}
+                    className="w-full px-3 py-2 border border-indigo-300 rounded-lg text-sm"
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={handleAdicionarItemDevolucao}
+                  disabled={addingItem}
+                  className="px-3 py-2 bg-indigo-700 text-white rounded-lg hover:bg-indigo-800 disabled:opacity-50 flex items-center justify-center gap-2"
+                >
+                  <FaPlus /> {addingItem ? 'A adicionar...' : 'Adicionar artigo'}
+                </button>
+              </div>
+              <p className="mt-2 text-[11px] text-indigo-900/80">
+                Dica: para desconsiderar um artigo errado, abra “Editar preparação” e guarde com quantidade preparada igual a 0.
+              </p>
+            </div>
+          )}
           <div className="space-y-4">
             {requisicao.itens && requisicao.itens.map((item, idx) => {
               const qtdPreparada = parseInt(item.quantidade_preparada) || 0;
@@ -1395,6 +1521,22 @@ const PrepararRequisicao = () => {
                               </span>
                             )}
                           </div>
+                          {(String(item.tipocontrolo || '').toUpperCase() === 'LOTE' ||
+                            String(item.tipocontrolo || '').toUpperCase() === 'S/N' ||
+                            String(item.lote || '').trim() ||
+                            String(item.serialnumber || '').trim()) && (
+                            <div className="mt-2 text-xs text-gray-700 flex flex-wrap gap-2">
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-indigo-50 border border-indigo-200 rounded">
+                                <strong>Controlo:</strong> {String(item.tipocontrolo || '—').toUpperCase()}
+                              </span>
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-indigo-50 border border-indigo-200 rounded">
+                                <strong>Lote:</strong> {String(item.lote || '').trim() || '—'}
+                              </span>
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-indigo-50 border border-indigo-200 rounded">
+                                <strong>S/N:</strong> {String(item.serialnumber || '').trim() || '—'}
+                              </span>
+                            </div>
+                          )}
                         </>
                       )}
                       {!isPreparando && !isFluxoRecebimentoMercadoria && (item.localizacao_origem || item.localizacao_destino) && (
@@ -1449,6 +1591,39 @@ const PrepararRequisicao = () => {
 
                   {isPreparando && (
                     <form onSubmit={handlePrepararItem} className="mt-4 pt-4 border-t border-gray-200 space-y-3">
+                      {isFluxoDevolucao && (
+                        <section className="rounded-xl border border-indigo-200 bg-indigo-50 p-4 shadow-sm space-y-2">
+                          <h4 className="text-sm font-semibold text-indigo-900">
+                            Dados importados da devolução (conferência)
+                          </h4>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2 text-xs">
+                            <div className="rounded-md border border-indigo-200 bg-white px-2 py-1.5">
+                              <span className="text-indigo-700 font-semibold">Controlo:</span>{' '}
+                              <span className="text-indigo-900">
+                                {String(item.tipocontrolo || '—').toUpperCase()}
+                              </span>
+                            </div>
+                            <div className="rounded-md border border-indigo-200 bg-white px-2 py-1.5">
+                              <span className="text-indigo-700 font-semibold">Qtd. esperada:</span>{' '}
+                              <span className="text-indigo-900 tabular-nums">
+                                {Number(item.quantidade) || 0}
+                              </span>
+                            </div>
+                            <div className="rounded-md border border-indigo-200 bg-white px-2 py-1.5">
+                              <span className="text-indigo-700 font-semibold">Lote:</span>{' '}
+                              <span className="text-indigo-900">
+                                {String(item.lote || '').trim() || '—'}
+                              </span>
+                            </div>
+                            <div className="rounded-md border border-indigo-200 bg-white px-2 py-1.5">
+                              <span className="text-indigo-700 font-semibold">S/N:</span>{' '}
+                              <span className="text-indigo-900 break-all">
+                                {String(item.serialnumber || '').trim() || '—'}
+                              </span>
+                            </div>
+                          </div>
+                        </section>
+                      )}
                       <nav
                         className="flex flex-wrap items-center gap-1.5 text-[11px] font-semibold"
                         aria-label="Passos da preparação"
