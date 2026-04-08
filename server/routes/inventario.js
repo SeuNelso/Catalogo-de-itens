@@ -1,5 +1,6 @@
 const express = require('express');
 const { isAdmin } = require('../utils/roles');
+const { quantidadeStockNacionalNoArmazem } = require('../utils/stockNacionalMatch');
 
 const INVENTARIO_ROLES = new Set(['admin', 'backoffice_armazem', 'supervisor_armazem', 'operador']);
 const ROLES_CRIAR_JUSTIFICAR = new Set(['admin', 'backoffice_armazem']);
@@ -103,6 +104,53 @@ function createInventarioRouter(deps = {}) {
     return ` AND a.id = ANY($${startIndex}::int[]) `;
   };
 
+  const getStockNacionalByCodigo = async (armazemId, codigos) => {
+    if (!Number.isFinite(Number(armazemId)) || !Array.isArray(codigos) || codigos.length === 0) {
+      return new Map();
+    }
+    const armazemQ = await pool.query(
+      `SELECT id, codigo, descricao FROM armazens WHERE id = $1 LIMIT 1`,
+      [armazemId]
+    );
+    const armazem = armazemQ.rows[0];
+    if (!armazem) return new Map();
+
+    const itensQ = await pool.query(
+      `SELECT i.id, i.codigo, i.descricao
+       FROM itens i
+       WHERE i.codigo = ANY($1::text[])`,
+      [codigos]
+    );
+    const itemIds = (itensQ.rows || []).map((r) => Number(r.id)).filter((n) => Number.isFinite(n));
+    const byItemId = new Map((itensQ.rows || []).map((r) => [Number(r.id), r]));
+    if (!itemIds.length) return new Map();
+
+    const stockRowsQ = await pool.query(
+      `SELECT item_id, armazem, quantidade::float AS quantidade
+       FROM armazens_item
+       WHERE item_id = ANY($1::int[])`,
+      [itemIds]
+    );
+    const rowsByItem = new Map();
+    for (const row of stockRowsQ.rows || []) {
+      const id = Number(row.item_id);
+      if (!rowsByItem.has(id)) rowsByItem.set(id, []);
+      rowsByItem.get(id).push(row);
+    }
+
+    const out = new Map();
+    for (const itemId of itemIds) {
+      const item = byItemId.get(itemId);
+      if (!item) continue;
+      const qtd = quantidadeStockNacionalNoArmazem(rowsByItem.get(itemId) || [], armazem);
+      out.set(String(item.codigo || '').trim(), {
+        descricao: String(item.descricao || '').trim(),
+        quantidade_sistema: Number(qtd || 0),
+      });
+    }
+    return out;
+  };
+
   router.get('/armazens', async (req, res) => {
     try {
       const params = [];
@@ -195,26 +243,7 @@ function createInventarioRouter(deps = {}) {
       if (!cleaned.length) return res.json([]);
 
       const codigos = [...new Set(cleaned.map((r) => r.artigo))];
-      const q = await pool.query(
-        `SELECT
-           i.codigo,
-           i.descricao,
-           COALESCE(SUM(ali.quantidade), 0)::numeric AS quantidade_sistema
-         FROM itens i
-         LEFT JOIN armazens_localizacao_item ali ON ali.item_id = i.id
-         LEFT JOIN armazens_localizacoes al
-           ON al.id = ali.localizacao_id
-          AND al.armazem_id = $1
-         WHERE i.codigo = ANY($2::text[])
-         GROUP BY i.codigo, i.descricao`,
-        [armazemId, codigos]
-      );
-      const byCodigo = new Map(
-        (q.rows || []).map((x) => [String(x.codigo || '').trim(), {
-          descricao: String(x.descricao || '').trim(),
-          quantidade_sistema: Number(x.quantidade_sistema || 0),
-        }])
-      );
+      const byCodigo = await getStockNacionalByCodigo(armazemId, codigos);
 
       const out = cleaned.map((r) => {
         const hit = byCodigo.get(r.artigo);
@@ -307,26 +336,7 @@ function createInventarioRouter(deps = {}) {
       if (!cleaned.length) return res.status(400).json({ error: 'Nenhuma linha válida para criar tarefa.' });
 
       const codigos = [...new Set(cleaned.map((r) => r.artigo))];
-      const stockQ = await pool.query(
-        `SELECT
-           i.codigo,
-           i.descricao,
-           COALESCE(SUM(ali.quantidade), 0)::numeric AS quantidade_sistema
-         FROM itens i
-         LEFT JOIN armazens_localizacao_item ali ON ali.item_id = i.id
-         LEFT JOIN armazens_localizacoes al
-           ON al.id = ali.localizacao_id
-          AND al.armazem_id = $1
-         WHERE i.codigo = ANY($2::text[])
-         GROUP BY i.codigo, i.descricao`,
-        [armazemId, codigos]
-      );
-      const byCodigo = new Map(
-        (stockQ.rows || []).map((x) => [String(x.codigo || '').trim(), {
-          descricao: String(x.descricao || '').trim(),
-          quantidade_sistema: Number(x.quantidade_sistema || 0),
-        }])
-      );
+      const byCodigo = await getStockNacionalByCodigo(armazemId, codigos);
 
       const client = await pool.connect();
       try {

@@ -283,7 +283,7 @@ const ContagemSemanal = () => {
               <tr>
                 <th className="px-3 py-2 border-b text-left">Artigo</th>
                 <th className="px-3 py-2 border-b text-left">Descrição</th>
-                <th className="px-3 py-2 border-b text-right">Stock armazém</th>
+                <th className="px-3 py-2 border-b text-right">Stock nacional</th>
                 <th className="px-3 py-2 border-b text-right">QTD</th>
                 <th className="px-3 py-2 border-b text-right">QTD APE</th>
                 <th className="px-3 py-2 border-b text-right">TOTAL</th>
