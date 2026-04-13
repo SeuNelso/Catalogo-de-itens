@@ -10,6 +10,7 @@ import Home from './pages/Home';
 import Login from './pages/Login';
 import CadastrarItem from './pages/CadastrarItem';
 import ListarItens from './pages/ListarItens';
+import DashboardClienteCompostos from './pages/DashboardClienteCompostos';
 import DetalhesItem from './pages/DetalhesItem';
 import EditarItem from './pages/EditarItem';
 import ExcluirArtigo from './pages/ExcluirArtigo';
@@ -71,6 +72,14 @@ function App() {
                 <Route path="/" element={<Home />} />
                 <Route path="/login" element={<Login />} />
                 <Route path="/listar" element={<ProtectedRoute><ListarItens /></ProtectedRoute>} />
+                <Route
+                  path="/dashboard-cliente-compostos"
+                  element={
+                    <ProtectedRoute>
+                      <DashboardClienteCompostos />
+                    </ProtectedRoute>
+                  }
+                />
                 <Route path="/item/:id" element={<DetalhesItem />} />
                 <Route 
                   path="/editar/:id" 

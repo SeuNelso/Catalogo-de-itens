@@ -751,7 +751,7 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
   const handleConfirmarEntregaRecebimento = async (reqId) => {
     try {
       const ok = await confirm({
-        title: 'Confirmar entrega',
+        title: 'Confirmar receção',
         message: 'Deseja confirmar a entrega deste recebimento?',
         confirmLabel: 'Confirmar',
       });
@@ -1390,8 +1390,9 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
   const isFluxoRecebimentoMercadoria = (reqObj) => {
     const obs = String(reqObj?.observacoes || '').toUpperCase();
     if (!obs.startsWith(RECEBIMENTO_TRANSFERENCIA_MARKER)) return false;
-    // Apenas tarefas espelho do destino (recebimento) devem entrar no fluxo "Recebimento de mercadoria".
-    return /AUTO_FROM_REQ:\s*\d+/i.test(String(reqObj?.observacoes || ''));
+    // Qualquer tarefa marcada como recebimento de transferência
+    // (manual/GT ou espelho automático) deve entrar no fluxo de recebimento.
+    return true;
   };
 
   const recebimentoEntregaConfirmada = (reqObj) => Boolean(reqObj?.recebimento_entrega_confirmada);
@@ -2074,7 +2075,10 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
                             </div>
                           )}
                         </div>
-                        {!isFluxoRecebimentoMercadoria(req) && req.tra_gerada_em && (
+                        {((!isFluxoRecebimentoMercadoria(req) && req.tra_gerada_em) ||
+                          (isFluxoRecebimentoMercadoria(req) &&
+                            recebimentoAguardandoTraOrigem(req) &&
+                            !req.requisicao_origem_id)) && (
                           <div className="mt-3 flex items-end gap-2 flex-wrap" onClick={(e) => e.stopPropagation()}>
                             <div className="flex flex-col">
                               <label className="text-xs font-semibold text-gray-700 mb-1">Nº TRA</label>
@@ -2113,9 +2117,9 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
                         className={`px-3 py-2 rounded-lg bg-amber-600 text-white transition-colors ${
                           prepBloqueio ? 'opacity-50 cursor-not-allowed' : 'hover:bg-amber-700'
                         }`}
-                        title={prepBloqueio ? 'Reservada para separação a outro operador' : 'Confirmar entrega no recebimento'}
+                        title={prepBloqueio ? 'Reservada para separação a outro operador' : 'Confirmar receção no recebimento'}
                       >
-                        CONFIRMAR ENTREGA
+                        CONFIRMAR RECEÇÃO
                       </button>
                     )}
                     {isFluxoRecebimentoMercadoria(req) &&

@@ -627,7 +627,7 @@ const TransferenciasRecebimento = () => {
                   disabled={confirmingEntrega || !recebimentoReqId}
                   className="px-3 py-2 rounded-lg bg-amber-600 text-white text-sm font-bold hover:bg-amber-700 disabled:opacity-50"
                 >
-                  {confirmingEntrega ? 'A confirmar entrega…' : 'Confirmar entrega'}
+                  {confirmingEntrega ? 'A confirmar receção…' : 'Confirmar receção'}
                 </button>
                 {recebimentoReq?.tra_baixa_expedicao_aplicada_em && (
                   <span className="text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded px-2 py-1">

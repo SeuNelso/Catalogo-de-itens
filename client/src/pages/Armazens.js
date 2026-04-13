@@ -72,7 +72,8 @@ const Armazens = () => {
     descricao: '',
     tipo: 'viatura', // 'central' | 'viatura' | 'apeado' | 'epi'
     localizacoes: [],  // central: [{ localizacao, tipo_localizacao }]; viatura: preenchido com 2 (normal, FERR)
-    armazem_central_vinculado_id: ''
+    armazem_central_vinculado_id: '',
+    recebimento_transferencia_digital: true
   });
   const [submitting, setSubmitting] = useState(false);
   const [loadingEdit, setLoadingEdit] = useState(false);
@@ -712,6 +713,9 @@ const Armazens = () => {
             ? [{ localizacao: codigoU, tipo_localizacao: 'normal' }]
             : locsCentrais
     };
+    if (formData.tipo === 'central') {
+      payload.recebimento_transferencia_digital = formData.recebimento_transferencia_digital !== false;
+    }
     if ((formData.tipo === 'apeado' || formData.tipo === 'epi') && !payload.armazem_central_vinculado_id) {
       setToast({ type: 'error', message: 'Selecione o armazém central vinculado.' });
       return;
@@ -746,7 +750,7 @@ const Armazens = () => {
         });
       }
 
-      setFormData({ codigo: '', descricao: '', tipo: 'viatura', localizacoes: [], armazem_central_vinculado_id: '' });
+      setFormData({ codigo: '', descricao: '', tipo: 'viatura', localizacoes: [], armazem_central_vinculado_id: '', recebimento_transferencia_digital: true });
       setCentralBulkText('');
       setEditandoId(null);
       setMostrarForm(false);
@@ -768,7 +772,7 @@ const Armazens = () => {
       return;
     }
     setEditandoId(null);
-    setFormData({ codigo: '', descricao: '', tipo: 'viatura', localizacoes: [], armazem_central_vinculado_id: '' });
+    setFormData({ codigo: '', descricao: '', tipo: 'viatura', localizacoes: [], armazem_central_vinculado_id: '', recebimento_transferencia_digital: true });
     setCentralBulkText('');
     setLoadingEdit(true);
     setMostrarForm(true);
@@ -834,7 +838,8 @@ const Armazens = () => {
         tipo,
         localizacoes: locsForForm,
         armazem_central_vinculado_id:
-          data.armazem_central_vinculado_id != null ? String(data.armazem_central_vinculado_id) : ''
+          data.armazem_central_vinculado_id != null ? String(data.armazem_central_vinculado_id) : '',
+        recebimento_transferencia_digital: data.recebimento_transferencia_digital !== false
       });
       if (tipo === 'central') {
         setCentralBulkText(buildCentralBulkText(locs));
@@ -854,7 +859,7 @@ const Armazens = () => {
   };
 
   const handleCancel = () => {
-    setFormData({ codigo: '', descricao: '', tipo: 'viatura', localizacoes: [], armazem_central_vinculado_id: '' });
+    setFormData({ codigo: '', descricao: '', tipo: 'viatura', localizacoes: [], armazem_central_vinculado_id: '', recebimento_transferencia_digital: true });
     setCentralBulkText('');
     setEditingLocIdx(null);
     setEditingLocValue('');
@@ -963,8 +968,9 @@ const Armazens = () => {
   };
 
   const handleChange = (e) => {
-    const { name, value } = e.target;
-    setFormData(prev => ({ ...prev, [name]: value }));
+    const { name, type, checked, value } = e.target;
+    const nextVal = type === 'checkbox' ? checked : value;
+    setFormData(prev => ({ ...prev, [name]: nextVal }));
   };
 
   const armazensFiltrados = useMemo(
@@ -1133,7 +1139,7 @@ const Armazens = () => {
                       name="tipo"
                       value="viatura"
                       checked={formData.tipo === 'viatura'}
-                      onChange={() => setFormData(prev => ({ ...prev, tipo: 'viatura', localizacoes: [], armazem_central_vinculado_id: '' }))}
+                      onChange={() => setFormData(prev => ({ ...prev, tipo: 'viatura', localizacoes: [], armazem_central_vinculado_id: '', recebimento_transferencia_digital: true }))}
                       className="text-[#0915FF]"
                     />
                     <span>Viatura</span>
@@ -1160,7 +1166,7 @@ const Armazens = () => {
                       name="tipo"
                       value="apeado"
                       checked={formData.tipo === 'apeado'}
-                      onChange={() => setFormData(prev => ({ ...prev, tipo: 'apeado', localizacoes: [] }))}
+                      onChange={() => setFormData(prev => ({ ...prev, tipo: 'apeado', localizacoes: [], recebimento_transferencia_digital: true }))}
                       className="text-[#0915FF]"
                     />
                     <span>APEADO</span>
@@ -1171,7 +1177,7 @@ const Armazens = () => {
                       name="tipo"
                       value="epi"
                       checked={formData.tipo === 'epi'}
-                      onChange={() => setFormData(prev => ({ ...prev, tipo: 'epi', localizacoes: [] }))}
+                      onChange={() => setFormData(prev => ({ ...prev, tipo: 'epi', localizacoes: [], recebimento_transferencia_digital: true }))}
                       className="text-[#0915FF]"
                     />
                     <span>EPI</span>
@@ -1276,6 +1282,25 @@ const Armazens = () => {
                 </div>
               )}
               {formData.tipo === 'central' && (
+                <>
+                <div className="mb-4 rounded-lg border border-blue-100 bg-blue-50/80 p-4">
+                  <label className="flex items-start gap-3 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      name="recebimento_transferencia_digital"
+                      checked={formData.recebimento_transferencia_digital !== false}
+                      onChange={handleChange}
+                      className="mt-1 rounded border-gray-300 text-[#0915FF] focus:ring-[#0915FF]"
+                    />
+                    <span className="text-sm text-gray-800">
+                      <span className="font-medium">Receção digital em transferências (central → central)</span>
+                      <span className="block text-xs text-gray-600 mt-1">
+                        Com esta opção ativa, ao confirmar entrega na origem é criada a tarefa de recebimento de mercadoria neste armazém destino.
+                        Desative para armazéns onde o sistema ainda não está implantado (fluxo legado: origem passa a Entregue sem tarefa espelho no destino).
+                      </span>
+                    </span>
+                  </label>
+                </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
                     Localizações (central) <span className="text-red-500">*</span>
@@ -1421,6 +1446,7 @@ const Armazens = () => {
                     </div>
                   </div>
                 </div>
+                </>
               )}
               <div className="flex gap-3">
                 <button

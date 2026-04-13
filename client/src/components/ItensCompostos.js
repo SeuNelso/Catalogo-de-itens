@@ -192,7 +192,10 @@ const ItensCompostos = ({ itemId, isEditing = false, onImagemCompletaChange, ima
   // Função para selecionar um item
   const handleItemSelect = (item) => {
     setSelectedItem(item.id); // Manter como número, não converter para string
-    setSearchTerm(`${item.codigo} - ${item.descricao}`);
+    const inativo = item.ativo === false;
+    setSearchTerm(
+      `${item.codigo} - ${item.descricao}${inativo ? ' (inativo)' : ''}`
+    );
     setShowDropdown(false);
     setSelectedItemIndex(-1);
   };
@@ -587,6 +590,9 @@ const ItensCompostos = ({ itemId, isEditing = false, onImagemCompletaChange, ima
           {showAdicionar && (
             <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-4">
               <h4 className="font-semibold text-blue-900 mb-3">Adicionar Item à Composição</h4>
+              <p className="text-xs text-blue-800/90 mb-3">
+                Pode incluir artigos inativos na composição; aparecem com a etiqueta «Inativo» na pesquisa e na lista.
+              </p>
               
               <div className="space-y-4">
                 <div className="relative">
@@ -627,8 +633,15 @@ const ItensCompostos = ({ itemId, isEditing = false, onImagemCompletaChange, ima
                             }`}
                             onClick={() => handleItemSelect(item)}
                           >
-                            <div className="font-medium text-gray-900">
-                              {item.codigo} - {item.descricao}
+                            <div className="font-medium text-gray-900 flex flex-wrap items-center gap-2">
+                              <span>
+                                {item.codigo} - {item.descricao}
+                              </span>
+                              {item.ativo === false && (
+                                <span className="text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-amber-100 text-amber-900">
+                                  Inativo
+                                </span>
+                              )}
                             </div>
                             <div className="text-xs text-gray-500">
                               {item.setor && `Setor: ${item.setor}`}
@@ -685,9 +698,14 @@ const ItensCompostos = ({ itemId, isEditing = false, onImagemCompletaChange, ima
                   {/* Cabeçalho do componente */}
                   <div className="flex items-center justify-between p-3 bg-gray-50 hover:bg-gray-100 transition-colors duration-200">
                     <div className="flex-1 cursor-pointer" onClick={() => handleItemClick(componente.item_id)}>
-                      <div className="font-medium text-gray-900 flex items-center gap-2 group-hover:text-blue-600 transition-colors duration-200">
+                      <div className="font-medium text-gray-900 flex flex-wrap items-center gap-2 group-hover:text-blue-600 transition-colors duration-200">
                         <span className="text-sm font-bold text-blue-600">#{componente.codigo}</span>
                         <span>{componente.descricao}</span>
+                        {componente.componente_ativo === false && (
+                          <span className="text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-amber-100 text-amber-900">
+                            Inativo
+                          </span>
+                        )}
                         <ExternalLink className="w-4 h-4 text-blue-600 opacity-0 group-hover:opacity-100 transition-opacity duration-200" />
                       </div>
                       <div className="text-sm text-gray-600 mt-1">

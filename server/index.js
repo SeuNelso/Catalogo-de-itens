@@ -56,6 +56,8 @@ const {
   armazemMovimentacaoInternaTableExists,
 } = require('./utils/usuarioDbColumns');
 const { buildExcelTransferencia } = require('./utils/buildExcelTransferencia');
+const { expandirComposicaoAteFolhas } = require('./utils/composicaoExpandida');
+const { loadStockByCodigoFromXlsx, normCodigo: normCodigoStock } = require('./utils/stockListXlsxMap');
 const { quantidadeStockNacionalNoArmazem } = require('./utils/stockNacionalMatch');
 const { createRequisicoesRouter } = require('./routes/requisicoes');
 const { createInventarioRouter } = require('./routes/inventario');
@@ -1690,6 +1692,337 @@ app.get('/api/itens', async (req, res) => {
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+/** Itens com setor CLIENTE (token em lista separada por vírgula/;|) e com composição definida */
+const sqlDashboardClienteCompostosList = `
+  SELECT DISTINCT i.id, i.codigo, i.descricao, i.unidadearmazenamento, i.ativo
+  FROM itens i
+  INNER JOIN itens_compostos ic ON ic.item_principal_id = i.id
+  WHERE EXISTS (
+    SELECT 1
+    FROM itens_setores is2
+    WHERE is2.item_id = i.id
+      AND EXISTS (
+        SELECT 1
+        FROM unnest(
+          string_to_array(
+            regexp_replace(trim(COALESCE(is2.setor, '')), '[|;]', ',', 'g'),
+            ','
+          )
+        ) AS tok(raw)
+        WHERE upper(trim(tok.raw)) = 'CLIENTE'
+      )
+  )
+  ORDER BY i.codigo
+`;
+
+const dashboardClienteStockUpload = multer({
+  dest: 'uploads/',
+  limits: { fileSize: 20 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const ok = /\.(xlsx|xls)$/i.test(file.originalname || '');
+    if (!ok) {
+      return cb(new Error('O ficheiro de stock deve ser .xlsx ou .xls.'));
+    }
+    cb(null, true);
+  },
+});
+
+function dashboardClienteExportMultipart(req, res, next) {
+  const ct = String(req.headers['content-type'] || '').toLowerCase();
+  if (ct.includes('multipart/form-data')) {
+    return dashboardClienteStockUpload.single('stock')(req, res, (err) => {
+      if (err) {
+        const msg =
+          err.code === 'LIMIT_FILE_SIZE'
+            ? 'Ficheiro de stock demasiado grande (máx. 20 MB).'
+            : err.message || 'Erro no upload do ficheiro de stock.';
+        return res.status(400).json({ error: msg });
+      }
+      next();
+    });
+  }
+  next();
+}
+
+/** Deve ficar ANTES de /api/itens/:id para não capturar "dashboard-cliente-compostos" como id */
+app.get('/api/itens/dashboard-cliente-compostos', authenticateToken, async (req, res) => {
+  try {
+    const { rows } = await pool.query(sqlDashboardClienteCompostosList);
+    res.json(rows);
+  } catch (error) {
+    console.error('Erro ao listar dashboard cliente compostos:', error);
+    res.status(500).json({ error: 'Erro ao listar artigos', details: error.message });
+  }
+});
+
+/**
+ * Corpo JSON: { pedido: [{ item_id, quantidade }, ...] }
+ * Ou multipart/form-data: campo pedido (JSON string) + opcional ficheiro stock (.xlsx com colunas x3, Total).
+ * Com stock: o Excel inclui colunas "Stock (ficheiro)" e "Falta (após stock)".
+ */
+app.post(
+  '/api/itens/dashboard-cliente-compostos/export',
+  authenticateToken,
+  dashboardClienteExportMultipart,
+  async (req, res) => {
+    let stockFilePath = null;
+    try {
+      let pedidoRaw;
+      if (req.file) {
+        stockFilePath = req.file.path;
+        let parsed;
+        try {
+          parsed = JSON.parse(req.body?.pedido || '[]');
+        } catch {
+          return res.status(400).json({ error: 'Campo pedido inválido (esperado JSON no multipart).' });
+        }
+        pedidoRaw = parsed;
+      } else {
+        pedidoRaw = req.body?.pedido;
+        if (typeof pedidoRaw === 'string') {
+          try {
+            pedidoRaw = JSON.parse(pedidoRaw);
+          } catch {
+            return res.status(400).json({ error: 'Campo pedido inválido (JSON esperado).' });
+          }
+        }
+      }
+      if (!Array.isArray(pedidoRaw)) {
+        return res.status(400).json({ error: 'Envie pedido: array de { item_id, quantidade }.' });
+      }
+      if (pedidoRaw.length > 2000) {
+        return res.status(400).json({ error: 'Lista de pedido demasiado longa.' });
+      }
+
+    const { rows: permitidos } = await pool.query(sqlDashboardClienteCompostosList);
+    const allowedIds = new Set(permitidos.map((r) => Number(r.id)));
+
+    /** @type {Map<number, number>} */
+    const totais = new Map();
+    /** Kits explícitos no pedido (para nome do ficheiro quando há um só) */
+    const itemIdsPedidoKit = new Set();
+
+    for (const lin of pedidoRaw) {
+      const itemId = parseInt(lin?.item_id, 10);
+      const q = parseFloat(
+        String(lin?.quantidade != null ? lin.quantidade : '')
+          .trim()
+          .replace(',', '.')
+      );
+      if (!Number.isFinite(itemId) || itemId <= 0) {
+        return res.status(400).json({ error: 'item_id inválido no pedido.' });
+      }
+      if (!Number.isFinite(q) || q <= 0) {
+        continue;
+      }
+      if (q > 1_000_000) {
+        return res.status(400).json({ error: 'Quantidade demasiado elevada numa linha.' });
+      }
+      if (!allowedIds.has(itemId)) {
+        return res.status(403).json({
+          error: `O artigo ${itemId} não pertence à lista de compostos CLIENTE ou não tem composição.`
+        });
+      }
+
+      itemIdsPedidoKit.add(itemId);
+      totais.set(itemId, (totais.get(itemId) || 0) + q);
+
+      try {
+        const { linhas } = await expandirComposicaoAteFolhas(pool, itemId, q);
+        for (const L of linhas) {
+          totais.set(L.item_id, (totais.get(L.item_id) || 0) + L.quantidade_necessaria);
+        }
+      } catch (e) {
+        if (e && e.code === 'COMPOSICAO_CICLO') {
+          return res.status(400).json({ error: `Composição circular envolvendo o artigo ${itemId}.`, item_id: itemId });
+        }
+        throw e;
+      }
+    }
+
+    if (totais.size === 0) {
+      return res.status(400).json({ error: 'Indique pelo menos uma quantidade maior que zero.' });
+    }
+
+    const ids = [...totais.keys()];
+    const metaRes = await pool.query(
+      `SELECT id, codigo, descricao FROM itens WHERE id = ANY($1::int[])`,
+      [ids]
+    );
+    const metaById = new Map(metaRes.rows.map((r) => [r.id, r]));
+
+    /** @type {Map<string, number>|null} */
+    let stockMap = null;
+    if (stockFilePath) {
+      try {
+        stockMap = loadStockByCodigoFromXlsx(stockFilePath);
+      } catch (e) {
+        if (e && e.code === 'STOCK_XLSX_COLS') {
+          return res.status(400).json({ error: e.message });
+        }
+        console.error('Erro ao ler ficheiro de stock:', e);
+        return res.status(400).json({ error: 'Não foi possível ler o ficheiro de stock.' });
+      }
+    }
+
+    const dados = ids
+      .map((id) => {
+        const m = metaById.get(id) || { codigo: String(id), descricao: '' };
+        const necess = totais.get(id);
+        const row = {
+          Artigo: m.codigo || '',
+          Descrição: m.descricao || '',
+          'Quantidade total necessária': necess
+        };
+        if (stockMap) {
+          const stockVal = stockMap.get(normCodigoStock(m.codigo)) ?? 0;
+          row['Stock (ficheiro)'] = stockVal;
+          row['Falta (após stock)'] = Math.max(0, necess - stockVal);
+        }
+        return row;
+      })
+      .sort((a, b) =>
+        String(a.Artigo || '').localeCompare(String(b.Artigo || ''), 'pt', { sensitivity: 'base' })
+      );
+
+    const emptyRow = stockMap
+      ? {
+          Artigo: '',
+          Descrição: '',
+          'Quantidade total necessária': '',
+          'Stock (ficheiro)': '',
+          'Falta (após stock)': ''
+        }
+      : { Artigo: '', Descrição: '', 'Quantidade total necessária': '' };
+    const safeRows = dados.length ? dados : [emptyRow];
+
+    const baseColumns = stockMap
+      ? [
+          { header: 'Artigo', key: 'Artigo', minWidth: 12, maxWidth: 28 },
+          { header: 'Descrição', key: 'Descrição', minWidth: 24, maxWidth: 80 },
+          {
+            header: 'Quantidade total necessária',
+            key: 'Quantidade total necessária',
+            minWidth: 18,
+            maxWidth: 30
+          },
+          { header: 'Stock (ficheiro)', key: 'Stock (ficheiro)', minWidth: 16, maxWidth: 24 },
+          { header: 'Falta (após stock)', key: 'Falta (após stock)', minWidth: 18, maxWidth: 26 }
+        ]
+      : [
+          { header: 'Artigo', key: 'Artigo', minWidth: 12, maxWidth: 28 },
+          { header: 'Descrição', key: 'Descrição', minWidth: 24, maxWidth: 80 },
+          {
+            header: 'Quantidade total necessária',
+            key: 'Quantidade total necessária',
+            minWidth: 18,
+            maxWidth: 30
+          }
+        ];
+
+    const columnsWithWidth = baseColumns.map((col) => {
+      const headerLen = String(col.header || '').length;
+      let maxLen = headerLen;
+      for (const r of safeRows) {
+        const cellVal = r[col.key] === null || r[col.key] === undefined ? '' : String(r[col.key]);
+        const len = cellVal.length;
+        if (len > maxLen) maxLen = len;
+      }
+      const calculated = maxLen + 3;
+      const width = Math.max(col.minWidth, Math.min(col.maxWidth, calculated));
+      return { header: col.header, key: col.key, width };
+    });
+
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('Necessidades');
+    sheet.columns = columnsWithWidth;
+    safeRows.forEach((r) => sheet.addRow(r));
+
+    const thinBorder = {
+      top: { style: 'thin', color: { argb: 'FF000000' } },
+      left: { style: 'thin', color: { argb: 'FF000000' } },
+      bottom: { style: 'thin', color: { argb: 'FF000000' } },
+      right: { style: 'thin', color: { argb: 'FF000000' } }
+    };
+
+    const headerRow = sheet.getRow(1);
+    headerRow.height = 24;
+    headerRow.font = { bold: true, color: { argb: 'FF000000' } };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFD3D3D3' }
+    };
+    headerRow.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+    headerRow.eachCell({ includeEmpty: true }, (cell) => {
+      cell.border = thinBorder;
+    });
+
+    for (let ri = 2; ri <= sheet.rowCount; ri++) {
+      const row = sheet.getRow(ri);
+      row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+        cell.border = thinBorder;
+        cell.font = { size: 11 };
+        const isDesc = colNumber === 2;
+        const isNumericCol = colNumber >= 3;
+        cell.alignment = {
+          vertical: 'middle',
+          horizontal: isDesc ? 'left' : isNumericCol ? 'right' : 'left',
+          wrapText: isDesc
+        };
+        const raw = cell.value;
+        if (
+          isNumericCol &&
+          raw !== '' &&
+          raw != null &&
+          String(raw).trim() !== ''
+        ) {
+          const n = typeof raw === 'number' ? raw : parseFloat(String(raw).replace(',', '.'));
+          if (Number.isFinite(n)) {
+            cell.value = n;
+            // Inteiros: sem secção decimal (evita "60." em alguns locales). Decimais: só dígitos necessários.
+            const isWhole = Math.abs(n - Math.round(n)) < 1e-9;
+            cell.numFmt = isWhole ? '#,##0' : '#,##0.##########';
+          }
+        }
+      });
+    }
+
+    sheet.views = [{ state: 'frozen', ySplit: 1 }];
+
+    const buffer = await workbook.xlsx.writeBuffer();
+    const dateStr = new Date().toISOString().slice(0, 10);
+    let fn = `necessidades_cliente_compostos_${dateStr}.xlsx`;
+    if (itemIdsPedidoKit.size === 1) {
+      const onlyKitId = itemIdsPedidoKit.values().next().value;
+      const cod = metaById.get(onlyKitId)?.codigo || String(onlyKitId);
+      const safe = String(cod)
+        .trim()
+        .replace(/[/\\?%*:|"<>]/g, '_')
+        .replace(/\s+/g, '_')
+        .slice(0, 80);
+      const sufixoStock = stockMap ? '_com_stock' : '';
+      fn = `necessidades_cliente_${safe || 'artigo'}${sufixoStock}_${dateStr}.xlsx`;
+    } else if (stockMap) {
+      fn = `necessidades_cliente_compostos_com_stock_${dateStr}.xlsx`;
+    }
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${fn}"`);
+    res.send(buffer);
+  } catch (error) {
+    console.error('Erro ao exportar dashboard cliente compostos:', error);
+    res.status(500).json({ error: 'Erro ao gerar ficheiro', details: error.message });
+  } finally {
+    if (stockFilePath) {
+      try {
+        fs.unlinkSync(stockFilePath);
+      } catch (_) {
+        /* ignore */
+      }
+    }
   }
 });
 
@@ -3960,9 +4293,8 @@ app.delete('/api/imagens/:id', authenticateToken, async (req, res) => {
 app.get('/api/itens-para-componentes', authenticateToken, async (req, res) => {
   try {
     const { rows } = await pool.query(`
-      SELECT id, codigo, descricao, unidadearmazenamento 
-      FROM itens 
-      WHERE ativo = true 
+      SELECT id, codigo, descricao, unidadearmazenamento, ativo
+      FROM itens
       ORDER BY codigo
     `);
     
@@ -3996,7 +4328,8 @@ app.get('/api/itens/:id/componentes', authenticateToken, async (req, res) => {
         i.unidadepeso,
         i.tipocontrolo,
         i.observacoes,
-        i.unidadearmazenamento
+        i.unidadearmazenamento,
+        i.ativo AS componente_ativo
       FROM itens_compostos ic
       JOIN itens i ON ic.item_componente_id = i.id
       WHERE ic.item_principal_id = $1
@@ -4007,6 +4340,61 @@ app.get('/api/itens/:id/componentes', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('Erro ao buscar componentes:', error);
     res.status(500).json({ error: 'Erro ao buscar componentes' });
+  }
+});
+
+/**
+ * Lista de materiais (BOM) expandida: para N unidades do item raiz, devolve quantidades
+ * agregadas nos artigos-base (sem duplicar intermediários compostos). Deteta ciclos.
+ */
+app.get('/api/itens/:id/composicao-expandida', authenticateToken, async (req, res) => {
+  try {
+    const rootId = parseInt(req.params.id, 10);
+    if (!Number.isFinite(rootId) || rootId <= 0) {
+      return res.status(400).json({ error: 'ID de item inválido.' });
+    }
+    const qRaw = req.query.quantidade != null ? String(req.query.quantidade).trim() : '1';
+    const quantidadePedida = parseFloat(qRaw.replace(',', '.'));
+    if (!Number.isFinite(quantidadePedida) || quantidadePedida <= 0) {
+      return res.status(400).json({ error: 'Indique uma quantidade válida maior que zero.' });
+    }
+    if (quantidadePedida > 1_000_000) {
+      return res.status(400).json({ error: 'Quantidade demasiado elevada.' });
+    }
+
+    const rootMeta = await pool.query(
+      `SELECT id, codigo, descricao FROM itens WHERE id = $1`,
+      [rootId]
+    );
+    if (rootMeta.rows.length === 0) {
+      return res.status(404).json({ error: 'Item não encontrado.' });
+    }
+
+       const { linhas, tem_composicao } = await expandirComposicaoAteFolhas(pool, rootId, quantidadePedida);
+
+    if (!tem_composicao) {
+      return res.json({
+        item_principal: rootMeta.rows[0],
+        quantidade_pedida: quantidadePedida,
+        tem_composicao: false,
+        linhas: [],
+        aviso: null
+      });
+    }
+
+    res.json({
+      item_principal: rootMeta.rows[0],
+      quantidade_pedida: quantidadePedida,
+      tem_composicao: true,
+      linhas,
+      aviso: null
+    });
+  } catch (error) {
+    if (error && error.code === 'COMPOSICAO_CICLO') {
+      return res.status(400).json({ error: error.message });
+    }
+    console.error('Erro ao expandir composição:', error);
+    res.status(500).json({ error: 'Erro ao calcular composição expandida', details: error.message });
   }
 });
 
@@ -5836,7 +6224,7 @@ app.post('/api/armazens', authenticateToken, async (req, res) => {
       return res.status(403).json({ error: 'Apenas administradores podem criar armazéns' });
     }
 
-    const { codigo, descricao, localizacao, localizacoes, tipo, armazem_central_vinculado_id } = req.body;
+    const { codigo, descricao, localizacao, localizacoes, tipo, armazem_central_vinculado_id, recebimento_transferencia_digital } = req.body;
 
     if (!codigo || !codigo.toString().trim()) {
       return res.status(400).json({ error: 'Código é obrigatório (ex: V848 ou E)' });
@@ -5913,47 +6301,62 @@ app.post('/api/armazens', authenticateToken, async (req, res) => {
       armazemCentralVinculadoId = null;
     }
 
+    const recebimentoTransferenciaDigitalCriar =
+      tipoArmazem === 'central' ? recebimento_transferencia_digital !== false : true;
+
     let result;
     try {
       result = await pool.query(`
-        INSERT INTO armazens (codigo, descricao, localizacao, tipo, armazem_central_vinculado_id)
-        VALUES ($1, $2, $3, $4, $5)
+        INSERT INTO armazens (codigo, descricao, localizacao, tipo, armazem_central_vinculado_id, recebimento_transferencia_digital)
+        VALUES ($1, $2, $3, $4, $5, $6)
         RETURNING *
-      `, [codigoNorm, descricaoTrim, (locsWithTipo[0] && locsWithTipo[0].localizacao) || null, tipoArmazem, armazemCentralVinculadoId]);
+      `, [codigoNorm, descricaoTrim, (locsWithTipo[0] && locsWithTipo[0].localizacao) || null, tipoArmazem, armazemCentralVinculadoId, recebimentoTransferenciaDigitalCriar]);
     } catch (insertError) {
       if (insertError.code === '42703') {
         const missingColMsg = String(insertError.message || '').toLowerCase();
+        const missingRecTransDig = missingColMsg.includes('recebimento_transferencia_digital');
         const missingVinculoCol = missingColMsg.includes('armazem_central_vinculado_id');
         const missingTipoCol = missingColMsg.includes('tipo');
-        if (armazemCentralVinculadoId && missingVinculoCol) {
+        if (missingRecTransDig) {
+          try {
+            result = await pool.query(`
+              INSERT INTO armazens (codigo, descricao, localizacao, tipo, armazem_central_vinculado_id)
+              VALUES ($1, $2, $3, $4, $5)
+              RETURNING *
+            `, [codigoNorm, descricaoTrim, (locsWithTipo[0] && locsWithTipo[0].localizacao) || null, tipoArmazem, armazemCentralVinculadoId]);
+          } catch (retryErr) {
+            throw retryErr;
+          }
+        } else if (armazemCentralVinculadoId && missingVinculoCol) {
           return res.status(503).json({
             error: 'A base de dados não suporta vínculo central para APEADO/EPI.',
             details: 'Execute a migração: server/migrate-armazens-vinculo-central.sql'
           });
-        }
-        if (missingTipoCol) {
+        } else if (missingTipoCol) {
           return res.status(503).json({
             error: 'A base de dados não suporta tipos de armazém (central/viatura/APEADO/EPI).',
             details: 'Execute a migração: server/migrate-armazens-tipo-central-viatura.sql'
           });
+        } else {
+          try {
+            result = await pool.query(`
+              INSERT INTO armazens (codigo, descricao, localizacao)
+              VALUES ($1, $2, $3)
+              RETURNING *
+            `, [codigoNorm, descricaoTrim, (locsWithTipo[0] && locsWithTipo[0].localizacao) || null]);
+            console.log(`Armazem criado (esquema antigo): ${result.rows[0].descricao}`);
+            return res.status(201).json(result.rows[0]);
+          } catch (fallbackErr) {
+            console.error('Erro ao criar armazém (fallback):', fallbackErr);
+            return res.status(500).json({
+              error: 'Erro ao criar armazém. Execute a migração: server/migrate-armazens-add-codigo.sql',
+              details: fallbackErr.message
+            });
+          }
         }
-        try {
-          result = await pool.query(`
-            INSERT INTO armazens (codigo, descricao, localizacao)
-            VALUES ($1, $2, $3)
-            RETURNING *
-          `, [codigoNorm, descricaoTrim, (locsWithTipo[0] && locsWithTipo[0].localizacao) || null]);
-          console.log(`✅ Armazém criado (esquema antigo): ${result.rows[0].descricao}`);
-          return res.status(201).json(result.rows[0]);
-        } catch (fallbackErr) {
-          console.error('Erro ao criar armazém (fallback):', fallbackErr);
-          return res.status(500).json({
-            error: 'Erro ao criar armazém. Execute a migração: server/migrate-armazens-add-codigo.sql',
-            details: fallbackErr.message
-          });
-        }
+      } else {
+        throw insertError;
       }
-      throw insertError;
     }
 
     const armazemId = result.rows[0].id;
@@ -5981,6 +6384,18 @@ app.post('/api/armazens', authenticateToken, async (req, res) => {
           return res.status(503).json({
             error: 'Tabela armazens_localizacoes não existe. Execute a migração:',
             details: 'server/migrate-armazens-multiplas-localizacoes.sql ou server/criar-tabelas-armazens-requisicoes.sql'
+          });
+        }
+        if (
+          e.code === '23503' &&
+          (
+            String(e.constraint || '').includes('armazem_movimentacao_interna_origem_localizacao_id_fkey') ||
+            String(e.constraint || '').includes('armazem_movimentacao_interna_destino_localizacao_id_fkey')
+          )
+        ) {
+          return res.status(409).json({
+            error: 'Não é possível alterar localizações deste armazém.',
+            details: 'Existem movimentações internas associadas às localizações atuais. Preserve as localizações em uso ou utilize um novo armazém.'
           });
         }
         throw e;
@@ -6095,7 +6510,7 @@ app.put('/api/armazens/:id', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'ID de armazém inválido' });
     }
 
-    const { codigo, descricao, localizacao, localizacoes, ativo, tipo, armazem_central_vinculado_id } = req.body;
+    const { codigo, descricao, localizacao, localizacoes, ativo, tipo, armazem_central_vinculado_id, recebimento_transferencia_digital } = req.body;
 
     const updates = [];
     const params = [];
@@ -6156,6 +6571,13 @@ app.put('/api/armazens/:id', authenticateToken, async (req, res) => {
       }
       updates.push(`armazem_central_vinculado_id = $${paramCount++}`);
       params.push(armazemCentralVinculadoIdPut);
+    }
+
+    if (recebimento_transferencia_digital !== undefined) {
+      const v = recebimento_transferencia_digital;
+      const boolVal = !(v === false || v === 0 || v === '0' || String(v).toLowerCase() === 'false');
+      updates.push(`recebimento_transferencia_digital = $${paramCount++}`);
+      params.push(boolVal);
     }
 
     const temLocalizacoesParaAtualizar = localizacoes !== undefined && Array.isArray(localizacoes);
@@ -6221,6 +6643,15 @@ app.put('/api/armazens/:id', authenticateToken, async (req, res) => {
           WHERE id = $${paramCount}
         `, params);
       } catch (updE) {
+        if (updE.code === '42703') {
+          const missingColMsg = String(updE.message || '').toLowerCase();
+          if (missingColMsg.includes('recebimento_transferencia_digital')) {
+            return res.status(503).json({
+              error: 'Coluna recebimento_transferencia_digital em falta na base de dados.',
+              details: 'Execute a migração: server/migrate-armazens-recebimento-transferencia-digital.sql',
+            });
+          }
+        }
         if (updE.code === '42703' && (tipoIdx !== -1 || armCentralIdx !== -1)) {
           const missingColMsg = String(updE.message || '').toLowerCase();
           const missingVinculoCol = missingColMsg.includes('armazem_central_vinculado_id');
@@ -6264,17 +6695,81 @@ app.put('/api/armazens/:id', authenticateToken, async (req, res) => {
 
     if (temLocalizacoesParaAtualizar && locsWithTipo.length > 0) {
       try {
-        await pool.query('DELETE FROM armazens_localizacoes WHERE armazem_id = $1', [id]);
-        for (const loc of locsWithTipo) {
-          try {
-            await pool.query(
-              'INSERT INTO armazens_localizacoes (armazem_id, localizacao, tipo_localizacao) VALUES ($1, $2, $3)',
-              [id, loc.localizacao, loc.tipo_localizacao || 'normal']
+        let existingLocs = [];
+        let hasTipoLocalizacaoColumn = true;
+        try {
+          const existingRes = await pool.query(
+            'SELECT id, localizacao, tipo_localizacao FROM armazens_localizacoes WHERE armazem_id = $1 ORDER BY id',
+            [id]
+          );
+          existingLocs = existingRes.rows || [];
+        } catch (selE) {
+          if (selE.code === '42703') {
+            hasTipoLocalizacaoColumn = false;
+            const existingRes = await pool.query(
+              'SELECT id, localizacao FROM armazens_localizacoes WHERE armazem_id = $1 ORDER BY id',
+              [id]
             );
-          } catch (insE) {
-            if (insE.code === '42703') {
-              await pool.query('INSERT INTO armazens_localizacoes (armazem_id, localizacao) VALUES ($1, $2)', [id, loc.localizacao]);
-            } else throw insE;
+            existingLocs = (existingRes.rows || []).map((r) => ({
+              ...r,
+              tipo_localizacao: (r.localizacao || '').toUpperCase().includes('.FERR') ? 'FERR' : 'normal'
+            }));
+          } else {
+            throw selE;
+          }
+        }
+
+        const existingByLoc = new Map(
+          existingLocs.map((r) => [String(r.localizacao || '').trim(), r])
+        );
+        const desiredByLoc = new Map(
+          locsWithTipo.map((l) => [String(l.localizacao || '').trim(), { ...l, localizacao: String(l.localizacao || '').trim() }])
+        );
+
+        for (const desired of desiredByLoc.values()) {
+          const current = existingByLoc.get(desired.localizacao);
+          if (!current) {
+            if (hasTipoLocalizacaoColumn) {
+              await pool.query(
+                'INSERT INTO armazens_localizacoes (armazem_id, localizacao, tipo_localizacao) VALUES ($1, $2, $3)',
+                [id, desired.localizacao, desired.tipo_localizacao || 'normal']
+              );
+            } else {
+              await pool.query(
+                'INSERT INTO armazens_localizacoes (armazem_id, localizacao) VALUES ($1, $2)',
+                [id, desired.localizacao]
+              );
+            }
+            continue;
+          }
+
+          if (hasTipoLocalizacaoColumn && (current.tipo_localizacao || 'normal') !== (desired.tipo_localizacao || 'normal')) {
+            await pool.query(
+              'UPDATE armazens_localizacoes SET tipo_localizacao = $1 WHERE id = $2',
+              [desired.tipo_localizacao || 'normal', current.id]
+            );
+          }
+        }
+
+        for (const current of existingLocs) {
+          const locKey = String(current.localizacao || '').trim();
+          if (desiredByLoc.has(locKey)) continue;
+          try {
+            await pool.query('DELETE FROM armazens_localizacoes WHERE id = $1', [current.id]);
+          } catch (delE) {
+            if (
+              delE.code === '23503' &&
+              (
+                String(delE.constraint || '').includes('armazem_movimentacao_interna_origem_localizacao_id_fkey') ||
+                String(delE.constraint || '').includes('armazem_movimentacao_interna_destino_localizacao_id_fkey')
+              )
+            ) {
+              return res.status(409).json({
+                error: 'Não é possível remover localização em uso.',
+                details: `A localização "${locKey}" possui movimentações internas associadas.`
+              });
+            }
+            throw delE;
           }
         }
       } catch (e) {

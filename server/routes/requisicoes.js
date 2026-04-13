@@ -1216,7 +1216,8 @@ router.get('/', ...requisicaoAuth, async (req, res) => {
             const origemReq = origemById.get(Number(origemReqId));
             reqRow.requisicao_origem_tra_numero = String(origemReq?.tra_numero || '').trim();
           } else {
-            reqRow.requisicao_origem_tra_numero = '';
+            // Recebimento manual/GT não tem AUTO_FROM_REQ: usar o Nº TRA guardado no próprio recebimento.
+            reqRow.requisicao_origem_tra_numero = String(reqRow.tra_numero || '').trim();
           }
           reqRow.aguardando_tra_origem =
             Boolean(entregaConfirmada) &&
@@ -7340,7 +7341,8 @@ router.patch('/:id/marcar-entregue', ...requisicaoAuth, async (req, res) => {
          r.armazem_id,
          r.separador_usuario_id,
          ao.tipo AS armazem_origem_tipo,
-         a.tipo AS armazem_destino_tipo
+         a.tipo AS armazem_destino_tipo,
+         COALESCE(a.recebimento_transferencia_digital, true) AS destino_recebimento_transferencia_digital
        FROM requisicoes r
        LEFT JOIN armazens ao ON r.armazem_origem_id = ao.id
        INNER JOIN armazens a ON r.armazem_id = a.id
@@ -7368,9 +7370,12 @@ router.patch('/:id/marcar-entregue', ...requisicaoAuth, async (req, res) => {
     const origemTipo = String(row.armazem_origem_tipo || '').trim().toLowerCase();
     const destinoTipo = String(row.armazem_destino_tipo || '').trim().toLowerCase();
     const isCentralParaCentral = origemTipo === 'central' && destinoTipo === 'central';
+    const destinoRecebimentoDigital = row.destino_recebimento_transferencia_digital !== false;
+    const useMirrorRecebimentoCentral =
+      isCentralParaCentral && destinoRecebimentoDigital;
 
-    // Entregar central->central: criar recebimento no destino e manter origem em EM_EXPEDICAO (aguardando receção).
-    if (isCentralParaCentral) {
+    // Entregar central->central com receção digital no destino: criar recebimento no destino e manter origem em EM_EXPEDICAO (aguardando receção).
+    if (useMirrorRecebimentoCentral) {
       const marker = `${RECEBIMENTO_TRANSFERENCIA_MARKER}: AUTO_FROM_REQ:${reqId} | DELIVERY_CONFIRMED:0 | TRA_CONFIRMED:0`;
       // convenção do recebimento existente:
       // armazem_origem_id = armazém de recebimento (destino da original)
@@ -7437,7 +7442,7 @@ router.patch('/:id/marcar-entregue', ...requisicaoAuth, async (req, res) => {
     return res.json({
       ...updated.rows[0],
       recebimento_transferencia_id: recebimentoTransferenciaId,
-      aguardando_recepcao: Boolean(isCentralParaCentral),
+      aguardando_recepcao: Boolean(useMirrorRecebimentoCentral),
     });
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {});
@@ -7588,7 +7593,7 @@ router.patch('/:id/tra-numero', ...requisicaoAuth, denyOperador, async (req, res
     }
     const check = await pool.query(
       `SELECT r.id, r.status, r.armazem_origem_id, r.armazem_id, r.separador_usuario_id, r.tra_gerada_em,
-              r.devolucao_tra_gerada_em, r.tra_numero,
+              r.devolucao_tra_gerada_em, r.tra_numero, r.observacoes,
               ao.tipo AS armazem_origem_tipo, a.tipo AS armazem_destino_tipo
        FROM requisicoes r
        LEFT JOIN armazens ao ON r.armazem_origem_id = ao.id
@@ -7608,7 +7613,12 @@ router.patch('/:id/tra-numero', ...requisicaoAuth, denyOperador, async (req, res
     if (separadorImpedeAcao(row, req)) {
       return respostaBloqueioSeparador(res);
     }
-    if (!row.tra_gerada_em && !row.devolucao_tra_gerada_em) {
+    const isRecebimentoTransfer = hasRecebimentoMarker(row);
+    if (
+      !row.tra_gerada_em &&
+      !row.devolucao_tra_gerada_em &&
+      !isRecebimentoTransfer
+    ) {
       return res.status(400).json({ error: 'Gere a TRA/DEV antes de informar o número.' });
     }
     const isDevolucaoFluxo = Boolean(row.devolucao_tra_gerada_em);
@@ -8261,7 +8271,7 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
 
         await client.query('BEGIN');
         const lock = await client.query(
-          `SELECT r.id, r.status, r.observacoes, r.armazem_origem_id
+          `SELECT r.id, r.status, r.observacoes, r.armazem_origem_id, r.tra_numero
            FROM requisicoes r
            WHERE r.id = $1
            FOR UPDATE`,
@@ -8292,24 +8302,30 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
           return res.status(400).json({ error: 'Confirme primeiro a entrega no recebimento.' });
         }
         const reqOrigemId = getAutoFromReqId(row);
-        if (!Number.isFinite(reqOrigemId)) {
-          await client.query('ROLLBACK');
-          return res.status(400).json({ error: 'Recebimento sem vínculo com requisição de origem.' });
-        }
-        const origemQ = await client.query(
-          `SELECT id, tra_numero
-           FROM requisicoes
-           WHERE id = $1`,
-          [reqOrigemId]
-        );
-        if (!origemQ.rows.length) {
-          await client.query('ROLLBACK');
-          return res.status(404).json({ error: 'Requisição de origem não encontrada.' });
-        }
-        const traNumeroOrigem = String(origemQ.rows[0].tra_numero || '').trim();
-        if (!traNumeroOrigem) {
-          await client.query('ROLLBACK');
-          return res.status(400).json({ error: 'Aguardando Nº TRA do armazém de origem.' });
+        let traNumeroOrigem = '';
+        if (Number.isFinite(reqOrigemId)) {
+          const origemQ = await client.query(
+            `SELECT id, tra_numero
+             FROM requisicoes
+             WHERE id = $1`,
+            [reqOrigemId]
+          );
+          if (!origemQ.rows.length) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ error: 'Requisição de origem não encontrada.' });
+          }
+          traNumeroOrigem = String(origemQ.rows[0].tra_numero || '').trim();
+          if (!traNumeroOrigem) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({ error: 'Aguardando Nº TRA do armazém de origem.' });
+          }
+        } else {
+          // Fluxo manual/GT: sem vínculo de origem, validar Nº TRA salvo no próprio recebimento.
+          traNumeroOrigem = String(row.tra_numero || '').trim();
+          if (!traNumeroOrigem) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({ error: 'Guarde o Nº TRA neste recebimento antes de confirmar.' });
+          }
         }
 
         const obsComTraConfirmada = upsertMarkerFlag(row.observacoes, 'TRA_CONFIRMED', true);
