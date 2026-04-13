@@ -938,6 +938,10 @@ router.get('/', ...requisicaoAuth, async (req, res) => {
         OR (LOWER(TRIM(ao.tipo)) = $${paramCount++} AND LOWER(TRIM(a.tipo)) = $${paramCount++})
       )`;
       params.push('central', 'apeado', 'apeado', 'central', 'central', 'central');
+      // Recebimento de mercadoria usa os mesmos tipos no JOIN, mas convenção invertida
+      // (armazem_origem_id = onde se recebe). Não contar como transferência "centrais".
+      query += ` AND UPPER(COALESCE(r.observacoes, '')) NOT LIKE $${paramCount++}`;
+      params.push(`${RECEBIMENTO_TRANSFERENCIA_MARKER}%`);
     } else if (devolucoesViaturaCentral) {
       // Devolução: origem = viatura e destino = central
       query += ` AND LOWER(TRIM(ao.tipo)) = $${paramCount++} AND LOWER(TRIM(a.tipo)) = $${paramCount++}`;
@@ -945,14 +949,27 @@ router.get('/', ...requisicaoAuth, async (req, res) => {
     } else {
       // Página "Requisições": excluir fluxos dedicados de Devoluções e Transferências.
       // Devoluções: viatura -> central
-      // Transferências: central <-> apeado e central -> central
+      // Transferências: central <-> apeado e central -> central (exceto recebimento mercadoria)
       query += ` AND NOT (
         (LOWER(TRIM(ao.tipo)) = $${paramCount++} AND LOWER(TRIM(a.tipo)) = $${paramCount++})
         OR (LOWER(TRIM(ao.tipo)) = $${paramCount++} AND LOWER(TRIM(a.tipo)) = $${paramCount++})
         OR (LOWER(TRIM(ao.tipo)) = $${paramCount++} AND LOWER(TRIM(a.tipo)) = $${paramCount++})
-        OR (LOWER(TRIM(ao.tipo)) = $${paramCount++} AND LOWER(TRIM(a.tipo)) = $${paramCount++})
+        OR (
+          (LOWER(TRIM(ao.tipo)) = $${paramCount++} AND LOWER(TRIM(a.tipo)) = $${paramCount++})
+          AND UPPER(COALESCE(r.observacoes, '')) NOT LIKE $${paramCount++}
+        )
       )`;
-      params.push('viatura', 'central', 'central', 'apeado', 'apeado', 'central', 'central', 'central');
+      params.push(
+        'viatura',
+        'central',
+        'central',
+        'apeado',
+        'apeado',
+        'central',
+        'central',
+        'central',
+        `${RECEBIMENTO_TRANSFERENCIA_MARKER}%`
+      );
     }
 
     if (armazem_id != null && String(armazem_id).trim() !== '') {
@@ -1023,6 +1040,8 @@ router.get('/', ...requisicaoAuth, async (req, res) => {
             OR (LOWER(TRIM(ao.tipo)) = $${pc++} AND LOWER(TRIM(a.tipo)) = $${pc++})
           )`;
           fbParams.push('central', 'apeado', 'apeado', 'central', 'central', 'central');
+          fallbackQuery += ` AND UPPER(COALESCE(r.observacoes, '')) NOT LIKE $${pc++}`;
+          fbParams.push(`${RECEBIMENTO_TRANSFERENCIA_MARKER}%`);
         } else if (devolucoesViaturaCentral) {
           fallbackQuery += ` AND LOWER(TRIM(ao.tipo)) = $${pc++} AND LOWER(TRIM(a.tipo)) = $${pc++}`;
           fbParams.push('viatura', 'central');
@@ -1031,9 +1050,22 @@ router.get('/', ...requisicaoAuth, async (req, res) => {
             (LOWER(TRIM(ao.tipo)) = $${pc++} AND LOWER(TRIM(a.tipo)) = $${pc++})
             OR (LOWER(TRIM(ao.tipo)) = $${pc++} AND LOWER(TRIM(a.tipo)) = $${pc++})
             OR (LOWER(TRIM(ao.tipo)) = $${pc++} AND LOWER(TRIM(a.tipo)) = $${pc++})
-            OR (LOWER(TRIM(ao.tipo)) = $${pc++} AND LOWER(TRIM(a.tipo)) = $${pc++})
+            OR (
+              (LOWER(TRIM(ao.tipo)) = $${pc++} AND LOWER(TRIM(a.tipo)) = $${pc++})
+              AND UPPER(COALESCE(r.observacoes, '')) NOT LIKE $${pc++}
+            )
           )`;
-          fbParams.push('viatura', 'central', 'central', 'apeado', 'apeado', 'central', 'central', 'central');
+          fbParams.push(
+            'viatura',
+            'central',
+            'central',
+            'apeado',
+            'apeado',
+            'central',
+            'central',
+            'central',
+            `${RECEBIMENTO_TRANSFERENCIA_MARKER}%`
+          );
         }
         if (armazem_id != null && String(armazem_id).trim() !== '') {
           const aid = parseInt(String(armazem_id), 10);
@@ -1396,29 +1428,61 @@ router.get('/:id/export-excel', ...requisicaoAuth, denyOperador, async (req, res
 const LOCALIZACAO_EXPEDICAO_FALLBACK = 'EXPEDICAO.E';
 const LOCALIZACAO_RECEBIMENTO_FALLBACK = 'RECEBIMENTO.E';
 
+async function buildRecebimentoMercadoriaReporteRows(poolConn, requisicao) {
+  const locRecebimentoDestino =
+    (await localizacaoArmazemPorTipoConn(poolConn, requisicao.armazem_origem_id, 'recebimento')) ||
+    LOCALIZACAO_RECEBIMENTO_FALLBACK;
+  const columns = ['COD', 'DESCRIÇÃO', 'QTD', 'S/N', 'LOTE', 'Localização destino'];
+  const rows = (requisicao.itens || []).map((it) => ({
+    COD: String(it.item_codigo || '').trim(),
+    'DESCRIÇÃO': String(it.item_descricao || '').trim(),
+    QTD: Number(it.quantidade_preparada ?? it.quantidade ?? 0) || 0,
+    'S/N': String(it.serialnumber || '').trim(),
+    LOTE: String(it.lote || '').trim(),
+    'Localização destino': String(locRecebimentoDestino || '').trim(),
+  }));
+  return { columns, rows };
+}
+
 // Helper: gera ficheiro de reporte formatado no template
 // (Artigo, Descrição, Quantidade, ORIGEM, S/N, LOTE, DESTINO[, Observações])
+// ou, com opts.recebimentoMercadoria: COD, DESCRIÇÃO, QTD, S/N, LOTE, Localização destino
 async function buildExcelReporte(rows, res, filename, opts = {}) {
   const includeObservacoes = Boolean(opts.includeObservacoes);
+  const recebimentoMercadoria = Boolean(opts.recebimentoMercadoria);
   const workbook = new ExcelJS.Workbook();
   const sheet = workbook.addWorksheet('Reporte');
 
-  const baseColumns = [
-    { header: 'Artigo', key: 'Artigo', minWidth: 10, maxWidth: 22 },
-    { header: 'Descrição', key: 'Descrição', minWidth: 18, maxWidth: 70 },
-    { header: 'Quantidade', key: 'Quantidade', minWidth: 10, maxWidth: 18 },
-    { header: 'ORIGEM', key: 'ORIGEM', minWidth: 12, maxWidth: 28 },
-    { header: 'S/N', key: 'S/N', minWidth: 8, maxWidth: 20 },
-    { header: 'LOTE', key: 'LOTE', minWidth: 10, maxWidth: 36 },
-    { header: 'DESTINO', key: 'DESTINO', minWidth: 10, maxWidth: 20 }
-  ];
-  if (includeObservacoes) {
-    baseColumns.push({ header: 'Observações', key: 'Observações', minWidth: 14, maxWidth: 45 });
+  let baseColumns;
+  if (recebimentoMercadoria) {
+    baseColumns = [
+      { header: 'COD', key: 'COD', minWidth: 10, maxWidth: 22 },
+      { header: 'DESCRIÇÃO', key: 'DESCRIÇÃO', minWidth: 18, maxWidth: 70 },
+      { header: 'QTD', key: 'QTD', minWidth: 8, maxWidth: 14 },
+      { header: 'S/N', key: 'S/N', minWidth: 8, maxWidth: 20 },
+      { header: 'LOTE', key: 'LOTE', minWidth: 10, maxWidth: 36 },
+      { header: 'Localização destino', key: 'Localização destino', minWidth: 14, maxWidth: 28 },
+    ];
+  } else {
+    baseColumns = [
+      { header: 'Artigo', key: 'Artigo', minWidth: 10, maxWidth: 22 },
+      { header: 'Descrição', key: 'Descrição', minWidth: 18, maxWidth: 70 },
+      { header: 'Quantidade', key: 'Quantidade', minWidth: 10, maxWidth: 18 },
+      { header: 'ORIGEM', key: 'ORIGEM', minWidth: 12, maxWidth: 28 },
+      { header: 'S/N', key: 'S/N', minWidth: 8, maxWidth: 20 },
+      { header: 'LOTE', key: 'LOTE', minWidth: 10, maxWidth: 36 },
+      { header: 'DESTINO', key: 'DESTINO', minWidth: 10, maxWidth: 20 }
+    ];
+    if (includeObservacoes) {
+      baseColumns.push({ header: 'Observações', key: 'Observações', minWidth: 14, maxWidth: 45 });
+    }
   }
 
-  const safeRows = rows.length
-    ? rows
-    : [{ Artigo: '', 'Descrição': '', Quantidade: '', ORIGEM: '', 'S/N': '', LOTE: '', DESTINO: '', 'Observações': '' }];
+  const emptyRow = recebimentoMercadoria
+    ? { COD: '', 'DESCRIÇÃO': '', QTD: '', 'S/N': '', LOTE: '', 'Localização destino': '' }
+    : { Artigo: '', 'Descrição': '', Quantidade: '', ORIGEM: '', 'S/N': '', LOTE: '', DESTINO: '', 'Observações': '' };
+
+  const safeRows = rows.length ? rows : [emptyRow];
 
   // Largura automática por conteúdo (header + dados), com limites por coluna.
   const columnsWithWidth = baseColumns.map((col) => {
@@ -1464,10 +1528,17 @@ async function buildExcelReporte(rows, res, filename, opts = {}) {
     row.height = 22;
     row.eachCell((cell, colNumber) => {
       cell.font = { size: 11 };
+      const colKey = baseColumns[colNumber - 1]?.key;
+      const leftAlign =
+        colKey === 'Descrição' ||
+        colKey === 'DESCRIÇÃO' ||
+        colKey === 'Observações' ||
+        colKey === 'Localização destino' ||
+        (!recebimentoMercadoria && includeObservacoes && colNumber === baseColumns.length);
       cell.alignment = {
         vertical: 'middle',
-        horizontal: (colNumber === 2 || (includeObservacoes && colNumber === baseColumns.length)) ? 'left' : 'center',
-        wrapText: (colNumber === 2 || (includeObservacoes && colNumber === baseColumns.length))
+        horizontal: leftAlign ? 'left' : 'center',
+        wrapText: leftAlign
       };
       cell.border = {
         top: { style: 'thin', color: { argb: 'FF808080' } },
@@ -8356,6 +8427,33 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
     }
   );
 
+  router.get(
+    '/transferencias/recebimento/:id/reporte-dados',
+    ...requisicaoAuth,
+    async (req, res) => {
+      try {
+        const { id } = req.params;
+        const reqId = parseInt(String(id || ''), 10);
+        if (!Number.isFinite(reqId)) return res.status(400).json({ error: 'ID inválido.' });
+
+        const requisicao = await getRequisicaoComItens(reqId);
+        if (!requisicao) return res.status(404).json({ error: 'Requisição não encontrada.' });
+        if (!hasRecebimentoMarker(requisicao)) {
+          return res.status(400).json({ error: 'Requisição não é um recebimento de transferência.' });
+        }
+        if (String(requisicao.status || '') !== 'EM EXPEDICAO') {
+          return res.status(400).json({ error: 'Reporte só está disponível quando o recebimento está em processo.' });
+        }
+
+        const { columns, rows } = await buildRecebimentoMercadoriaReporteRows(pool, requisicao);
+        return res.json({ columns, rows });
+      } catch (e) {
+        console.error('Erro ao obter dados do reporte de recebimento:', e);
+        return res.status(500).json({ error: 'Erro ao obter reporte', details: e.message });
+      }
+    }
+  );
+
   // Exportar report de material recebido
   router.get(
     '/transferencias/recebimento/:id/export-reporte',
@@ -8375,22 +8473,7 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
           return res.status(400).json({ error: 'Reporte só está disponível quando o recebimento está em processo.' });
         }
 
-        const destino = requisicao?.armazem_origem_descricao || '';
-        const origem = requisicao?.armazem_destino_descricao || '';
-        const locRecebimentoDestino =
-          (await localizacaoArmazemPorTipoConn(pool, requisicao.armazem_origem_id, 'recebimento')) ||
-          LOCALIZACAO_RECEBIMENTO_FALLBACK;
-
-        const rows = (requisicao.itens || []).map((it) => ({
-          Artigo: String(it.item_codigo || '').trim(),
-          'Descrição': String(it.item_descricao || '').trim(),
-          Quantidade: Number(it.quantidade_preparada ?? it.quantidade ?? 0) || 0,
-          ORIGEM: String(origem || '').trim(),
-          'S/N': String(it.serialnumber || '').trim(),
-          LOTE: String(it.lote || '').trim(),
-          DESTINO: String(locRecebimentoDestino || destino || '').trim(),
-          Observações: '',
-        }));
+        const { rows } = await buildRecebimentoMercadoriaReporteRows(pool, requisicao);
 
         await pool.query(
           `UPDATE requisicoes
@@ -8401,7 +8484,7 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
         );
 
         const filename = `MATERIAL_RECEBIDO_requisicao_${reqId}_${new Date().toISOString().slice(0, 10)}.xlsx`;
-        await buildExcelReporte(rows, res, filename, { includeObservacoes: false });
+        await buildExcelReporte(rows, res, filename, { recebimentoMercadoria: true });
       } catch (e) {
         console.error('Erro ao exportar report material recebido:', e);
         return res.status(500).json({ error: 'Erro ao exportar report', details: e.message });

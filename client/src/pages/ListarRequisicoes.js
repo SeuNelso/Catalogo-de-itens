@@ -33,7 +33,7 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
   const [reporteModal, setReporteModal] = useState({
     open: false,
     title: '',
-    kind: 'reporte', // 'reporte' | 'clog'
+    kind: 'reporte', // 'reporte' | 'clog' | 'reporte-recebimento'
     mode: 'single', // 'single' | 'multi'
     reqId: null,
     ids: [],
@@ -724,6 +724,40 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
     }
   };
 
+  const handleReporteRecebimentoModal = async (req) => {
+    const reqId = req?.id;
+    if (!reqId) {
+      setToast({ type: 'error', message: 'Requisição inválida' });
+      return;
+    }
+    try {
+      setReporteLoading(true);
+      const token = localStorage.getItem('token');
+      const response = await fetch(`/api/requisicoes/transferencias/recebimento/${reqId}/reporte-dados`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || 'Erro ao obter dados do reporte');
+      }
+      const data = await response.json();
+      setReporteModal({
+        open: true,
+        title: `Reporte recebimento (#${reqId})`,
+        kind: 'reporte-recebimento',
+        mode: 'single',
+        reqId,
+        ids: [reqId],
+        columns: data.columns || [],
+        rows: data.rows || []
+      });
+    } catch (error) {
+      setToast({ type: 'error', message: error.message || 'Erro ao preparar reporte' });
+    } finally {
+      setReporteLoading(false);
+    }
+  };
+
   const handleFinalizarRecebimento = async (reqId) => {
     try {
       const ok = await confirm({
@@ -1246,7 +1280,14 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
                 <tr style="${trStyle}">
                   ${columns.map((c) => {
                     const v = r?.[c] ?? '';
-                    const align = c === 'Descrição' || c === 'DESCRIPTION' || c === 'Observações' ? 'left' : 'center';
+                    const align =
+                      c === 'Descrição' ||
+                      c === 'DESCRIPTION' ||
+                      c === 'Observações' ||
+                      c === 'DESCRIÇÃO' ||
+                      c === 'Localização destino'
+                        ? 'left'
+                        : 'center';
                     return `<td style="border:1px solid #000; padding:4px 6px; text-align:${align}; vertical-align:top;">${escapeHtml(v)}</td>`;
                   }).join('')}
                 </tr>
@@ -1281,9 +1322,12 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
 
       setToast({
         type: 'success',
-        message: reporteModal.kind === 'clog'
-          ? 'Tabela do Clog copiada (para colar no Outlook).'
-          : 'Tabela do reporte copiada (para colar no Outlook).'
+        message:
+          reporteModal.kind === 'clog'
+            ? 'Tabela do Clog copiada (para colar no Outlook).'
+            : reporteModal.kind === 'reporte-recebimento'
+              ? 'Tabela do reporte de recebimento copiada (para colar no Outlook).'
+              : 'Tabela do reporte copiada (para colar no Outlook).'
       });
     } catch (error) {
       console.error(error);
@@ -1295,16 +1339,29 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
     try {
       const dateStr = new Date().toISOString().slice(0, 10);
       const isClog = reporteModal.kind === 'clog';
+      const isReceb = reporteModal.kind === 'reporte-recebimento';
       if (reporteModal.mode === 'single') {
         const reqId = reporteModal.reqId;
-        await downloadExport(
-          isClog ? `/api/requisicoes/${reqId}/export-clog` : `/api/requisicoes/${reqId}/export-reporte`,
-          isClog ? `CLOG_requisicao_${reqId}_${dateStr}.xlsx` : `REPORTE_requisicao_${reqId}_${dateStr}.xlsx`,
-          isClog ? 'Ficheiro Clog gerado com sucesso.' : 'Ficheiro de reporte gerado com sucesso.'
-        );
+        if (isReceb) {
+          await downloadExport(
+            `/api/requisicoes/transferencias/recebimento/${reqId}/export-reporte`,
+            `MATERIAL_RECEBIDO_requisicao_${reqId}_${dateStr}.xlsx`,
+            'Ficheiro de reporte gerado com sucesso.'
+          );
+          await fetchRequisicoes();
+        } else {
+          await downloadExport(
+            isClog ? `/api/requisicoes/${reqId}/export-clog` : `/api/requisicoes/${reqId}/export-reporte`,
+            isClog ? `CLOG_requisicao_${reqId}_${dateStr}.xlsx` : `REPORTE_requisicao_${reqId}_${dateStr}.xlsx`,
+            isClog ? 'Ficheiro Clog gerado com sucesso.' : 'Ficheiro de reporte gerado com sucesso.'
+          );
+        }
       } else {
         const ids = Array.isArray(reporteModal.ids) ? reporteModal.ids : [];
         const token = localStorage.getItem('token');
+        if (isReceb) {
+          throw new Error('Exportação combinada não disponível para reporte de recebimento.');
+        }
         const res = await fetch(isClog ? '/api/requisicoes/export-clog-multi' : '/api/requisicoes/export-reporte-multi', {
           method: 'POST',
           headers: {
@@ -1666,7 +1723,13 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
                 <FaFileImport /> {isModoTransferencias && flowParam === 'recebimento' ? 'Importar Guia AT' : 'Importar requisição'}
               </button>
               <Link
-                to={isModoTransferencias ? createTransferLink : '/requisicoes/criar'}
+                to={
+                  isModoTransferencias && flowParam === 'recebimento'
+                    ? '/transferencias?recebimento=1'
+                    : isModoTransferencias
+                      ? createTransferLink
+                      : '/requisicoes/criar'
+                }
                 className="inline-flex items-center gap-2 px-4 py-2 bg-[#0915FF] text-white rounded-lg hover:bg-[#070FCC] transition-colors"
               >
                 <FaPlus /> {isModoTransferencias ? 'Nova Transferência' : 'Nova Requisição'}
@@ -2515,6 +2578,40 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
                 </>
               );
             })()}
+            {canDocsELogisticaPosSeparacao &&
+              (() => {
+                const { reqs, complete } = getActionTargetReqs(contextMenu.req);
+                if (!complete || reqs.length !== 1) return null;
+                const r = reqs[0];
+                if (
+                  !isFluxoRecebimentoMercadoria(r) ||
+                  r.status !== 'EM EXPEDICAO' ||
+                  !recebimentoEntregaConfirmada(r)
+                ) {
+                  return null;
+                }
+                const ctxRecebReporteBloqueado = preparacaoReservadaOutroUtilizador(r, user);
+                return (
+                  <button
+                    type="button"
+                    disabled={ctxRecebReporteBloqueado}
+                    className={`block w-full text-left px-4 py-2 hover:bg-gray-100 ${
+                      ctxRecebReporteBloqueado ? 'opacity-50 cursor-not-allowed' : ''
+                    }`}
+                    title={
+                      ctxRecebReporteBloqueado
+                        ? 'Reservada para separação a outro operador'
+                        : 'Reporte: COD, DESCRIÇÃO, QTD, S/N, LOTE, localização destino'
+                    }
+                    onClick={() => {
+                      handleReporteRecebimentoModal(r);
+                      setContextMenu(prev => ({ ...prev, visible: false }));
+                    }}
+                  >
+                    Reporte
+                  </button>
+                );
+              })()}
             {(() => {
               const { reqs, complete } = getActionTargetReqs(contextMenu.req);
               const canDeleteCtx = complete && reqs.length > 0 && reqs.every(canDeleteRequisicao);

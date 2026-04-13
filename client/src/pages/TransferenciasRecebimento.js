@@ -66,7 +66,11 @@ const TransferenciasRecebimento = () => {
   const [recebimentoReq, setRecebimentoReq] = useState(null); // contém .itens
   const [confirmQuantByItemId, setConfirmQuantByItemId] = useState({});
 
-  const [importados, setImportados] = useState([]); // apenas enquanto importa o ficheiro
+  const [importados, setImportados] = useState([]); // linhas de importação e/ou entrada manual
+
+  const [manualCodigo, setManualCodigo] = useState('');
+  const [manualQtd, setManualQtd] = useState('');
+  const [manualDescricao, setManualDescricao] = useState('');
 
   // 'setup' → 'pendente' → 'em_processo'
   const [stage, setStage] = useState('setup');
@@ -112,8 +116,55 @@ const TransferenciasRecebimento = () => {
     setRecebimentoReq(null);
     setConfirmQuantByItemId({});
     setImportados([]);
+    setManualCodigo('');
+    setManualQtd('');
+    setManualDescricao('');
     setStage('setup');
   }, [receivingId]);
+
+  const adicionarLinhaManual = useCallback(() => {
+    if (!receivingId) {
+      setToast({ type: 'error', message: 'Selecione o armazém de recebimento.' });
+      return;
+    }
+    if (!origemId) {
+      setToast({ type: 'error', message: 'Selecione o armazém de origem.' });
+      return;
+    }
+    const codigo = String(manualCodigo || '').trim();
+    const q = parseNumberPt(manualQtd);
+    const descricao = String(manualDescricao || '').trim();
+    if (!codigo) {
+      setToast({ type: 'error', message: 'Indique o código do artigo.' });
+      return;
+    }
+    if (!Number.isFinite(q) || q <= 0) {
+      setToast({ type: 'error', message: 'Indique uma quantidade numérica maior que zero.' });
+      return;
+    }
+    const k = codigo.toUpperCase();
+    setImportados((prev) => {
+      const idx = prev.findIndex((x) => String(x.codigo || '').trim().toUpperCase() === k);
+      if (idx >= 0) {
+        const next = [...prev];
+        const cur = next[idx];
+        next[idx] = {
+          ...cur,
+          quantidade: Number(cur.quantidade) + q,
+          descricao: descricao || cur.descricao || ''
+        };
+        return next;
+      }
+      return [...prev, { codigo, quantidade: q, descricao }];
+    });
+    setManualCodigo('');
+    setManualQtd('');
+    setManualDescricao('');
+  }, [manualCodigo, manualDescricao, manualQtd, origemId, receivingId]);
+
+  const removerLinhaImportada = useCallback((idx) => {
+    setImportados((prev) => prev.filter((_, i) => i !== idx));
+  }, []);
 
   const handleFile = useCallback(
     async (file) => {
@@ -261,7 +312,7 @@ const TransferenciasRecebimento = () => {
       return;
     }
     if (!Array.isArray(importados) || importados.length === 0) {
-      setToast({ type: 'error', message: 'Importe pelo menos 1 material.' });
+      setToast({ type: 'error', message: 'Adicione pelo menos uma linha (manual ou ficheiro).' });
       return;
     }
     const ok = importados.every((m) => Number(m.quantidade) > 0);
@@ -453,7 +504,7 @@ const TransferenciasRecebimento = () => {
             Recebimento de transferência entre armazéns
           </h1>
           <p className="text-xs text-gray-500 mt-1">
-            1) Escolha origem (diferente do destino) · 2) Importe materiais · 3) Confirme · 4) Gere report.
+            1) Escolha origem (diferente do destino) · 2) Importe um ficheiro ou adicione código e quantidade à mão · 3) Crie a transferência · 4) Confirme · 5) Gere report.
           </p>
         </div>
 
@@ -523,6 +574,59 @@ const TransferenciasRecebimento = () => {
                 Excel/CSV: colunas <span className="font-mono">Código</span> e <span className="font-mono">Quantidade</span>. PDF: usa a cópia ORIGINAL da guia.
               </div>
             </div>
+          </div>
+
+          <div className="mt-5 pt-5 border-t border-gray-100">
+            <div className="text-xs font-semibold text-gray-700 mb-2">Ou adicionar linhas manualmente</div>
+            <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 sm:gap-3 items-end">
+              <div className="sm:col-span-3">
+                <label className="block text-[11px] text-gray-500 mb-1">Código do artigo</label>
+                <input
+                  type="text"
+                  value={manualCodigo}
+                  onChange={(e) => setManualCodigo(e.target.value)}
+                  disabled={!receivingId || !origemId}
+                  placeholder="Ex: ABC123"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono disabled:opacity-50"
+                />
+              </div>
+              <div className="sm:col-span-2">
+                <label className="block text-[11px] text-gray-500 mb-1">Quantidade</label>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={manualQtd}
+                  onChange={(e) => setManualQtd(e.target.value)}
+                  disabled={!receivingId || !origemId}
+                  placeholder="0"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm tabular-nums disabled:opacity-50"
+                />
+              </div>
+              <div className="sm:col-span-5">
+                <label className="block text-[11px] text-gray-500 mb-1">Descrição (opcional)</label>
+                <input
+                  type="text"
+                  value={manualDescricao}
+                  onChange={(e) => setManualDescricao(e.target.value)}
+                  disabled={!receivingId || !origemId}
+                  placeholder="Nota ou descrição livre"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:opacity-50"
+                />
+              </div>
+              <div className="sm:col-span-2">
+                <button
+                  type="button"
+                  disabled={!receivingId || !origemId}
+                  onClick={adicionarLinhaManual}
+                  className="w-full px-3 py-2 rounded-lg border border-[#0915FF] text-[#0915FF] text-sm font-semibold hover:bg-blue-50 disabled:opacity-50"
+                >
+                  Adicionar
+                </button>
+              </div>
+            </div>
+            <p className="text-[11px] text-gray-500 mt-2">
+              O código tem de existir no catálogo. Se repetir o mesmo código, as quantidades são somadas.
+            </p>
           </div>
         </div>
 
@@ -651,7 +755,7 @@ const TransferenciasRecebimento = () => {
             <div className="flex items-center justify-between gap-3">
               <div>
                 <div className="text-sm font-semibold text-gray-900">Setup</div>
-                <div className="text-xs text-gray-500">Importe a lista e crie a transferência a receber.</div>
+                <div className="text-xs text-gray-500">Com materiais na lista abaixo, crie a transferência a receber.</div>
               </div>
               <button
                 type="button"
@@ -665,7 +769,7 @@ const TransferenciasRecebimento = () => {
             {importados.length > 0 && (
               <>
                 <div className="mt-3 text-xs text-gray-600">
-                  Importados: <span className="font-mono tabular-nums">{importados.length}</span> linha(s).
+                  Linhas na lista: <span className="font-mono tabular-nums">{importados.length}</span>
                 </div>
                 <div className="mt-3 overflow-x-auto border border-gray-200 rounded-lg">
                   <table className="min-w-full text-sm">
@@ -674,6 +778,7 @@ const TransferenciasRecebimento = () => {
                         <th className="px-3 py-2 text-left">Código</th>
                         <th className="px-3 py-2 text-left">Descrição</th>
                         <th className="px-3 py-2 text-right">Quantidade</th>
+                        <th className="px-3 py-2 text-right w-[88px]"> </th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-100 bg-white">
@@ -682,6 +787,15 @@ const TransferenciasRecebimento = () => {
                           <td className="px-3 py-2 font-mono text-xs">{it.codigo}</td>
                           <td className="px-3 py-2 text-xs text-gray-700 max-w-[420px]">{it.descricao || '—'}</td>
                           <td className="px-3 py-2 text-right text-xs tabular-nums">{Number(it.quantidade) || 0}</td>
+                          <td className="px-3 py-2 text-right">
+                            <button
+                              type="button"
+                              onClick={() => removerLinhaImportada(idx)}
+                              className="text-xs text-red-600 hover:text-red-800 font-medium"
+                            >
+                              Remover
+                            </button>
+                          </td>
                         </tr>
                       ))}
                     </tbody>
