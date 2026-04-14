@@ -7,10 +7,11 @@ import { getRequisicoesArmazemOrigemIds } from '../utils/requisicoesArmazemOrige
 import { filtrarArmazensOrigemRequisicao } from '../utils/armazensRequisicaoOrigem';
 
 const ImportarRequisicao = () => {
-  const [file, setFile] = useState(null);
+  const [files, setFiles] = useState([]);
   const [armazens, setArmazens] = useState([]);
   const [armazemOrigemId, setArmazemOrigemId] = useState('');
   const [loading, setLoading] = useState(false);
+  const [importProgress, setImportProgress] = useState({ current: 0, total: 0 });
   const [toast, setToast] = useState(null);
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 600);
   const navigate = useNavigate();
@@ -54,14 +55,14 @@ const ImportarRequisicao = () => {
   }, []);
 
   const handleFileChange = (e) => {
-    setFile(e.target.files[0]);
+    setFiles(Array.from(e.target.files || []));
     setToast(null);
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!file) {
-      setToast({ type: 'error', message: 'Selecione um arquivo Excel de requisição (.xlsx).' });
+    if (!files.length) {
+      setToast({ type: 'error', message: 'Selecione pelo menos um arquivo Excel de requisição (.xlsx).' });
       return;
     }
     if (!armazemOrigemId) {
@@ -69,38 +70,64 @@ const ImportarRequisicao = () => {
       return;
     }
     setLoading(true);
+    setImportProgress({ current: 0, total: files.length });
     try {
-      const formData = new FormData();
-      formData.append('arquivo', file);
-      formData.append('armazem_origem_id', armazemOrigemId);
       const token = localStorage.getItem('token');
-      const res = await fetch('/api/requisicoes/importar-excel', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
-        body: formData
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setToast({ type: 'error', message: data.error || 'Erro ao importar requisição.' });
-        setLoading(false);
-        return;
+      let okCount = 0;
+      let erroCount = 0;
+      const erros = [];
+
+      for (let i = 0; i < files.length; i += 1) {
+        const currentFile = files[i];
+        setImportProgress({ current: i + 1, total: files.length });
+
+        const formData = new FormData();
+        formData.append('arquivo', currentFile);
+        formData.append('armazem_origem_id', armazemOrigemId);
+
+        // eslint-disable-next-line no-await-in-loop
+        const res = await fetch('/api/requisicoes/importar-excel', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}` },
+          body: formData
+        });
+        // eslint-disable-next-line no-await-in-loop
+        const data = await res.json().catch(() => ({}));
+        if (res.ok) {
+          okCount += 1;
+        } else {
+          erroCount += 1;
+          erros.push(`${currentFile?.name || `Arquivo ${i + 1}`}: ${data.error || 'Erro ao importar.'}`);
+        }
       }
-      const reqId = data.requisicao_id;
-      const devId = data.devolucao_id;
-      setToast({
-        type: 'success',
-        message: devId
-          ? 'Requisição e devolução importadas com sucesso!'
-          : 'Requisição importada com sucesso!'
-      });
-      setTimeout(() => {
-        // Após importar, voltar sempre ao quadro de status da tela de Requisições.
-        navigate('/requisicoes');
-      }, 1200);
+
+      if (okCount === files.length) {
+        setToast({
+          type: 'success',
+          message: okCount === 1
+            ? 'Requisição importada com sucesso!'
+            : `${okCount} arquivo(s) importado(s) com sucesso!`
+        });
+        setTimeout(() => {
+          navigate('/requisicoes');
+        }, 1200);
+      } else if (okCount > 0) {
+        setToast({
+          type: 'success',
+          message: `${okCount} arquivo(s) importado(s) e ${erroCount} com erro. ${erros[0] || ''}`.trim()
+        });
+      } else {
+        setToast({
+          type: 'error',
+          message: `Falha ao importar ${erroCount} arquivo(s). ${erros[0] || ''}`.trim()
+        });
+      }
     } catch (err) {
       console.error('Erro ao importar requisição:', err);
       setToast({ type: 'error', message: 'Erro de conexão ao importar requisição.' });
+    } finally {
       setLoading(false);
+      setImportProgress({ current: 0, total: 0 });
     }
   };
 
@@ -140,12 +167,17 @@ const ImportarRequisicao = () => {
           >
             <Upload className="text-[#0915FF]" size={32} />
             <span className="text-[#0915FF] font-semibold text-sm sm:text-base">
-              {file ? file.name : 'Clique ou arraste para selecionar o arquivo'}
+              {files.length === 0
+                ? 'Clique ou arraste para selecionar um ou mais arquivos'
+                : files.length === 1
+                  ? files[0].name
+                  : `${files.length} arquivos selecionados`}
             </span>
             <input
               id="requisicao-excel-upload"
               type="file"
               accept=".xlsx,.xls"
+              multiple
               onChange={handleFileChange}
               className="hidden"
             />
@@ -179,7 +211,11 @@ const ImportarRequisicao = () => {
             disabled={loading}
             className="mt-2 w-full bg-[#0915FF] text-white font-bold rounded-lg py-2.5 sm:py-3 text-sm sm:text-base flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed"
           >
-            {loading ? 'Importando...' : 'Importar requisição'}
+            {loading
+              ? `Importando ${importProgress.current}/${importProgress.total}...`
+              : files.length > 1
+                ? 'Importar requisições'
+                : 'Importar requisição'}
           </button>
         </form>
 

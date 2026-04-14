@@ -281,6 +281,18 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
     }
   };
 
+  const voltarParaExpedicao = async (reqId) => {
+    const token = localStorage.getItem('token');
+    const response = await fetch(`/api/requisicoes/${reqId}/voltar-em-expedicao`, {
+      method: 'PATCH',
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.error || 'Erro ao voltar para Em expedição');
+    }
+  };
+
   const fetchRequisicaoDetalhe = async (reqId) => {
     const token = localStorage.getItem('token');
     const response = await fetch(`/api/requisicoes/${reqId}`, {
@@ -508,6 +520,29 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
       await fetchRequisicoes();
     } catch (error) {
       setToast({ type: 'error', message: error.message || 'Erro ao entregar' });
+    }
+  };
+
+  const handleVoltarEmExpedicao = async (req) => {
+    const reqId = req?.id;
+    try {
+      if (!reqId) throw new Error('Requisição inválida');
+      if (req.status !== 'Entregue') {
+        throw new Error('Só é possível voltar para Em expedição quando a requisição está Entregue.');
+      }
+      const ok = await confirm({
+        title: 'Voltar para Em expedição',
+        message: 'Tem certeza? Isso vai alterar o status para Em expedição.',
+        confirmLabel: 'Sim, voltar',
+        variant: 'warning'
+      });
+      if (!ok) return;
+
+      await voltarParaExpedicao(reqId);
+      setToast({ type: 'success', message: 'Requisição marcada como Em expedição.' });
+      await fetchRequisicoes();
+    } catch (error) {
+      setToast({ type: 'error', message: error.message || 'Erro ao voltar para Em expedição' });
     }
   };
 
@@ -2126,6 +2161,18 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
                           )}
                           <div><strong>Criado por:</strong> {formatCriadorRequisicao(req)}</div>
                           <div><strong>Data:</strong> {new Date(req.created_at).toLocaleDateString('pt-BR')}</div>
+                          {['Entregue', 'FINALIZADO'].includes(String(req.status || '')) && req.entregue_em && (
+                            <div>
+                              <strong>Entregue em:</strong>{' '}
+                              {new Date(req.entregue_em).toLocaleString('pt-BR')}
+                            </div>
+                          )}
+                          {req.status === 'FINALIZADO' && (req.finalizado_em || req.updated_at) && (
+                            <div>
+                              <strong>Finalizado em:</strong>{' '}
+                              {new Date(req.finalizado_em || req.updated_at).toLocaleString('pt-BR')}
+                            </div>
+                          )}
                           {isFluxoRecebimentoMercadoria(req) && req.requisicao_origem_tra_numero && (
                             <div><strong>Nº TRA (origem):</strong> {req.requisicao_origem_tra_numero}</div>
                           )}
@@ -2441,6 +2488,12 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
               const canGerarTRA = all(r => podeGerarTraAposRececao(r));
               const canBaixarTRA = all(r => (r.status === 'Entregue' && r.tra_gerada_em) || r.status === 'FINALIZADO');
               const canGerarReporte = all(r => (r.status === 'Entregue' && r.tra_gerada_em) || r.status === 'FINALIZADO');
+              const canVoltarEmExpedicao = all(
+                (r) =>
+                  String(r?.status || '') === 'Entregue' &&
+                  !r?.tra_gerada_em &&
+                  !isFluxoRecebimentoMercadoria(r)
+              );
               const canGerarClog = all(
                 (r) =>
                   ((r.status === 'Entregue' && r.tra_gerada_em) || r.status === 'FINALIZADO') &&
@@ -2455,6 +2508,7 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
               const ctxTrflGerarBloqueado = Boolean(canGerarTRFL && algumaPrepBloqueio);
               const ctxTraGerarBloqueado = Boolean(canGerarTRA && algumaPrepBloqueio);
               const ctxEntregarBloqueado = Boolean(canEntregar && algumaPrepBloqueio);
+              const ctxVoltarExpedicaoBloqueado = Boolean(canVoltarEmExpedicao && algumaPrepBloqueio);
               const ctxFinalizarBloqueado = Boolean(canFinalizar && algumaPrepBloqueio);
 
               return (
@@ -2495,6 +2549,27 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
                       }}
                     >
                       ENTREGAR
+                    </button>
+                  )}
+
+                  {canVoltarEmExpedicao && (
+                    <button
+                      type="button"
+                      disabled={ctxVoltarExpedicaoBloqueado}
+                      className={`block w-full text-left px-4 py-2 hover:bg-gray-100 ${
+                        ctxVoltarExpedicaoBloqueado ? 'opacity-50 cursor-not-allowed' : ''
+                      }`}
+                      title={ctxVoltarExpedicaoBloqueado ? 'Reservada para separação a outro operador' : undefined}
+                      onClick={() => {
+                        if (isMulti) {
+                          setToast({ type: 'error', message: 'Voltar para Em expedição está disponível apenas para uma requisição por vez.' });
+                        } else {
+                          handleVoltarEmExpedicao(contextMenu.req);
+                        }
+                        setContextMenu(prev => ({ ...prev, visible: false }));
+                      }}
+                    >
+                      VOLTAR PARA EXPEDIÇÃO
                     </button>
                   )}
 
