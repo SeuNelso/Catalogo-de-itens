@@ -330,6 +330,22 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
   const EPI_DISCLAIMER_TITULO = 'Declaração (DL 348/93 de 1 de Outubro)';
   const EPI_DISCLAIMER_TEXTO =
     'Declaro(a) que recebi os Equipamentos de Proteção Individual (EPI) acima mencionados e que fui informado(a) dos respetivos riscos que pretendem proteger, comprometendo-me a utilizá-los corretamene de acordo com as instruções recebidas, a conservá-los e mantê-los em bom estado, e a participar ao meu superior hierárquico todas as avarias ou deficiências de que tenha conhecimento.';
+  const EPI_RISCOS_DESCRITIVOS = [
+    'Queda em Altura',
+    'Queda ao Mesmo ou com Desnível',
+    'Queda de Objetos',
+    'Esmagamento',
+    'Queimadura',
+    'Entalamento',
+    'Atropelamento',
+    'Eletrocussão/ Eletrização',
+    'Pancada na Cabeça',
+    'Exposição ao Ruído',
+    'Exposição Agentes Químicos/ Poeiras',
+    'Choque com ou contra Objetos/ Equipamentos em movimento ou imóveis',
+    'Projeção de Partículas/ Fragmentos',
+    'Golpe, Corte e /ou Perfuração'
+  ];
 
   const isNotaEpi = (reqObj) => {
     const destinoTipo = String(reqObj?.armazem_destino_tipo || '').trim().toLowerCase();
@@ -355,7 +371,40 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
     const titleHeight = 13;
     const lineHeight = 10;
     const bodyHeight = lines.length * lineHeight;
-    const blockHeight = titleHeight + bodyHeight + 4;
+
+    // Tabela em duas colunas (1–7 | 8–14): menos altura na folha; texto com quebra na coluna "Risco".
+    const tableW = pageWidth - 2 * marginX;
+    const gapMid = 8;
+    const leftPanelW = (tableW - gapMid) / 2;
+    const colNumW = 22;
+    const colRiscoW = leftPanelW - colNumW;
+    const riscoHeaderHeight = 14;
+    const subHeaderH = 12;
+    const riscoLineH = 8;
+    const riscoRowPad = 4;
+    const riscoRowMin = 10;
+    const numPairRows = Math.ceil(EPI_RISCOS_DESCRITIVOS.length / 2);
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7);
+    const rowHeights = [];
+    let bodyGridH = 0;
+    for (let r = 0; r < numPairRows; r += 1) {
+      const leftTxt = EPI_RISCOS_DESCRITIVOS[r] || '';
+      const rightTxt = EPI_RISCOS_DESCRITIVOS[r + numPairRows] || '';
+      const leftLn = leftTxt ? doc.splitTextToSize(leftTxt, Math.max(20, colRiscoW - 6)) : [''];
+      const rightLn = rightTxt ? doc.splitTextToSize(rightTxt, Math.max(20, colRiscoW - 6)) : [''];
+      const rowH = Math.max(
+        riscoRowMin,
+        Math.max(leftLn.length, rightLn.length) * riscoLineH + riscoRowPad
+      );
+      rowHeights.push(rowH);
+      bodyGridH += rowH;
+    }
+
+    const riscoTableHeight = riscoHeaderHeight + subHeaderH + bodyGridH;
+    const gapAntesDeclaracao = 14;
+    const blockHeight = riscoTableHeight + gapAntesDeclaracao + titleHeight + bodyHeight + 4;
 
     let yStart = topYSignatures - blockHeight - 12;
     const minY = 60;
@@ -364,10 +413,60 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
       yStart = Math.max(minY, availableHeight + 60 - blockHeight);
     }
 
-    doc.text(EPI_DISCLAIMER_TITULO, pageWidth / 2, yStart, { align: 'center' });
+    const tableX = marginX;
+    const tableY = yStart;
+    const leftPanelX = tableX;
+    const rightPanelX = tableX + leftPanelW + gapMid;
+
+    doc.setDrawColor(175, 175, 175);
+    doc.setLineWidth(0.35);
+    doc.rect(tableX, tableY, tableW, riscoHeaderHeight);
+    doc.rect(leftPanelX, tableY + riscoHeaderHeight, leftPanelW, subHeaderH);
+    doc.rect(rightPanelX, tableY + riscoHeaderHeight, leftPanelW, subHeaderH);
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(8);
+    doc.setTextColor(70, 70, 70);
+    doc.text('RISCOS A PROTEGER', tableX + tableW / 2, tableY + 10, { align: 'center' });
+
+    const ySub = tableY + riscoHeaderHeight;
+    doc.text('Nº', leftPanelX + colNumW / 2, ySub + 8, { align: 'center' });
+    doc.text('Risco', leftPanelX + colNumW + colRiscoW / 2, ySub + 8, { align: 'center' });
+    doc.text('Nº', rightPanelX + colNumW / 2, ySub + 8, { align: 'center' });
+    doc.text('Risco', rightPanelX + colNumW + colRiscoW / 2, ySub + 8, { align: 'center' });
+
+    let rowY = ySub + subHeaderH;
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7);
+    doc.setTextColor(80, 80, 80);
+    for (let r = 0; r < numPairRows; r += 1) {
+      const rowH = rowHeights[r];
+      const leftTxt = EPI_RISCOS_DESCRITIVOS[r] || '';
+      const rightTxt = EPI_RISCOS_DESCRITIVOS[r + numPairRows] || '';
+      const leftLn = leftTxt ? doc.splitTextToSize(leftTxt, Math.max(20, colRiscoW - 6)) : [''];
+      const rightLn = rightTxt ? doc.splitTextToSize(rightTxt, Math.max(20, colRiscoW - 6)) : [''];
+
+      doc.rect(leftPanelX, rowY, colNumW, rowH);
+      doc.rect(leftPanelX + colNumW, rowY, colRiscoW, rowH);
+      doc.rect(rightPanelX, rowY, colNumW, rowH);
+      doc.rect(rightPanelX + colNumW, rowY, colRiscoW, rowH);
+
+      const yMid = rowY + rowH / 2 + 2.5;
+      doc.text(String(r + 1), leftPanelX + colNumW / 2, yMid, { align: 'center' });
+      doc.text(leftLn, leftPanelX + colNumW + 3, rowY + 8);
+      doc.text(String(r + 1 + numPairRows), rightPanelX + colNumW / 2, yMid, { align: 'center' });
+      doc.text(rightLn, rightPanelX + colNumW + 3, rowY + 8);
+      rowY += rowH;
+    }
+
+    const yDeclaracao = tableY + riscoTableHeight + gapAntesDeclaracao;
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(10);
+    doc.setTextColor(45, 45, 45);
+    doc.text(EPI_DISCLAIMER_TITULO, pageWidth / 2, yDeclaracao, { align: 'center' });
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(9);
-    doc.text(lines, pageWidth / 2, yStart + titleHeight, { align: 'center' });
+    doc.text(lines, pageWidth / 2, yDeclaracao + titleHeight, { align: 'center' });
   };
 
   const baixarPdfEntregaMultiRespeitandoDestino = (reqs) => {
@@ -404,7 +503,7 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
     const sigTop = pageHeight - 60 - 70;
     const lastY = doc.lastAutoTable?.finalY ?? 0;
     const hasEpiReq = arr.some((r) => isNotaEpi(r));
-    const disclaimerReserve = hasEpiReq ? 95 : 0;
+    const disclaimerReserve = hasEpiReq ? 240 : 0;
     if (lastY + 30 + disclaimerReserve > sigTop) {
       doc.addPage();
     }
