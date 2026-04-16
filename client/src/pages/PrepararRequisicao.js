@@ -48,6 +48,13 @@ const normPrepLocBusca = (v) =>
     .toLowerCase()
     .trim();
 
+const formatMetrosSemZeros = (value) => {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return String(value || '');
+  if (Math.abs(num) < 1e-12) return '0';
+  return num.toString();
+};
+
 /** Itens LOTE/SN: uma linha por unidade; alinha ao nº em «quantidade preparada». */
 function resizeBobinasArray(prevBobinas, n) {
   const prev = Array.isArray(prevBobinas) ? [...prevBobinas] : [];
@@ -94,7 +101,13 @@ const PrepararRequisicao = () => {
   const [prepLocBusca, setPrepLocBusca] = useState('');
   const [serialScannerIdx, setSerialScannerIdx] = useState(null);
   const [serialScannerContinuous, setSerialScannerContinuous] = useState(false);
+  const [showCaixaScanner, setShowCaixaScanner] = useState(false);
+  const [showCaixaManualModal, setShowCaixaManualModal] = useState(false);
+  const [caixaManualInput, setCaixaManualInput] = useState('');
   const [reservandoCaixa, setReservandoCaixa] = useState(false);
+  const [lotesDisponiveisPrep, setLotesDisponiveisPrep] = useState([]);
+  const [loadingLotesPrep, setLoadingLotesPrep] = useState(false);
+  const [loteDropdownAbertoIdx, setLoteDropdownAbertoIdx] = useState(null);
   const [stockNacionalPrep, setStockNacionalPrep] = useState({ loading: false, valor: null });
   const [addItemSearch, setAddItemSearch] = useState('');
   const [addItemResults, setAddItemResults] = useState([]);
@@ -937,22 +950,35 @@ const PrepararRequisicao = () => {
     e.preventDefault();
     if (!canPrepare || !itemPreparando) return;
 
+    const tipoControlo = (itemPreparando.tipocontrolo || '').toUpperCase();
+    const isLote = tipoControlo === 'LOTE';
     const qtdRequisitada = parseFloat(itemPreparando.quantidade) || 0;
-    let qtdPreparadaNumerica = 0;
+    let qtdPreparadaParaComparacao = 0;
+    let qtdPreparadaParaStock = 0;
+    let qtdPreparadaParaPayload = 0;
+    const qtdDigitada = parseFloat(formItem.quantidade_preparada);
 
-    if ((itemPreparando.tipocontrolo || '').toUpperCase() === 'LOTE' && Array.isArray(formItem.bobinas) && formItem.bobinas.length > 0) {
-      qtdPreparadaNumerica = formItem.bobinas.reduce((sum, b) => sum + (parseFloat(b.metros) || 0), 0);
-    } else {
-      const qtd = parseFloat(formItem.quantidade_preparada);
-      if (Number.isNaN(qtd) || qtd < 0) {
-        setToast({ type: 'error', message: 'Informe uma quantidade válida (use 0 se não tiver o item).' });
-        return;
-      }
-      qtdPreparadaNumerica = qtd;
+    if (Number.isNaN(qtdDigitada) || qtdDigitada < 0) {
+      setToast({ type: 'error', message: 'Informe uma quantidade válida (use 0 se não tiver o item).' });
+      return;
     }
 
-    if (qtdPreparadaNumerica !== qtdRequisitada) {
-      const msg = `A quantidade preparada (${qtdPreparadaNumerica}) é diferente da quantidade requisitada (${qtdRequisitada}). Confirma que esta diferença é intencional?`;
+    if (isLote) {
+      qtdPreparadaParaComparacao = qtdDigitada; // quantidade de bobinas pedidas/separadas
+      qtdPreparadaParaPayload = qtdDigitada; // quantidade_preparada em requisicoes_itens (bobinas)
+      if (Array.isArray(formItem.bobinas) && formItem.bobinas.length > 0) {
+        // Para controlo de stock, o consumo real deve ser em metros.
+        qtdPreparadaParaStock = formItem.bobinas.reduce((sum, b) => sum + (parseFloat(b.metros) || 0), 0);
+      }
+    } else {
+      qtdPreparadaParaComparacao = qtdDigitada;
+      qtdPreparadaParaStock = qtdDigitada;
+      qtdPreparadaParaPayload = qtdDigitada;
+    }
+
+    if (qtdPreparadaParaComparacao !== qtdRequisitada) {
+      const unidade = isLote ? 'bobinas' : 'unidades';
+      const msg = `A quantidade preparada (${qtdPreparadaParaComparacao} ${unidade}) é diferente da quantidade requisitada (${qtdRequisitada} ${unidade}). Confirma que esta diferença é intencional?`;
       const ok = await confirm({
         title: 'Quantidade diferente da requisitada',
         message: msg,
@@ -970,7 +996,7 @@ const PrepararRequisicao = () => {
       return;
     }
 
-    if (!isFluxoRecebimentoMercadoria && podeUsarControloStock(user) && preparacaoStockLoc.filtroAtivo && qtdPreparadaNumerica > 0) {
+    if (!isFluxoRecebimentoMercadoria && podeUsarControloStock(user) && preparacaoStockLoc.filtroAtivo && qtdPreparadaParaStock > 0) {
       const row = preparacaoStockLoc.porLocalizacao.find(
         (r) => String(r.localizacao || '').trim().toUpperCase() === locOrigem.toUpperCase()
       );
@@ -982,16 +1008,15 @@ const PrepararRequisicao = () => {
         });
         return;
       }
-      if (disp + 1e-9 < qtdPreparadaNumerica) {
+      if (disp + 1e-9 < qtdPreparadaParaStock) {
         setToast({
           type: 'error',
-          message: `Stock insuficiente na localização selecionada (disponível: ${disp}, necessário: ${qtdPreparadaNumerica}).`,
+          message: `Stock insuficiente na localização selecionada (disponível: ${disp}, necessário: ${qtdPreparadaParaStock}).`,
         });
         return;
       }
     }
 
-    const tipoControlo = (itemPreparando.tipocontrolo || '').toUpperCase();
     let bobinasPayload = undefined;
     if (tipoControlo === 'LOTE') {
       if (!Array.isArray(formItem.bobinas) || formItem.bobinas.length === 0) {
@@ -1011,6 +1036,16 @@ const PrepararRequisicao = () => {
           serialnumber: (b.serialnumber || '').trim() || null,
           metros
         });
+      }
+      const lotesNorm = bobinasValidas.map((b) => String(b.lote || '').trim().toUpperCase());
+      const duplicadosLote = lotesNorm.filter((l, i) => lotesNorm.indexOf(l) !== i);
+      if (duplicadosLote.length > 0) {
+        const unicos = [...new Set(duplicadosLote)];
+        setToast({
+          type: 'error',
+          message: `Existem lotes repetidos: ${unicos.join(', ')}`,
+        });
+        return;
       }
       bobinasPayload = bobinasValidas;
     } else if (tipoControlo === 'S/N') {
@@ -1049,7 +1084,7 @@ const PrepararRequisicao = () => {
           quantidade_preparada:
             (tipoControlo === 'LOTE' || tipoControlo === 'S/N') && bobinasPayload
               ? bobinasPayload.length
-              : qtdPreparadaNumerica,
+              : qtdPreparadaParaPayload,
           quantidade_apeados: Math.max(0, Math.floor(Number(formItem.quantidade_apeados) || 0)),
           localizacao_origem: isFluxoRecebimentoMercadoria ? null : locOrigem,
           lote: formItem.lote || null,
@@ -1078,9 +1113,7 @@ const PrepararRequisicao = () => {
     }
   };
 
-  const handleLerSeriaisPorCaixa = async () => {
-    if (!itemPreparando?.id) return;
-    const codigoCaixa = String(window.prompt('Código da caixa (ex.: CX-000123):') || '').trim();
+  const carregarSeriaisDaCaixa = async (codigoCaixa) => {
     if (!codigoCaixa) return;
     try {
       setReservandoCaixa(true);
@@ -1120,6 +1153,12 @@ const PrepararRequisicao = () => {
     }
   };
 
+  const handleLerSeriaisPorCaixa = async () => {
+    if (!itemPreparando?.id) return;
+    setCaixaManualInput('');
+    setShowCaixaManualModal(true);
+  };
+
   const locsOrigemParaPreparacao = useMemo(() => {
     const todas = armazemOrigem?.localizacoes?.map((l) => l.localizacao).filter(Boolean) || [];
     if (!podeUsarControloStock(user)) return todas;
@@ -1145,6 +1184,71 @@ const PrepararRequisicao = () => {
     if (!q) return locsOrigemParaPreparacao;
     return locsOrigemParaPreparacao.filter((loc) => normPrepLocBusca(loc).includes(q));
   }, [locsOrigemParaPreparacao, prepLocBusca]);
+
+  const locOrigemPreparacaoAtual = useMemo(() => (
+    formItem.localizacao_origem === '_custom_'
+      ? String(formItem.localizacao_origem_custom || '').trim()
+      : String(formItem.localizacao_origem || '').trim()
+  ), [formItem.localizacao_origem, formItem.localizacao_origem_custom]);
+
+  useEffect(() => {
+    const tipoControlo = String(itemPreparando?.tipocontrolo || '').toUpperCase();
+    if (tipoControlo !== 'LOTE' || !itemPreparando?.item_id || !armazemOrigem?.id || !locOrigemPreparacaoAtual) {
+      setLotesDisponiveisPrep([]);
+      setLoadingLotesPrep(false);
+      return;
+    }
+
+    let active = true;
+    const loadLotes = async () => {
+      setLoadingLotesPrep(true);
+      try {
+        const token = localStorage.getItem('token');
+        const p = new URLSearchParams();
+        p.set('item_id', itemPreparando.item_id);
+        p.set('armazem_id', armazemOrigem.id);
+        p.set('localizacao', locOrigemPreparacaoAtual);
+        const response = await fetch(`/api/requisicoes/stock/disponibilidade?${p.toString()}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.error || 'Erro ao carregar lotes disponíveis');
+        if (!active) return;
+        const lotes = Array.isArray(data.lotes) ? data.lotes : [];
+        const somenteDisponiveis = lotes.filter((l) => Number(l?.quantidade_disponivel) > 0);
+        setLotesDisponiveisPrep(somenteDisponiveis);
+      } catch (_e) {
+        if (!active) return;
+        setLotesDisponiveisPrep([]);
+      } finally {
+        if (active) setLoadingLotesPrep(false);
+      }
+    };
+
+    loadLotes();
+    return () => {
+      active = false;
+    };
+  }, [itemPreparando?.item_id, itemPreparando?.tipocontrolo, armazemOrigem?.id, locOrigemPreparacaoAtual]);
+
+  const aplicarLoteNaBobina = (idxBob, loteSelecionado) => {
+    const loteNormalizado = String(loteSelecionado || '').trim();
+    const loteInfo = (lotesDisponiveisPrep || []).find(
+      (l) => String(l.lote || '').trim().toUpperCase() === loteNormalizado.toUpperCase()
+    );
+    setFormItem((prev) => ({
+      ...prev,
+      bobinas: (prev.bobinas || []).map((bb, i) => {
+        if (i !== idxBob) return bb;
+        if (!loteInfo) return { ...bb, lote: loteSelecionado, metros: '' };
+        return {
+          ...bb,
+          lote: loteInfo.lote || loteSelecionado,
+          metros: formatMetrosSemZeros(loteInfo.quantidade_disponivel ?? ''),
+        };
+      }),
+    }));
+  };
 
   useEffect(() => {
     setPrepLocBusca('');
@@ -1816,26 +1920,81 @@ const PrepararRequisicao = () => {
                                 key={idxBob}
                                 className="grid grid-cols-1 sm:grid-cols-4 gap-2 items-end border border-gray-200 rounded-lg p-2"
                               >
+                                {(() => {
+                                  const loteQuery = String(b.lote || '').trim();
+                                  const loteQueryNorm = loteQuery
+                                    .normalize('NFD')
+                                    .replace(/[\u0300-\u036f]/g, '')
+                                    .toUpperCase();
+                                  const lotesFiltrados = loteQuery
+                                    ? (lotesDisponiveisPrep || [])
+                                        .filter((l) => {
+                                          const loteTxt = String(l.lote || '');
+                                          const loteNorm = loteTxt
+                                            .normalize('NFD')
+                                            .replace(/[\u0300-\u036f]/g, '')
+                                            .toUpperCase();
+                                          return loteNorm.includes(loteQueryNorm);
+                                        })
+                                        .slice(0, 8)
+                                    : [];
+                                  return (
                                 <div className="sm:col-span-2">
                                   <label className="block text-xs font-medium text-gray-700 mb-1">
                                     Lote da bobina {idxBob + 1}
                                   </label>
-                                  <input
-                                    type="text"
-                                    value={b.lote}
-                                    onChange={(e) => {
-                                      const val = e.target.value;
-                                      setFormItem(prev => ({
-                                        ...prev,
-                                        bobinas: prev.bobinas.map((bb, i) =>
-                                          i === idxBob ? { ...bb, lote: val } : bb
-                                        )
-                                      }));
-                                    }}
-                                    className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm"
-                                    placeholder="Lote"
-                                  />
+                                  <div className="relative">
+                                    <input
+                                      type="text"
+                                      value={b.lote}
+                                      onChange={(e) => {
+                                        const val = e.target.value;
+                                        aplicarLoteNaBobina(idxBob, val);
+                                      }}
+                                      onFocus={() => setLoteDropdownAbertoIdx(idxBob)}
+                                      onBlur={() => {
+                                        setTimeout(() => setLoteDropdownAbertoIdx((prev) => (prev === idxBob ? null : prev)), 120);
+                                      }}
+                                      className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm"
+                                      placeholder="Lote"
+                                      autoComplete="off"
+                                    />
+                                    {loteDropdownAbertoIdx === idxBob && loteQuery && (
+                                      <div className="absolute z-20 mt-1 w-full rounded-md border border-gray-200 bg-white shadow-lg max-h-44 overflow-auto">
+                                        {lotesFiltrados.length > 0 ? (
+                                          lotesFiltrados.map((loteOpt) => (
+                                            <button
+                                              key={`${idxBob}-${loteOpt.id}`}
+                                              type="button"
+                                              onMouseDown={(e) => {
+                                                e.preventDefault();
+                                                aplicarLoteNaBobina(idxBob, loteOpt.lote);
+                                                setLoteDropdownAbertoIdx(null);
+                                              }}
+                                              className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 border-b border-gray-100 last:border-b-0"
+                                            >
+                                              <span className="font-medium text-gray-800">{loteOpt.lote}</span>
+                                              <span className="text-gray-500"> ({formatMetrosSemZeros(loteOpt.quantidade_disponivel)} m)</span>
+                                            </button>
+                                          ))
+                                        ) : (
+                                          <div className="px-3 py-2 text-xs text-gray-500">
+                                            Nenhum lote encontrado para "{loteQuery}".
+                                          </div>
+                                        )}
+                                      </div>
+                                    )}
+                                  </div>
+                                  <p className="mt-1 text-[11px] text-gray-500">
+                                    {loadingLotesPrep
+                                      ? 'A carregar lotes disponíveis...'
+                                      : locOrigemPreparacaoAtual
+                                        ? 'Ao selecionar um lote disponível, a metragem será preenchida automaticamente.'
+                                        : 'Selecione primeiro a localização de saída para ver os lotes disponíveis.'}
+                                  </p>
                                 </div>
+                                  );
+                                })()}
                                 <div>
                                   <label className="block text-xs font-medium text-gray-700 mb-1">
                                     Metros
@@ -1888,12 +2047,21 @@ const PrepararRequisicao = () => {
                             <div className="flex items-center gap-2">
                               <button
                                 type="button"
-                                onClick={handleLerSeriaisPorCaixa}
+                                onClick={() => setShowCaixaScanner(true)}
                                 disabled={reservandoCaixa}
                                 className="px-2.5 py-1.5 border border-indigo-300 rounded text-indigo-700 hover:bg-indigo-50 flex items-center gap-1 text-xs disabled:opacity-50"
-                                title="Ler o código da caixa e preencher os seriais"
+                                title="Ler o código da caixa por câmara (barcode/QR)"
                               >
-                                <FaQrcode /> {reservandoCaixa ? 'A ler...' : 'Ler caixa'}
+                                <FaQrcode /> {reservandoCaixa ? 'A ler...' : 'Ler caixa (câmara)'}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={handleLerSeriaisPorCaixa}
+                                disabled={reservandoCaixa}
+                                className="px-2.5 py-1.5 border border-slate-300 rounded text-slate-700 hover:bg-slate-50 flex items-center gap-1 text-xs disabled:opacity-50"
+                                title="Digitar o código da caixa manualmente"
+                              >
+                                {reservandoCaixa ? 'A ler...' : 'Digitar caixa'}
                               </button>
                               <button
                                 type="button"
@@ -2017,6 +2185,73 @@ const PrepararRequisicao = () => {
                             closeOnScan={!serialScannerContinuous}
                             formatsToSupport={FORMATOS_QR_BARCODE}
                           />
+                          <QrScannerModal
+                            open={showCaixaScanner}
+                            onClose={() => setShowCaixaScanner(false)}
+                            onScan={async (texto) => {
+                              const codigoCaixa = (texto || '').trim();
+                              if (!codigoCaixa) return;
+                              await carregarSeriaisDaCaixa(codigoCaixa);
+                            }}
+                            title="Ler caixa (código de barras / QR)"
+                            readerId="qr-reader-caixa"
+                            closeOnScan
+                            formatsToSupport={FORMATOS_QR_BARCODE}
+                          />
+                          {showCaixaManualModal && (
+                            <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/40 p-4">
+                              <div className="w-full max-w-md rounded-xl bg-white shadow-xl border border-gray-200 p-4 space-y-4">
+                                <div>
+                                  <h5 className="text-base font-semibold text-gray-900">Digitar caixa</h5>
+                                  <p className="text-sm text-gray-500">
+                                    Informe o codigo da caixa para carregar os seriais associados.
+                                  </p>
+                                </div>
+                                <input
+                                  type="text"
+                                  value={caixaManualInput}
+                                  onChange={(e) => setCaixaManualInput(e.target.value)}
+                                  placeholder="Codigo da caixa"
+                                  autoFocus
+                                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                                  onKeyDown={async (e) => {
+                                    if (e.key === 'Enter' && !reservandoCaixa) {
+                                      e.preventDefault();
+                                      const codigo = String(caixaManualInput || '').trim();
+                                      if (!codigo) return;
+                                      setShowCaixaManualModal(false);
+                                      await carregarSeriaisDaCaixa(codigo);
+                                    }
+                                  }}
+                                />
+                                <div className="flex justify-end gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setShowCaixaManualModal(false);
+                                      setCaixaManualInput('');
+                                    }}
+                                    className="px-3 py-2 border border-gray-300 rounded-lg text-sm hover:bg-gray-50"
+                                  >
+                                    Cancelar
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={reservandoCaixa || !String(caixaManualInput || '').trim()}
+                                    onClick={async () => {
+                                      const codigo = String(caixaManualInput || '').trim();
+                                      if (!codigo) return;
+                                      setShowCaixaManualModal(false);
+                                      await carregarSeriaisDaCaixa(codigo);
+                                    }}
+                                    className="px-3 py-2 bg-[#0915FF] text-white rounded-lg text-sm hover:bg-[#070FCC] disabled:opacity-50"
+                                  >
+                                    {reservandoCaixa ? 'A ler...' : 'Confirmar'}
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+                          )}
                         </section>
                       )}
                       {!isFluxoRecebimentoMercadoria && (

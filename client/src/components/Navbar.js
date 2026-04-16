@@ -631,6 +631,23 @@ const Navbar = () => {
                           Importar Seriais/Lotes
                         </Link>
                       )}
+                      {isAdmin && (
+                        <Link
+                          to="/stock-rastreavel/cadastro-manual"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setDadosOpen(false);
+                            setTimeout(() => {
+                              navigate('/stock-rastreavel/cadastro-manual');
+                            }, 100);
+                          }}
+                          className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded"
+                        >
+                          <Package size={14} className="lg:w-4 lg:h-4" />
+                          Cadastrar Serial Manual
+                        </Link>
+                      )}
                       {podeStockMenu && (
                         <Link 
                           to="/stock-rastreavel/consulta" 
@@ -1058,6 +1075,12 @@ const Navbar = () => {
                         <Link to="/stock-rastreavel/importacao" onClick={(e) => handleMobileNavigation('/stock-rastreavel/importacao', e)} className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10">
                           <Package size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" />
                           Importar Seriais/Lotes
+                        </Link>
+                      )}
+                      {isAdmin && (
+                        <Link to="/stock-rastreavel/cadastro-manual" onClick={(e) => handleMobileNavigation('/stock-rastreavel/cadastro-manual', e)} className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10">
+                          <Package size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" />
+                          Cadastrar Serial Manual
                         </Link>
                       )}
                       {podeStockMenu && (

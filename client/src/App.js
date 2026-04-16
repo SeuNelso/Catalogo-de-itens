@@ -40,6 +40,7 @@ import ConsultaMovimentos from './pages/ConsultaMovimentos';
 import Inventario from './pages/Inventario';
 import ContagemSemanal from './pages/ContagemSemanal';
 import StockRastreavelConsulta from './pages/StockRastreavelConsulta';
+import StockRastreavelCadastroManual from './pages/StockRastreavelCadastroManual';
 import StockRastreavelImportacao from './pages/StockRastreavelImportacao';
 import './App.css';
 import { ROLES_COM_ACESSO_REQUISICOES } from './utils/roles';
@@ -324,6 +325,14 @@ function App() {
                   element={
                     <ProtectedRoute allowedRoles={['admin']}>
                       <StockRastreavelImportacao />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/stock-rastreavel/cadastro-manual"
+                  element={
+                    <ProtectedRoute allowedRoles={['admin']}>
+                      <StockRastreavelCadastroManual />
                     </ProtectedRoute>
                   }
                 />

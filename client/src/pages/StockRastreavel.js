@@ -26,14 +26,28 @@ const StockRastreavel = ({ mode = 'all' }) => {
   const [meusArmazens, setMeusArmazens] = useState([]);
   const [armazemSelecionadoId, setArmazemSelecionadoId] = useState('');
   const [importArmazemId, setImportArmazemId] = useState('');
+  const [savingManual, setSavingManual] = useState(false);
+  const [manualForm, setManualForm] = useState({
+    modo: 'serial',
+    armazem_id: '',
+    artigo_codigo: '',
+    localizacao: '',
+    serialnumber: '',
+    lote: '',
+    quantidade: '1',
+    caixa_codigo: '',
+  });
+  const [manualAdded, setManualAdded] = useState([]);
   const isImportMode = mode === 'import';
   const isConsultaMode = mode === 'consulta';
+  const isManualMode = mode === 'manual';
   const showImport = mode === 'all' || isImportMode;
   const showConsulta = mode === 'all' || isConsultaMode;
+  const showManual = mode === 'all' || isManualMode;
 
   useEffect(() => {
     const loadMeusArmazens = async () => {
-      if (!showConsulta && !showImport) return;
+      if (!showConsulta && !showImport && !showManual) return;
       try {
         const token = localStorage.getItem('token');
         const response = await fetch('/api/requisicoes/stock/meus-armazens', {
@@ -49,19 +63,81 @@ const StockRastreavel = ({ mode = 'all' }) => {
           setArmazemSelecionadoId(id);
           setFArmazemId(id);
           setArmazemId(id);
+          setManualForm((prev) => ({ ...prev, armazem_id: id }));
         }
       } catch (e) {
         setErro(e.message || 'Erro ao carregar armazéns do utilizador');
       }
     };
     loadMeusArmazens();
-  }, [showConsulta, showImport]);
+  }, [showConsulta, showImport, showManual]);
 
   useEffect(() => {
     if (!armazemSelecionadoId) return;
     setFArmazemId(armazemSelecionadoId);
     setArmazemId(armazemSelecionadoId);
   }, [armazemSelecionadoId]);
+
+  const handleManualChange = (field, value) => {
+    setManualForm((prev) => ({ ...prev, [field]: value }));
+  };
+
+  const cadastrarSerialManual = async () => {
+    const isModoSerial = manualForm.modo === 'serial';
+    if (!manualForm.armazem_id || !manualForm.artigo_codigo || !manualForm.localizacao) {
+      setErro('Preencha armazém, artigo e localização.');
+      return;
+    }
+    if (isModoSerial && !manualForm.serialnumber) {
+      setErro('Preencha o serial number.');
+      return;
+    }
+    if (!isModoSerial && !manualForm.lote) {
+      setErro('Preencha o lote.');
+      return;
+    }
+    if (!isModoSerial && (!Number.isFinite(Number(manualForm.quantidade)) || Number(manualForm.quantidade) <= 0)) {
+      setErro('Informe uma quantidade válida para o lote.');
+      return;
+    }
+    setErro('');
+    setSavingManual(true);
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch('/api/requisicoes/stock/serial/manual', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          modo: manualForm.modo,
+          armazem_id: manualForm.armazem_id,
+          artigo_codigo: manualForm.artigo_codigo.trim(),
+          localizacao: manualForm.localizacao.trim(),
+          serialnumber: manualForm.serialnumber.trim(),
+          lote: manualForm.lote.trim(),
+          quantidade: Number(manualForm.quantidade || 0),
+          caixa_codigo: isModoSerial ? (manualForm.caixa_codigo.trim() || null) : null,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || 'Erro ao cadastrar serial');
+      if (data?.row) {
+        setManualAdded((prev) => [data.row, ...prev].slice(0, 12));
+      }
+      setManualForm((prev) => ({
+        ...prev,
+        serialnumber: '',
+        lote: '',
+        quantidade: prev.modo === 'lote' ? prev.quantidade : '1',
+      }));
+    } catch (e) {
+      setErro(e.message || 'Erro ao cadastrar serial');
+    } finally {
+      setSavingManual(false);
+    }
+  };
 
   const callImport = async (mode) => {
     if (!importArmazemId) {
@@ -169,6 +245,7 @@ const StockRastreavel = ({ mode = 'all' }) => {
         artigo_codigo: r.artigoCodigo || '',
         serialnumber: r.serialnumber || '',
         lote: r.lote || '',
+        quantidade: r.quantidade || '',
         localizacao: r.localizacao || '',
         caixa_codigo: r.caixaCodigo || '',
       }));
@@ -251,7 +328,11 @@ const StockRastreavel = ({ mode = 'all' }) => {
       const token = localStorage.getItem('token');
       const p = new URLSearchParams();
       p.set('armazem_id', armazemSelecionadoId || fArmazemId);
-      if (fItemId) p.set('item_id', fItemId);
+      const filtroArtigo = String(fItemId || '').trim();
+      if (filtroArtigo) {
+        p.set('item_codigo', filtroArtigo);
+        if (/^\d+$/.test(filtroArtigo)) p.set('item_id', filtroArtigo);
+      }
       if (fLocalizacao) p.set('localizacao', fLocalizacao);
       if (fStatus) p.set('status', fStatus);
       p.set('limit', '500');
@@ -275,7 +356,7 @@ const StockRastreavel = ({ mode = 'all' }) => {
         <section className="bg-white rounded-lg border border-gray-200 p-4 space-y-3">
           <h2 className="font-semibold text-gray-800">Importação inicial</h2>
           <div className="text-xs text-gray-500">
-            Selecione o armazém de destino e importe ficheiro com colunas: artigo_codigo, serialnumber ou lote, caixa_codigo (opcional) e localizacao.
+            Selecione o armazém de destino e importe ficheiro com colunas: artigo_codigo, serialnumber ou lote, quantidade (obrigatória para lote), caixa_codigo (opcional) e localizacao.
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
             <select
@@ -406,9 +487,185 @@ const StockRastreavel = ({ mode = 'all' }) => {
         </section>
         )}
 
+        {showManual && (
+        <section className="bg-white rounded-lg border border-gray-200 p-4 space-y-4">
+          <div>
+            <h2 className="font-semibold text-gray-800">Cadastro manual de serial</h2>
+            <div className="text-xs text-gray-500 mt-1">
+              Fluxo pensado para cadastro rápido: mantenha armazém, artigo, localização e caixa, e vá trocando apenas o serial number.
+            </div>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3">
+            <select
+              value={manualForm.modo}
+              onChange={(e) => setManualForm((prev) => ({
+                ...prev,
+                modo: e.target.value,
+                serialnumber: '',
+                lote: '',
+                quantidade: e.target.value === 'lote' ? prev.quantidade || '1' : '1',
+                caixa_codigo: e.target.value === 'serial' ? prev.caixa_codigo : '',
+              }))}
+              className="px-3 py-2 border border-gray-300 rounded"
+            >
+              <option value="serial">Adicionar serial</option>
+              <option value="lote">Adicionar lote</option>
+            </select>
+            <select
+              value={manualForm.armazem_id}
+              onChange={(e) => handleManualChange('armazem_id', e.target.value)}
+              className="px-3 py-2 border border-gray-300 rounded"
+            >
+              <option value="">Selecionar armazém</option>
+              {(meusArmazens || []).map((a) => (
+                <option key={a.id} value={String(a.id)}>
+                  {a.codigo ? `${a.codigo} - ` : ''}{a.descricao || `Armazém ${a.id}`}
+                </option>
+              ))}
+            </select>
+            <input
+              value={manualForm.artigo_codigo}
+              onChange={(e) => handleManualChange('artigo_codigo', e.target.value)}
+              placeholder="Código do artigo"
+              className="px-3 py-2 border border-gray-300 rounded"
+            />
+            <input
+              value={manualForm.localizacao}
+              onChange={(e) => handleManualChange('localizacao', e.target.value)}
+              placeholder="Localização"
+              className="px-3 py-2 border border-gray-300 rounded"
+            />
+            {manualForm.modo === 'serial' ? (
+              <>
+                <input
+                  value={manualForm.caixa_codigo}
+                  onChange={(e) => handleManualChange('caixa_codigo', e.target.value)}
+                  placeholder="Caixa (opcional)"
+                  className="px-3 py-2 border border-gray-300 rounded"
+                />
+                <input
+                  value={manualForm.serialnumber}
+                  onChange={(e) => handleManualChange('serialnumber', e.target.value)}
+                  placeholder="Serial number"
+                  className="px-3 py-2 border-2 border-[#0915FF] rounded"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !savingManual) {
+                      e.preventDefault();
+                      cadastrarSerialManual();
+                    }
+                  }}
+                />
+              </>
+            ) : (
+              <>
+                <input
+                  value={manualForm.quantidade}
+                  onChange={(e) => handleManualChange('quantidade', e.target.value)}
+                  placeholder="Quantidade"
+                  type="number"
+                  min="0.001"
+                  step="0.001"
+                  className="px-3 py-2 border border-gray-300 rounded"
+                />
+                <input
+                  value={manualForm.lote}
+                  onChange={(e) => handleManualChange('lote', e.target.value)}
+                  placeholder="Lote"
+                  className="px-3 py-2 border-2 border-[#0915FF] rounded"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !savingManual) {
+                      e.preventDefault();
+                      cadastrarSerialManual();
+                    }
+                  }}
+                />
+              </>
+            )}
+          </div>
+          <div className="flex flex-wrap gap-2 items-center">
+            <button
+              type="button"
+              onClick={cadastrarSerialManual}
+              disabled={savingManual}
+              className="px-4 py-2 bg-[#0915FF] text-white rounded hover:bg-[#070FCC] disabled:opacity-50"
+            >
+              {savingManual ? 'A gravar...' : 'Adicionar serial'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setManualForm((prev) => ({ ...prev, serialnumber: '' }))}
+              disabled={savingManual}
+              className="px-3 py-2 border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50"
+            >
+              {manualForm.modo === 'serial' ? 'Limpar serial' : 'Limpar lote'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setManualForm({
+                modo: manualForm.modo,
+                armazem_id: manualForm.armazem_id,
+                artigo_codigo: '',
+                localizacao: '',
+                serialnumber: '',
+                lote: '',
+                quantidade: '1',
+                caixa_codigo: '',
+              })}
+              disabled={savingManual}
+              className="px-3 py-2 border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50"
+            >
+              Novo contexto
+            </button>
+            <div className="text-xs text-gray-500">
+              {manualForm.modo === 'serial'
+                ? 'Dica: depois do primeiro registo, escreva apenas o próximo serial e prima `Enter`.'
+                : 'Dica: para o mesmo artigo e localização, mude só o lote e a quantidade.'}
+            </div>
+          </div>
+          {manualAdded.length > 0 && (
+            <div className="border border-slate-200 rounded overflow-hidden">
+              <div className="p-2 bg-slate-50 text-xs font-semibold text-slate-700">
+                Últimos seriais adicionados
+              </div>
+              <div className="max-h-72 overflow-auto">
+                <table className="min-w-full text-xs">
+                  <thead className="bg-slate-100">
+                    <tr>
+                      <th className="text-left px-2 py-1 border-b">Artigo</th>
+                      <th className="text-left px-2 py-1 border-b">Tipo</th>
+                      <th className="text-left px-2 py-1 border-b">Serial / Lote</th>
+                      <th className="text-left px-2 py-1 border-b">Quantidade</th>
+                      <th className="text-left px-2 py-1 border-b">Localização</th>
+                      <th className="text-left px-2 py-1 border-b">Caixa</th>
+                      <th className="text-left px-2 py-1 border-b">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {manualAdded.map((r, idx) => (
+                      <tr key={`${r.item_codigo}-${r.serialnumber}-${idx}`} className="border-b last:border-b-0">
+                        <td className="px-2 py-1">
+                          <div className="font-medium text-slate-800">{r.item_codigo}</div>
+                          <div className="text-slate-500">{r.item_descricao || '—'}</div>
+                        </td>
+                        <td className="px-2 py-1 uppercase">{r.tipo || (r.serialnumber ? 'serial' : 'lote')}</td>
+                        <td className="px-2 py-1">{r.serialnumber || r.lote || '—'}</td>
+                        <td className="px-2 py-1">{r.quantidade ?? '—'}</td>
+                        <td className="px-2 py-1">{r.localizacao}</td>
+                        <td className="px-2 py-1">{r.caixa_codigo || '—'}</td>
+                        <td className="px-2 py-1">{r.status}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </section>
+        )}
+
         {showConsulta && (
         <section className="bg-white rounded-lg border border-gray-200 p-4 space-y-3">
-          <h2 className="font-semibold text-gray-800">Consulta de seriais por armazém</h2>
+          <h2 className="font-semibold text-gray-800">Consulta de seriais e lotes por armazém</h2>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
             <select
               value={armazemSelecionadoId}
@@ -430,7 +687,7 @@ const StockRastreavel = ({ mode = 'all' }) => {
             </div>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-5 gap-2">
-            <input value={fItemId} onChange={(e) => setFItemId(e.target.value)} placeholder="item_id (opcional)" className="px-3 py-2 border border-gray-300 rounded" />
+            <input value={fItemId} onChange={(e) => setFItemId(e.target.value)} placeholder="código do artigo ou item_id (opcional)" className="px-3 py-2 border border-gray-300 rounded" />
             <input value={fLocalizacao} onChange={(e) => setFLocalizacao(e.target.value)} placeholder="localização (opcional)" className="px-3 py-2 border border-gray-300 rounded" />
             <select value={fStatus} onChange={(e) => setFStatus(e.target.value)} className="px-3 py-2 border border-gray-300 rounded">
               <option value="">status (todos)</option>
@@ -451,25 +708,37 @@ const StockRastreavel = ({ mode = 'all' }) => {
                 <table className="min-w-full text-xs">
                   <thead className="bg-slate-100">
                     <tr>
+                      <th className="text-left px-2 py-1 border-b">Tipo</th>
                       <th className="text-left px-2 py-1 border-b">Artigo</th>
                       <th className="text-left px-2 py-1 border-b">Serial</th>
                       <th className="text-left px-2 py-1 border-b">Lote</th>
+                      <th className="text-left px-2 py-1 border-b">Quantidade</th>
                       <th className="text-left px-2 py-1 border-b">Localização</th>
                       <th className="text-left px-2 py-1 border-b">Status</th>
                       <th className="text-left px-2 py-1 border-b">Req</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {(seriaisData.rows || []).map((r) => (
-                      <tr key={r.id} className="border-b last:border-b-0">
+                    {(seriaisData.rows || []).map((r) => {
+                      const statusNorm = String(r.status || '').trim().toLowerCase();
+                      const statusBgClass =
+                        statusNorm === 'consumido'
+                          ? 'bg-red-50'
+                          : statusNorm === 'reservado'
+                            ? 'bg-yellow-50'
+                            : '';
+                      return (
+                      <tr key={r.id} className={`border-b last:border-b-0 ${statusBgClass}`}>
+                        <td className="px-2 py-1 uppercase">{r.tipo || (r.serialnumber ? 'serial' : 'lote')}</td>
                         <td className="px-2 py-1">{r.item_codigo}</td>
-                        <td className="px-2 py-1">{r.serialnumber}</td>
+                        <td className="px-2 py-1">{r.serialnumber || '—'}</td>
                         <td className="px-2 py-1">{r.lote || '—'}</td>
+                        <td className="px-2 py-1">{r.quantidade ?? '—'}</td>
                         <td className="px-2 py-1">{r.localizacao}</td>
                         <td className="px-2 py-1">{r.status}</td>
                         <td className="px-2 py-1">{r.requisicao_id || '—'}</td>
                       </tr>
-                    ))}
+                    )})}
                   </tbody>
                 </table>
               </div>

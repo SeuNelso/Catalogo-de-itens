@@ -2766,6 +2766,44 @@ router.get('/:id/export-tra', ...requisicaoAuth, denyOperador, async (req, res) 
           payload: { origem: 'export-tra' },
         });
       }
+      const lotesConsumir = await cTra.query(
+        `SELECT b.lote, b.metros, ri.item_id, ri.localizacao_origem, ri.id AS requisicao_item_id, r.armazem_origem_id
+         FROM requisicoes_itens_bobinas b
+         INNER JOIN requisicoes_itens ri ON ri.id = b.requisicao_item_id
+         INNER JOIN requisicoes r ON r.id = ri.requisicao_id
+         WHERE ri.requisicao_id = $1`,
+        [id]
+      );
+      for (const row of lotesConsumir.rows || []) {
+        const metros = Number(row.metros) || 0;
+        if (!row.lote || metros <= 0 || !row.localizacao_origem) continue;
+        // eslint-disable-next-line no-await-in-loop
+        await cTra.query(
+          `UPDATE stock_lote
+           SET quantidade_reservada = CASE WHEN quantidade_reservada >= $5 THEN quantidade_reservada - $5 ELSE 0 END,
+               quantidade_consumida = quantidade_consumida + CASE WHEN quantidade_reservada >= $5 THEN $5 ELSE quantidade_reservada END,
+               atualizado_em = CURRENT_TIMESTAMP
+           WHERE item_id = $1
+             AND armazem_id = $2
+             AND UPPER(TRIM(localizacao)) = UPPER(TRIM($3::text))
+             AND UPPER(TRIM(lote)) = UPPER(TRIM($4::text))`,
+          [row.item_id, row.armazem_origem_id, row.localizacao_origem, row.lote, metros]
+        );
+        // eslint-disable-next-line no-await-in-loop
+        await logStockMovimento({
+          db: cTra,
+          tipo: 'consumo_tra_lote',
+          itemId: row.item_id,
+          armazemId: row.armazem_origem_id,
+          localizacao: row.localizacao_origem,
+          lote: row.lote,
+          quantidade: metros,
+          requisicaoId: parseInt(id, 10),
+          requisicaoItemId: row.requisicao_item_id,
+          usuarioId: req.user?.id || null,
+          payload: { origem: 'export-tra' },
+        });
+      }
       await cTra.query(
         `UPDATE requisicoes
          SET tra_gerada_em = COALESCE(tra_gerada_em, CURRENT_TIMESTAMP)
@@ -3461,6 +3499,44 @@ router.post('/export-tra-multi', ...requisicaoAuth, denyOperador, async (req, re
               lote: row.lote,
               serialnumber: row.serialnumber,
               quantidade: 1,
+              requisicaoId: id,
+              requisicaoItemId: row.requisicao_item_id,
+              usuarioId: req.user?.id || null,
+              payload: { origem: 'export-tra-multi' },
+            });
+          }
+          const lotesConsumir = await cTraM.query(
+            `SELECT b.lote, b.metros, ri.item_id, ri.localizacao_origem, ri.id AS requisicao_item_id, r.armazem_origem_id
+             FROM requisicoes_itens_bobinas b
+             INNER JOIN requisicoes_itens ri ON ri.id = b.requisicao_item_id
+             INNER JOIN requisicoes r ON r.id = ri.requisicao_id
+             WHERE ri.requisicao_id = $1`,
+            [id]
+          );
+          for (const row of lotesConsumir.rows || []) {
+            const metros = Number(row.metros) || 0;
+            if (!row.lote || metros <= 0 || !row.localizacao_origem) continue;
+            // eslint-disable-next-line no-await-in-loop
+            await cTraM.query(
+              `UPDATE stock_lote
+               SET quantidade_reservada = CASE WHEN quantidade_reservada >= $5 THEN quantidade_reservada - $5 ELSE 0 END,
+                   quantidade_consumida = quantidade_consumida + CASE WHEN quantidade_reservada >= $5 THEN $5 ELSE quantidade_reservada END,
+                   atualizado_em = CURRENT_TIMESTAMP
+               WHERE item_id = $1
+                 AND armazem_id = $2
+                 AND UPPER(TRIM(localizacao)) = UPPER(TRIM($3::text))
+                 AND UPPER(TRIM(lote)) = UPPER(TRIM($4::text))`,
+              [row.item_id, row.armazem_origem_id, row.localizacao_origem, row.lote, metros]
+            );
+            // eslint-disable-next-line no-await-in-loop
+            await logStockMovimento({
+              db: cTraM,
+              tipo: 'consumo_tra_lote',
+              itemId: row.item_id,
+              armazemId: row.armazem_origem_id,
+              localizacao: row.localizacao_origem,
+              lote: row.lote,
+              quantidade: metros,
               requisicaoId: id,
               requisicaoItemId: row.requisicao_item_id,
               usuarioId: req.user?.id || null,
@@ -6883,6 +6959,16 @@ router.patch('/:id/atender-item', ...requisicaoAuth, async (req, res) => {
         await client.query('ROLLBACK');
         return res.status(400).json({ error: `Item ${item.item_id} é controlado por LOTE. Informe pelo menos uma bobina.` });
       }
+      const lotesNorm = bobinas
+        .map((b) => String(b.lote || '').trim().toUpperCase())
+        .filter(Boolean);
+      const dupLotes = lotesNorm.filter((x, i) => lotesNorm.indexOf(x) !== i);
+      if (dupLotes.length > 0) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({
+          error: `Lotes duplicados na mesma preparação: ${[...new Set(dupLotes)].join(', ')}.`,
+        });
+      }
       for (const b of bobinas) {
         const loteB = (b.lote || '').trim();
         const metros = Number(b.metros);
@@ -6972,6 +7058,57 @@ router.patch('/:id/atender-item', ...requisicaoAuth, async (req, res) => {
           locLabel: isZero ? '' : locOrigem,
           needQty: needStockQty,
         });
+      }
+
+      if (tipoControlo === 'LOTE') {
+        // Libera reservas anteriores desta linha antes de recalcular a preparação atual.
+        await liberarReservasLotePorRequisicaoItem(client, {
+          requisicaoItemId: requisicao_item_id,
+          usuarioId: req.user?.id || null,
+          origem: 'atender-item-recalculo',
+        });
+
+        if (!isZero && Array.isArray(bobinas) && bobinas.length > 0) {
+          for (const b of bobinas) {
+            const loteB = String(b.lote || '').trim();
+            const metros = Number(b.metros) || 0;
+            if (!loteB || metros <= 0) continue;
+            // eslint-disable-next-line no-await-in-loop
+            const reserva = await client.query(
+              `UPDATE stock_lote
+               SET quantidade_disponivel = quantidade_disponivel - $5,
+                   quantidade_reservada = quantidade_reservada + $5,
+                   atualizado_em = CURRENT_TIMESTAMP
+               WHERE item_id = $1
+                 AND armazem_id = $2
+                 AND UPPER(TRIM(localizacao)) = UPPER(TRIM($3::text))
+                 AND UPPER(TRIM(lote)) = UPPER(TRIM($4::text))
+                 AND quantidade_disponivel >= $5
+               RETURNING id`,
+              [item.item_id, check.rows[0].armazem_origem_id, locOrigem, loteB, metros]
+            );
+            if (!reserva.rows.length) {
+              throw makeStockPrepBizError(
+                400,
+                `Lote ${loteB} sem saldo disponível suficiente para reservar ${metros}.`
+              );
+            }
+            // eslint-disable-next-line no-await-in-loop
+            await logStockMovimento({
+              db: client,
+              tipo: 'reserva_lote_preparacao',
+              itemId: item.item_id,
+              armazemId: check.rows[0].armazem_origem_id,
+              localizacao: locOrigem,
+              lote: loteB,
+              quantidade: metros,
+              requisicaoId: Number(id),
+              requisicaoItemId: requisicao_item_id,
+              usuarioId: req.user?.id || null,
+              payload: { origem: 'atender-item' },
+            });
+          }
+        }
       }
 
       if (tipoControlo === 'S/N') {
@@ -7298,6 +7435,11 @@ router.delete('/:id/requisicao-itens/:requisicaoItemId', ...requisicaoAuth, asyn
     }
 
     try {
+      await liberarReservasLotePorRequisicaoItem(pool, {
+        requisicaoItemId,
+        usuarioId: req.user?.id || null,
+        origem: 'remover-linha',
+      });
       await pool.query('DELETE FROM requisicoes_itens_bobinas WHERE requisicao_item_id = $1', [requisicaoItemId]);
     } catch (e) {
       if (e.code !== '42P01') throw e;
@@ -7886,6 +8028,11 @@ router.patch('/:id/cancelar', ...requisicaoAuth, denyOperador, async (req, res) 
            AND status = 'reservado'`,
         [id]
       );
+      await liberarReservasLotePorRequisicao(pool, {
+        requisicaoId: Number(id),
+        usuarioId: req.user?.id || null,
+        origem: 'cancelar-requisicao',
+      });
     }
 
     const updated = await getRequisicaoComItens(id);
@@ -7954,6 +8101,11 @@ router.patch('/:id/concluir-cancelamento-expedicao', ...requisicaoAuth, denyOper
          AND status = 'reservado'`,
       [id]
     );
+    await liberarReservasLotePorRequisicao(pool, {
+      requisicaoId: Number(id),
+      usuarioId: req.user?.id || null,
+      origem: 'concluir-cancelamento-expedicao',
+    });
     const updated = await getRequisicaoComItens(id);
     return res.json(updated);
   } catch (error) {
@@ -9120,6 +9272,76 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
     );
   }
 
+  async function localizacaoExisteNoArmazem(db, { armazemId, localizacao }) {
+    const armId = Number(armazemId || 0);
+    const loc = String(localizacao || '').trim();
+    if (!armId || !loc) return false;
+    const q = await db.query(
+      `SELECT 1
+       FROM armazens_localizacoes
+       WHERE armazem_id = $1
+         AND UPPER(TRIM(localizacao)) = UPPER(TRIM($2::text))
+       LIMIT 1`,
+      [armId, loc]
+    );
+    return q.rows.length > 0;
+  }
+
+  async function liberarReservasLotePorRequisicaoItem(db, { requisicaoItemId, usuarioId = null, origem = 'desconhecida' }) {
+    const antigas = await db.query(
+      `SELECT b.lote, b.metros, ri.item_id, ri.localizacao_origem, r.armazem_origem_id
+       FROM requisicoes_itens_bobinas b
+       INNER JOIN requisicoes_itens ri ON ri.id = b.requisicao_item_id
+       INNER JOIN requisicoes r ON r.id = ri.requisicao_id
+       WHERE b.requisicao_item_id = $1`,
+      [requisicaoItemId]
+    );
+    for (const row of antigas.rows || []) {
+      const metros = Number(row.metros) || 0;
+      if (metros <= 0 || !row.lote || !row.localizacao_origem || !row.armazem_origem_id || !row.item_id) continue;
+      // eslint-disable-next-line no-await-in-loop
+      await db.query(
+        `UPDATE stock_lote
+         SET quantidade_disponivel = quantidade_disponivel + CASE WHEN quantidade_reservada >= $5 THEN $5 ELSE quantidade_reservada END,
+             quantidade_reservada = CASE WHEN quantidade_reservada >= $5 THEN quantidade_reservada - $5 ELSE 0 END,
+             atualizado_em = CURRENT_TIMESTAMP
+         WHERE item_id = $1
+           AND armazem_id = $2
+           AND UPPER(TRIM(localizacao)) = UPPER(TRIM($3::text))
+           AND UPPER(TRIM(lote)) = UPPER(TRIM($4::text))`,
+        [row.item_id, row.armazem_origem_id, row.localizacao_origem, row.lote, metros]
+      );
+      // eslint-disable-next-line no-await-in-loop
+      await logStockMovimento({
+        db,
+        tipo: 'libera_reserva_lote',
+        itemId: row.item_id,
+        armazemId: row.armazem_origem_id,
+        localizacao: row.localizacao_origem,
+        lote: row.lote,
+        quantidade: metros,
+        requisicaoItemId,
+        usuarioId,
+        payload: { origem },
+      });
+    }
+  }
+
+  async function liberarReservasLotePorRequisicao(db, { requisicaoId, usuarioId = null, origem = 'desconhecida' }) {
+    const itens = await db.query(
+      `SELECT id FROM requisicoes_itens WHERE requisicao_id = $1`,
+      [requisicaoId]
+    );
+    for (const it of itens.rows || []) {
+      // eslint-disable-next-line no-await-in-loop
+      await liberarReservasLotePorRequisicaoItem(db, {
+        requisicaoItemId: it.id,
+        usuarioId,
+        origem,
+      });
+    }
+  }
+
   async function parseImportStockRows(req) {
     const selectedArmazemId = Number(req.body?.armazem_id || 0) || null;
     const selectedArmazemCodigo = String(req.body?.armazem_codigo || '').trim();
@@ -9130,6 +9352,7 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
         itemId: Number(r.itemId || 0) || null,
         serialnumber: String(r.serialnumber || '').trim(),
         lote: String(r.lote || '').trim(),
+        quantidade: Number(r.quantidade || 0) || 0,
         armazemCodigo: String(r.armazemCodigo || '').trim() || selectedArmazemCodigo,
         armazemId: Number(r.armazemId || 0) || selectedArmazemId,
         localizacao: String(r.localizacao || '').trim(),
@@ -9187,12 +9410,19 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
         norm.caixa ||
         ''
       ).trim();
+      const quantidade = Number(
+        norm.quantidade ||
+        norm.metragem ||
+        norm.metros ||
+        0
+      ) || 0;
       return {
         linha: idx + 2,
         artigoCodigo,
         itemId,
         serialnumber,
         lote,
+        quantidade,
         armazemCodigo: String(norm.armazem_codigo || norm.armazem || '').trim() || selectedArmazemCodigo,
         armazemId: Number(norm.armazem_id || 0) || selectedArmazemId,
         localizacao,
@@ -9210,18 +9440,21 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
         { header: 'artigo_codigo', key: 'artigo_codigo', width: 18 },
         { header: 'serialnumber', key: 'serialnumber', width: 24 },
         { header: 'lote', key: 'lote', width: 18 },
+        { header: 'quantidade', key: 'quantidade', width: 14 },
         { header: 'caixa_codigo', key: 'caixa_codigo', width: 18 },
         { header: 'localizacao', key: 'localizacao', width: 20 },
       ];
       sheet.addRow({
         artigo_codigo: '3000331',
         serialnumber: 'SN-0001',
+        quantidade: 1,
         caixa_codigo: 'CX-000123',
         localizacao: 'A1.01',
       });
       sheet.addRow({
         artigo_codigo: '3000331',
         lote: 'LOTE-ABC-001',
+        quantidade: 2005,
         caixa_codigo: 'CX-000123',
         localizacao: 'A1.01',
       });
@@ -9243,10 +9476,27 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
       const rows = await parseImportStockRows(req);
       const errors = [];
       const seenSerial = new Set();
+      const locExistsCache = new Map();
       for (const r of rows) {
+        const rowArmazemId = Number(r.armazemId || selectedArmazemId || 0) || 0;
         if (!r.localizacao) errors.push({ linha: r.linha, erro: 'Localização obrigatória' });
         if (!r.itemId && !r.artigoCodigo) errors.push({ linha: r.linha, erro: 'item_id ou artigo_codigo obrigatório' });
         if (!r.serialnumber && !r.lote) errors.push({ linha: r.linha, erro: 'serialnumber ou lote obrigatório' });
+        if (rowArmazemId && r.localizacao) {
+          const key = `${rowArmazemId}::${String(r.localizacao || '').trim().toUpperCase()}`;
+          let exists = locExistsCache.get(key);
+          if (typeof exists === 'undefined') {
+            // eslint-disable-next-line no-await-in-loop
+            exists = await localizacaoExisteNoArmazem(pool, { armazemId: rowArmazemId, localizacao: r.localizacao });
+            locExistsCache.set(key, exists);
+          }
+          if (!exists) {
+            errors.push({ linha: r.linha, erro: `Localização "${r.localizacao}" não existe no armazém ${rowArmazemId}` });
+          }
+        }
+        if (r.lote && (!Number.isFinite(Number(r.quantidade)) || Number(r.quantidade) <= 0)) {
+          errors.push({ linha: r.linha, erro: 'quantidade obrigatória e > 0 para lote' });
+        }
         if (r.serialnumber) {
           const k = `${r.itemId || r.artigoCodigo}::${r.serialnumber}`;
           if (seenSerial.has(k)) errors.push({ linha: r.linha, erro: 'Serial duplicado no arquivo' });
@@ -9289,6 +9539,7 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
       let imported = 0;
       let skipped = 0;
       const errors = [];
+      const locExistsCache = new Map();
       for (let idx = 0; idx < rows.length; idx += 1) {
         const r = rows[idx];
         try {
@@ -9297,6 +9548,18 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
           if (!itemId || !armazemId || !r.localizacao) {
             skipped += 1;
             errors.push({ linha: r.linha, erro: 'Referências inválidas (item/armazém/localização)' });
+            continue;
+          }
+          const locKey = `${armazemId}::${String(r.localizacao || '').trim().toUpperCase()}`;
+          let locExists = locExistsCache.get(locKey);
+          if (typeof locExists === 'undefined') {
+            // eslint-disable-next-line no-await-in-loop
+            locExists = await localizacaoExisteNoArmazem(client, { armazemId, localizacao: r.localizacao });
+            locExistsCache.set(locKey, locExists);
+          }
+          if (!locExists) {
+            skipped += 1;
+            errors.push({ linha: r.linha, erro: `Localização "${r.localizacao}" não existe no armazém ${armazemId}` });
             continue;
           }
           if (r.serialnumber) {
@@ -9338,12 +9601,18 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
               payload: { linha: r.linha, caixa: r.caixaCodigo || null },
             });
           } else if (r.lote) {
+            const quantidadeLote = Number(r.quantidade || 0);
+            if (!Number.isFinite(quantidadeLote) || quantidadeLote <= 0) {
+              skipped += 1;
+              errors.push({ linha: r.linha, erro: 'quantidade obrigatória e > 0 para lote' });
+              continue;
+            }
             await client.query(
               `INSERT INTO stock_lote (item_id, armazem_id, localizacao, lote, quantidade_disponivel)
-               VALUES ($1,$2,$3,$4,1)
+               VALUES ($1,$2,$3,$4,$5)
                ON CONFLICT (item_id, armazem_id, localizacao, lote)
-               DO UPDATE SET quantidade_disponivel = stock_lote.quantidade_disponivel + 1, atualizado_em = CURRENT_TIMESTAMP`,
-              [itemId, armazemId, r.localizacao, r.lote]
+               DO UPDATE SET quantidade_disponivel = stock_lote.quantidade_disponivel + EXCLUDED.quantidade_disponivel, atualizado_em = CURRENT_TIMESTAMP`,
+              [itemId, armazemId, r.localizacao, r.lote, quantidadeLote]
             );
             imported += 1;
             await logStockMovimento({
@@ -9353,7 +9622,7 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
               armazemId,
               localizacao: r.localizacao,
               lote: r.lote,
-              quantidade: 1,
+              quantidade: quantidadeLote,
               usuarioId: req.user?.id || null,
               payload: { linha: r.linha },
             });
@@ -9376,6 +9645,197 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
       await client.query('ROLLBACK').catch(() => {});
       console.error('[stock-import][commit] erro:', e.message);
       return res.status(500).json({ error: e.message || 'Erro ao importar stock rastreável' });
+    } finally {
+      client.release();
+    }
+  });
+
+  router.post('/stock/serial/manual', ...requisicaoAuth, denyNonAdmin, async (req, res) => {
+    const client = await pool.connect();
+    try {
+      const itemIdBody = Number(req.body?.item_id || 0) || null;
+      const artigoCodigo = String(req.body?.artigo_codigo || '').trim();
+      const armazemId = Number(req.body?.armazem_id || 0) || null;
+      const localizacao = String(req.body?.localizacao || '').trim();
+      const modo = String(req.body?.modo || 'serial').trim().toLowerCase();
+      const serialnumber = String(req.body?.serialnumber || '').trim();
+      const lote = String(req.body?.lote || '').trim() || null;
+      const caixaCodigo = String(req.body?.caixa_codigo || '').trim();
+      const quantidadeLote = Number(req.body?.quantidade || 0);
+
+      if (!armazemId) {
+        return res.status(400).json({ error: 'armazem_id é obrigatório.' });
+      }
+      if (!localizacao) {
+        return res.status(400).json({ error: 'localizacao é obrigatória.' });
+      }
+      if (!['serial', 'lote'].includes(modo)) {
+        return res.status(400).json({ error: 'modo inválido. Use serial ou lote.' });
+      }
+      if (modo === 'serial' && !serialnumber) {
+        return res.status(400).json({ error: 'serialnumber é obrigatório.' });
+      }
+      if (modo === 'lote' && !lote) {
+        return res.status(400).json({ error: 'lote é obrigatório.' });
+      }
+      if (modo === 'lote' && (!Number.isFinite(quantidadeLote) || quantidadeLote <= 0)) {
+        return res.status(400).json({ error: 'quantidade é obrigatória para lote e deve ser maior que zero.' });
+      }
+      if (!itemIdBody && !artigoCodigo) {
+        return res.status(400).json({ error: 'item_id ou artigo_codigo é obrigatório.' });
+      }
+
+      await client.query('BEGIN');
+      const locExists = await localizacaoExisteNoArmazem(client, { armazemId, localizacao });
+      if (!locExists) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: `Localização "${localizacao}" não existe no armazém ${armazemId}.` });
+      }
+
+      let itemId = itemIdBody;
+      let itemCodigo = artigoCodigo;
+      let itemDescricao = '';
+      if (!itemId) {
+        const itemQ = await client.query(
+          'SELECT id, codigo, descricao FROM itens WHERE codigo = $1 LIMIT 1',
+          [artigoCodigo]
+        );
+        if (!itemQ.rows.length) {
+          await client.query('ROLLBACK');
+          return res.status(404).json({ error: 'Artigo não encontrado.' });
+        }
+        itemId = Number(itemQ.rows[0].id);
+        itemCodigo = String(itemQ.rows[0].codigo || artigoCodigo);
+        itemDescricao = String(itemQ.rows[0].descricao || '');
+      } else {
+        const itemQ = await client.query(
+          'SELECT id, codigo, descricao FROM itens WHERE id = $1 LIMIT 1',
+          [itemId]
+        );
+        if (!itemQ.rows.length) {
+          await client.query('ROLLBACK');
+          return res.status(404).json({ error: 'Item não encontrado.' });
+        }
+        itemCodigo = String(itemQ.rows[0].codigo || artigoCodigo);
+        itemDescricao = String(itemQ.rows[0].descricao || '');
+      }
+
+      let responseRow;
+      if (modo === 'serial') {
+        const serialUpsert = await client.query(
+          `INSERT INTO stock_serial (item_id, armazem_id, localizacao, serialnumber, lote, status)
+           VALUES ($1,$2,$3,$4,$5,$6)
+           ON CONFLICT (item_id, serialnumber)
+           DO UPDATE SET
+             armazem_id = EXCLUDED.armazem_id,
+             localizacao = EXCLUDED.localizacao,
+             lote = COALESCE(NULLIF(EXCLUDED.lote,''), stock_serial.lote),
+             atualizado_em = CURRENT_TIMESTAMP
+           RETURNING id, item_id, armazem_id, localizacao, serialnumber, lote, status`,
+          [itemId, armazemId, localizacao, serialnumber, lote, STOCK_STATUS.DISPONIVEL]
+        );
+
+        let caixaId = null;
+        if (caixaCodigo) {
+          const caixaQ = await client.query(
+            `INSERT INTO stock_caixas (codigo_caixa, item_id, armazem_id, localizacao, status, criado_por_usuario_id)
+             VALUES ($1,$2,$3,$4,'fechada',$5)
+             ON CONFLICT (codigo_caixa)
+             DO UPDATE SET
+               item_id = EXCLUDED.item_id,
+               armazem_id = EXCLUDED.armazem_id,
+               localizacao = EXCLUDED.localizacao,
+               atualizado_em = CURRENT_TIMESTAMP
+             RETURNING id`,
+            [caixaCodigo, itemId, armazemId, localizacao, req.user?.id || null]
+          );
+          caixaId = Number(caixaQ.rows[0]?.id || 0) || null;
+          if (caixaId) {
+            await client.query(
+              `INSERT INTO stock_caixa_seriais (caixa_id, stock_serial_id)
+               VALUES ($1,$2)
+               ON CONFLICT (stock_serial_id) DO NOTHING`,
+              [caixaId, serialUpsert.rows[0].id]
+            );
+          }
+        }
+
+        await logStockMovimento({
+          db: client,
+          tipo: 'cadastro_serial_manual',
+          itemId,
+          armazemId,
+          localizacao,
+          lote,
+          serialnumber,
+          quantidade: 1,
+          caixaId,
+          usuarioId: req.user?.id || null,
+          payload: { caixa: caixaCodigo || null, origem: 'cadastro-manual', modo },
+        });
+
+        responseRow = {
+          id: serialUpsert.rows[0].id,
+          tipo: 'serial',
+          item_id: itemId,
+          item_codigo: itemCodigo,
+          item_descricao: itemDescricao,
+          armazem_id: armazemId,
+          localizacao,
+          serialnumber,
+          lote,
+          quantidade: 1,
+          status: serialUpsert.rows[0].status,
+          caixa_codigo: caixaCodigo || null,
+        };
+      } else {
+        const loteUpsert = await client.query(
+          `INSERT INTO stock_lote (item_id, armazem_id, localizacao, lote, quantidade_disponivel)
+           VALUES ($1,$2,$3,$4,$5)
+           ON CONFLICT (item_id, armazem_id, localizacao, lote)
+           DO UPDATE SET
+             quantidade_disponivel = stock_lote.quantidade_disponivel + EXCLUDED.quantidade_disponivel,
+             atualizado_em = CURRENT_TIMESTAMP
+           RETURNING id, item_id, armazem_id, localizacao, lote, quantidade_disponivel`,
+          [itemId, armazemId, localizacao, lote, quantidadeLote]
+        );
+
+        await logStockMovimento({
+          db: client,
+          tipo: 'cadastro_lote_manual',
+          itemId,
+          armazemId,
+          localizacao,
+          lote,
+          quantidade: quantidadeLote,
+          usuarioId: req.user?.id || null,
+          payload: { origem: 'cadastro-manual', modo },
+        });
+
+        responseRow = {
+          id: loteUpsert.rows[0].id,
+          tipo: 'lote',
+          item_id: itemId,
+          item_codigo: itemCodigo,
+          item_descricao: itemDescricao,
+          armazem_id: armazemId,
+          localizacao,
+          serialnumber: null,
+          lote,
+          quantidade: Number(loteUpsert.rows[0].quantidade_disponivel || quantidadeLote),
+          status: 'disponivel',
+          caixa_codigo: null,
+        };
+      }
+
+      await client.query('COMMIT');
+      return res.json({
+        ok: true,
+        row: responseRow,
+      });
+    } catch (e) {
+      await client.query('ROLLBACK').catch(() => {});
+      return res.status(500).json({ error: e.message || 'Erro ao cadastrar serial manualmente' });
     } finally {
       client.release();
     }
@@ -9453,6 +9913,7 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
     try {
       const armazemId = Number(req.query.armazem_id || 0);
       const itemId = Number(req.query.item_id || 0) || null;
+      const itemCodigo = String(req.query.item_codigo || '').trim();
       const localizacao = String(req.query.localizacao || '').trim();
       const status = String(req.query.status || '').trim().toLowerCase();
       const limit = Math.max(1, Math.min(1000, Number(req.query.limit || 200)));
@@ -9461,37 +9922,117 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
       if (!requisicaoArmazemOrigemAcessoPermitido(req, armazemId)) {
         return res.status(403).json({ error: 'Sem acesso ao armazém informado.' });
       }
-      const params = [armazemId];
-      const filters = ['s.armazem_id = $1'];
-      let p = 2;
-      if (itemId) {
-        filters.push(`s.item_id = $${p++}`);
-        params.push(itemId);
+
+      const serialParams = [armazemId];
+      const serialFilters = ['s.armazem_id = $1'];
+      let sp = 2;
+      if (itemId && itemCodigo) {
+        const idxItemId = sp++;
+        serialParams.push(itemId);
+        const idxItemCodigo = sp++;
+        serialParams.push(`%${itemCodigo}%`);
+        serialFilters.push(`(s.item_id = $${idxItemId} OR UPPER(TRIM(i.codigo::text)) LIKE UPPER(TRIM($${idxItemCodigo}::text)))`);
+      } else if (itemId) {
+        serialFilters.push(`s.item_id = $${sp++}`);
+        serialParams.push(itemId);
+      } else if (itemCodigo) {
+        serialFilters.push(`UPPER(TRIM(i.codigo::text)) LIKE UPPER(TRIM($${sp++}::text))`);
+        serialParams.push(`%${itemCodigo}%`);
       }
       if (localizacao) {
-        filters.push(`s.localizacao = $${p++}`);
-        params.push(localizacao);
+        serialFilters.push(`s.localizacao = $${sp++}`);
+        serialParams.push(localizacao);
       }
       if (status) {
-        filters.push(`s.status = $${p++}`);
-        params.push(status);
+        serialFilters.push(`s.status = $${sp++}`);
+        serialParams.push(status);
       }
-      const where = filters.join(' AND ');
-      const totalQ = await pool.query(`SELECT COUNT(*)::int AS c FROM stock_serial s WHERE ${where}`, params);
-      params.push(limit, offset);
-      const rowsQ = await pool.query(
-        `SELECT
-           s.id, s.item_id, i.codigo AS item_codigo, i.descricao AS item_descricao,
-           s.localizacao, s.serialnumber, s.lote, s.status,
-           s.requisicao_id, s.requisicao_item_id,
-           s.reservado_em, s.consumido_em, s.criado_em, s.atualizado_em
-         FROM stock_serial s
-         INNER JOIN itens i ON i.id = s.item_id
-         WHERE ${where}
-         ORDER BY s.atualizado_em DESC, s.id DESC
-         LIMIT $${p++} OFFSET $${p++}`,
-        params
+
+      const loteParams = [armazemId];
+      const loteParamStart = serialParams.length + 1;
+      const loteFilters = [`l.armazem_id = $${loteParamStart}`];
+      let lp = loteParamStart + 1;
+      if (itemId && itemCodigo) {
+        const idxItemId = lp++;
+        loteParams.push(itemId);
+        const idxItemCodigo = lp++;
+        loteParams.push(`%${itemCodigo}%`);
+        loteFilters.push(`(l.item_id = $${idxItemId} OR UPPER(TRIM(i.codigo::text)) LIKE UPPER(TRIM($${idxItemCodigo}::text)))`);
+      } else if (itemId) {
+        loteFilters.push(`l.item_id = $${lp++}`);
+        loteParams.push(itemId);
+      } else if (itemCodigo) {
+        loteFilters.push(`UPPER(TRIM(i.codigo::text)) LIKE UPPER(TRIM($${lp++}::text))`);
+        loteParams.push(`%${itemCodigo}%`);
+      }
+      if (localizacao) {
+        loteFilters.push(`l.localizacao = $${lp++}`);
+        loteParams.push(localizacao);
+      }
+      if (status) {
+        loteFilters.push(`(CASE WHEN l.quantidade_disponivel > 0 THEN 'disponivel' WHEN l.quantidade_reservada > 0 THEN 'reservado' ELSE 'consumido' END) = $${lp++}`);
+        loteParams.push(status);
+      }
+
+      const serialWhere = serialFilters.join(' AND ');
+      const loteWhere = loteFilters.join(' AND ');
+
+      const unionSql = `
+        SELECT
+          s.id::bigint AS id,
+          'serial'::text AS tipo,
+          s.item_id,
+          i.codigo AS item_codigo,
+          i.descricao AS item_descricao,
+          s.localizacao,
+          s.serialnumber,
+          s.lote,
+          s.status,
+          1::numeric AS quantidade,
+          s.requisicao_id,
+          s.requisicao_item_id,
+          s.reservado_em,
+          s.consumido_em,
+          s.criado_em,
+          s.atualizado_em
+        FROM stock_serial s
+        INNER JOIN itens i ON i.id = s.item_id
+        WHERE ${serialWhere}
+        UNION ALL
+        SELECT
+          (1000000000000::bigint + l.id::bigint) AS id,
+          'lote'::text AS tipo,
+          l.item_id,
+          i.codigo AS item_codigo,
+          i.descricao AS item_descricao,
+          l.localizacao,
+          NULL::text AS serialnumber,
+          l.lote,
+          (CASE WHEN l.quantidade_disponivel > 0 THEN 'disponivel' WHEN l.quantidade_reservada > 0 THEN 'reservado' ELSE 'consumido' END) AS status,
+          l.quantidade_disponivel AS quantidade,
+          NULL::int AS requisicao_id,
+          NULL::int AS requisicao_item_id,
+          NULL::timestamp AS reservado_em,
+          NULL::timestamp AS consumido_em,
+          l.criado_em,
+          l.atualizado_em
+        FROM stock_lote l
+        INNER JOIN itens i ON i.id = l.item_id
+        WHERE ${loteWhere}
+      `;
+
+      const totalQ = await pool.query(
+        `SELECT COUNT(*)::int AS c FROM (${unionSql}) u`,
+        [...serialParams, ...loteParams]
       );
+      const rowsQ = await pool.query(
+        `SELECT * FROM (${unionSql}) u
+         ORDER BY u.atualizado_em DESC, u.id DESC
+         LIMIT $${serialParams.length + loteParams.length + 1}
+         OFFSET $${serialParams.length + loteParams.length + 2}`,
+        [...serialParams, ...loteParams, limit, offset]
+      );
+
       return res.json({
         total: totalQ.rows[0]?.c || 0,
         limit,
@@ -9855,6 +10396,11 @@ router.delete('/:id', ...requisicaoAuth, denyOperador, async (req, res) => {
          AND status = 'reservado'`,
       [id]
     );
+    await liberarReservasLotePorRequisicao(pool, {
+      requisicaoId: Number(id),
+      usuarioId: req.user?.id || null,
+      origem: 'delete-requisicao',
+    });
     await pool.query('DELETE FROM requisicoes WHERE id = $1', [id]);
 
     console.log(`✅ Requisição deletada: ID ${id}`);
