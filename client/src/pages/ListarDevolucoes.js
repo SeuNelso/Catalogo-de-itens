@@ -68,7 +68,7 @@ const ListarDevolucoes = () => {
   const statusParam = params.get('status') || '';
 
   const showStatusBoard = !statusParam;
-  // statusFilter pode ser: 'esperando' | 'EM EXPEDICAO' | 'APEADOS' | 'FINALIZADO'
+  // statusFilter pode ser: 'esperando' | 'EM EXPEDICAO' | 'APEADOS' | 'FINALIZADO' | 'cancelada'
   const statusFilter = statusParam;
 
   const canEntregar =
@@ -84,6 +84,13 @@ const ListarDevolucoes = () => {
     const status = String(reqObj?.status || '');
     const precisaAdmin = ['EM SEPARACAO', 'separado', 'EM EXPEDICAO', 'APEADOS', 'Entregue'].includes(status);
     return !precisaAdmin || user?.role === 'admin';
+  };
+
+  const canCancelarDevolucao = (reqObj) => {
+    if (!canDelete) return false;
+    if (!reqObj) return false;
+    const status = String(reqObj?.status || '');
+    return ['pendente', 'separado', 'EM EXPEDICAO'].includes(status);
   };
 
   const canCreateOrEdit =
@@ -298,6 +305,7 @@ const ListarDevolucoes = () => {
     if (status === 'APEADOS') return 'bg-purple-100 text-purple-800';
     if (status === 'Entregue') return 'bg-emerald-100 text-emerald-800';
     if (status === 'FINALIZADO') return 'bg-slate-200 text-slate-900';
+    if (status === 'cancelada') return 'bg-red-100 text-red-800';
     return 'bg-gray-100 text-gray-800';
   };
 
@@ -307,6 +315,7 @@ const ListarDevolucoes = () => {
     if (status === 'APEADOS') return 'APEADOS';
     if (status === 'Entregue') return 'Finalizado';
     if (status === 'FINALIZADO') return 'Finalizado';
+    if (status === 'cancelada') return 'Cancelada';
     return status || '';
   };
 
@@ -321,8 +330,121 @@ const ListarDevolucoes = () => {
     { key: 'esperando', label: 'Esperando entrega', color: 'bg-yellow-50 border-yellow-200 text-yellow-800' },
     { key: 'EM EXPEDICAO', label: 'Em processo', color: 'bg-blue-50 border-blue-200 text-blue-800' },
     { key: 'APEADOS', label: 'Transferências pendentes', color: 'bg-purple-50 border-purple-200 text-purple-800' },
-    { key: 'FINALIZADO', label: 'Finalizado', color: 'bg-slate-50 border-slate-300 text-slate-800' }
+    { key: 'FINALIZADO', label: 'Finalizado', color: 'bg-slate-50 border-slate-300 text-slate-800' },
+    { key: 'cancelada', label: 'Canceladas', color: 'bg-red-50 border-red-200 text-red-800' }
   ];
+
+  const handleCancelarDevolucao = async (reqObj) => {
+    const reqId = Number(reqObj?.id);
+    if (!Number.isFinite(reqId)) return;
+    if (!canCancelarDevolucao(reqObj)) {
+      setToast({ type: 'error', message: 'Esta devolução não pode ser cancelada no estado atual.' });
+      return;
+    }
+    const emExpedicao = String(reqObj?.status || '') === 'EM EXPEDICAO';
+    try {
+      const ok = await confirm({
+        title: emExpedicao ? 'Cancelar em processo' : 'Cancelar devolução',
+        message: emExpedicao
+          ? 'A devolução ficará sinalizada como cancelada em processo. Depois poderá gerar TRFL de retorno. Deseja continuar?'
+          : 'A devolução será movida para Canceladas. Deseja continuar?',
+        variant: 'danger',
+        confirmLabel: 'Cancelar devolução'
+      });
+      if (!ok) return;
+      const token = localStorage.getItem('token');
+      const response = await fetch(`/api/requisicoes/${reqId}/cancelar`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || 'Erro ao cancelar devolução');
+      }
+      await fetchDevolucoes();
+      setToast({
+        type: 'success',
+        message: emExpedicao
+          ? 'Devolução marcada como cancelada em processo.'
+          : 'Devolução cancelada com sucesso.'
+      });
+    } catch (error) {
+      setToast({ type: 'error', message: error.message || 'Erro ao cancelar devolução' });
+    }
+  };
+
+  const handleCancelarDevolucaoMulti = async (reqsArg) => {
+    const reqs = Array.isArray(reqsArg) ? reqsArg.filter(Boolean) : [];
+    if (reqs.length === 0) return;
+    const elegiveis = reqs.filter(canCancelarDevolucao);
+    if (elegiveis.length === 0) {
+      setToast({ type: 'error', message: 'Nenhuma devolução selecionada pode ser cancelada.' });
+      return;
+    }
+    const temEmExpedicao = elegiveis.some((r) => String(r?.status || '') === 'EM EXPEDICAO');
+    try {
+      const ok = await confirm({
+        title: `Cancelar ${elegiveis.length} devolução(ões)`,
+        message: temEmExpedicao
+          ? 'As devoluções em processo ficarão marcadas como canceladas nessa fase para permitir TRFL de retorno. Deseja continuar?'
+          : 'As devoluções elegíveis serão movidas para Canceladas. Deseja continuar?',
+        variant: 'danger',
+        confirmLabel: 'Cancelar selecionadas'
+      });
+      if (!ok) return;
+      const token = localStorage.getItem('token');
+      let okCount = 0;
+      let failCount = 0;
+      for (const r of elegiveis) {
+        // eslint-disable-next-line no-await-in-loop
+        const response = await fetch(`/api/requisicoes/${r.id}/cancelar`, {
+          method: 'PATCH',
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (response.ok) okCount += 1;
+        else failCount += 1;
+      }
+      await fetchDevolucoes();
+      setToast({
+        type: okCount > 0 ? 'success' : 'error',
+        message:
+          okCount > 0
+            ? `Cancelamento concluído: ${okCount} devolução(ões) cancelada(s)${failCount ? `, ${failCount} com falha` : ''}.`
+            : 'Não foi possível cancelar as devoluções selecionadas.'
+      });
+    } catch (error) {
+      setToast({ type: 'error', message: error.message || 'Erro ao cancelar devoluções' });
+    }
+  };
+
+  const handleExportTRFLCancelamentoDevolucao = async (reqId) => {
+    try {
+      const ok = await confirm({
+        title: 'TRFL de cancelamento',
+        message: 'Deseja gerar a TRFL de retorno para esta devolução cancelada em processo?',
+        confirmLabel: 'Gerar TRFL'
+      });
+      if (!ok) return;
+      await downloadExport(
+        `/api/requisicoes/${reqId}/export-trfl`,
+        `TRFL_cancelamento_devolucao_${reqId}_${new Date().toISOString().slice(0, 10)}.xlsx`,
+        'TRFL de cancelamento gerada com sucesso.'
+      );
+      const token = localStorage.getItem('token');
+      const finishResp = await fetch(`/api/requisicoes/${reqId}/concluir-cancelamento-expedicao`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (!finishResp.ok) {
+        const data = await finishResp.json().catch(() => ({}));
+        throw new Error(data.error || 'TRFL gerada, mas falhou ao concluir cancelamento');
+      }
+      await fetchDevolucoes();
+      setToast({ type: 'success', message: 'TRFL de cancelamento gerada e devolução movida para Canceladas.' });
+    } catch (error) {
+      setToast({ type: 'error', message: error.message || 'Erro ao gerar TRFL de cancelamento' });
+    }
+  };
 
   const handleDelete = async (reqId) => {
     const req = devolucoes.find((x) => Number(x.id) === Number(reqId));
@@ -1676,6 +1798,11 @@ const ListarDevolucoes = () => {
                               <span className={`px-2 py-1 text-xs font-semibold rounded-full ${getStatusBadge(r.status)}`}>
                                 {statusLabel}
                               </span>
+                              {r.status === 'EM EXPEDICAO' && Boolean(r.cancelada_em_expedicao) && (
+                                <span className="px-2 py-1 text-xs font-semibold rounded-full bg-red-100 text-red-800">
+                                  Cancelada
+                                </span>
+                              )}
 
                               {isRequisicaoDoUtilizadorAtual(r, user) && (
                                 <span className="px-2 py-0.5 text-[10px] font-semibold rounded-full bg-violet-100 text-violet-800 uppercase tracking-wide">
@@ -1739,6 +1866,18 @@ const ListarDevolucoes = () => {
                                 <strong className="inline-block w-20 shrink-0 text-gray-800">Data:</strong>
                                 <span>{createdBr}</span>
                               </div>
+                              {(r.status === 'cancelada' || Boolean(r.cancelada_em_expedicao)) && (
+                                <>
+                                  <div className="flex">
+                                    <strong className="inline-block w-20 shrink-0 text-gray-800">Cancelada por:</strong>
+                                    <span className="break-words">{String(r.cancelada_por_nome || '').trim() || '—'}</span>
+                                  </div>
+                                  <div className="flex">
+                                    <strong className="inline-block w-20 shrink-0 text-gray-800">Cancelada em:</strong>
+                                    <span>{r.cancelada_em ? new Date(r.cancelada_em).toLocaleString('pt-BR') : '—'}</span>
+                                  </div>
+                                </>
+                              )}
                               <div className="flex">
                                 <strong className="inline-block w-20 shrink-0 text-gray-800">Nº de DEV:</strong>
                                 <span>{String(r.tra_numero || '').trim() || '—'}</span>
@@ -1825,7 +1964,11 @@ const ListarDevolucoes = () => {
                               )}
 
                             {/* Fluxo devolução: EM EXPEDICAO */}
-                            {r.status === 'EM EXPEDICAO' && canEntregar && !r.devolucao_tra_gerada_em && !receberAtivoIds.has(reqIdNum) && (
+                            {r.status === 'EM EXPEDICAO' &&
+                              canEntregar &&
+                              !r.cancelada_em_expedicao &&
+                              !r.devolucao_tra_gerada_em &&
+                              !receberAtivoIds.has(reqIdNum) && (
                               <button
                                 type="button"
                                 onClick={() => handleReceberDevolucaoComPdf(r, prepBloqueio)}
@@ -1840,7 +1983,11 @@ const ListarDevolucoes = () => {
                               </button>
                             )}
 
-                            {r.status === 'EM EXPEDICAO' && canEntregar && !r.devolucao_tra_gerada_em && receberAtivoIds.has(reqIdNum) && (
+                            {r.status === 'EM EXPEDICAO' &&
+                              canEntregar &&
+                              !r.cancelada_em_expedicao &&
+                              !r.devolucao_tra_gerada_em &&
+                              receberAtivoIds.has(reqIdNum) && (
                               <button
                                 type="button"
                                 onClick={() => handleExportTRADevolucao(r.id)}
@@ -1852,6 +1999,18 @@ const ListarDevolucoes = () => {
                                 disabled={prepBloqueio}
                               >
                                 GERAR DEV
+                              </button>
+                            )}
+                            {r.status === 'EM EXPEDICAO' && Boolean(r.cancelada_em_expedicao) && canDocsELogisticaPosSeparacao && (
+                              <button
+                                type="button"
+                                onClick={() => handleExportTRFLCancelamentoDevolucao(r.id)}
+                                className={`px-3 py-2 text-red-700 hover:bg-red-50 rounded-lg border border-red-300 transition-colors ${
+                                  prepBloqueio ? 'opacity-50 cursor-not-allowed hover:bg-red-50' : ''
+                                }`}
+                                disabled={prepBloqueio}
+                              >
+                                GERAR TRFL CANCELAMENTO
                               </button>
                             )}
 
@@ -2461,6 +2620,21 @@ const ListarDevolucoes = () => {
               })()}
             {(() => {
               const { reqs, complete } = getActionTargetReqs(contextMenu.req);
+              const canCancelarCtx = complete && reqs.length > 0 && reqs.every(canCancelarDevolucao);
+              if (canCancelarCtx) {
+                return (
+                  <button
+                    className="block w-full text-left px-4 py-2 hover:bg-red-50 text-red-700"
+                    onClick={() => {
+                      if (reqs.length > 1) handleCancelarDevolucaoMulti(reqs);
+                      else handleCancelarDevolucao(reqs[0]);
+                      setContextMenu((prev) => ({ ...prev, visible: false }));
+                    }}
+                  >
+                    {reqs.length > 1 ? 'Cancelar selecionadas' : 'Cancelar devolução'}
+                  </button>
+                );
+              }
               const canDeleteCtx = complete && reqs.length > 0 && reqs.every(canDeleteDevolucao);
               if (!canDeleteCtx) return null;
               return (

@@ -256,6 +256,11 @@ const Transferencias = () => {
                           <span className="px-3 py-1 text-sm rounded-full bg-blue-100 text-blue-800 font-semibold">
                             {getStatusLabel(r.status)}
                           </span>
+                          {r.status === 'EM EXPEDICAO' && Boolean(r.cancelada_em_expedicao) && (
+                            <span className="px-3 py-1 text-sm rounded-full bg-red-100 text-red-800 font-semibold">
+                              Cancelada
+                            </span>
+                          )}
                         </div>
                         <div className="text-sm text-gray-600 space-y-1">
                           <div><strong>Origem:</strong> {r.armazem_origem_descricao || r.armazem_origem_id}</div>

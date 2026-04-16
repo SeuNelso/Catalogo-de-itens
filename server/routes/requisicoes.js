@@ -65,9 +65,19 @@ const SQL_SEPARADOR_NOME = `COALESCE(
   '—'
 )`;
 
+const SQL_CANCELADOR_NOME = `COALESCE(
+  NULLIF(TRIM(CONCAT(COALESCE(cu.nome, ''), ' ', COALESCE(cu.sobrenome, ''))), ''),
+  NULLIF(TRIM(COALESCE(cu.username, '')), ''),
+  NULLIF(TRIM(COALESCE(cu.numero_colaborador::text, '')), ''),
+  '—'
+)`;
+
 const SQL_LISTA_CRIADOR_E_SEPARADOR = `${SQL_CRIADOR_COM_EMAIL},
         r.separador_usuario_id,
-        ${SQL_SEPARADOR_NOME} AS separador_nome`;
+        ${SQL_SEPARADOR_NOME} AS separador_nome,
+        r.cancelada_em,
+        r.cancelada_por_usuario_id,
+        ${SQL_CANCELADOR_NOME} AS cancelada_por_nome`;
 
 const EPI_DISCLAIMER_PADRAO =
   'Declaração (DL 348/93 de 1 de Outubro): Declaro(a) que recebi os Equipamentos de Proteção Individual (EPI) acima mencionados e que fui informado(a) dos respetivos riscos que pretendem proteger, comprometendo-me a utilizá-los corretamene de acordo com as instruções recebidas, a conservá-los e mantê-los em bom estado, e a participar ao meu superior hierárquico todas as avarias ou deficiências de que tenha conhecimento.';
@@ -920,6 +930,7 @@ router.get('/', ...requisicaoAuth, async (req, res) => {
       LEFT JOIN armazens ao ON r.armazem_origem_id = ao.id
       LEFT JOIN usuarios u ON r.usuario_id = u.id
       LEFT JOIN usuarios su ON r.separador_usuario_id = su.id
+      LEFT JOIN usuarios cu ON r.cancelada_por_usuario_id = cu.id
       WHERE 1=1
     `;
     const params = [];
@@ -1024,6 +1035,7 @@ router.get('/', ...requisicaoAuth, async (req, res) => {
           LEFT JOIN armazens ao ON r.armazem_origem_id = ao.id
           LEFT JOIN usuarios u ON r.usuario_id = u.id
           LEFT JOIN usuarios su ON r.separador_usuario_id = su.id
+          LEFT JOIN usuarios cu ON r.cancelada_por_usuario_id = cu.id
           WHERE 1=1
         `;
         const fbParams = [];
@@ -2068,18 +2080,23 @@ router.get('/:id/export-trfl', ...requisicaoAuth, denyOperador, async (req, res)
     }
 
     const rows = [];
+    const isCancelamentoExpedicao = String(requisicao.status || '') === 'EM EXPEDICAO' && Boolean(requisicao.cancelada_em_expedicao);
 
     // Linhas por bobina (cada bobina = uma linha)
     for (const b of bobinas) {
+      const rowItem = requisicao.itens.find(it => it.item_id === b.item_id);
+      const localOrigSeparacao = rowItem?.localizacao_origem || '';
+      const originLocation = isCancelamentoExpedicao ? localizacaoExpedicao : localOrigSeparacao;
+      const destinationLocation = isCancelamentoExpedicao ? localOrigSeparacao : localizacaoExpedicao;
       rows.push({
         Date: dateStr,
         OriginWarehouse: codigoOrigem,
-        OriginLocation: requisicao.itens.find(it => it.item_id === b.item_id)?.localizacao_origem || '',
+        OriginLocation: originLocation,
         Article: String(b.item_codigo || ''),
         Quatity: Number(b.metros) || 0,
         SerialNumber1: b.serialnumber || '', SerialNumber2: '', MacAddress: '', CentroCusto: '',
         DestinationWarehouse: codigoOrigem,
-        DestinationLocation: localizacaoExpedicao,
+        DestinationLocation: destinationLocation,
         ProjectCode: '',
         Batch: b.lote || ''
       });
@@ -2097,15 +2114,17 @@ router.get('/:id/export-trfl', ...requisicaoAuth, denyOperador, async (req, res)
         const serials = serialsNormalizadosList(ri.serialnumber);
         if (serials.length > 0) {
           for (const sn of serials) {
+            const originLocation = isCancelamentoExpedicao ? localizacaoExpedicao : (ri.localizacao_origem || '');
+            const destinationLocation = isCancelamentoExpedicao ? (ri.localizacao_origem || '') : localizacaoExpedicao;
             rows.push({
               Date: dateStr,
               OriginWarehouse: codigoOrigem,
-              OriginLocation: ri.localizacao_origem || '',
+              OriginLocation: originLocation,
               Article: String(ri.item_codigo || ''),
               Quatity: 1,
               SerialNumber1: sn, SerialNumber2: '', MacAddress: '', CentroCusto: '',
               DestinationWarehouse: codigoOrigem,
-              DestinationLocation: localizacaoExpedicao,
+              DestinationLocation: destinationLocation,
               ProjectCode: '',
               Batch: ri.lote || ''
             });
@@ -2113,15 +2132,17 @@ router.get('/:id/export-trfl', ...requisicaoAuth, denyOperador, async (req, res)
           continue;
         }
       }
+      const originLocation = isCancelamentoExpedicao ? localizacaoExpedicao : (ri.localizacao_origem || '');
+      const destinationLocation = isCancelamentoExpedicao ? (ri.localizacao_origem || '') : localizacaoExpedicao;
       rows.push({
         Date: dateStr,
         OriginWarehouse: codigoOrigem,
-        OriginLocation: ri.localizacao_origem || '',
+        OriginLocation: originLocation,
         Article: String(ri.item_codigo || ''),
         Quatity: qty,
         SerialNumber1: ri.serialnumber || '', SerialNumber2: '', MacAddress: '', CentroCusto: '',
         DestinationWarehouse: codigoOrigem,
-        DestinationLocation: localizacaoExpedicao,
+        DestinationLocation: destinationLocation,
         ProjectCode: '',
         Batch: ri.lote || ''
       });
@@ -2222,17 +2243,22 @@ router.post('/export-trfl-multi', ...requisicaoAuth, denyOperador, async (req, r
       }
 
       const rows = [];
+      const isCancelamentoExpedicao = String(requisicao.status || '') === 'EM EXPEDICAO' && Boolean(requisicao.cancelada_em_expedicao);
 
       for (const b of bobinas) {
+        const rowItem = requisicao.itens.find(it => it.item_id === b.item_id);
+        const localOrigSeparacao = rowItem?.localizacao_origem || '';
+        const originLocation = isCancelamentoExpedicao ? localizacaoExpedicao : localOrigSeparacao;
+        const destinationLocation = isCancelamentoExpedicao ? localOrigSeparacao : localizacaoExpedicao;
         rows.push({
           Date: dateStr,
           OriginWarehouse: codigoOrigem,
-          OriginLocation: requisicao.itens.find(it => it.item_id === b.item_id)?.localizacao_origem || '',
+          OriginLocation: originLocation,
           Article: String(b.item_codigo || ''),
           Quatity: Number(b.metros) || 0,
           SerialNumber1: b.serialnumber || '', SerialNumber2: '', MacAddress: '', CentroCusto: '',
           DestinationWarehouse: codigoOrigem,
-          DestinationLocation: localizacaoExpedicao,
+          DestinationLocation: destinationLocation,
           ProjectCode: '',
           Batch: b.lote || ''
         });
@@ -2248,15 +2274,17 @@ router.post('/export-trfl-multi', ...requisicaoAuth, denyOperador, async (req, r
           const serials = serialsNormalizadosList(ri.serialnumber);
           if (serials.length > 0) {
             for (const sn of serials) {
+              const originLocation = isCancelamentoExpedicao ? localizacaoExpedicao : (ri.localizacao_origem || '');
+              const destinationLocation = isCancelamentoExpedicao ? (ri.localizacao_origem || '') : localizacaoExpedicao;
               rows.push({
                 Date: dateStr,
                 OriginWarehouse: codigoOrigem,
-                OriginLocation: ri.localizacao_origem || '',
+                OriginLocation: originLocation,
                 Article: String(ri.item_codigo || ''),
                 Quatity: 1,
                 SerialNumber1: sn, SerialNumber2: '', MacAddress: '', CentroCusto: '',
                 DestinationWarehouse: codigoOrigem,
-                DestinationLocation: localizacaoExpedicao,
+                DestinationLocation: destinationLocation,
                 ProjectCode: '',
                 Batch: ri.lote || ''
               });
@@ -2265,15 +2293,17 @@ router.post('/export-trfl-multi', ...requisicaoAuth, denyOperador, async (req, r
           }
         }
 
+        const originLocation = isCancelamentoExpedicao ? localizacaoExpedicao : (ri.localizacao_origem || '');
+        const destinationLocation = isCancelamentoExpedicao ? (ri.localizacao_origem || '') : localizacaoExpedicao;
         rows.push({
           Date: dateStr,
           OriginWarehouse: codigoOrigem,
-          OriginLocation: ri.localizacao_origem || '',
+          OriginLocation: originLocation,
           Article: String(ri.item_codigo || ''),
           Quatity: qty,
           SerialNumber1: ri.serialnumber || '', SerialNumber2: '', MacAddress: '', CentroCusto: '',
           DestinationWarehouse: codigoOrigem,
-          DestinationLocation: localizacaoExpedicao,
+          DestinationLocation: destinationLocation,
           ProjectCode: '',
           Batch: ri.lote || ''
         });
@@ -7437,6 +7467,7 @@ router.patch('/:id/marcar-entregue', ...requisicaoAuth, async (req, res) => {
     // Lock apenas da linha da requisição (evita erro em LEFT JOIN + FOR UPDATE).
     const lock = await client.query(
       `SELECT r.id, r.status, r.armazem_origem_id, r.armazem_id, r.separador_usuario_id
+              , COALESCE(r.cancelada_em_expedicao, false) AS cancelada_em_expedicao
        FROM requisicoes r
        WHERE r.id = $1
        FOR UPDATE`,
@@ -7477,6 +7508,12 @@ router.patch('/:id/marcar-entregue', ...requisicaoAuth, async (req, res) => {
       await client.query('ROLLBACK');
       return res.status(400).json({
         error: 'Só pode marcar como entregue quando a requisição está em expedição (EM EXPEDICAO) ou APEADOS.'
+      });
+    }
+    if (Boolean(row.cancelada_em_expedicao)) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({
+        error: 'Requisição cancelada em expedição. Gere a TRFL de cancelamento e conclua o cancelamento.'
       });
     }
 
@@ -7622,6 +7659,135 @@ router.patch('/:id/voltar-em-expedicao', ...requisicaoAuth, async (req, res) => 
   } catch (error) {
     console.error('Erro ao voltar para Em expedição:', error);
     return res.status(500).json({ error: 'Erro ao voltar para Em expedição', details: error.message });
+  }
+});
+
+// Cancelar requisição com regra por fase:
+// - pendente / separado => status "cancelada"
+// - EM_EXPEDICAO        => mantém status e marca flag de cancelamento
+router.patch('/:id/cancelar', ...requisicaoAuth, denyOperador, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const check = await pool.query(
+      `SELECT
+         r.id,
+         r.status,
+         r.armazem_origem_id,
+         r.armazem_id,
+         r.separador_usuario_id,
+         ao.tipo AS armazem_origem_tipo,
+         a.tipo AS armazem_destino_tipo,
+         COALESCE(r.cancelada_em_expedicao, false) AS cancelada_em_expedicao
+       FROM requisicoes r
+       LEFT JOIN armazens ao ON r.armazem_origem_id = ao.id
+       INNER JOIN armazens a ON r.armazem_id = a.id
+       WHERE r.id = $1`,
+      [id]
+    );
+    if (check.rows.length === 0) {
+      return res.status(404).json({ error: 'Requisição não encontrada' });
+    }
+    const row = check.rows[0];
+    if (!requisicaoArmazemOrigemAcessoPermitido(req, row.armazem_origem_id, { requisicao: row })) {
+      return res.status(403).json({ error: 'Sem acesso a esta requisição.' });
+    }
+    if (separadorImpedeAcao(row, req)) {
+      return respostaBloqueioSeparador(res);
+    }
+
+    const st = String(row.status || '');
+    if (st === 'cancelada') {
+      return res.status(400).json({ error: 'Requisição já está cancelada.' });
+    }
+    if (!['pendente', 'separado', 'EM EXPEDICAO'].includes(st)) {
+      return res.status(400).json({
+        error: 'Só é permitido cancelar requisições em Pendente, Separadas ou Em expedição.'
+      });
+    }
+
+    if (st === 'EM EXPEDICAO') {
+      await pool.query(
+        `UPDATE requisicoes
+         SET cancelada_em_expedicao = true,
+             cancelada_em = CURRENT_TIMESTAMP,
+             cancelada_por_usuario_id = $2,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = $1`,
+        [id, req.user?.id || null]
+      );
+    } else {
+      await pool.query(
+        `UPDATE requisicoes
+         SET status = 'cancelada',
+             cancelada_em_expedicao = false,
+             cancelada_em = CURRENT_TIMESTAMP,
+             cancelada_por_usuario_id = $2,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = $1`,
+        [id, req.user?.id || null]
+      );
+    }
+
+    const updated = await getRequisicaoComItens(id);
+    return res.json(updated);
+  } catch (error) {
+    if (error.code === '42703') {
+      return res.status(503).json({
+        error: 'Coluna cancelada_em_expedicao não existe no banco.',
+        details: 'Execute a migração: server/migrate-requisicoes-cancelamento-expedicao.sql'
+      });
+    }
+    console.error('Erro ao cancelar requisição:', error);
+    return res.status(500).json({ error: 'Erro ao cancelar requisição', details: error.message });
+  }
+});
+
+// Após gerar TRFL de cancelamento em EM_EXPEDICAO, concluir o cancelamento:
+// move para status "cancelada" e desliga a flag operacional.
+router.patch('/:id/concluir-cancelamento-expedicao', ...requisicaoAuth, denyOperador, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const check = await pool.query(
+      `SELECT
+         r.id,
+         r.status,
+         r.armazem_origem_id,
+         r.armazem_id,
+         r.separador_usuario_id,
+         COALESCE(r.cancelada_em_expedicao, false) AS cancelada_em_expedicao,
+         ao.tipo AS armazem_origem_tipo,
+         a.tipo AS armazem_destino_tipo
+       FROM requisicoes r
+       LEFT JOIN armazens ao ON r.armazem_origem_id = ao.id
+       INNER JOIN armazens a ON r.armazem_id = a.id
+       WHERE r.id = $1`,
+      [id]
+    );
+    if (check.rows.length === 0) return res.status(404).json({ error: 'Requisição não encontrada' });
+    const row = check.rows[0];
+    if (!requisicaoArmazemOrigemAcessoPermitido(req, row.armazem_origem_id, { requisicao: row })) {
+      return res.status(403).json({ error: 'Sem acesso a esta requisição.' });
+    }
+    if (separadorImpedeAcao(row, req)) return respostaBloqueioSeparador(res);
+    if (String(row.status || '') !== 'EM EXPEDICAO' || !row.cancelada_em_expedicao) {
+      return res.status(400).json({
+        error: 'Só é possível concluir cancelamento para requisição em Em expedição marcada como cancelada.'
+      });
+    }
+
+    await pool.query(
+      `UPDATE requisicoes
+       SET status = 'cancelada',
+           cancelada_em_expedicao = false,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = $1`,
+      [id]
+    );
+    const updated = await getRequisicaoComItens(id);
+    return res.json(updated);
+  } catch (error) {
+    console.error('Erro ao concluir cancelamento em expedição:', error);
+    return res.status(500).json({ error: 'Erro ao concluir cancelamento', details: error.message });
   }
 });
 

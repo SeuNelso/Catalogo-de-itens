@@ -269,6 +269,18 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
     }
   };
 
+  const concluirCancelamentoExpedicao = async (reqId) => {
+    const token = localStorage.getItem('token');
+    const response = await fetch(`/api/requisicoes/${reqId}/concluir-cancelamento-expedicao`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.error || 'Erro ao concluir cancelamento');
+    }
+  };
+
   const marcarEntregue = async (reqId) => {
     const token = localStorage.getItem('token');
     const response = await fetch(`/api/requisicoes/${reqId}/marcar-entregue`, {
@@ -731,6 +743,9 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
         `TRFL_requisicao_${reqId}_${new Date().toISOString().slice(0, 10)}.xlsx`,
         isRedownload ? 'TRFL baixada novamente.' : 'TRFL gerada com sucesso.'
       );
+      if (req.status === 'EM EXPEDICAO' && req.cancelada_em_expedicao) {
+        await concluirCancelamentoExpedicao(reqId);
+      }
       if (req.status === 'separado') {
         try {
           await marcarEmExpedicao(reqId);
@@ -1085,6 +1100,98 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
     } catch (error) {
       console.error('Erro ao excluir requisição:', error);
       setToast({ type: 'error', message: 'Erro ao excluir requisição' });
+    }
+  };
+
+  const canCancelarRequisicao = (reqObj) => {
+    if (!canDelete) return false;
+    const st = String(reqObj?.status || '');
+    if (!['pendente', 'separado', 'EM EXPEDICAO'].includes(st)) return false;
+    if (st === 'EM SEPARACAO' || st === 'Entregue' || st === 'FINALIZADO' || st === 'cancelada') return false;
+    return true;
+  };
+
+  const handleCancelarRequisicao = async (reqObj) => {
+    const reqId = Number(reqObj?.id);
+    if (!Number.isFinite(reqId)) return;
+    if (!canCancelarRequisicao(reqObj)) {
+      setToast({ type: 'error', message: 'Esta requisição não pode ser cancelada no estado atual.' });
+      return;
+    }
+    const st = String(reqObj?.status || '');
+    const emExpedicao = st === 'EM EXPEDICAO';
+    const ok = await confirm({
+      title: emExpedicao ? 'Cancelar em expedição' : 'Cancelar requisição',
+      message: emExpedicao
+        ? 'A requisição ficará sinalizada como cancelada e permanecerá em Em expedição para gerar a TRFL de retorno. Deseja continuar?'
+        : 'A requisição será movida para o status Canceladas. Deseja continuar?',
+      variant: 'danger',
+      confirmLabel: 'Cancelar requisição'
+    });
+    if (!ok) return;
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch(`/api/requisicoes/${reqId}/cancelar`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || 'Erro ao cancelar requisição');
+      }
+      await fetchRequisicoes();
+      setToast({
+        type: 'success',
+        message: emExpedicao
+          ? 'Requisição marcada como cancelada em expedição. Gere a TRFL de retorno.'
+          : 'Requisição cancelada com sucesso.'
+      });
+    } catch (error) {
+      setToast({ type: 'error', message: error.message || 'Erro ao cancelar requisição' });
+    }
+  };
+
+  const handleCancelarRequisicaoMulti = async (reqsArg) => {
+    const reqs = Array.isArray(reqsArg) ? reqsArg.filter(Boolean) : [];
+    if (reqs.length === 0) return;
+    const elegiveis = reqs.filter(canCancelarRequisicao);
+    if (elegiveis.length === 0) {
+      setToast({ type: 'error', message: 'Nenhuma requisição selecionada pode ser cancelada.' });
+      return;
+    }
+    const temEmExpedicao = elegiveis.some((r) => String(r?.status || '') === 'EM EXPEDICAO');
+    const ok = await confirm({
+      title: `Cancelar ${elegiveis.length} requisição(ões)`,
+      message: temEmExpedicao
+        ? 'As requisições em Em expedição serão marcadas como canceladas e permanecerão nessa fase para gerar TRFL de retorno. Deseja continuar?'
+        : 'As requisições elegíveis serão movidas para o status Canceladas. Deseja continuar?',
+      variant: 'danger',
+      confirmLabel: 'Cancelar selecionadas'
+    });
+    if (!ok) return;
+    try {
+      const token = localStorage.getItem('token');
+      let okCount = 0;
+      let failCount = 0;
+      for (const r of elegiveis) {
+        // eslint-disable-next-line no-await-in-loop
+        const response = await fetch(`/api/requisicoes/${r.id}/cancelar`, {
+          method: 'PATCH',
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (response.ok) okCount += 1;
+        else failCount += 1;
+      }
+      await fetchRequisicoes();
+      setToast({
+        type: okCount > 0 ? 'success' : 'error',
+        message:
+          okCount > 0
+            ? `Cancelamento concluído: ${okCount} cancelada(s)${failCount ? `, ${failCount} com falha` : ''}.`
+            : 'Não foi possível cancelar as requisições selecionadas.'
+      });
+    } catch (error) {
+      setToast({ type: 'error', message: error.message || 'Erro ao cancelar requisições' });
     }
   };
 
@@ -2158,6 +2265,11 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
                           <span className={`px-2 py-1 text-xs font-semibold rounded-full ${getStatusBadge(req.status)}`}>
                             {getStatusLabel(req.status)}
                           </span>
+                          {req.status === 'EM EXPEDICAO' && Boolean(req.cancelada_em_expedicao) && (
+                            <span className="px-2 py-1 text-xs font-semibold rounded-full bg-red-100 text-red-800">
+                              Cancelada
+                            </span>
+                          )}
                           {selectedIds.includes(req.id) && (
                             <span className="px-2 py-0.5 text-[10px] font-semibold rounded-full bg-blue-100 text-blue-800 uppercase tracking-wide">
                               Selecionada
@@ -2260,6 +2372,17 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
                           )}
                           <div><strong>Criado por:</strong> {formatCriadorRequisicao(req)}</div>
                           <div><strong>Data:</strong> {new Date(req.created_at).toLocaleDateString('pt-BR')}</div>
+                          {(req.status === 'cancelada' || Boolean(req.cancelada_em_expedicao)) && (
+                            <>
+                              <div>
+                                <strong>Cancelada por:</strong> {String(req.cancelada_por_nome || '').trim() || '—'}
+                              </div>
+                              <div>
+                                <strong>Cancelada em:</strong>{' '}
+                                {req.cancelada_em ? new Date(req.cancelada_em).toLocaleString('pt-BR') : '—'}
+                              </div>
+                            </>
+                          )}
                           {['Entregue', 'FINALIZADO'].includes(String(req.status || '')) && req.entregue_em && (
                             <div>
                               <strong>Entregue em:</strong>{' '}
@@ -2401,7 +2524,10 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
                         GERAR TRFL
                       </button>
                     ) : null}
-                    {canPrepare && !isFluxoRecebimentoMercadoria(req) && req.status === 'EM EXPEDICAO' && (
+                    {canPrepare &&
+                      !isFluxoRecebimentoMercadoria(req) &&
+                      req.status === 'EM EXPEDICAO' &&
+                      !req.cancelada_em_expedicao && (
                       <button
                         type="button"
                         disabled={prepBloqueio || isAguardandoRececao(req)}
@@ -2418,6 +2544,22 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
                         }
                       >
                         {isAguardandoRececao(req) ? 'AGUARDANDO RECEÇÃO' : 'ENTREGAR'}
+                      </button>
+                    )}
+                    {canDocsELogisticaPosSeparacao &&
+                      !isFluxoRecebimentoMercadoria(req) &&
+                      req.status === 'EM EXPEDICAO' &&
+                      Boolean(req.cancelada_em_expedicao) && (
+                      <button
+                        type="button"
+                        disabled={prepBloqueio}
+                        onClick={() => handleExportTRFL(req, { redownload: true })}
+                        className={`px-3 py-2 text-red-700 rounded-lg border border-red-300 transition-colors ${
+                          prepBloqueio ? 'opacity-50 cursor-not-allowed' : 'hover:bg-red-50'
+                        }`}
+                        title={prepBloqueio ? 'Reservada para separação a outro operador' : 'Gerar TRFL de retorno da expedição'}
+                      >
+                        GERAR TRFL CANCELAMENTO
                       </button>
                     )}
                     {canDocsELogisticaPosSeparacao &&
@@ -2582,7 +2724,9 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
               const canGerarTRFL = all(r => r.status === 'separado' && r.separacao_confirmada);
               const canBaixarTRFL = all(r => ['EM EXPEDICAO', 'Entregue', 'FINALIZADO'].includes(r.status));
 
-              const canEntregar = all(r => r.status === 'EM EXPEDICAO' && !isAguardandoRececao(r));
+              const canEntregar = all(
+                (r) => r.status === 'EM EXPEDICAO' && !isAguardandoRececao(r) && !r.cancelada_em_expedicao
+              );
 
               const canGerarTRA = all(r => podeGerarTraAposRececao(r));
               const canBaixarTRA = all(r => (r.status === 'Entregue' && r.tra_gerada_em) || r.status === 'FINALIZADO');
@@ -2789,6 +2933,21 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
             {(() => {
               const { reqs, complete } = getActionTargetReqs(contextMenu.req);
               const canDeleteCtx = complete && reqs.length > 0 && reqs.every(canDeleteRequisicao);
+              const canCancelarCtx = complete && reqs.length > 0 && reqs.every(canCancelarRequisicao);
+              if (canCancelarCtx) {
+                return (
+                  <button
+                    className="block w-full text-left px-4 py-2 hover:bg-red-50 text-red-700"
+                    onClick={() => {
+                      if (reqs.length > 1) handleCancelarRequisicaoMulti(reqs);
+                      else handleCancelarRequisicao(reqs[0]);
+                      setContextMenu(prev => ({ ...prev, visible: false }));
+                    }}
+                  >
+                    {reqs.length > 1 ? 'Cancelar selecionadas' : 'Cancelar requisição'}
+                  </button>
+                );
+              }
               if (!canDeleteCtx) return null;
               return (
               <button
