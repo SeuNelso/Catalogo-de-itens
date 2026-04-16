@@ -39,6 +39,8 @@ import TransferenciaLocalizacao from './pages/TransferenciaLocalizacao';
 import ConsultaMovimentos from './pages/ConsultaMovimentos';
 import Inventario from './pages/Inventario';
 import ContagemSemanal from './pages/ContagemSemanal';
+import StockRastreavelConsulta from './pages/StockRastreavelConsulta';
+import StockRastreavelImportacao from './pages/StockRastreavelImportacao';
 import './App.css';
 import { ROLES_COM_ACESSO_REQUISICOES } from './utils/roles';
 
@@ -314,6 +316,22 @@ function App() {
                   element={
                     <ProtectedRoute requireConsultaMovimentos>
                       <ConsultaMovimentos />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/stock-rastreavel/importacao"
+                  element={
+                    <ProtectedRoute allowedRoles={['admin']}>
+                      <StockRastreavelImportacao />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/stock-rastreavel/consulta"
+                  element={
+                    <ProtectedRoute allowedRoles={['admin', 'backoffice_armazem', 'supervisor_armazem', 'operador']}>
+                      <StockRastreavelConsulta />
                     </ProtectedRoute>
                   }
                 />

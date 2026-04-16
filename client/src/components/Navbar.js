@@ -11,6 +11,7 @@ const Navbar = () => {
   const [gerirOpen, setGerirOpen] = useState(false);
   const [dadosOpen, setDadosOpen] = useState(false);
   const [clogOpen, setClogOpen] = useState(false);
+  const [consultaOpen, setConsultaOpen] = useState(false);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [isInteracting, setIsInteracting] = useState(false);
   const navigate = useNavigate();
@@ -20,6 +21,7 @@ const Navbar = () => {
     setGerirOpen(false);
     setDadosOpen(false);
     setClogOpen(false);
+    setConsultaOpen(false);
     setUserMenuOpen(false);
   };
 
@@ -27,6 +29,7 @@ const Navbar = () => {
     setGerirOpen((prev) => (menu === 'gerir' ? !prev : false));
     setDadosOpen((prev) => (menu === 'dados' ? !prev : false));
     setClogOpen((prev) => (menu === 'clog' ? !prev : false));
+    setConsultaOpen((prev) => (menu === 'consulta' ? !prev : false));
     setUserMenuOpen((prev) => (menu === 'user' ? !prev : false));
   };
 
@@ -44,6 +47,9 @@ const Navbar = () => {
   /** Conta autenticada que não é admin: acede a /admin-usuarios só para o próprio perfil */
   const showMeuPerfil = isAuthenticated && !isAdmin;
   const podeStockMenu = user && podeUsarControloStock(user);
+  const canSeeConsultaMenu =
+    user &&
+    (podeStockMenu || ['supervisor_armazem', 'backoffice_armazem', 'operador'].includes(user.role));
   const podeMovimentosMenu = user && podeUsarConsultaMovimentos(user);
   const podeInventarioMenu = user && podeAcederInventario(user.role) && podeUsarControloStock(user);
   const podeContagemSemanalMenu = user && podeAcederInventario(user.role);
@@ -97,6 +103,7 @@ const Navbar = () => {
       const gerirDropdown = document.querySelector('.gerir-dropdown');
       const dadosDropdown = document.querySelector('.dados-dropdown');
       const clogDropdown = document.querySelector('.clog-dropdown');
+      const consultaDropdown = document.querySelector('.consulta-dropdown');
       if (userMenuOpen) {
         const userDropDesk = document.querySelector('.user-menu-dropdown-desktop');
         const userDropMob = document.querySelector('.user-menu-dropdown-mobile');
@@ -127,24 +134,32 @@ const Navbar = () => {
           setClogOpen(false);
         }, 100);
       }
+
+      if (consultaOpen && consultaDropdown && !consultaDropdown.contains(event.target)) {
+        setTimeout(() => {
+          setConsultaOpen(false);
+        }, 100);
+      }
     };
 
     document.addEventListener('mousedown', handleClickOutside);
     return () => {
       document.removeEventListener('mousedown', handleClickOutside);
     };
-  }, [gerirOpen, dadosOpen, clogOpen, userMenuOpen]);
+  }, [gerirOpen, dadosOpen, clogOpen, consultaOpen, userMenuOpen]);
 
   // Fechar dropdowns quando o mouse sai deles (com delay)
   useEffect(() => {
     let gerirTimeout;
     let dadosTimeout;
     let clogTimeout;
+    let consultaTimeout;
 
     const handleMouseLeave = (event) => {
       const gerirDropdown = document.querySelector('.gerir-dropdown');
       const dadosDropdown = document.querySelector('.dados-dropdown');
       const clogDropdown = document.querySelector('.clog-dropdown');
+      const consultaDropdown = document.querySelector('.consulta-dropdown');
       
       // Não fechar se o usuário está interagindo
       if (isInteracting) return;
@@ -173,6 +188,14 @@ const Navbar = () => {
           }
         }, 300);
       }
+
+      if (consultaOpen && consultaDropdown && !consultaDropdown.contains(event.relatedTarget)) {
+        consultaTimeout = setTimeout(() => {
+          if (!isInteracting) {
+            setConsultaOpen(false);
+          }
+        }, 300);
+      }
     };
 
     const handleMouseEnter = () => {
@@ -186,11 +209,15 @@ const Navbar = () => {
       if (clogTimeout) {
         clearTimeout(clogTimeout);
       }
+      if (consultaTimeout) {
+        clearTimeout(consultaTimeout);
+      }
     };
 
     const gerirDropdown = document.querySelector('.gerir-dropdown');
     const dadosDropdown = document.querySelector('.dados-dropdown');
     const clogDropdown = document.querySelector('.clog-dropdown');
+    const consultaDropdown = document.querySelector('.consulta-dropdown');
     
     if (gerirDropdown) {
       gerirDropdown.addEventListener('mouseleave', handleMouseLeave);
@@ -206,6 +233,10 @@ const Navbar = () => {
       clogDropdown.addEventListener('mouseleave', handleMouseLeave);
       clogDropdown.addEventListener('mouseenter', handleMouseEnter);
     }
+    if (consultaDropdown) {
+      consultaDropdown.addEventListener('mouseleave', handleMouseLeave);
+      consultaDropdown.addEventListener('mouseenter', handleMouseEnter);
+    }
 
     return () => {
       if (gerirDropdown) {
@@ -220,11 +251,16 @@ const Navbar = () => {
         clogDropdown.removeEventListener('mouseleave', handleMouseLeave);
         clogDropdown.removeEventListener('mouseenter', handleMouseEnter);
       }
+      if (consultaDropdown) {
+        consultaDropdown.removeEventListener('mouseleave', handleMouseLeave);
+        consultaDropdown.removeEventListener('mouseenter', handleMouseEnter);
+      }
       if (gerirTimeout) clearTimeout(gerirTimeout);
       if (dadosTimeout) clearTimeout(dadosTimeout);
       if (clogTimeout) clearTimeout(clogTimeout);
+      if (consultaTimeout) clearTimeout(consultaTimeout);
     };
-  }, [gerirOpen, dadosOpen, clogOpen, isInteracting]);
+  }, [gerirOpen, dadosOpen, clogOpen, consultaOpen, isInteracting]);
 
   // Garantir UI limpa quando a rota muda.
   useEffect(() => {
@@ -352,20 +388,55 @@ const Navbar = () => {
                       </div>
                     )}
                   </div>
-                  {showGerirMenu && podeStockMenu && (
-                    <Link
-                      to="/consulta-estoque-localizacoes"
-                      onClick={(e) => {
-                        e.preventDefault();
-                        closeAllDropdowns();
-                        setTimeout(() => navigate('/consulta-estoque-localizacoes'), 100);
-                      }}
-                      className="inline-flex items-center gap-1 lg:gap-2 bg-transparent border-none text-white font-semibold text-sm lg:text-base py-3 px-2 lg:px-3 xl:px-4 no-underline cursor-pointer rounded-lg transition-colors duration-200 hover:bg-white/10"
-                      title="Consulta: localizações e stock (centrais)"
+                  {canSeeConsultaMenu && (
+                    <div
+                      className="relative inline-block consulta-dropdown"
+                      onMouseEnter={() => setIsInteracting(true)}
+                      onMouseLeave={() => setIsInteracting(false)}
                     >
-                      <MapPin size={14} className="lg:w-4 lg:h-4" />
-                      <span>Consulta</span>
-                    </Link>
+                      <button
+                        className="bg-transparent border-none text-white font-semibold text-sm lg:text-base py-3 px-2 lg:px-3 xl:px-4 cursor-pointer flex items-center gap-1 lg:gap-2 transition-colors duration-200 rounded-lg hover:bg-white/10"
+                        onClick={() => toggleDropdown('consulta')}
+                        title="Consultas"
+                      >
+                        <MapPin size={14} className="lg:w-4 lg:h-4" />
+                        <span>Consulta</span>
+                        <ChevronDown size={14} className={`ml-1 text-white transition-transform duration-200 lg:w-4 lg:h-4 ${consultaOpen ? 'rotate-180' : ''}`} />
+                      </button>
+                      {consultaOpen && (
+                        <div className="absolute top-full left-0 bg-[#0915FF] border border-gray-200 rounded-lg shadow-lg min-w-56 z-50 p-2 -mt-1 pt-2">
+                          <div className="flex flex-col gap-1">
+                            <Link
+                              to="/consulta-estoque-localizacoes"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                setConsultaOpen(false);
+                                setTimeout(() => navigate('/consulta-estoque-localizacoes'), 100);
+                              }}
+                              className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded"
+                              title="Consulta: localizações e stock (centrais)"
+                            >
+                              <MapPin size={14} className="lg:w-4 lg:h-4" />
+                              Consulta Localizações
+                            </Link>
+                            <Link
+                              to="/stock-rastreavel/consulta"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                setConsultaOpen(false);
+                                setTimeout(() => navigate('/stock-rastreavel/consulta'), 100);
+                              }}
+                              className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded"
+                            >
+                              <Database size={14} className="lg:w-4 lg:h-4" />
+                              Consulta Seriais/Lotes
+                            </Link>
+                          </div>
+                        </div>
+                      )}
+                    </div>
                   )}
                 </div>
               )}
@@ -541,6 +612,40 @@ const Navbar = () => {
                         >
                           <Package size={14} className="lg:w-4 lg:h-4" />
                           Importar Unidades
+                        </Link>
+                      )}
+                      {isAdmin && (
+                        <Link 
+                          to="/stock-rastreavel/importacao" 
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setDadosOpen(false);
+                            setTimeout(() => {
+                              navigate('/stock-rastreavel/importacao');
+                            }, 100);
+                          }} 
+                          className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded"
+                        >
+                          <Package size={14} className="lg:w-4 lg:h-4" />
+                          Importar Seriais/Lotes
+                        </Link>
+                      )}
+                      {podeStockMenu && (
+                        <Link 
+                          to="/stock-rastreavel/consulta" 
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setDadosOpen(false);
+                            setTimeout(() => {
+                              navigate('/stock-rastreavel/consulta');
+                            }, 100);
+                          }} 
+                          className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded"
+                        >
+                          <Database size={14} className="lg:w-4 lg:h-4" />
+                          Consultar Seriais/Lotes
                         </Link>
                       )}
                     </div>
@@ -793,16 +898,42 @@ const Navbar = () => {
                       </div>
                     )}
                   </div>
-                  {showGerirMenu && podeStockMenu && (
-                    <Link
-                      to="/consulta-estoque-localizacoes"
-                      onClick={(e) => handleMobileNavigation('/consulta-estoque-localizacoes', e)}
-                      className="w-[85vw] sm:w-[90vw] py-3 sm:py-4 px-4 sm:px-5 bg-transparent text-white font-semibold text-sm sm:text-base no-underline flex items-center gap-2 transition-colors duration-200 rounded-lg hover:bg-white/10 m-0 mb-0.5"
-                      title="Consulta: localizações e stock (centrais)"
-                    >
-                      <MapPin size={14} className="sm:w-4 sm:h-4" />
-                      Consulta
-                    </Link>
+                  {canSeeConsultaMenu && (
+                    <div className="relative w-full consulta-dropdown">
+                      <button
+                        className="w-full justify-between py-3 sm:py-4 px-4 sm:px-5 bg-transparent border-none text-white font-semibold text-sm sm:text-base cursor-pointer flex items-center gap-2 transition-colors duration-200 rounded-lg"
+                        onClick={() => toggleDropdown('consulta')}
+                      >
+                        <div className="flex items-center gap-2">
+                          <MapPin size={14} className="sm:w-4 sm:h-4" />
+                          Consulta
+                        </div>
+                        <ChevronDown size={14} className={`text-white transition-transform duration-200 sm:w-4 sm:h-4 ${consultaOpen ? 'rotate-180' : ''}`} />
+                      </button>
+                      {consultaOpen && (
+                        <div className="static shadow-none border-none bg-white/5 m-0 p-0 rounded-none">
+                          <div className="flex flex-col">
+                            <Link
+                              to="/consulta-estoque-localizacoes"
+                              onClick={(e) => handleMobileNavigation('/consulta-estoque-localizacoes', e)}
+                              className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10"
+                              title="Consulta: localizações e stock (centrais)"
+                            >
+                              <MapPin size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" />
+                              Consulta Localizações
+                            </Link>
+                            <Link
+                              to="/stock-rastreavel/consulta"
+                              onClick={(e) => handleMobileNavigation('/stock-rastreavel/consulta', e)}
+                              className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10"
+                            >
+                              <Database size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" />
+                              Consulta Seriais/Lotes
+                            </Link>
+                          </div>
+                        </div>
+                      )}
+                    </div>
                   )}
                 </>
               )}
@@ -921,6 +1052,18 @@ const Navbar = () => {
                         <Link to="/importar-unidades" onClick={(e) => handleMobileNavigation('/importar-unidades', e)} className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10">
                           <Package size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" />
                           Importar Unidades
+                        </Link>
+                      )}
+                      {isAdmin && (
+                        <Link to="/stock-rastreavel/importacao" onClick={(e) => handleMobileNavigation('/stock-rastreavel/importacao', e)} className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10">
+                          <Package size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" />
+                          Importar Seriais/Lotes
+                        </Link>
+                      )}
+                      {podeStockMenu && (
+                        <Link to="/stock-rastreavel/consulta" onClick={(e) => handleMobileNavigation('/stock-rastreavel/consulta', e)} className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10">
+                          <Database size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" />
+                          Consultar Seriais/Lotes
                         </Link>
                       )}
                     </div>

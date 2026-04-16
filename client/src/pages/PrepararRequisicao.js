@@ -94,6 +94,7 @@ const PrepararRequisicao = () => {
   const [prepLocBusca, setPrepLocBusca] = useState('');
   const [serialScannerIdx, setSerialScannerIdx] = useState(null);
   const [serialScannerContinuous, setSerialScannerContinuous] = useState(false);
+  const [reservandoCaixa, setReservandoCaixa] = useState(false);
   const [stockNacionalPrep, setStockNacionalPrep] = useState({ loading: false, valor: null });
   const [addItemSearch, setAddItemSearch] = useState('');
   const [addItemResults, setAddItemResults] = useState([]);
@@ -1077,6 +1078,48 @@ const PrepararRequisicao = () => {
     }
   };
 
+  const handleLerSeriaisPorCaixa = async () => {
+    if (!itemPreparando?.id) return;
+    const codigoCaixa = String(window.prompt('Código da caixa (ex.: CX-000123):') || '').trim();
+    if (!codigoCaixa) return;
+    try {
+      setReservandoCaixa(true);
+      const token = localStorage.getItem('token');
+      const response = await fetch(`/api/requisicoes/stock/caixas/${encodeURIComponent(codigoCaixa)}`, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || 'Erro ao consultar caixa');
+      }
+      const data = await response.json();
+      const seriais = Array.isArray(data.seriais)
+        ? data.seriais
+            .map((row) => String(row?.serialnumber || '').trim())
+            .filter(Boolean)
+        : [];
+      if (seriais.length === 0) {
+        throw new Error(`A caixa ${codigoCaixa} não possui seriais associados.`);
+      }
+      setFormItem((prev) => ({
+        ...prev,
+        quantidade_preparada: String(seriais.length),
+        bobinas: seriais.map((sn) => ({ lote: '', serialnumber: sn, metros: '' })),
+      }));
+      setToast({
+        type: 'success',
+        message: `Caixa ${codigoCaixa}: ${seriais.length} serial(is) carregado(s). A reserva será feita ao preparar.`,
+      });
+    } catch (error) {
+      setToast({ type: 'error', message: error.message || 'Erro ao ler caixa' });
+    } finally {
+      setReservandoCaixa(false);
+    }
+  };
+
   const locsOrigemParaPreparacao = useMemo(() => {
     const todas = armazemOrigem?.localizacoes?.map((l) => l.localizacao).filter(Boolean) || [];
     if (!podeUsarControloStock(user)) return todas;
@@ -1842,26 +1885,37 @@ const PrepararRequisicao = () => {
                         <section className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm space-y-3">
                           <div className="flex flex-wrap items-center justify-between gap-2">
                             <h4 className="text-sm font-semibold text-gray-800">Seriais (S/N)</h4>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                const firstEmpty = (formItem.bobinas || []).findIndex((b) => !(b.serialnumber || '').trim());
-                                const startIdx = firstEmpty >= 0 ? firstEmpty : 0;
-                                if ((formItem.bobinas || []).length === 0) {
-                                  setToast({
-                                    type: 'error',
-                                    message: 'Defina primeiro a quantidade preparada para gerar as linhas de S/N.'
-                                  });
-                                  return;
-                                }
-                                setSerialScannerContinuous(true);
-                                setSerialScannerIdx(startIdx);
-                              }}
-                              className="px-2.5 py-1.5 border border-gray-300 rounded text-gray-700 hover:bg-gray-100 flex items-center gap-1 text-xs"
-                              title="Ler vários seriais em sequência"
-                            >
-                              <FaQrcode /> Scanner contínuo
-                            </button>
+                            <div className="flex items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={handleLerSeriaisPorCaixa}
+                                disabled={reservandoCaixa}
+                                className="px-2.5 py-1.5 border border-indigo-300 rounded text-indigo-700 hover:bg-indigo-50 flex items-center gap-1 text-xs disabled:opacity-50"
+                                title="Ler o código da caixa e preencher os seriais"
+                              >
+                                <FaQrcode /> {reservandoCaixa ? 'A ler...' : 'Ler caixa'}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const firstEmpty = (formItem.bobinas || []).findIndex((b) => !(b.serialnumber || '').trim());
+                                  const startIdx = firstEmpty >= 0 ? firstEmpty : 0;
+                                  if ((formItem.bobinas || []).length === 0) {
+                                    setToast({
+                                      type: 'error',
+                                      message: 'Defina primeiro a quantidade preparada para gerar as linhas de S/N.'
+                                    });
+                                    return;
+                                  }
+                                  setSerialScannerContinuous(true);
+                                  setSerialScannerIdx(startIdx);
+                                }}
+                                className="px-2.5 py-1.5 border border-gray-300 rounded text-gray-700 hover:bg-gray-100 flex items-center gap-1 text-xs"
+                                title="Ler vários seriais em sequência"
+                              >
+                                <FaQrcode /> Scanner contínuo
+                              </button>
+                            </div>
                           </div>
                           {(formItem.bobinas || []).length === 0 && (
                             <p className="text-xs text-gray-500">

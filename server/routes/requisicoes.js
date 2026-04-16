@@ -2,6 +2,7 @@
  * Rotas /api/requisicoes — montar com app.use('/api/requisicoes', createRequisicoesRouter(deps))
  */
 const express = require('express');
+const multer = require('multer');
 const ExcelJS = require('exceljs');
 const XLSX = require('xlsx');
 const fs = require('fs');
@@ -53,6 +54,16 @@ function denyOperador(req, res, next) {
       error:
         'Operadores só podem consultar e separar requisições dos seus armazéns e marcar entrega; não podem executar esta operação.',
       code: 'OPERADOR_RESTRITO',
+    });
+  }
+  next();
+}
+
+function denyNonAdmin(req, res, next) {
+  if (!req.user || !isAdmin(req.user.role)) {
+    return res.status(403).json({
+      error: 'Apenas administradores podem executar esta operação.',
+      code: 'ADMIN_ONLY',
     });
   }
   next();
@@ -810,6 +821,7 @@ function createRequisicoesRouter(deps) {
   } = deps;
 
   const router = express.Router();
+  const stockImportUpload = multer({ storage: multer.memoryStorage() });
 
   const RECEBIMENTO_TRANSFERENCIA_MARKER = 'RECEBIMENTO_TRANSFERENCIA_V1';
 
@@ -2726,6 +2738,34 @@ router.get('/:id/export-tra', ...requisicaoAuth, denyOperador, async (req, res) 
           if (seTra.code !== '42P01' && seTra.code !== '42703') throw seTra;
         }
       }
+      // Consumo definitivo dos seriais reservados para esta requisição (idempotente).
+      // Isto é rastreabilidade do serial e deve ocorrer mesmo sem controlo de stock ativo.
+      const consumed = await cTra.query(
+        `UPDATE stock_serial
+         SET status = 'consumido',
+             consumido_em = COALESCE(consumido_em, CURRENT_TIMESTAMP),
+             atualizado_em = CURRENT_TIMESTAMP
+         WHERE requisicao_id = $1
+           AND status = 'reservado'
+         RETURNING item_id, armazem_id, localizacao, lote, serialnumber, requisicao_item_id`,
+        [id]
+      );
+      for (const row of consumed.rows || []) {
+        // eslint-disable-next-line no-await-in-loop
+        await logStockMovimento({
+          tipo: 'consumo_tra',
+          itemId: row.item_id,
+          armazemId: row.armazem_id,
+          localizacao: row.localizacao,
+          lote: row.lote,
+          serialnumber: row.serialnumber,
+          quantidade: 1,
+          requisicaoId: parseInt(id, 10),
+          requisicaoItemId: row.requisicao_item_id,
+          usuarioId: req.user?.id || null,
+          payload: { origem: 'export-tra' },
+        });
+      }
       await cTra.query(
         `UPDATE requisicoes
          SET tra_gerada_em = COALESCE(tra_gerada_em, CURRENT_TIMESTAMP)
@@ -3398,6 +3438,34 @@ router.post('/export-tra-multi', ...requisicaoAuth, denyOperador, async (req, re
             } catch (seTraM) {
               if (seTraM.code !== '42P01' && seTraM.code !== '42703') throw seTraM;
             }
+          }
+          // Consumo definitivo dos seriais reservados para esta requisição (idempotente),
+          // mesmo quando o utilizador não controla stock físico.
+          const consumed = await cTraM.query(
+            `UPDATE stock_serial
+             SET status = 'consumido',
+                 consumido_em = COALESCE(consumido_em, CURRENT_TIMESTAMP),
+                 atualizado_em = CURRENT_TIMESTAMP
+             WHERE requisicao_id = $1
+               AND status = 'reservado'
+             RETURNING item_id, armazem_id, localizacao, lote, serialnumber, requisicao_item_id`,
+            [id]
+          );
+          for (const row of consumed.rows || []) {
+            // eslint-disable-next-line no-await-in-loop
+            await logStockMovimento({
+              tipo: 'consumo_tra',
+              itemId: row.item_id,
+              armazemId: row.armazem_id,
+              localizacao: row.localizacao,
+              lote: row.lote,
+              serialnumber: row.serialnumber,
+              quantidade: 1,
+              requisicaoId: id,
+              requisicaoItemId: row.requisicao_item_id,
+              usuarioId: req.user?.id || null,
+              payload: { origem: 'export-tra-multi' },
+            });
           }
           await cTraM.query(
             `UPDATE requisicoes
@@ -6845,6 +6913,8 @@ router.patch('/:id/atender-item', ...requisicaoAuth, async (req, res) => {
         } else if (!serialnumber || String(serialnumber).trim() === '') {
           await client.query('ROLLBACK');
           return res.status(400).json({ error: `Item ${item.item_id} é controlado por número de série. Informe o Serial number na preparação.` });
+        } else {
+          serialsNormalizados = [String(serialnumber).trim()];
         }
       }
     }
@@ -6902,6 +6972,85 @@ router.patch('/:id/atender-item', ...requisicaoAuth, async (req, res) => {
           locLabel: isZero ? '' : locOrigem,
           needQty: needStockQty,
         });
+      }
+
+      if (tipoControlo === 'S/N') {
+        await client.query(
+          `UPDATE stock_serial
+           SET status = 'disponivel',
+               requisicao_id = NULL,
+               requisicao_item_id = NULL,
+               reservado_em = NULL,
+               atualizado_em = CURRENT_TIMESTAMP
+           WHERE requisicao_item_id = $1
+             AND status = 'reservado'`,
+          [requisicao_item_id]
+        );
+
+        if (!isZero && Array.isArray(serialsNormalizados) && serialsNormalizados.length > 0) {
+          const serialRows = await client.query(
+            `SELECT id, serialnumber, status
+             FROM stock_serial
+             WHERE item_id = $1
+               AND armazem_id = $2
+               AND serialnumber = ANY($3::text[])
+             ORDER BY serialnumber
+             FOR UPDATE`,
+            [item.item_id, check.rows[0].armazem_origem_id, serialsNormalizados]
+          );
+
+          const rowsBySerial = new Map(
+            (serialRows.rows || []).map((row) => [String(row.serialnumber || '').trim(), row])
+          );
+          const emFalta = serialsNormalizados.filter((sn) => !rowsBySerial.has(sn));
+          if (emFalta.length > 0) {
+            throw makeStockPrepBizError(
+              400,
+              `Os seguintes seriais não foram encontrados no armazém de origem: ${emFalta.join(', ')}.`
+            );
+          }
+
+          const indisponiveis = [];
+          for (const sn of serialsNormalizados) {
+            const row = rowsBySerial.get(sn);
+            if (String(row.status) !== STOCK_STATUS.DISPONIVEL) {
+              indisponiveis.push(`${sn} (${row.status})`);
+            }
+          }
+          if (indisponiveis.length > 0) {
+            throw makeStockPrepBizError(
+              400,
+              `Os seguintes seriais não estão disponíveis para reserva: ${indisponiveis.join(', ')}.`
+            );
+          }
+
+          for (const sn of serialsNormalizados) {
+            const row = rowsBySerial.get(sn);
+            await client.query(
+              `UPDATE stock_serial
+               SET status = 'reservado',
+                   requisicao_id = $1,
+                   requisicao_item_id = $2,
+                   reservado_em = CURRENT_TIMESTAMP,
+                   atualizado_em = CURRENT_TIMESTAMP
+               WHERE id = $3`,
+              [id, requisicao_item_id, row.id]
+            );
+          }
+
+          await logStockMovimento({
+            db: client,
+            tipo: 'reserva_serial_preparacao',
+            itemId: item.item_id,
+            armazemId: check.rows[0].armazem_origem_id,
+            localizacao: locOrigem,
+            quantidade: serialsNormalizados.length,
+            requisicaoId: Number(id),
+            requisicaoItemId: requisicao_item_id,
+            usuarioId: req.user?.id || null,
+            payload: { serials: serialsNormalizados },
+          });
+        }
       }
 
       await client.query(updateQuery, params);
@@ -7726,6 +7875,17 @@ router.patch('/:id/cancelar', ...requisicaoAuth, denyOperador, async (req, res) 
          WHERE id = $1`,
         [id, req.user?.id || null]
       );
+      await pool.query(
+        `UPDATE stock_serial
+         SET status = 'disponivel',
+             requisicao_id = NULL,
+             requisicao_item_id = NULL,
+             reservado_em = NULL,
+             atualizado_em = CURRENT_TIMESTAMP
+         WHERE requisicao_id = $1
+           AND status = 'reservado'`,
+        [id]
+      );
     }
 
     const updated = await getRequisicaoComItens(id);
@@ -7781,6 +7941,17 @@ router.patch('/:id/concluir-cancelamento-expedicao', ...requisicaoAuth, denyOper
            cancelada_em_expedicao = false,
            updated_at = CURRENT_TIMESTAMP
        WHERE id = $1`,
+      [id]
+    );
+    await pool.query(
+      `UPDATE stock_serial
+       SET status = 'disponivel',
+           requisicao_id = NULL,
+           requisicao_item_id = NULL,
+           reservado_em = NULL,
+           atualizado_em = CURRENT_TIMESTAMP
+       WHERE requisicao_id = $1
+         AND status = 'reservado'`,
       [id]
     );
     const updated = await getRequisicaoComItens(id);
@@ -8919,6 +9090,710 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
     }
   );
 
+  const STOCK_STATUS = {
+    DISPONIVEL: 'disponivel',
+    RESERVADO: 'reservado',
+    CONSUMIDO: 'consumido',
+  };
+
+  function normalizeImportHeader(v) {
+    return String(v || '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .trim()
+      .toLowerCase();
+  }
+
+  function parseRowsFromWorkbookBuffer(buffer) {
+    const wb = XLSX.read(buffer, { type: 'buffer' });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    if (!ws) return [];
+    return XLSX.utils.sheet_to_json(ws, { defval: '' });
+  }
+
+  async function logStockMovimento({ db = pool, tipo, itemId, armazemId, localizacao, lote, serialnumber, quantidade, requisicaoId, requisicaoItemId, caixaId, usuarioId, payload }) {
+    await db.query(
+      `INSERT INTO stock_movimentos_auditoria
+       (tipo, item_id, armazem_id, localizacao, lote, serialnumber, quantidade, requisicao_id, requisicao_item_id, caixa_id, usuario_id, payload)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+      [tipo, itemId || null, armazemId || null, localizacao || null, lote || null, serialnumber || null, quantidade ?? null, requisicaoId || null, requisicaoItemId || null, caixaId || null, usuarioId || null, payload ? JSON.stringify(payload) : null]
+    );
+  }
+
+  async function parseImportStockRows(req) {
+    const selectedArmazemId = Number(req.body?.armazem_id || 0) || null;
+    const selectedArmazemCodigo = String(req.body?.armazem_codigo || '').trim();
+    if (Array.isArray(req.body?.rows)) {
+      return req.body.rows.map((r, idx) => ({
+        linha: Number(r.linha || idx + 1),
+        artigoCodigo: String(r.artigoCodigo || '').trim(),
+        itemId: Number(r.itemId || 0) || null,
+        serialnumber: String(r.serialnumber || '').trim(),
+        lote: String(r.lote || '').trim(),
+        armazemCodigo: String(r.armazemCodigo || '').trim() || selectedArmazemCodigo,
+        armazemId: Number(r.armazemId || 0) || selectedArmazemId,
+        localizacao: String(r.localizacao || '').trim(),
+        caixaCodigo: String(r.caixaCodigo || '').trim(),
+      }));
+    }
+    if (!req.file) {
+      throw new Error('Arquivo é obrigatório.');
+    }
+    const fileBuffer = req.file.buffer || (req.file.path ? fs.readFileSync(req.file.path) : null);
+    if (!fileBuffer) throw new Error('Não foi possível ler o arquivo enviado.');
+    const rows = parseRowsFromWorkbookBuffer(fileBuffer);
+    const mapped = rows.map((row, idx) => {
+      const norm = {};
+      for (const [k, v] of Object.entries(row || {})) norm[normalizeImportHeader(k)] = v;
+      const artigoCodigo = String(
+        norm.artigo_codigo ||
+        norm['codigo do artigo'] ||
+        norm['codigo artigo'] ||
+        norm.codigo ||
+        norm.artigo ||
+        ''
+      ).trim();
+      const itemId = Number(norm.item_id || norm['item id'] || 0) || null;
+      const serialOrLote = String(
+        norm['serial number ou lote'] ||
+        norm['serial ou lote'] ||
+        norm['serial/lote'] ||
+        norm['serial number'] ||
+        ''
+      ).trim();
+      const serialnumber = String(
+        norm.serialnumber ||
+        norm.serial ||
+        norm['s/n'] ||
+        serialOrLote ||
+        ''
+      ).trim();
+      const lote = String(
+        norm.lote ||
+        (serialnumber ? '' : serialOrLote) ||
+        ''
+      ).trim();
+      const localizacao = String(
+        norm.localizacao ||
+        norm['localizacao de origem'] ||
+        norm['localizacao origem'] ||
+        norm['local de armazenagem'] ||
+        ''
+      ).trim();
+      const caixaCodigo = String(
+        norm.caixa_codigo ||
+        norm['codigo da caixa'] ||
+        norm['codigo caixa'] ||
+        norm.caixa ||
+        ''
+      ).trim();
+      return {
+        linha: idx + 2,
+        artigoCodigo,
+        itemId,
+        serialnumber,
+        lote,
+        armazemCodigo: String(norm.armazem_codigo || norm.armazem || '').trim() || selectedArmazemCodigo,
+        armazemId: Number(norm.armazem_id || 0) || selectedArmazemId,
+        localizacao,
+        caixaCodigo,
+      };
+    });
+    return mapped.filter((r) => r.serialnumber || r.lote || r.itemId || r.artigoCodigo);
+  }
+
+  router.get('/stock/import/template', ...requisicaoAuth, denyNonAdmin, async (_req, res) => {
+    try {
+      const workbook = new ExcelJS.Workbook();
+      const sheet = workbook.addWorksheet('template_stock');
+      sheet.columns = [
+        { header: 'artigo_codigo', key: 'artigo_codigo', width: 18 },
+        { header: 'serialnumber', key: 'serialnumber', width: 24 },
+        { header: 'lote', key: 'lote', width: 18 },
+        { header: 'caixa_codigo', key: 'caixa_codigo', width: 18 },
+        { header: 'localizacao', key: 'localizacao', width: 20 },
+      ];
+      sheet.addRow({
+        artigo_codigo: '3000331',
+        serialnumber: 'SN-0001',
+        caixa_codigo: 'CX-000123',
+        localizacao: 'A1.01',
+      });
+      sheet.addRow({
+        artigo_codigo: '3000331',
+        lote: 'LOTE-ABC-001',
+        caixa_codigo: 'CX-000123',
+        localizacao: 'A1.01',
+      });
+      sheet.getRow(1).font = { bold: true };
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', 'attachment; filename="template_import_stock_rastreavel.xlsx"');
+      await workbook.xlsx.write(res);
+      res.end();
+    } catch (e) {
+      return res.status(500).json({ error: e.message || 'Erro ao gerar template de importação' });
+    }
+  });
+
+  router.post('/stock/import/preview', ...requisicaoAuth, denyNonAdmin, stockImportUpload.single('arquivo'), async (req, res) => {
+    try {
+      const selectedArmazemId = Number(req.body?.armazem_id || 0);
+      if (!selectedArmazemId) return res.status(400).json({ error: 'armazem_id é obrigatório para importar.' });
+      console.log(`[stock-import][preview] início user=${req.user?.id || 'na'} armazem=${selectedArmazemId} arquivo=${req.file?.originalname || 'sem-arquivo'}`);
+      const rows = await parseImportStockRows(req);
+      const errors = [];
+      const seenSerial = new Set();
+      for (const r of rows) {
+        if (!r.localizacao) errors.push({ linha: r.linha, erro: 'Localização obrigatória' });
+        if (!r.itemId && !r.artigoCodigo) errors.push({ linha: r.linha, erro: 'item_id ou artigo_codigo obrigatório' });
+        if (!r.serialnumber && !r.lote) errors.push({ linha: r.linha, erro: 'serialnumber ou lote obrigatório' });
+        if (r.serialnumber) {
+          const k = `${r.itemId || r.artigoCodigo}::${r.serialnumber}`;
+          if (seenSerial.has(k)) errors.push({ linha: r.linha, erro: 'Serial duplicado no arquivo' });
+          seenSerial.add(k);
+        }
+      }
+      const payload = {
+        total_linhas: rows.length,
+        validas: Math.max(0, rows.length - errors.length),
+        invalidas: errors.length,
+        rows,
+        erros: errors.slice(0, 500),
+      };
+      console.log(`[stock-import][preview] fim armazem=${selectedArmazemId} total=${payload.total_linhas} validas=${payload.validas} invalidas=${payload.invalidas}`);
+      return res.json(payload);
+    } catch (e) {
+      console.error('[stock-import][preview] erro:', e.message);
+      return res.status(400).json({ error: e.message || 'Erro no preview da importação' });
+    }
+  });
+
+  router.post('/stock/import/commit', ...requisicaoAuth, denyNonAdmin, stockImportUpload.single('arquivo'), async (req, res) => {
+    const client = await pool.connect();
+    try {
+      const selectedArmazemId = Number(req.body?.armazem_id || 0);
+      if (!selectedArmazemId) return res.status(400).json({ error: 'armazem_id é obrigatório para importar.' });
+      const isRetry = Array.isArray(req.body?.rows);
+      console.log(`[stock-import][commit] início modo=${isRetry ? 'retry' : 'arquivo'} user=${req.user?.id || 'na'} armazem=${selectedArmazemId} arquivo=${req.file?.originalname || 'sem-arquivo'}`);
+      const rows = await parseImportStockRows(req);
+      const codigosArtigo = [...new Set(rows.map((r) => String(r.artigoCodigo || '').trim()).filter(Boolean))];
+      const itensMap = new Map();
+      if (codigosArtigo.length > 0) {
+        const itensQ = await client.query(
+          'SELECT id, codigo FROM itens WHERE codigo = ANY($1::text[])',
+          [codigosArtigo]
+        );
+        for (const row of itensQ.rows || []) itensMap.set(String(row.codigo), Number(row.id));
+      }
+      await client.query('BEGIN');
+      let imported = 0;
+      let skipped = 0;
+      const errors = [];
+      for (let idx = 0; idx < rows.length; idx += 1) {
+        const r = rows[idx];
+        try {
+          const itemId = r.itemId || itensMap.get(String(r.artigoCodigo || '').trim()) || null;
+          const armazemId = r.armazemId || selectedArmazemId || null;
+          if (!itemId || !armazemId || !r.localizacao) {
+            skipped += 1;
+            errors.push({ linha: r.linha, erro: 'Referências inválidas (item/armazém/localização)' });
+            continue;
+          }
+          if (r.serialnumber) {
+            await client.query(
+              `INSERT INTO stock_serial (item_id, armazem_id, localizacao, serialnumber, lote, status)
+               VALUES ($1,$2,$3,$4,$5,$6)
+               ON CONFLICT (item_id, serialnumber)
+               DO UPDATE SET armazem_id = EXCLUDED.armazem_id, localizacao = EXCLUDED.localizacao, lote = COALESCE(NULLIF(EXCLUDED.lote,''), stock_serial.lote), atualizado_em = CURRENT_TIMESTAMP`,
+              [itemId, armazemId, r.localizacao, r.serialnumber, r.lote || null, STOCK_STATUS.DISPONIVEL]
+            );
+            if (r.caixaCodigo) {
+              const caixa = await client.query(
+                `INSERT INTO stock_caixas (codigo_caixa, item_id, armazem_id, localizacao, status, criado_por_usuario_id)
+                 VALUES ($1,$2,$3,$4,'fechada',$5)
+                 ON CONFLICT (codigo_caixa)
+                 DO UPDATE SET item_id = EXCLUDED.item_id, armazem_id = EXCLUDED.armazem_id, localizacao = EXCLUDED.localizacao, atualizado_em = CURRENT_TIMESTAMP
+                 RETURNING id`,
+                [r.caixaCodigo, itemId, armazemId, r.localizacao, req.user?.id || null]
+              );
+              const serial = await client.query('SELECT id FROM stock_serial WHERE item_id = $1 AND serialnumber = $2', [itemId, r.serialnumber]);
+              await client.query(
+                `INSERT INTO stock_caixa_seriais (caixa_id, stock_serial_id)
+                 VALUES ($1,$2)
+                 ON CONFLICT (stock_serial_id) DO NOTHING`,
+                [caixa.rows[0].id, serial.rows[0].id]
+              );
+            }
+            imported += 1;
+            await logStockMovimento({
+              db: client,
+              tipo: 'import_serial',
+              itemId,
+              armazemId,
+              localizacao: r.localizacao,
+              lote: r.lote || null,
+              serialnumber: r.serialnumber,
+              quantidade: 1,
+              usuarioId: req.user?.id || null,
+              payload: { linha: r.linha, caixa: r.caixaCodigo || null },
+            });
+          } else if (r.lote) {
+            await client.query(
+              `INSERT INTO stock_lote (item_id, armazem_id, localizacao, lote, quantidade_disponivel)
+               VALUES ($1,$2,$3,$4,1)
+               ON CONFLICT (item_id, armazem_id, localizacao, lote)
+               DO UPDATE SET quantidade_disponivel = stock_lote.quantidade_disponivel + 1, atualizado_em = CURRENT_TIMESTAMP`,
+              [itemId, armazemId, r.localizacao, r.lote]
+            );
+            imported += 1;
+            await logStockMovimento({
+              db: client,
+              tipo: 'import_lote',
+              itemId,
+              armazemId,
+              localizacao: r.localizacao,
+              lote: r.lote,
+              quantidade: 1,
+              usuarioId: req.user?.id || null,
+              payload: { linha: r.linha },
+            });
+          }
+        } catch (innerErr) {
+          skipped += 1;
+          errors.push({ linha: r.linha, erro: innerErr.message });
+        }
+        const processadas = idx + 1;
+        if (processadas % 100 === 0 || processadas === rows.length) {
+          console.log(
+            `[stock-import][commit] progresso armazem=${selectedArmazemId} processadas=${processadas}/${rows.length} importadas=${imported} ignoradas=${skipped}`
+          );
+        }
+      }
+      await client.query('COMMIT');
+      console.log(`[stock-import][commit] fim armazem=${selectedArmazemId} total=${rows.length} importadas=${imported} ignoradas=${skipped} erros=${errors.length}`);
+      return res.json({ ok: true, total: rows.length, importadas: imported, ignoradas: skipped, erros: errors.slice(0, 500) });
+    } catch (e) {
+      await client.query('ROLLBACK').catch(() => {});
+      console.error('[stock-import][commit] erro:', e.message);
+      return res.status(500).json({ error: e.message || 'Erro ao importar stock rastreável' });
+    } finally {
+      client.release();
+    }
+  });
+
+  router.get('/stock/disponibilidade', ...requisicaoAuth, async (req, res) => {
+    try {
+      const itemId = Number(req.query.item_id || 0);
+      const armazemId = Number(req.query.armazem_id || 0);
+      const localizacao = String(req.query.localizacao || '').trim();
+      if (!itemId || !armazemId) return res.status(400).json({ error: 'item_id e armazem_id são obrigatórios' });
+      const [serialQ, lotesQ] = await Promise.all([
+        pool.query(
+          `SELECT id, serialnumber, lote
+           FROM stock_serial
+           WHERE item_id = $1 AND armazem_id = $2
+             AND ($3 = '' OR localizacao = $3)
+             AND status = 'disponivel'
+           ORDER BY serialnumber`,
+          [itemId, armazemId, localizacao]
+        ),
+        pool.query(
+          `SELECT id, lote, quantidade_disponivel, quantidade_reservada
+           FROM stock_lote
+           WHERE item_id = $1 AND armazem_id = $2
+             AND ($3 = '' OR localizacao = $3)
+           ORDER BY lote`,
+          [itemId, armazemId, localizacao]
+        ),
+      ]);
+      return res.json({
+        seriais: serialQ.rows || [],
+        lotes: lotesQ.rows || [],
+      });
+    } catch (e) {
+      return res.status(500).json({ error: e.message || 'Erro ao consultar disponibilidade' });
+    }
+  });
+
+  router.get('/stock/meus-armazens', ...requisicaoAuth, async (req, res) => {
+    try {
+      if (isAdmin(req.user?.role)) {
+        const all = await pool.query(
+          `SELECT id, codigo, descricao
+           FROM armazens
+           WHERE ativo = true
+             AND LOWER(TRIM(COALESCE(tipo, ''))) = 'central'
+           ORDER BY codigo ASC, descricao ASC`
+        );
+        return res.json({ rows: all.rows || [] });
+      }
+
+      const ids = Array.isArray(req.user?.requisicoes_armazem_origem_ids)
+        ? req.user.requisicoes_armazem_origem_ids
+            .map((v) => Number(v))
+            .filter((v) => Number.isFinite(v) && v > 0)
+        : [];
+      if (!ids.length) return res.json({ rows: [] });
+
+      const rows = await pool.query(
+        `SELECT id, codigo, descricao
+         FROM armazens
+         WHERE id = ANY($1::int[])
+           AND LOWER(TRIM(COALESCE(tipo, ''))) = 'central'
+         ORDER BY codigo ASC, descricao ASC`,
+        [ids]
+      );
+      return res.json({ rows: rows.rows || [] });
+    } catch (e) {
+      return res.status(500).json({ error: e.message || 'Erro ao obter armazéns do utilizador' });
+    }
+  });
+
+  router.get('/stock/seriais-por-armazem', ...requisicaoAuth, async (req, res) => {
+    try {
+      const armazemId = Number(req.query.armazem_id || 0);
+      const itemId = Number(req.query.item_id || 0) || null;
+      const localizacao = String(req.query.localizacao || '').trim();
+      const status = String(req.query.status || '').trim().toLowerCase();
+      const limit = Math.max(1, Math.min(1000, Number(req.query.limit || 200)));
+      const offset = Math.max(0, Number(req.query.offset || 0));
+      if (!armazemId) return res.status(400).json({ error: 'armazem_id é obrigatório' });
+      if (!requisicaoArmazemOrigemAcessoPermitido(req, armazemId)) {
+        return res.status(403).json({ error: 'Sem acesso ao armazém informado.' });
+      }
+      const params = [armazemId];
+      const filters = ['s.armazem_id = $1'];
+      let p = 2;
+      if (itemId) {
+        filters.push(`s.item_id = $${p++}`);
+        params.push(itemId);
+      }
+      if (localizacao) {
+        filters.push(`s.localizacao = $${p++}`);
+        params.push(localizacao);
+      }
+      if (status) {
+        filters.push(`s.status = $${p++}`);
+        params.push(status);
+      }
+      const where = filters.join(' AND ');
+      const totalQ = await pool.query(`SELECT COUNT(*)::int AS c FROM stock_serial s WHERE ${where}`, params);
+      params.push(limit, offset);
+      const rowsQ = await pool.query(
+        `SELECT
+           s.id, s.item_id, i.codigo AS item_codigo, i.descricao AS item_descricao,
+           s.localizacao, s.serialnumber, s.lote, s.status,
+           s.requisicao_id, s.requisicao_item_id,
+           s.reservado_em, s.consumido_em, s.criado_em, s.atualizado_em
+         FROM stock_serial s
+         INNER JOIN itens i ON i.id = s.item_id
+         WHERE ${where}
+         ORDER BY s.atualizado_em DESC, s.id DESC
+         LIMIT $${p++} OFFSET $${p++}`,
+        params
+      );
+      return res.json({
+        total: totalQ.rows[0]?.c || 0,
+        limit,
+        offset,
+        rows: rowsQ.rows || [],
+      });
+    } catch (e) {
+      return res.status(500).json({ error: e.message || 'Erro ao consultar seriais por armazém' });
+    }
+  });
+
+  router.get('/stock/caixas/:codigo', ...requisicaoAuth, async (req, res) => {
+    try {
+      const codigo = String(req.params.codigo || '').trim();
+      if (!codigo) return res.status(400).json({ error: 'Código da caixa obrigatório' });
+      const caixa = await pool.query(
+        `SELECT c.*, i.codigo AS item_codigo, i.descricao AS item_descricao
+         FROM stock_caixas c
+         INNER JOIN itens i ON i.id = c.item_id
+         WHERE c.codigo_caixa = $1
+         LIMIT 1`,
+        [codigo]
+      );
+      if (!caixa.rows.length) return res.status(404).json({ error: 'Caixa não encontrada' });
+      const seriais = await pool.query(
+        `SELECT s.id, s.serialnumber, s.status, s.lote
+         FROM stock_caixa_seriais cs
+         INNER JOIN stock_serial s ON s.id = cs.stock_serial_id
+         WHERE cs.caixa_id = $1
+         ORDER BY s.serialnumber`,
+        [caixa.rows[0].id]
+      );
+      return res.json({
+        caixa: caixa.rows[0],
+        seriais: seriais.rows || [],
+      });
+    } catch (e) {
+      return res.status(500).json({ error: e.message || 'Erro ao consultar caixa' });
+    }
+  });
+
+  router.get('/stock/seriais/:codigo', ...requisicaoAuth, async (req, res) => {
+    try {
+      const codigo = String(req.params.codigo || '').trim();
+      const armazemId = Number(req.query.armazem_id || 0) || null;
+      if (!codigo) return res.status(400).json({ error: 'Código do serial obrigatório' });
+      if (armazemId && !requisicaoArmazemOrigemAcessoPermitido(req, armazemId)) {
+        return res.status(403).json({ error: 'Sem acesso ao armazém informado.' });
+      }
+      const params = [codigo];
+      let whereArmazem = '';
+      if (armazemId) {
+        params.push(armazemId);
+        whereArmazem = ' AND s.armazem_id = $2';
+      }
+      const serialQ = await pool.query(
+        `SELECT
+           s.id, s.item_id, i.codigo AS item_codigo, i.descricao AS item_descricao,
+           s.armazem_id, a.codigo AS armazem_codigo, a.descricao AS armazem_descricao,
+           s.localizacao, s.serialnumber, s.lote, s.status,
+           s.requisicao_id, s.requisicao_item_id, s.reservado_em, s.consumido_em,
+           c.id AS caixa_id, c.codigo_caixa
+         FROM stock_serial s
+         INNER JOIN itens i ON i.id = s.item_id
+         INNER JOIN armazens a ON a.id = s.armazem_id
+         LEFT JOIN stock_caixa_seriais cs ON cs.stock_serial_id = s.id
+         LEFT JOIN stock_caixas c ON c.id = cs.caixa_id
+         WHERE s.serialnumber = $1${whereArmazem}
+         ORDER BY s.atualizado_em DESC
+         LIMIT 1`,
+        params
+      );
+      if (!serialQ.rows.length) return res.status(404).json({ error: 'Serial não encontrado' });
+      return res.json(serialQ.rows[0]);
+    } catch (e) {
+      return res.status(500).json({ error: e.message || 'Erro ao consultar serial' });
+    }
+  });
+
+  router.post('/:id/itens/:requisicaoItemId/reservar-caixa', ...requisicaoAuth, async (req, res) => {
+    const client = await pool.connect();
+    try {
+      const reqId = Number(req.params.id || 0);
+      const reqItemId = Number(req.params.requisicaoItemId || 0);
+      const codigoCaixa = String(req.body?.codigo_caixa || '').trim();
+      if (!reqId || !reqItemId || !codigoCaixa) return res.status(400).json({ error: 'Parâmetros inválidos' });
+      await client.query('BEGIN');
+      const reqItem = await client.query(
+        `SELECT ri.*, r.armazem_origem_id
+         FROM requisicoes_itens ri
+         INNER JOIN requisicoes r ON r.id = ri.requisicao_id
+         WHERE ri.id = $1 AND ri.requisicao_id = $2
+         FOR UPDATE`,
+        [reqItemId, reqId]
+      );
+      if (!reqItem.rows.length) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: 'Item de requisição não encontrado' });
+      }
+      const itemRow = reqItem.rows[0];
+      const caixa = await client.query('SELECT * FROM stock_caixas WHERE codigo_caixa = $1 FOR UPDATE', [codigoCaixa]);
+      if (!caixa.rows.length) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: 'Caixa não encontrada' });
+      }
+      const c = caixa.rows[0];
+      if (Number(c.item_id) !== Number(itemRow.item_id)) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'Caixa não pertence ao artigo desta linha.' });
+      }
+      if (Number(c.armazem_id) !== Number(itemRow.armazem_origem_id)) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'Caixa não pertence ao armazém de origem desta requisição.' });
+      }
+      // Libera reservas antigas desta linha para recalcular a partir da caixa escaneada.
+      await client.query(
+        `UPDATE stock_serial
+         SET status = 'disponivel', requisicao_id = NULL, requisicao_item_id = NULL, reservado_em = NULL, atualizado_em = CURRENT_TIMESTAMP
+         WHERE requisicao_item_id = $1 AND status = 'reservado'`,
+        [reqItemId]
+      );
+      const serialRows = await client.query(
+        `SELECT s.id, s.serialnumber, s.status
+         FROM stock_caixa_seriais cs
+         INNER JOIN stock_serial s ON s.id = cs.stock_serial_id
+         WHERE cs.caixa_id = $1
+         ORDER BY s.serialnumber
+         FOR UPDATE`,
+        [c.id]
+      );
+      const reservados = [];
+      const invalidos = [];
+      for (const sr of serialRows.rows || []) {
+        if (String(sr.status) !== STOCK_STATUS.DISPONIVEL) {
+          invalidos.push({ serialnumber: sr.serialnumber, motivo: `status ${sr.status}` });
+          continue;
+        }
+        await client.query(
+          `UPDATE stock_serial
+           SET status = 'reservado',
+               requisicao_id = $1,
+               requisicao_item_id = $2,
+               reservado_em = CURRENT_TIMESTAMP,
+               atualizado_em = CURRENT_TIMESTAMP
+           WHERE id = $3`,
+          [reqId, reqItemId, sr.id]
+        );
+        reservados.push(sr.serialnumber);
+      }
+      await client.query(
+        `UPDATE requisicoes_itens
+         SET serialnumber = $1,
+             quantidade_preparada = $2
+         WHERE id = $3`,
+        [reservados.join('\n'), reservados.length, reqItemId]
+      );
+      await logStockMovimento({
+        db: client,
+        tipo: 'reserva_caixa',
+        itemId: itemRow.item_id,
+        armazemId: itemRow.armazem_origem_id,
+        localizacao: c.localizacao,
+        quantidade: reservados.length,
+        requisicaoId: reqId,
+        requisicaoItemId: reqItemId,
+        caixaId: c.id,
+        usuarioId: req.user?.id || null,
+        payload: { codigo_caixa: codigoCaixa, invalidos },
+      });
+      await client.query('COMMIT');
+      return res.json({ ok: true, codigo_caixa: codigoCaixa, reservados, invalidos });
+    } catch (e) {
+      await client.query('ROLLBACK').catch(() => {});
+      return res.status(500).json({ error: e.message || 'Erro ao reservar caixa' });
+    } finally {
+      client.release();
+    }
+  });
+
+  router.post('/:id/itens/:requisicaoItemId/reservar-seriais', ...requisicaoAuth, async (req, res) => {
+    const client = await pool.connect();
+    try {
+      const reqId = Number(req.params.id || 0);
+      const reqItemId = Number(req.params.requisicaoItemId || 0);
+      const seriais = Array.isArray(req.body?.seriais)
+        ? req.body.seriais.map((s) => String(s || '').trim()).filter(Boolean)
+        : [];
+      if (!reqId || !reqItemId || !seriais.length) {
+        return res.status(400).json({ error: 'Parâmetros inválidos' });
+      }
+      const serialsUnicos = [...new Set(seriais)];
+      if (serialsUnicos.length !== seriais.length) {
+        return res.status(400).json({ error: 'Existem serial numbers duplicados na seleção.' });
+      }
+      await client.query('BEGIN');
+      const reqItem = await client.query(
+        `SELECT ri.*, r.armazem_origem_id
+         FROM requisicoes_itens ri
+         INNER JOIN requisicoes r ON r.id = ri.requisicao_id
+         WHERE ri.id = $1 AND ri.requisicao_id = $2
+         FOR UPDATE`,
+        [reqItemId, reqId]
+      );
+      if (!reqItem.rows.length) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: 'Item de requisição não encontrado' });
+      }
+      const itemRow = reqItem.rows[0];
+      await client.query(
+        `UPDATE stock_serial
+         SET status = 'disponivel', requisicao_id = NULL, requisicao_item_id = NULL, reservado_em = NULL, atualizado_em = CURRENT_TIMESTAMP
+         WHERE requisicao_item_id = $1 AND status = 'reservado'`,
+        [reqItemId]
+      );
+      const serialRows = await client.query(
+        `SELECT id, serialnumber, status, localizacao
+         FROM stock_serial
+         WHERE item_id = $1
+           AND armazem_id = $2
+           AND serialnumber = ANY($3::text[])
+         ORDER BY serialnumber
+         FOR UPDATE`,
+        [itemRow.item_id, itemRow.armazem_origem_id, serialsUnicos]
+      );
+      const bySerial = new Map((serialRows.rows || []).map((r) => [String(r.serialnumber), r]));
+      const reservados = [];
+      const invalidos = [];
+      for (const sn of serialsUnicos) {
+        const row = bySerial.get(sn);
+        if (!row) {
+          invalidos.push({ serialnumber: sn, motivo: 'não encontrado no armazém/item' });
+          continue;
+        }
+        if (String(row.status) !== STOCK_STATUS.DISPONIVEL) {
+          invalidos.push({ serialnumber: sn, motivo: `status ${row.status}` });
+          continue;
+        }
+        await client.query(
+          `UPDATE stock_serial
+           SET status = 'reservado',
+               requisicao_id = $1,
+               requisicao_item_id = $2,
+               reservado_em = CURRENT_TIMESTAMP,
+               atualizado_em = CURRENT_TIMESTAMP
+           WHERE id = $3`,
+          [reqId, reqItemId, row.id]
+        );
+        reservados.push(sn);
+      }
+      if (invalidos.length > 0) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({
+          error: 'Nem todos os seriais puderam ser reservados.',
+          reservados,
+          invalidos,
+        });
+      }
+      await client.query(
+        `UPDATE requisicoes_itens
+         SET serialnumber = $1,
+             quantidade_preparada = $2
+         WHERE id = $3`,
+        [reservados.join('\n'), reservados.length, reqItemId]
+      );
+      await logStockMovimento({
+        db: client,
+        tipo: 'reserva_serial_manual',
+        itemId: itemRow.item_id,
+        armazemId: itemRow.armazem_origem_id,
+        quantidade: reservados.length,
+        requisicaoId: reqId,
+        requisicaoItemId: reqItemId,
+        usuarioId: req.user?.id || null,
+        payload: { seriais: reservados },
+      });
+      await client.query('COMMIT');
+      return res.json({ ok: true, reservados, invalidos: [] });
+    } catch (e) {
+      await client.query('ROLLBACK').catch(() => {});
+      return res.status(500).json({ error: e.message || 'Erro ao reservar seriais' });
+    } finally {
+      client.release();
+    }
+  });
+
+  router.post('/:id/itens/:requisicaoItemId/liberar-reservas', ...requisicaoAuth, async (req, res) => {
+    try {
+      const reqItemId = Number(req.params.requisicaoItemId || 0);
+      if (!reqItemId) return res.status(400).json({ error: 'ID inválido' });
+      const r = await pool.query(
+        `UPDATE stock_serial
+         SET status = 'disponivel', requisicao_id = NULL, requisicao_item_id = NULL, reservado_em = NULL, atualizado_em = CURRENT_TIMESTAMP
+         WHERE requisicao_item_id = $1 AND status = 'reservado'
+         RETURNING id`,
+        [reqItemId]
+      );
+      return res.json({ ok: true, liberados: r.rows.length });
+    } catch (e) {
+      return res.status(500).json({ error: e.message || 'Erro ao liberar reservas' });
+    }
+  });
+
 // Deletar requisição
 router.delete('/:id', ...requisicaoAuth, denyOperador, async (req, res) => {
   try {
@@ -8969,6 +9844,17 @@ router.delete('/:id', ...requisicaoAuth, denyOperador, async (req, res) => {
     }
 
     // Deletar requisição (itens serão deletados automaticamente por CASCADE)
+    await pool.query(
+      `UPDATE stock_serial
+       SET status = 'disponivel',
+           requisicao_id = NULL,
+           requisicao_item_id = NULL,
+           reservado_em = NULL,
+           atualizado_em = CURRENT_TIMESTAMP
+       WHERE requisicao_id = $1
+         AND status = 'reservado'`,
+      [id]
+    );
     await pool.query('DELETE FROM requisicoes WHERE id = $1', [id]);
 
     console.log(`✅ Requisição deletada: ID ${id}`);
