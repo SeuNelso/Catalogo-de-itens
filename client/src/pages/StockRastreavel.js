@@ -1,7 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import * as XLSX from 'xlsx';
+import { useAuth } from '../contexts/AuthContext';
 
 const StockRastreavel = ({ mode = 'all' }) => {
+  const { user } = useAuth();
   const [arquivo, setArquivo] = useState(null);
   const [preview, setPreview] = useState(null);
   const [loadingImport, setLoadingImport] = useState(false);
@@ -38,12 +40,14 @@ const StockRastreavel = ({ mode = 'all' }) => {
     caixa_codigo: '',
   });
   const [manualAdded, setManualAdded] = useState([]);
+  const [deletingKey, setDeletingKey] = useState('');
   const isImportMode = mode === 'import';
   const isConsultaMode = mode === 'consulta';
   const isManualMode = mode === 'manual';
   const showImport = mode === 'all' || isImportMode;
   const showConsulta = mode === 'all' || isConsultaMode;
   const showManual = mode === 'all' || isManualMode;
+  const isAdminUser = user?.role === 'admin';
 
   useEffect(() => {
     const loadMeusArmazens = async () => {
@@ -344,6 +348,42 @@ const StockRastreavel = ({ mode = 'all' }) => {
       setSeriaisData(data);
     } catch (e) {
       setErro(e.message || 'Erro ao consultar seriais por armazém');
+    }
+  };
+
+  const apagarRegistroConsulta = async (row) => {
+    if (!isAdminUser || !row) return;
+    const tipo = String(row.tipo || (row.serialnumber ? 'serial' : 'lote')).toLowerCase();
+    const identificador = tipo === 'serial' ? row.serialnumber : row.lote;
+    const ok = window.confirm(`Deseja apagar ${tipo} "${identificador}" do banco? Esta ação não pode ser desfeita.`);
+    if (!ok) return;
+    setErro('');
+    const key = `${tipo}-${row.id}`;
+    setDeletingKey(key);
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch('/api/requisicoes/stock/seriais-por-armazem', {
+        method: 'DELETE',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          tipo,
+          item_id: row.item_id,
+          armazem_id: armazemSelecionadoId || fArmazemId,
+          localizacao: row.localizacao,
+          serialnumber: row.serialnumber || null,
+          lote: row.lote || null,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || 'Erro ao apagar registo');
+      await consultarSeriaisPorArmazem();
+    } catch (e) {
+      setErro(e.message || 'Erro ao apagar registo');
+    } finally {
+      setDeletingKey('');
     }
   };
 
@@ -716,6 +756,7 @@ const StockRastreavel = ({ mode = 'all' }) => {
                       <th className="text-left px-2 py-1 border-b">Localização</th>
                       <th className="text-left px-2 py-1 border-b">Status</th>
                       <th className="text-left px-2 py-1 border-b">Req</th>
+                      {isAdminUser && <th className="text-left px-2 py-1 border-b">Ações</th>}
                     </tr>
                   </thead>
                   <tbody>
@@ -737,6 +778,18 @@ const StockRastreavel = ({ mode = 'all' }) => {
                         <td className="px-2 py-1">{r.localizacao}</td>
                         <td className="px-2 py-1">{r.status}</td>
                         <td className="px-2 py-1">{r.requisicao_id || '—'}</td>
+                        {isAdminUser && (
+                          <td className="px-2 py-1">
+                            <button
+                              type="button"
+                              onClick={() => apagarRegistroConsulta(r)}
+                              disabled={deletingKey === `${String(r.tipo || (r.serialnumber ? 'serial' : 'lote')).toLowerCase()}-${r.id}`}
+                              className="px-2 py-1 text-[11px] border border-red-300 text-red-700 rounded hover:bg-red-50 disabled:opacity-50"
+                            >
+                              Apagar
+                            </button>
+                          </td>
+                        )}
                       </tr>
                     )})}
                   </tbody>

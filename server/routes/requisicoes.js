@@ -10044,6 +10044,100 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
     }
   });
 
+  router.delete('/stock/seriais-por-armazem', ...requisicaoAuth, denyNonAdmin, async (req, res) => {
+    const client = await pool.connect();
+    try {
+      const tipo = String(req.body?.tipo || '').trim().toLowerCase();
+      const itemId = Number(req.body?.item_id || 0) || null;
+      const armazemId = Number(req.body?.armazem_id || 0) || null;
+      const localizacao = String(req.body?.localizacao || '').trim();
+      const serialnumber = String(req.body?.serialnumber || '').trim();
+      const lote = String(req.body?.lote || '').trim();
+
+      if (!['serial', 'lote'].includes(tipo)) {
+        return res.status(400).json({ error: 'tipo inválido. Use serial ou lote.' });
+      }
+      if (!itemId || !armazemId || !localizacao) {
+        return res.status(400).json({ error: 'item_id, armazem_id e localizacao são obrigatórios.' });
+      }
+      if (tipo === 'serial' && !serialnumber) {
+        return res.status(400).json({ error: 'serialnumber é obrigatório para apagar serial.' });
+      }
+      if (tipo === 'lote' && !lote) {
+        return res.status(400).json({ error: 'lote é obrigatório para apagar lote.' });
+      }
+
+      await client.query('BEGIN');
+      if (tipo === 'serial') {
+        const serialQ = await client.query(
+          `SELECT id, item_id, armazem_id, localizacao, lote, serialnumber
+           FROM stock_serial
+           WHERE item_id = $1
+             AND armazem_id = $2
+             AND UPPER(TRIM(localizacao)) = UPPER(TRIM($3::text))
+             AND UPPER(TRIM(serialnumber)) = UPPER(TRIM($4::text))
+           LIMIT 1`,
+          [itemId, armazemId, localizacao, serialnumber]
+        );
+        if (!serialQ.rows.length) {
+          await client.query('ROLLBACK');
+          return res.status(404).json({ error: 'Serial não encontrado para exclusão.' });
+        }
+        const row = serialQ.rows[0];
+        await client.query('DELETE FROM stock_caixa_seriais WHERE stock_serial_id = $1', [row.id]);
+        await client.query('DELETE FROM stock_serial WHERE id = $1', [row.id]);
+        await logStockMovimento({
+          db: client,
+          tipo: 'delete_serial_manual',
+          itemId: row.item_id,
+          armazemId: row.armazem_id,
+          localizacao: row.localizacao,
+          lote: row.lote || null,
+          serialnumber: row.serialnumber,
+          quantidade: 1,
+          usuarioId: req.user?.id || null,
+          payload: { origem: 'stock-rastreavel-consulta' },
+        });
+      } else {
+        const loteQ = await client.query(
+          `SELECT id, item_id, armazem_id, localizacao, lote, quantidade_disponivel
+           FROM stock_lote
+           WHERE item_id = $1
+             AND armazem_id = $2
+             AND UPPER(TRIM(localizacao)) = UPPER(TRIM($3::text))
+             AND UPPER(TRIM(lote)) = UPPER(TRIM($4::text))
+           LIMIT 1`,
+          [itemId, armazemId, localizacao, lote]
+        );
+        if (!loteQ.rows.length) {
+          await client.query('ROLLBACK');
+          return res.status(404).json({ error: 'Lote não encontrado para exclusão.' });
+        }
+        const row = loteQ.rows[0];
+        await client.query('DELETE FROM stock_lote WHERE id = $1', [row.id]);
+        await logStockMovimento({
+          db: client,
+          tipo: 'delete_lote_manual',
+          itemId: row.item_id,
+          armazemId: row.armazem_id,
+          localizacao: row.localizacao,
+          lote: row.lote,
+          quantidade: Number(row.quantidade_disponivel || 0),
+          usuarioId: req.user?.id || null,
+          payload: { origem: 'stock-rastreavel-consulta' },
+        });
+      }
+
+      await client.query('COMMIT');
+      return res.json({ ok: true });
+    } catch (e) {
+      await client.query('ROLLBACK').catch(() => {});
+      return res.status(500).json({ error: e.message || 'Erro ao apagar registo de stock rastreável' });
+    } finally {
+      client.release();
+    }
+  });
+
   router.get('/stock/caixas/:codigo', ...requisicaoAuth, async (req, res) => {
     try {
       const codigo = String(req.params.codigo || '').trim();
