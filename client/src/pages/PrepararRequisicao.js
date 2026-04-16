@@ -1665,6 +1665,7 @@ const PrepararRequisicao = () => {
                               step={(item.tipocontrolo || '').toUpperCase() === 'LOTE' ? 1 : 'any'}
                               value={formItem.quantidade_preparada}
                               onChange={handleQuantidadePreparadaChange}
+                              onFocus={(e) => e.target.select()}
                               placeholder={isFluxoRecebimentoMercadoria ? 'Digite a quantidade recebida' : ''}
                               inputMode="decimal"
                               className="w-full sm:max-w-[160px] px-3 py-2.5 border-2 border-gray-200 rounded-xl text-xl font-semibold tabular-nums text-gray-900 focus:border-[#0915FF] focus:ring-2 focus:ring-[#0915FF]/25"

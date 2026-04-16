@@ -47,24 +47,6 @@ const QrScannerModal = ({
     setZoomRange({ min: 1, max: 1, step: 0.1 });
 
     let mounted = true;
-    const probeCameraAccess = async () => {
-      if (!navigator?.mediaDevices?.getUserMedia) return null;
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-        let deviceId = null;
-        try {
-          const track = stream.getVideoTracks?.()[0];
-          const settings = track?.getSettings?.() || {};
-          deviceId = settings?.deviceId || null;
-        } catch {}
-        try {
-          stream.getTracks().forEach((t) => t.stop());
-        } catch {}
-        return { deviceId };
-      } catch (err) {
-        return { error: err };
-      }
-    };
     const errorText = (err) => {
       if (!err) return '';
       const name = String(err?.name || '').trim();
@@ -101,10 +83,6 @@ const QrScannerModal = ({
     const startScanner = async () => {
       try {
         setErro(null);
-        const probe = await probeCameraAccess();
-        if (probe?.error) {
-          throw probe.error;
-        }
         const html5Qr = new Html5Qrcode(readerId);
         scannerRef.current = html5Qr;
         const isMobileUa = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || '');
@@ -181,13 +159,6 @@ const QrScannerModal = ({
         } catch {
           // ignorar: alguns browsers bloqueiam enumeração antes de stream.
         }
-        if (probe?.deviceId) {
-          // Em mobile, só usar deviceId do probe se ele já for a traseira identificada.
-          if (!isMobileUa || (backCameraIdFromList && probe.deviceId === backCameraIdFromList)) {
-            sourcesToTry.push(probe.deviceId);
-          }
-        }
-
         let started = false;
         let lastErr = null;
         for (const source of sourcesToTry) {
