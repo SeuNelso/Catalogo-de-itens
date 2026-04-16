@@ -63,6 +63,7 @@
     "heroku-postbuild": "cd client && rm -rf node_modules package-lock.json && npm install && npm run build"
   },
   "dependencies": {
+    "archiver": "^7.0.1",
     "aws-sdk": "^1.18.0",
     "bcryptjs": "^2.4.3",
     "compression": "^1.8.1",

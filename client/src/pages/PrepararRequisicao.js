@@ -1137,15 +1137,35 @@ const PrepararRequisicao = () => {
       if (seriais.length === 0) {
         throw new Error(`A caixa ${codigoCaixa} não possui seriais associados.`);
       }
-      setFormItem((prev) => ({
-        ...prev,
-        quantidade_preparada: String(seriais.length),
-        bobinas: seriais.map((sn) => ({ lote: '', serialnumber: sn, metros: '' })),
-      }));
-      setToast({
-        type: 'success',
-        message: `Caixa ${codigoCaixa}: ${seriais.length} serial(is) carregado(s). A reserva será feita ao preparar.`,
+      let toastMessage = '';
+      setFormItem((prev) => {
+        const nDigitado = Math.max(
+          0,
+          Math.min(MAX_BOBINAS_LOTE, Math.floor(Number(prev.quantidade_preparada)) || 0)
+        );
+        const nAlvo = nDigitado > 0 ? nDigitado : seriais.length;
+        const bobinas = Array.from({ length: nAlvo }, (_, i) => {
+          const sn = i < seriais.length ? seriais[i] : '';
+          return { lote: '', serialnumber: sn, metros: '' };
+        });
+        const preenchidos = Math.min(nAlvo, seriais.length);
+        const vaziosParaManual = Math.max(0, nAlvo - preenchidos);
+        const msgExtra =
+          nDigitado > 0 && seriais.length > nAlvo
+            ? ` (${seriais.length} na caixa; preenchidos os primeiros ${preenchidos})`
+            : vaziosParaManual > 0
+              ? ` (${preenchidos} da caixa; ${vaziosParaManual} campo(s) em branco para completar)`
+              : '';
+        toastMessage = `Caixa ${codigoCaixa}: ${preenchidos} serial(is) carregado(s)${msgExtra}. A reserva será feita ao preparar.`;
+        return {
+          ...prev,
+          quantidade_preparada: String(nAlvo),
+          bobinas,
+        };
       });
+      if (toastMessage) {
+        setToast({ type: 'success', message: toastMessage });
+      }
     } catch (error) {
       setToast({ type: 'error', message: error.message || 'Erro ao ler caixa' });
     } finally {

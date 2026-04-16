@@ -236,7 +236,7 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
     }
   };
 
-  const downloadExport = async (urlPath, filename, successMsg) => {
+  const downloadExport = async (urlPath, filenameFallback, successMsg) => {
     const token = localStorage.getItem('token');
     const response = await fetch(urlPath, { headers: { 'Authorization': `Bearer ${token}` } });
     if (!response.ok) {
@@ -246,6 +246,21 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
         if (data.error) msg = data.error;
       } catch (_) {}
       throw new Error(msg);
+    }
+    let filename = filenameFallback;
+    const cd = response.headers.get('Content-Disposition');
+    if (cd) {
+      const utf8Match = /filename\*=UTF-8''([^;\s]+)/i.exec(cd);
+      const asciiMatch = /filename="([^"]+)"/i.exec(cd);
+      if (utf8Match && utf8Match[1]) {
+        try {
+          filename = decodeURIComponent(utf8Match[1]);
+        } catch (_) {
+          /* keep fallback */
+        }
+      } else if (asciiMatch && asciiMatch[1]) {
+        filename = asciiMatch[1];
+      }
     }
     const blob = await response.blob();
     const url = window.URL.createObjectURL(blob);
@@ -760,6 +775,22 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
     } catch (error) {
       console.error('Erro ao exportar TRFL:', error);
       const msg = error.response?.data?.error || error.message || 'Erro ao exportar TRFL';
+      setToast({ type: 'error', message: msg });
+    }
+  };
+
+  const handleBaixarSeriaisEntrada = async (req) => {
+    const reqId = req?.id;
+    try {
+      if (!reqId) throw new Error('Requisição inválida');
+      await downloadExport(
+        `/api/requisicoes/${reqId}/export-seriais-entrada`,
+        `seriais_requisicao_${reqId}.xlsx`,
+        'Ficheiro de seriais gerado.'
+      );
+    } catch (error) {
+      console.error('Erro ao baixar seriais (entrada):', error);
+      const msg = error.response?.data?.error || error.message || 'Erro ao baixar seriais';
       setToast({ type: 'error', message: msg });
     }
   };
@@ -2774,6 +2805,27 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
                       }}
                     >
                       {canGerarTRFL ? 'GERAR TRFL' : 'Baixar TRFL'}
+                    </button>
+                  )}
+
+                  {(canDocsELogisticaPosSeparacao && (canGerarTRFL || canBaixarTRFL)) && !isMulti && (
+                    <button
+                      type="button"
+                      disabled={ctxTrflGerarBloqueado}
+                      className={`block w-full text-left px-4 py-2 hover:bg-gray-100 ${
+                        ctxTrflGerarBloqueado ? 'opacity-50 cursor-not-allowed' : ''
+                      }`}
+                      title={
+                        ctxTrflGerarBloqueado
+                          ? 'Reservada para separação a outro operador'
+                          : 'Excel por artigo S/N (modelo entrada de séries)'
+                      }
+                      onClick={() => {
+                        handleBaixarSeriaisEntrada(contextMenu.req);
+                        setContextMenu((prev) => ({ ...prev, visible: false }));
+                      }}
+                    >
+                      BAIXAR SERIAIS
                     </button>
                   )}
 

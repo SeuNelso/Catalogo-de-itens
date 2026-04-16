@@ -6,6 +6,8 @@ const multer = require('multer');
 const ExcelJS = require('exceljs');
 const XLSX = require('xlsx');
 const fs = require('fs');
+const path = require('path');
+const archiver = require('archiver');
 const pdfParseLib = require('pdf-parse');
 const { buildExcelTransferencia } = require('../utils/buildExcelTransferencia');
 
@@ -1775,6 +1777,127 @@ function formatDateBR(dateObj) {
   if (Number.isNaN(d.getTime())) return '';
   return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
 }
+
+function sanitizeSeriaisEntradaFilePart(s) {
+  return String(s || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-zA-Z0-9._-]+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_|_$/g, '')
+    .slice(0, 80) || 'x';
+}
+
+/** Ex.: codigo RIC + descrição AVE04 → RIC_AVE04 (para nome do ficheiro). */
+function equipaSlugSeriaisEntrada(requisicao) {
+  const cod = sanitizeSeriaisEntradaFilePart(requisicao.armazem_destino_codigo);
+  const desc = String(requisicao.armazem_destino_descricao || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-zA-Z0-9]+/g, '')
+    .slice(0, 24);
+  if (cod && desc) return `${cod}_${desc}`;
+  if (cod) return cod;
+  return desc || 'equipa';
+}
+
+async function serialsRecolhidosRequisicaoItem(poolConn, requisicaoItemId, ri) {
+  try {
+    const b = await poolConn.query(
+      `SELECT TRIM(serialnumber) AS sn
+       FROM requisicoes_itens_bobinas
+       WHERE requisicao_item_id = $1
+         AND serialnumber IS NOT NULL
+         AND TRIM(serialnumber) <> ''`,
+      [requisicaoItemId]
+    );
+    const fromBob = (b.rows || []).map((r) => String(r.sn || '').trim()).filter(Boolean);
+    if (fromBob.length) return fromBob;
+  } catch (e) {
+    if (e.code !== '42P01') throw e;
+  }
+  return serialsNormalizadosList(ri.serialnumber);
+}
+
+// ZIP com um Excel por linha S/N (modelo stock-entry-serial-numbers), coluna A = número de série.
+router.get('/:id/export-seriais-entrada', ...requisicaoAuth, denyOperador, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const requisicao = await getRequisicaoComItens(id);
+    if (!requisicao) return res.status(404).json({ error: 'Requisição não encontrada' });
+    if (!requisicaoArmazemOrigemAcessoPermitido(req, requisicao.armazem_origem_id, { requisicao })) {
+      return res.status(403).json({ error: 'Sem acesso a esta requisição.' });
+    }
+    if (!requisicao.separacao_confirmada) {
+      return res.status(400).json({ error: 'Só disponível após confirmar a separação.' });
+    }
+    if (!['separado', 'EM EXPEDICAO', 'APEADOS', 'Entregue', 'FINALIZADO'].includes(requisicao.status)) {
+      return res.status(400).json({ error: 'Requisição deve estar preparada / confirmada para exportar seriais.' });
+    }
+
+    const templatePath = path.join(__dirname, '..', 'stock-entry-serial-numbers.2026-04-16.xlsx');
+    if (!fs.existsSync(templatePath)) {
+      return res.status(500).json({ error: 'Modelo Excel de entrada de seriais não encontrado no servidor.' });
+    }
+
+    const reqIdNum = parseInt(id, 10);
+    const equipa = equipaSlugSeriaisEntrada(requisicao);
+    const files = [];
+
+    for (const ri of requisicao.itens || []) {
+      if (String(ri.tipocontrolo || '').toUpperCase() !== 'S/N') continue;
+      // eslint-disable-next-line no-await-in-loop
+      const serials = await serialsRecolhidosRequisicaoItem(pool, ri.id, ri);
+      if (!serials.length) continue;
+
+      // eslint-disable-next-line no-await-in-loop
+      const wb = new ExcelJS.Workbook();
+      // eslint-disable-next-line no-await-in-loop
+      await wb.xlsx.readFile(templatePath);
+      const ws = wb.worksheets[0];
+      if (!ws) continue;
+      let rowNum = 2;
+      for (const sn of serials) {
+        ws.getCell(rowNum, 1).value = sn;
+        rowNum += 1;
+      }
+      // eslint-disable-next-line no-await-in-loop
+      const buf = await wb.xlsx.writeBuffer();
+      const base = `${sanitizeSeriaisEntradaFilePart(ri.item_codigo)}_${equipa}_${reqIdNum}`;
+      files.push({ name: `${base}.xlsx`, buffer: Buffer.from(buf) });
+    }
+
+    if (!files.length) {
+      return res.status(400).json({ error: 'Não há itens S/N com serial preenchido nesta requisição.' });
+    }
+
+    if (files.length === 1) {
+      const only = files[0];
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', `attachment; filename="${only.name}"`);
+      return res.send(only.buffer);
+    }
+
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="seriais_requisicao_${reqIdNum}.zip"`);
+
+    const archive = archiver('zip', { zlib: { level: 9 } });
+    archive.on('error', (err) => {
+      console.error('Erro ao gerar ZIP de seriais entrada:', err);
+      if (!res.headersSent) res.status(500).json({ error: err.message || 'Erro ao compactar ficheiros' });
+    });
+    archive.pipe(res);
+    for (const f of files) {
+      archive.append(f.buffer, { name: f.name });
+    }
+    await archive.finalize();
+  } catch (error) {
+    console.error('Erro ao exportar seriais entrada:', error);
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Erro ao exportar seriais', details: error.message });
+    }
+  }
+});
 
 // TRFL — Só quando armazém de origem é geral (central). Destino = localização de expedição do armazém de origem.
 router.get('/:id/export-trfl', ...requisicaoAuth, denyOperador, async (req, res) => {
