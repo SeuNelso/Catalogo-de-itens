@@ -17,7 +17,9 @@ const CriarRequisicao = () => {
   const [formData, setFormData] = useState({
     armazem_origem_id: '',
     armazem_id: '',
-    observacoes: ''
+    observacoes: '',
+    colaborador_nome: '',
+    colaborador_numero: ''
   });
   const [armazens, setArmazens] = useState([]);
   const [itensRequisicao, setItensRequisicao] = useState([]); // Array de {item_id, quantidade}
@@ -293,6 +295,7 @@ const CriarRequisicao = () => {
 
   const armazemOrigemSelecionado = armazens.find(a => a.id === parseInt(formData.armazem_origem_id, 10));
   const armazemDestinoSelecionado = armazens.find(a => a.id === parseInt(formData.armazem_id, 10));
+  const isDestinoEpi = String(armazemDestinoSelecionado?.tipo || '').trim().toLowerCase() === 'epi';
 
   useEffect(() => {
     if (formData.armazem_origem_id && !armazensListaOrigem.some((a) => String(a.id) === String(formData.armazem_origem_id))) {
@@ -341,6 +344,18 @@ const CriarRequisicao = () => {
       return;
     }
 
+    if (isDestinoEpi) {
+      const nomeColab = String(formData.colaborador_nome || '').trim();
+      const numeroColab = String(formData.colaborador_numero || '').trim();
+      if (!nomeColab || !numeroColab) {
+        setToast({
+          type: 'error',
+          message: 'Para requisição EPI, preencha nome e número do colaborador.'
+        });
+        return;
+      }
+    }
+
     if (itensRequisicao.length === 0) {
       setToast({ type: 'error', message: 'Adicione pelo menos um item à requisição' });
       return;
@@ -349,6 +364,16 @@ const CriarRequisicao = () => {
     try {
       setLoading(true);
       const token = localStorage.getItem('token');
+      const nomeColab = String(formData.colaborador_nome || '').trim();
+      const numeroColab = String(formData.colaborador_numero || '').trim();
+      const observacoesBase = String(formData.observacoes || '').trim();
+      const observacoes = isDestinoEpi
+        ? [
+            nomeColab ? `Colaborador: ${nomeColab}` : null,
+            numeroColab ? `Nr. Colab.: ${numeroColab}` : null,
+            observacoesBase || null
+          ].filter(Boolean).join(' | ')
+        : (observacoesBase || null);
       
       const payload = {
         armazem_origem_id: formData.armazem_origem_id ? parseInt(formData.armazem_origem_id) : null,
@@ -357,7 +382,7 @@ const CriarRequisicao = () => {
           item_id: ri.item_id,
           quantidade: ri.quantidade
         })),
-        observacoes: formData.observacoes || null
+        observacoes
       };
 
       const response = await axios.post('/api/requisicoes', payload, {
@@ -748,6 +773,37 @@ const CriarRequisicao = () => {
             </div>
 
             {/* Observações */}
+            {isDestinoEpi && (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Nome do Colaborador <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    name="colaborador_nome"
+                    value={formData.colaborador_nome}
+                    onChange={handleChange}
+                    type="text"
+                    placeholder="Digite o nome do colaborador"
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0915FF] focus:border-transparent"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    N.º do Colaborador <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    name="colaborador_numero"
+                    value={formData.colaborador_numero}
+                    onChange={handleChange}
+                    type="text"
+                    placeholder="Digite o número do colaborador"
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0915FF] focus:border-transparent"
+                  />
+                </div>
+              </div>
+            )}
+
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">
                 Observações
