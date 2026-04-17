@@ -122,10 +122,31 @@ function quantidadeNecessariaStockPreparacao({
 }
 
 function serialsNormalizadosList(value) {
+  const isSerialInformadoValido = (raw) => {
+    const s = String(raw || '').trim();
+    if (!s) return false;
+    const norm = s
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase();
+    if (norm === 'sem serial') return false;
+    return true;
+  };
   return String(value || '')
     .split(/\r?\n|;|\|/)
     .map((s) => String(s || '').trim())
-    .filter(Boolean);
+    .filter(isSerialInformadoValido);
+}
+
+const STOCK_STATUS = {
+  DISPONIVEL: 'disponivel',
+  RESERVADO: 'reservado',
+  CONSUMIDO: 'consumido',
+};
+
+function armazemControlaSerialNumbers(tipoArmazem) {
+  const tipo = String(tipoArmazem || '').trim().toLowerCase();
+  return tipo === 'central' || tipo === 'apeado' || tipo === 'apeados';
 }
 
 /** Armazém central + armazens_localizacao_item: exige quantidade na localização de saída (só chamada se o utilizador tiver controlo de stock). */
@@ -631,6 +652,53 @@ async function aplicarStockDevolucaoEntradaRecebimento(client, { centralId, locR
     if (qty <= 0) continue;
     await creditarStockNaLocalizacaoArmazem(client, centralId, ri.item_id, ri.item_codigo, locRec, qty);
   }
+
+  // Rastreabilidade de S/N na entrada de devolução/recebimento:
+  // além do crédito em quantidade, cada serial precisa ficar disponível no armazém central.
+  for (const ri of list) {
+    const tipoControlo = String(ri.tipocontrolo || '').toUpperCase();
+    if (tipoControlo !== 'S/N') continue;
+    const serials = serialsNormalizadosList(ri.serialnumber);
+    if (!serials.length) continue;
+    const seen = new Set();
+    for (const sn of serials) {
+      const key = `${ri.item_id}::${sn}`.toUpperCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      // eslint-disable-next-line no-await-in-loop
+      await client.query(
+        `INSERT INTO stock_serial (item_id, armazem_id, localizacao, serialnumber, lote, status)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (item_id, serialnumber)
+         DO UPDATE SET
+           armazem_id = EXCLUDED.armazem_id,
+           localizacao = EXCLUDED.localizacao,
+           lote = COALESCE(NULLIF(EXCLUDED.lote, ''), stock_serial.lote),
+           status = EXCLUDED.status,
+           requisicao_id = NULL,
+           requisicao_item_id = NULL,
+           reservado_em = NULL,
+           consumido_em = NULL,
+           atualizado_em = CURRENT_TIMESTAMP`,
+        [ri.item_id, centralId, locRec, sn, ri.lote || null, STOCK_STATUS.DISPONIVEL]
+      );
+      // eslint-disable-next-line no-await-in-loop
+      await logStockMovimento({
+        db: client,
+        tipo: 'entrada_devolucao_serial',
+        itemId: ri.item_id,
+        armazemId: centralId,
+        localizacao: locRec,
+        lote: ri.lote || null,
+        serialnumber: sn,
+        quantidade: 1,
+        requisicaoId: Number(ri.requisicao_id) || null,
+        requisicaoItemId: Number(ri.id) || null,
+        usuarioId: null,
+        payload: { origem: 'aplicarStockDevolucaoEntradaRecebimento' },
+      });
+    }
+  }
 }
 
 /** TRFL interna devolução: recebimento → FERR / zona normal (mesmo central). */
@@ -730,15 +798,39 @@ async function aplicarStockTrflPendenteDevolucao(client, {
         );
       }
     } else if (tipoControlo === 'S/N') {
-      await moverStockMesmoArmazemPorLabels(
-        client,
-        centralId,
-        it.item_id,
-        it.item_codigo,
-        locOrigemMovimento,
-        localizacaoDestino,
-        remQty
-      );
+      const serials = serialsNormalizadosList(it.serialnumber);
+      const selecionados = serials.slice(apeadosQty, apeadosQty + remQty);
+      if (selecionados.length > 0) {
+        for (const sn of selecionados) {
+          // eslint-disable-next-line no-await-in-loop
+          await client.query(
+            `INSERT INTO stock_serial (item_id, armazem_id, localizacao, serialnumber, lote, status)
+             VALUES ($1, $2, $3, $4, $5, $6)
+             ON CONFLICT (item_id, serialnumber)
+             DO UPDATE SET
+               armazem_id = EXCLUDED.armazem_id,
+               localizacao = EXCLUDED.localizacao,
+               lote = COALESCE(NULLIF(EXCLUDED.lote, ''), stock_serial.lote),
+               status = EXCLUDED.status,
+               requisicao_id = NULL,
+               requisicao_item_id = NULL,
+               reservado_em = NULL,
+               consumido_em = NULL,
+               atualizado_em = CURRENT_TIMESTAMP`,
+            [it.item_id, centralId, localizacaoDestino, sn, it.lote || null, STOCK_STATUS.DISPONIVEL]
+          );
+        }
+      } else {
+        await moverStockMesmoArmazemPorLabels(
+          client,
+          centralId,
+          it.item_id,
+          it.item_codigo,
+          locOrigemMovimento,
+          localizacaoDestino,
+          remQty
+        );
+      }
     } else {
       await moverStockMesmoArmazemPorLabels(
         client,
@@ -786,16 +878,40 @@ async function aplicarStockTraApeadosDevolucao(client, {
         );
       }
     } else if (tipoControlo === 'S/N') {
-      await moverStockEntreArmazensPorLabels(
-        client,
-        centralId,
-        locOrigemCentral,
-        destinoApeadoId,
-        locRecApeado,
-        it.item_id,
-        it.item_codigo,
-        apeadosQty
-      );
+      const serials = serialsNormalizadosList(it.serialnumber);
+      const selecionados = serials.slice(0, apeadosQty);
+      if (selecionados.length > 0) {
+        for (const sn of selecionados) {
+          // eslint-disable-next-line no-await-in-loop
+          await client.query(
+            `INSERT INTO stock_serial (item_id, armazem_id, localizacao, serialnumber, lote, status)
+             VALUES ($1, $2, $3, $4, $5, $6)
+             ON CONFLICT (item_id, serialnumber)
+             DO UPDATE SET
+               armazem_id = EXCLUDED.armazem_id,
+               localizacao = EXCLUDED.localizacao,
+               lote = COALESCE(NULLIF(EXCLUDED.lote, ''), stock_serial.lote),
+               status = EXCLUDED.status,
+               requisicao_id = NULL,
+               requisicao_item_id = NULL,
+               reservado_em = NULL,
+               consumido_em = NULL,
+               atualizado_em = CURRENT_TIMESTAMP`,
+            [it.item_id, destinoApeadoId, locRecApeado, sn, it.lote || null, STOCK_STATUS.DISPONIVEL]
+          );
+        }
+      } else {
+        await moverStockEntreArmazensPorLabels(
+          client,
+          centralId,
+          locOrigemCentral,
+          destinoApeadoId,
+          locRecApeado,
+          it.item_id,
+          it.item_codigo,
+          apeadosQty
+        );
+      }
     } else {
       await moverStockEntreArmazensPorLabels(
         client,
@@ -826,6 +942,9 @@ function createRequisicoesRouter(deps) {
   const stockImportUpload = multer({ storage: multer.memoryStorage() });
 
   const RECEBIMENTO_TRANSFERENCIA_MARKER = 'RECEBIMENTO_TRANSFERENCIA_V1';
+  const DEV_APEADOS_STOCK_PENDENTE_MARKER = 'DEV_APEADOS_STOCK_PENDENTE';
+  const DEV_TRFL_PENDENTE_STOCK_MARKER = 'DEV_TRFL_PENDENTE_STOCK_PENDENTE';
+  const TRFL_PENDENTE_LOC_TAG = 'TRFL_PENDENTE_LOC';
 
   function hasRecebimentoMarker(requisicao) {
     const obs = String(requisicao?.observacoes || '');
@@ -849,6 +968,29 @@ function createRequisicoesRouter(deps) {
     const re = new RegExp(`${markerKey}:\\s*[01]`, 'i');
     if (re.test(obs)) return obs.replace(re, next);
     return `${obs} | ${next}`;
+  }
+
+  function upsertTaggedValue(obsRaw, tagKey, valueRaw) {
+    const obs = String(obsRaw || '').trim();
+    const value = String(valueRaw || '').trim();
+    if (!value) return obs;
+    const escapedTag = String(tagKey).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const token = `${tagKey}:${value}`;
+    const re = new RegExp(`(?:^|\\|)\\s*${escapedTag}:\\s*[^|]*`, 'i');
+    if (!obs) return token;
+    if (re.test(obs)) {
+      return obs.replace(re, (m) => {
+        const hasPipePrefix = /^\s*\|/.test(m);
+        return `${hasPipePrefix ? ' | ' : ''}${token}`;
+      }).trim();
+    }
+    return `${obs} | ${token}`;
+  }
+
+  function getTaggedValue(obsRaw, tagKey) {
+    const escapedTag = String(tagKey).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const m = new RegExp(`(?:^|\\|)\\s*${escapedTag}:\\s*([^|]+)`, 'i').exec(String(obsRaw || ''));
+    return String(m?.[1] || '').trim();
   }
 
   async function extractPdfText(buffer) {
@@ -2215,6 +2357,7 @@ router.get('/:id/export-trfl', ...requisicaoAuth, denyOperador, async (req, res)
     }
 
     const rows = [];
+    const locDestinoByReqItemId = new Map();
     const isCancelamentoExpedicao = String(requisicao.status || '') === 'EM EXPEDICAO' && Boolean(requisicao.cancelada_em_expedicao);
 
     // Linhas por bobina (cada bobina = uma linha)
@@ -3133,7 +3276,7 @@ router.get('/:id/export-tra-apeados', ...requisicaoAuth, denyOperador, async (re
       let lockApe;
       try {
         lockApe = await cApe.query(
-          `SELECT devolucao_tra_gerada_em, devolucao_trfl_gerada_em, devolucao_tra_apeados_gerada_em
+          `SELECT devolucao_tra_gerada_em, devolucao_trfl_gerada_em, devolucao_tra_apeados_gerada_em, observacoes
            FROM requisicoes WHERE id = $1 FOR UPDATE`,
           [id]
         );
@@ -3153,28 +3296,19 @@ router.get('/:id/export-tra-apeados', ...requisicaoAuth, denyOperador, async (re
         cApe.release();
         return res.status(400).json({ error: 'Gere primeiro a TRA de devolução.' });
       }
-      const locOrigemStock = locRecCentral;
-      if (!lockApe.rows[0]?.devolucao_tra_apeados_gerada_em && usuarioTemPermissaoControloStock(req)) {
-        try {
-          await aplicarStockTraApeadosDevolucao(cApe, {
-            centralId,
-            locOrigemCentral: locOrigemStock,
-            destinoApeadoId,
-            locRecApeado,
-            apeadosItens,
-            bobinasByRequisicaoItemId,
-          });
-        } catch (st) {
-          if (st.code !== '42P01') throw st;
-        }
-      }
+      const obsComPendenciaStock = upsertMarkerFlag(
+        lockApe.rows[0]?.observacoes,
+        DEV_APEADOS_STOCK_PENDENTE_MARKER,
+        true
+      );
       await cApe.query(
         `UPDATE requisicoes
          SET devolucao_tra_apeados_gerada_em = COALESCE(devolucao_tra_apeados_gerada_em, CURRENT_TIMESTAMP),
              devolucao_apeado_destino_id = COALESCE(devolucao_apeado_destino_id, $2),
-             tra_gerada_em = COALESCE(tra_gerada_em, CURRENT_TIMESTAMP)
+             tra_gerada_em = COALESCE(tra_gerada_em, CURRENT_TIMESTAMP),
+             observacoes = $3
          WHERE id = $1`,
-        [id, destinoApeadoId]
+        [id, destinoApeadoId, obsComPendenciaStock]
       );
       await cApe.query('COMMIT');
     } catch (eApe) {
@@ -3290,6 +3424,7 @@ router.get('/:id/export-trfl-pendente-armazenagem', ...requisicaoAuth, denyOpera
     }
 
     const rows = [];
+    const locDestinoByReqItemId = new Map();
     for (const it of (requisicao.itens || [])) {
       const totalQty = parseInt(it.quantidade_preparada ?? it.quantidade, 10) || 0;
       const apeadosQty = parseInt(it.quantidade_apeados ?? 0, 10) || 0;
@@ -3307,6 +3442,7 @@ router.get('/:id/export-trfl-pendente-armazenagem', ...requisicaoAuth, denyOpera
           error: `A localização "${localizacaoDestino}" não pertence ao armazém central desta devolução.`
         });
       }
+      locDestinoByReqItemId.set(Number(it.id), localizacaoDestino);
 
       const tipoControlo = String(it.tipocontrolo || '').toUpperCase();
 
@@ -3371,7 +3507,7 @@ router.get('/:id/export-trfl-pendente-armazenagem', ...requisicaoAuth, denyOpera
       let lockPend;
       try {
         lockPend = await cPend.query(
-          `SELECT devolucao_trfl_pendente_gerada_em, devolucao_trfl_gerada_em FROM requisicoes WHERE id = $1 FOR UPDATE`,
+          `SELECT devolucao_trfl_pendente_gerada_em, devolucao_trfl_gerada_em, observacoes FROM requisicoes WHERE id = $1 FOR UPDATE`,
           [id]
         );
       } catch (e) {
@@ -3385,26 +3521,30 @@ router.get('/:id/export-trfl-pendente-armazenagem', ...requisicaoAuth, denyOpera
         }
         throw e;
       }
-      const locOrigemMovimento = lockPend.rows[0]?.devolucao_trfl_gerada_em ? localizacaoNormal : locRecCentral;
-      if (!lockPend.rows[0]?.devolucao_trfl_pendente_gerada_em && usuarioTemPermissaoControloStock(req)) {
-        try {
-          await aplicarStockTrflPendenteDevolucao(cPend, {
-            centralId,
-            locOrigemMovimento,
-            localizacaoDefault,
-            itemLocalizacoes,
-            itens: requisicao.itens || [],
-            bobinasByRequisicaoItemId,
-          });
-        } catch (st) {
-          if (st.code !== '42P01') throw st;
-        }
+      for (const it of requisicao.itens || []) {
+        const rid = Number(it.id);
+        if (!Number.isFinite(rid)) continue;
+        const locDestino = String(locDestinoByReqItemId.get(rid) || '').trim();
+        if (!locDestino) continue;
+        // eslint-disable-next-line no-await-in-loop
+        await cPend.query(
+          `UPDATE requisicoes_itens
+           SET observacoes = $2
+           WHERE id = $1`,
+          [rid, upsertTaggedValue(it.observacoes, TRFL_PENDENTE_LOC_TAG, locDestino)]
+        );
       }
+      const obsComPendenciaStock = upsertMarkerFlag(
+        lockPend.rows[0]?.observacoes,
+        DEV_TRFL_PENDENTE_STOCK_MARKER,
+        true
+      );
       await cPend.query(
         `UPDATE requisicoes
-         SET devolucao_trfl_pendente_gerada_em = COALESCE(devolucao_trfl_pendente_gerada_em, CURRENT_TIMESTAMP)
+         SET devolucao_trfl_pendente_gerada_em = COALESCE(devolucao_trfl_pendente_gerada_em, CURRENT_TIMESTAMP),
+             observacoes = $2
          WHERE id = $1`,
-        [id]
+        [id, obsComPendenciaStock]
       );
       await cPend.query('COMMIT');
     } catch (ePend) {
@@ -7107,7 +7247,7 @@ router.patch('/:id/atender-item', ...requisicaoAuth, async (req, res) => {
       }
       if (tipoControlo === 'S/N') {
         if (Array.isArray(serials)) {
-          serialsNormalizados = serials.map((s) => String(s || '').trim()).filter(Boolean);
+          serialsNormalizados = serialsNormalizadosList(serials.join('\n'));
           if (serialsNormalizados.length === 0) {
             await client.query('ROLLBACK');
             return res.status(400).json({ error: `Item ${item.item_id} é controlado por número de série. Informe pelo menos um serial number.` });
@@ -7123,7 +7263,11 @@ router.patch('/:id/atender-item', ...requisicaoAuth, async (req, res) => {
           await client.query('ROLLBACK');
           return res.status(400).json({ error: `Item ${item.item_id} é controlado por número de série. Informe o Serial number na preparação.` });
         } else {
-          serialsNormalizados = [String(serialnumber).trim()];
+          serialsNormalizados = serialsNormalizadosList(serialnumber);
+          if (serialsNormalizados.length === 0) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({ error: `Item ${item.item_id} é controlado por número de série. Informe o Serial number na preparação.` });
+          }
         }
       }
     }
@@ -7235,6 +7379,7 @@ router.patch('/:id/atender-item', ...requisicaoAuth, async (req, res) => {
       }
 
       if (tipoControlo === 'S/N') {
+        const origemControlaSeriais = armazemControlaSerialNumbers(check.rows[0].armazem_origem_tipo);
         await client.query(
           `UPDATE stock_serial
            SET status = 'disponivel',
@@ -7247,7 +7392,7 @@ router.patch('/:id/atender-item', ...requisicaoAuth, async (req, res) => {
           [requisicao_item_id]
         );
 
-        if (!isZero && Array.isArray(serialsNormalizados) && serialsNormalizados.length > 0) {
+        if (origemControlaSeriais && !isZero && Array.isArray(serialsNormalizados) && serialsNormalizados.length > 0) {
           const serialRows = await client.query(
             `SELECT id, serialnumber, status
              FROM stock_serial
@@ -8352,10 +8497,136 @@ router.patch('/:id/finalizar', ...requisicaoAuth, denyOperador, async (req, res)
       return res.status(400).json({ error: 'Preencha o número da TRA antes de finalizar a requisição.' });
     }
 
-    await pool.query(
-      'UPDATE requisicoes SET status = $1, finalizado_em = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
-      ['FINALIZADO', id]
-    );
+    if (fluxoDevolucao) {
+      const cFin = await pool.connect();
+      try {
+        await cFin.query('BEGIN');
+        const lockFin = await cFin.query(
+          `SELECT id, armazem_id, devolucao_apeado_destino_id, devolucao_trfl_gerada_em, observacoes
+           FROM requisicoes
+           WHERE id = $1
+           FOR UPDATE`,
+          [id]
+        );
+        if (!lockFin.rows.length) {
+          await cFin.query('ROLLBACK');
+          return res.status(404).json({ error: 'Requisição não encontrada' });
+        }
+        const finRow = lockFin.rows[0];
+        const requisicaoAtual = await getRequisicaoComItens(id);
+        if (!requisicaoAtual) {
+          await cFin.query('ROLLBACK');
+          return res.status(404).json({ error: 'Requisição não encontrada' });
+        }
+        const bobinasResult = await cFin.query(
+          `SELECT b.*, ri.id AS requisicao_item_id, i.codigo AS item_codigo
+           FROM requisicoes_itens_bobinas b
+           INNER JOIN requisicoes_itens ri ON b.requisicao_item_id = ri.id
+           INNER JOIN itens i ON ri.item_id = i.id
+           WHERE ri.requisicao_id = $1
+           ORDER BY ri.id, b.id`,
+          [id]
+        );
+        const bobinasByRequisicaoItemId = new Map();
+        for (const b of bobinasResult.rows || []) {
+          const rid = Number(b.requisicao_item_id);
+          if (!Number.isFinite(rid)) continue;
+          if (!bobinasByRequisicaoItemId.has(rid)) bobinasByRequisicaoItemId.set(rid, []);
+          bobinasByRequisicaoItemId.get(rid).push(b);
+        }
+
+        let observacoesFinal = String(finRow.observacoes || '');
+        if (markerFlagAtivo(observacoesFinal, DEV_APEADOS_STOCK_PENDENTE_MARKER)) {
+          const centralId = finRow.armazem_id;
+          const destinoApeadoId = Number(finRow.devolucao_apeado_destino_id || 0) || null;
+          if (centralId && destinoApeadoId) {
+            let locRecCentral = await localizacaoArmazemPorTipoConn(cFin, centralId, 'recebimento');
+            if (!locRecCentral) locRecCentral = LOCALIZACAO_RECEBIMENTO_FALLBACK;
+            let locRecApeado = await localizacaoArmazemPorTipoConn(cFin, destinoApeadoId, 'recebimento');
+            if (!locRecApeado) {
+              const apeadoQ = await cFin.query('SELECT codigo FROM armazens WHERE id = $1', [destinoApeadoId]);
+              locRecApeado = String(apeadoQ.rows?.[0]?.codigo || '').trim();
+            }
+            if (!locRecApeado) {
+              throw makeStockPrepBizError(400, 'Localização de recebimento do armazém APEADO não encontrada.');
+            }
+            const apeadosItens = (requisicaoAtual.itens || []).filter((it) => (parseInt(it.quantidade_apeados ?? 0, 10) || 0) > 0);
+            try {
+              await aplicarStockTraApeadosDevolucao(cFin, {
+                centralId,
+                locOrigemCentral: locRecCentral,
+                destinoApeadoId,
+                locRecApeado,
+                apeadosItens,
+                bobinasByRequisicaoItemId,
+              });
+            } catch (stApe) {
+              if (stApe.code !== '42P01') throw stApe;
+            }
+          }
+          observacoesFinal = upsertMarkerFlag(observacoesFinal, DEV_APEADOS_STOCK_PENDENTE_MARKER, false);
+        }
+
+        if (markerFlagAtivo(observacoesFinal, DEV_TRFL_PENDENTE_STOCK_MARKER)) {
+          const centralId = finRow.armazem_id;
+          if (centralId) {
+            let locRecCentral = await localizacaoArmazemPorTipoConn(cFin, centralId, 'recebimento');
+            if (!locRecCentral) locRecCentral = LOCALIZACAO_RECEBIMENTO_FALLBACK;
+            const locRows = await cFin.query(
+              'SELECT localizacao FROM armazens_localizacoes WHERE armazem_id = $1 ORDER BY id',
+              [centralId]
+            );
+            const codigoCentral = String(requisicaoAtual.armazem_destino_codigo || '').trim() || 'E';
+            const { localizacaoNormal } = computeDestLocFerrNormal(codigoCentral, locRows.rows || []);
+            const locOrigemMovimento = finRow.devolucao_trfl_gerada_em ? localizacaoNormal : locRecCentral;
+            const itemLocalizacoes = {};
+            for (const it of requisicaoAtual.itens || []) {
+              const rid = Number(it.id);
+              if (!Number.isFinite(rid)) continue;
+              const loc = getTaggedValue(it.observacoes, TRFL_PENDENTE_LOC_TAG);
+              if (loc) itemLocalizacoes[String(rid)] = loc;
+            }
+            try {
+              await aplicarStockTrflPendenteDevolucao(cFin, {
+                centralId,
+                locOrigemMovimento,
+                localizacaoDefault: null,
+                itemLocalizacoes,
+                itens: requisicaoAtual.itens || [],
+                bobinasByRequisicaoItemId,
+              });
+            } catch (stPend) {
+              if (stPend.code !== '42P01') throw stPend;
+            }
+          }
+          observacoesFinal = upsertMarkerFlag(observacoesFinal, DEV_TRFL_PENDENTE_STOCK_MARKER, false);
+        }
+
+        await cFin.query(
+          `UPDATE requisicoes
+           SET status = 'FINALIZADO',
+               finalizado_em = CURRENT_TIMESTAMP,
+               observacoes = $2,
+               updated_at = CURRENT_TIMESTAMP
+           WHERE id = $1`,
+          [id, observacoesFinal]
+        );
+        await cFin.query('COMMIT');
+      } catch (eFin) {
+        await cFin.query('ROLLBACK').catch(() => {});
+        if (eFin.isStockPrepBiz) {
+          return res.status(eFin.status).json(eFin.payload);
+        }
+        throw eFin;
+      } finally {
+        cFin.release();
+      }
+    } else {
+      await pool.query(
+        'UPDATE requisicoes SET status = $1, finalizado_em = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+        ['FINALIZADO', id]
+      );
+    }
     try {
       await persistMovimentosHistoricoForRequisicoes([id]);
     } catch (e) {
@@ -9365,12 +9636,6 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
     }
   );
 
-  const STOCK_STATUS = {
-    DISPONIVEL: 'disponivel',
-    RESERVADO: 'reservado',
-    CONSUMIDO: 'consumido',
-  };
-
   function normalizeImportHeader(v) {
     return String(v || '')
       .normalize('NFD')
@@ -10005,7 +10270,7 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
           `SELECT id, codigo, descricao
            FROM armazens
            WHERE ativo = true
-             AND LOWER(TRIM(COALESCE(tipo, ''))) = 'central'
+             AND LOWER(TRIM(COALESCE(tipo, ''))) IN ('central', 'apeado', 'apeados')
            ORDER BY codigo ASC, descricao ASC`
         );
         return res.json({ rows: all.rows || [] });
@@ -10022,7 +10287,7 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
         `SELECT id, codigo, descricao
          FROM armazens
          WHERE id = ANY($1::int[])
-           AND LOWER(TRIM(COALESCE(tipo, ''))) = 'central'
+           AND LOWER(TRIM(COALESCE(tipo, ''))) IN ('central', 'apeado', 'apeados')
          ORDER BY codigo ASC, descricao ASC`,
         [ids]
       );
@@ -10435,7 +10700,7 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
       const reqId = Number(req.params.id || 0);
       const reqItemId = Number(req.params.requisicaoItemId || 0);
       const seriais = Array.isArray(req.body?.seriais)
-        ? req.body.seriais.map((s) => String(s || '').trim()).filter(Boolean)
+        ? serialsNormalizadosList(req.body.seriais.join('\n'))
         : [];
       if (!reqId || !reqItemId || !seriais.length) {
         return res.status(400).json({ error: 'Parâmetros inválidos' });
@@ -10446,9 +10711,10 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
       }
       await client.query('BEGIN');
       const reqItem = await client.query(
-        `SELECT ri.*, r.armazem_origem_id
+        `SELECT ri.*, r.armazem_origem_id, ao.tipo AS armazem_origem_tipo
          FROM requisicoes_itens ri
          INNER JOIN requisicoes r ON r.id = ri.requisicao_id
+         LEFT JOIN armazens ao ON ao.id = r.armazem_origem_id
          WHERE ri.id = $1 AND ri.requisicao_id = $2
          FOR UPDATE`,
         [reqItemId, reqId]
@@ -10458,6 +10724,19 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
         return res.status(404).json({ error: 'Item de requisição não encontrado' });
       }
       const itemRow = reqItem.rows[0];
+      const origemControlaSeriais = armazemControlaSerialNumbers(itemRow.armazem_origem_tipo);
+
+      if (!origemControlaSeriais) {
+        await client.query(
+          `UPDATE requisicoes_itens
+           SET serialnumber = $1,
+               quantidade_preparada = $2
+           WHERE id = $3`,
+          [serialsUnicos.join('\n'), serialsUnicos.length, reqItemId]
+        );
+        await client.query('COMMIT');
+        return res.json({ ok: true, reservados: serialsUnicos, invalidos: [] });
+      }
       await client.query(
         `UPDATE stock_serial
          SET status = 'disponivel', requisicao_id = NULL, requisicao_item_id = NULL, reservado_em = NULL, atualizado_em = CURRENT_TIMESTAMP
