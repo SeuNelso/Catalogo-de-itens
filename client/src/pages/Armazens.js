@@ -73,7 +73,8 @@ const Armazens = () => {
     tipo: 'viatura', // 'central' | 'viatura' | 'apeado' | 'epi'
     localizacoes: [],  // central: [{ localizacao, tipo_localizacao }]; viatura: preenchido com 2 (normal, FERR)
     armazem_central_vinculado_id: '',
-    recebimento_transferencia_digital: true
+    recebimento_transferencia_digital: true,
+    compartilha_stock_serial: false
   });
   const [submitting, setSubmitting] = useState(false);
   const [loadingEdit, setLoadingEdit] = useState(false);
@@ -716,6 +717,7 @@ const Armazens = () => {
     if (formData.tipo === 'central') {
       payload.recebimento_transferencia_digital = formData.recebimento_transferencia_digital !== false;
     }
+    payload.compartilha_stock_serial = formData.compartilha_stock_serial !== false;
     if ((formData.tipo === 'apeado' || formData.tipo === 'epi') && !payload.armazem_central_vinculado_id) {
       setToast({ type: 'error', message: 'Selecione o armazém central vinculado.' });
       return;
@@ -750,7 +752,15 @@ const Armazens = () => {
         });
       }
 
-      setFormData({ codigo: '', descricao: '', tipo: 'viatura', localizacoes: [], armazem_central_vinculado_id: '', recebimento_transferencia_digital: true });
+      setFormData({
+        codigo: '',
+        descricao: '',
+        tipo: 'viatura',
+        localizacoes: [],
+        armazem_central_vinculado_id: '',
+        recebimento_transferencia_digital: true,
+        compartilha_stock_serial: false
+      });
       setCentralBulkText('');
       setEditandoId(null);
       setMostrarForm(false);
@@ -772,7 +782,15 @@ const Armazens = () => {
       return;
     }
     setEditandoId(null);
-    setFormData({ codigo: '', descricao: '', tipo: 'viatura', localizacoes: [], armazem_central_vinculado_id: '', recebimento_transferencia_digital: true });
+    setFormData({
+      codigo: '',
+      descricao: '',
+      tipo: 'viatura',
+      localizacoes: [],
+      armazem_central_vinculado_id: '',
+      recebimento_transferencia_digital: true,
+      compartilha_stock_serial: false
+    });
     setCentralBulkText('');
     setLoadingEdit(true);
     setMostrarForm(true);
@@ -839,7 +857,8 @@ const Armazens = () => {
         localizacoes: locsForForm,
         armazem_central_vinculado_id:
           data.armazem_central_vinculado_id != null ? String(data.armazem_central_vinculado_id) : '',
-        recebimento_transferencia_digital: data.recebimento_transferencia_digital !== false
+        recebimento_transferencia_digital: data.recebimento_transferencia_digital !== false,
+        compartilha_stock_serial: data.compartilha_stock_serial !== false
       });
       if (tipo === 'central') {
         setCentralBulkText(buildCentralBulkText(locs));
@@ -859,7 +878,15 @@ const Armazens = () => {
   };
 
   const handleCancel = () => {
-    setFormData({ codigo: '', descricao: '', tipo: 'viatura', localizacoes: [], armazem_central_vinculado_id: '', recebimento_transferencia_digital: true });
+    setFormData({
+      codigo: '',
+      descricao: '',
+      tipo: 'viatura',
+      localizacoes: [],
+      armazem_central_vinculado_id: '',
+      recebimento_transferencia_digital: true,
+      compartilha_stock_serial: false
+    });
     setCentralBulkText('');
     setEditingLocIdx(null);
     setEditingLocValue('');
@@ -1139,7 +1166,14 @@ const Armazens = () => {
                       name="tipo"
                       value="viatura"
                       checked={formData.tipo === 'viatura'}
-                      onChange={() => setFormData(prev => ({ ...prev, tipo: 'viatura', localizacoes: [], armazem_central_vinculado_id: '', recebimento_transferencia_digital: true }))}
+                      onChange={() => setFormData(prev => ({
+                        ...prev,
+                        tipo: 'viatura',
+                        localizacoes: [],
+                        armazem_central_vinculado_id: '',
+                        recebimento_transferencia_digital: true,
+                        compartilha_stock_serial: false
+                      }))}
                       className="text-[#0915FF]"
                     />
                     <span>Viatura</span>
@@ -1154,7 +1188,8 @@ const Armazens = () => {
                         ...prev,
                         tipo: 'central',
                         localizacoes: prev.localizacoes.length ? prev.localizacoes : [{ localizacao: '', tipo_localizacao: 'normal' }],
-                        armazem_central_vinculado_id: ''
+                        armazem_central_vinculado_id: '',
+                        compartilha_stock_serial: true
                       }))}
                       className="text-[#0915FF]"
                     />
@@ -1166,7 +1201,13 @@ const Armazens = () => {
                       name="tipo"
                       value="apeado"
                       checked={formData.tipo === 'apeado'}
-                      onChange={() => setFormData(prev => ({ ...prev, tipo: 'apeado', localizacoes: [], recebimento_transferencia_digital: true }))}
+                      onChange={() => setFormData(prev => ({
+                        ...prev,
+                        tipo: 'apeado',
+                        localizacoes: [],
+                        recebimento_transferencia_digital: true,
+                        compartilha_stock_serial: true
+                      }))}
                       className="text-[#0915FF]"
                     />
                     <span>APEADO</span>
@@ -1177,7 +1218,13 @@ const Armazens = () => {
                       name="tipo"
                       value="epi"
                       checked={formData.tipo === 'epi'}
-                      onChange={() => setFormData(prev => ({ ...prev, tipo: 'epi', localizacoes: [], recebimento_transferencia_digital: true }))}
+                      onChange={() => setFormData(prev => ({
+                        ...prev,
+                        tipo: 'epi',
+                        localizacoes: [],
+                        recebimento_transferencia_digital: true,
+                        compartilha_stock_serial: false
+                      }))}
                       className="text-[#0915FF]"
                     />
                     <span>EPI</span>
@@ -1448,6 +1495,24 @@ const Armazens = () => {
                 </div>
                 </>
               )}
+              <div className="mb-4 rounded-lg border border-gray-200 bg-gray-50/80 p-4">
+                <label className="flex items-start gap-3 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    name="compartilha_stock_serial"
+                    checked={formData.compartilha_stock_serial !== false}
+                    onChange={handleChange}
+                    className="mt-1 rounded border-gray-300 text-[#0915FF] focus:ring-[#0915FF]"
+                  />
+                  <span className="text-sm text-gray-800">
+                    <span className="font-medium">Compartilhar stock de seriais neste armazém</span>
+                    <span className="block text-xs text-gray-600 mt-1">
+                      Ativado: valida e movimenta seriais entre origem e destino no fluxo de preparação/transferência.
+                      Desativado: o armazém trabalha em controlo interno; os seriais podem ser apontados no destino e entram no stock apenas ao finalizar a tarefa.
+                    </span>
+                  </span>
+                </label>
+              </div>
               <div className="flex gap-3">
                 <button
                   type="submit"

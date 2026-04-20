@@ -47,9 +47,10 @@ const Navbar = () => {
   /** Conta autenticada que não é admin: acede a /admin-usuarios só para o próprio perfil */
   const showMeuPerfil = isAuthenticated && !isAdmin;
   const podeStockMenu = user && podeUsarControloStock(user);
+  const canSeeConsultaLocalizacoes = Boolean(podeStockMenu);
   const canSeeConsultaMenu =
     user &&
-    (podeStockMenu || ['supervisor_armazem', 'backoffice_armazem', 'operador'].includes(user.role));
+    (isAdmin || podeStockMenu || ['supervisor_armazem', 'backoffice_armazem', 'operador'].includes(user.role));
   const podeMovimentosMenu = user && podeUsarConsultaMovimentos(user);
   const podeInventarioMenu = user && podeAcederInventario(user.role) && podeUsarControloStock(user);
   const podeContagemSemanalMenu = user && podeAcederInventario(user.role);
@@ -406,20 +407,22 @@ const Navbar = () => {
                       {consultaOpen && (
                         <div className="absolute top-full left-0 bg-[#0915FF] border border-gray-200 rounded-lg shadow-lg min-w-56 z-50 p-2 -mt-1 pt-2">
                           <div className="flex flex-col gap-1">
-                            <Link
-                              to="/consulta-estoque-localizacoes"
-                              onClick={(e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                setConsultaOpen(false);
-                                setTimeout(() => navigate('/consulta-estoque-localizacoes'), 100);
-                              }}
-                              className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded"
-                              title="Consulta: localizações e stock (centrais)"
-                            >
-                              <MapPin size={14} className="lg:w-4 lg:h-4" />
-                              Consulta Localizações
-                            </Link>
+                            {canSeeConsultaLocalizacoes && (
+                              <Link
+                                to="/consulta-estoque-localizacoes"
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  setConsultaOpen(false);
+                                  setTimeout(() => navigate('/consulta-estoque-localizacoes'), 100);
+                                }}
+                                className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded"
+                                title="Consulta: localizações e stock (centrais)"
+                              >
+                                <MapPin size={14} className="lg:w-4 lg:h-4" />
+                                Consulta Localizações
+                              </Link>
+                            )}
                             <Link
                               to="/stock-rastreavel/consulta"
                               onClick={(e) => {
@@ -930,15 +933,17 @@ const Navbar = () => {
                       {consultaOpen && (
                         <div className="static shadow-none border-none bg-white/5 m-0 p-0 rounded-none">
                           <div className="flex flex-col">
-                            <Link
-                              to="/consulta-estoque-localizacoes"
-                              onClick={(e) => handleMobileNavigation('/consulta-estoque-localizacoes', e)}
-                              className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10"
-                              title="Consulta: localizações e stock (centrais)"
-                            >
-                              <MapPin size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" />
-                              Consulta Localizações
-                            </Link>
+                            {canSeeConsultaLocalizacoes && (
+                              <Link
+                                to="/consulta-estoque-localizacoes"
+                                onClick={(e) => handleMobileNavigation('/consulta-estoque-localizacoes', e)}
+                                className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10"
+                                title="Consulta: localizações e stock (centrais)"
+                              >
+                                <MapPin size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" />
+                                Consulta Localizações
+                              </Link>
+                            )}
                             <Link
                               to="/stock-rastreavel/consulta"
                               onClick={(e) => handleMobileNavigation('/stock-rastreavel/consulta', e)}

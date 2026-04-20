@@ -38,6 +38,7 @@ function parseSeriaisMovimento(raw) {
 const ConsultaMovimentos = () => {
   const { user } = useAuth();
   const isAdmin = user?.role === 'admin';
+  const [armazens, setArmazens] = useState([]);
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState(null);
   const [rows, setRows] = useState([]);
@@ -62,7 +63,7 @@ const ConsultaMovimentos = () => {
     description: '',
     serial: '',
     lote: '',
-    armazem: '',
+    armazem_id: '',
     localizacao: '',
     minhas: false,
   });
@@ -111,6 +112,24 @@ const ConsultaMovimentos = () => {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [serialModal]);
+
+  useEffect(() => {
+    const carregarArmazens = async () => {
+      try {
+        const token = localStorage.getItem('token');
+        const response = await fetch('/api/requisicoes/stock/meus-armazens', {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!response.ok) return;
+        const data = await response.json().catch(() => ({}));
+        const rows = Array.isArray(data?.rows) ? data.rows : [];
+        setArmazens(rows);
+      } catch (_) {
+        // Sem bloquear a tela caso o endpoint esteja indisponível.
+      }
+    };
+    carregarArmazens();
+  }, []);
 
   useEffect(() => {
     const initial = { ...filtros };
@@ -261,6 +280,8 @@ const ConsultaMovimentos = () => {
             >
               <option value="">Tipo de movimento</option>
               <option value="saida">Saída de Armazem</option>
+              <option value="transferencia">Transferencia</option>
+              <option value="transf. apeado">Transf. Apeado</option>
               <option value="devolucao">Devolução de carrinha</option>
             </select>
             <input
@@ -287,12 +308,18 @@ const ConsultaMovimentos = () => {
               placeholder="Lote"
               className="px-3 py-2 border border-gray-300 rounded-lg text-sm"
             />
-            <input
-              value={filtros.armazem}
-              onChange={(e) => setFiltros((p) => ({ ...p, armazem: e.target.value }))}
-              placeholder="Novo Armazém"
+            <select
+              value={filtros.armazem_id}
+              onChange={(e) => setFiltros((p) => ({ ...p, armazem_id: e.target.value }))}
               className="px-3 py-2 border border-gray-300 rounded-lg text-sm"
-            />
+            >
+              <option value="">Armazém (todos)</option>
+              {armazens.map((a) => (
+                <option key={a.id} value={String(a.id)}>
+                  {`${a.codigo} — ${a.descricao}`}
+                </option>
+              ))}
+            </select>
             <input
               value={filtros.localizacao}
               onChange={(e) => setFiltros((p) => ({ ...p, localizacao: e.target.value }))}
@@ -333,7 +360,7 @@ const ConsultaMovimentos = () => {
                   description: '',
                   serial: '',
                   lote: '',
-                  armazem: '',
+                  armazem_id: '',
                   localizacao: '',
                   minhas: false,
                 })
@@ -345,6 +372,11 @@ const ConsultaMovimentos = () => {
             <span className="text-sm text-gray-600">Linhas nesta página: {total}</span>
             <span className="text-xs text-gray-500">Offset: {offset}</span>
           </div>
+          {armazens.length > 1 && (
+            <p className="mt-2 text-xs text-gray-600">
+              Selecione um armazém para ver os movimentos no contexto desse armazém.
+            </p>
+          )}
         </div>
 
         <div className="bg-white rounded-lg border border-gray-200 overflow-auto">

@@ -138,15 +138,46 @@ function serialsNormalizadosList(value) {
     .filter(isSerialInformadoValido);
 }
 
+function ordemTipoMovimentoClog(tipo) {
+  const t = String(tipo || '').trim().toLowerCase();
+  if (t === 'transf. apeado') return 1;
+  if (t === 'devolucao de carrinha') return 2;
+  return 9;
+}
+
 const STOCK_STATUS = {
   DISPONIVEL: 'disponivel',
   RESERVADO: 'reservado',
   CONSUMIDO: 'consumido',
 };
 
-function armazemControlaSerialNumbers(tipoArmazem) {
+function armazemControlaSerialNumbers(tipoArmazem, compartilhaStockSerial) {
+  if (compartilhaStockSerial === true || compartilhaStockSerial === false) {
+    return compartilhaStockSerial;
+  }
   const tipo = String(tipoArmazem || '').trim().toLowerCase();
   return tipo === 'central' || tipo === 'apeado' || tipo === 'apeados';
+}
+
+async function obterCompartilhaStockSerialArmazem(db, armazemId, tipoArmazemFallback) {
+  if (!armazemId) return armazemControlaSerialNumbers(tipoArmazemFallback);
+  try {
+    const q = await db.query(
+      `SELECT compartilha_stock_serial
+       FROM armazens
+       WHERE id = $1`,
+      [armazemId]
+    );
+    if (!q.rows.length) return armazemControlaSerialNumbers(tipoArmazemFallback);
+    const v = q.rows[0].compartilha_stock_serial;
+    if (v === true || v === false) return v;
+    return armazemControlaSerialNumbers(tipoArmazemFallback);
+  } catch (e) {
+    if (e.code === '42703') {
+      return armazemControlaSerialNumbers(tipoArmazemFallback);
+    }
+    throw e;
+  }
 }
 
 /** Armazém central + armazens_localizacao_item: exige quantidade na localização de saída (só chamada se o utilizador tiver controlo de stock). */
@@ -1911,7 +1942,10 @@ function podeExportarClog(requisicao) {
   const st = String(requisicao?.status || '');
   if (st !== 'APEADOS') return false;
   if (!requisicao?.devolucao_tra_gerada_em) return false;
-  return Boolean(String(requisicao?.tra_numero || '').trim());
+  return Boolean(
+    String(requisicao?.tra_numero || '').trim() ||
+      String(requisicao?.devolucao_tra_apeados_numero || '').trim()
+  );
 }
 
 function formatDateBR(dateObj) {
@@ -4068,8 +4102,6 @@ function clogRowsFromItemData(
 ) {
   const isDevolucao = Boolean(opts?.isDevolucao);
   const isApeados = Boolean(opts?.isApeados);
-  const tipoMovimentoBase = isDevolucao ? 'Devolucao de carrinha' : 'Saida de Armazem';
-  const tipoMovimento = tipoMovimentoBase;
   const qtySign = isDevolucao ? 1 : -1;
   const traDev = String(traNumero || '').trim();
   const devolucaoDestinoLoc = String(opts?.devolucaoDestinoLoc || '').trim();
@@ -4086,6 +4118,12 @@ function clogRowsFromItemData(
   const armazemDestinoId = Number(opts?.armazemDestinoId) || 0;
   const origemTipo = String(opts?.origemTipo || '').trim().toLowerCase();
   const destinoTipoNorm = String(opts?.destinoTipo || '').trim().toLowerCase();
+  const isCentralApeado =
+    (origemTipo === 'central' && (destinoTipoNorm === 'apeado' || destinoTipoNorm === 'apeados')) ||
+    ((origemTipo === 'apeado' || origemTipo === 'apeados') && destinoTipoNorm === 'central');
+  const tipoMovimento = isDevolucao
+    ? 'Devolucao de carrinha'
+    : (isCentralApeado ? 'Transf. Apeado' : 'Saida de Armazem');
   const rows = [];
   const itemByItemId = new Map(itensComFerramenta.map((it) => [it.item_id, it]));
   const itemIdsComBobina = new Set(bobinas.map((b) => b.item_id));
@@ -4141,7 +4179,7 @@ function clogRowsFromItemData(
           armazem_destino_tipo: destinoTipoNorm,
           mov_id: `req:${reqId}:bob:${Number(b.id || 0)}:item:${Number(b.item_id || 0)}:apeados:${next}`,
           __ordem_movimento: 2,
-          'Tipo de Movimento': 'APEADOS',
+          'Tipo de Movimento': 'Transf. Apeado',
           'Dt_Recepção': dateStr,
           'REF.': String(b.item_codigo || ''),
           DESCRIPTION: String(b.item_descricao || ''),
@@ -4208,7 +4246,7 @@ function clogRowsFromItemData(
           armazem_destino_tipo: destinoTipoNorm,
           mov_id: `req:${reqId}:ri:${Number(ri.id || 0)}:item:${Number(ri.item_id || 0)}:apeados`,
           __ordem_movimento: 2,
-          'Tipo de Movimento': 'APEADOS',
+          'Tipo de Movimento': 'Transf. Apeado',
           'Dt_Recepção': dateStr,
           'REF.': String(ri.item_codigo || ''),
           DESCRIPTION: String(ri.item_descricao || ''),
@@ -4422,8 +4460,10 @@ async function buildClogRowsForRequisicaoIds(idsClean, dateStr, opts = {}) {
   `, [idsUnique]);
 
   const byId = new Map(reqRes.rows.map((r) => [r.id, r]));
-  const candidatas = idsClean.map((id) => byId.get(id)).filter(Boolean)
-    .filter((r) => podeExportarClog(r) && r.armazem_origem_id && String(r.tra_numero || '').trim());
+  const candidatas = idsClean
+    .map((id) => byId.get(id))
+    .filter(Boolean)
+    .filter((r) => podeExportarClog(r) && r.armazem_origem_id);
   if (candidatas.length === 0) return [];
 
   const origemIds = [...new Set(candidatas.map((r) => r.armazem_origem_id))];
@@ -4577,11 +4617,12 @@ async function buildClogRowsForRequisicaoIds(idsClean, dateStr, opts = {}) {
         ? observacoesClogEpiSomenteColaborador(r.observacoes)
         : r.observacoes || '';
     })();
+    const numeroTraDev = String(r.tra_numero || r.devolucao_tra_apeados_numero || '').trim();
     const rows = clogRowsFromItemData(
       dateForReq || formatDateBR(new Date()),
       codigoDestino,
       obsClog,
-      r.tra_numero || '',
+      numeroTraDev,
       localizacaoOrigemTRA,
       localizacaoFERR,
       localizacaoNormal,
@@ -4596,9 +4637,9 @@ async function buildClogRowsForRequisicaoIds(idsClean, dateStr, opts = {}) {
         destinoTipo: isRecMerc ? r.armazem_origem_tipo : r.armazem_destino_tipo,
         isDevolucao,
         isApeados:
-          String(r.status || '') === 'APEADOS' &&
           Boolean(r.devolucao_tra_apeados_gerada_em) &&
-          Boolean(String(r.devolucao_tra_apeados_numero || '').trim()),
+          Boolean(String(r.devolucao_tra_apeados_numero || '').trim()) &&
+          (itens || []).some((it) => (parseInt(it.quantidade_apeados ?? 0, 10) || 0) > 0),
         apeadoDestinoCodigo: String(r.devolucao_apeado_destino_codigo || '').trim(),
         apeadoDestinoLoc: recByApeadoId.get(Number(r.devolucao_apeado_destino_id)) || '',
         apeadosOrigemLoc: recByDestArm.get(locArmDestinoLogico) || LOCALIZACAO_RECEBIMENTO_FALLBACK,
@@ -4645,6 +4686,10 @@ router.get('/movimentos-clog/consulta', ...requisicaoAuth, denyOperador, async (
     const serial = String(req.query?.serial || '').trim().toLowerCase();
     const lote = String(req.query?.lote || '').trim().toLowerCase();
     const armazem = String(req.query?.armazem || '').trim().toLowerCase();
+    const armazemIdFiltroRaw = Number(req.query?.armazem_id || 0);
+    const armazemIdFiltro = Number.isFinite(armazemIdFiltroRaw) && armazemIdFiltroRaw > 0
+      ? armazemIdFiltroRaw
+      : null;
     const localizacao = String(req.query?.localizacao || '').trim().toLowerCase();
     const apenasMinhas = String(req.query?.minhas || '').trim() === '1';
     const pageSizeRaw = parseInt(String(req.query?.page_size || '40'), 10);
@@ -4654,21 +4699,63 @@ router.get('/movimentos-clog/consulta', ...requisicaoAuth, denyOperador, async (
     const reqBatchSize = 200;
     const maxBatches = 25;
     const columns = ['Tipo de Movimento', 'Dt_Recepção', 'REF.', 'DESCRIPTION', 'QTY', 'Loc_Inicial', 'S/N', 'Lote', 'Novo Armazém', 'TRA / DEV', 'New Localização', 'DEP', 'Observações'];
+    const allowedScopeIds = Array.isArray(req.requisicaoArmazemOrigemIds) ? req.requisicaoArmazemOrigemIds : [];
+
+    if (!isAdmin(req.user?.role) && armazemIdFiltro && !allowedScopeIds.includes(armazemIdFiltro)) {
+      return res.status(403).json({ error: 'Armazém fora do escopo do utilizador.' });
+    }
+
+    const rowMatchesArmazemFiltro = (row) => {
+      if (!armazemIdFiltro) return true;
+      const origemId = Number(row?.armazem_origem_id);
+      const destinoId = Number(row?.armazem_id);
+      return origemId === armazemIdFiltro || destinoId === armazemIdFiltro;
+    };
+
+    const normalizarTransferenciaCentralCentral = (row) => {
+      if (!row || typeof row !== 'object') return row;
+      const origemTipo = String(row?.armazem_origem_tipo || '').toLowerCase();
+      const destinoTipo = String(row?.armazem_destino_tipo || '').toLowerCase();
+      if (origemTipo !== 'central' || destinoTipo !== 'central') return row;
+      const tipoAtual = String(row?.['Tipo de Movimento'] || '').trim().toLowerCase();
+      if (tipoAtual === 'devolucao de carrinha' || tipoAtual === 'apeados') return row;
+      let qty = Number(row?.QTY);
+      if (!Number.isFinite(qty)) qty = 0;
+      if (armazemIdFiltro) {
+        const origemId = Number(row?.armazem_origem_id);
+        const destinoId = Number(row?.armazem_id);
+        if (destinoId === armazemIdFiltro && origemId !== armazemIdFiltro) {
+          qty = Math.abs(qty);
+        } else if (origemId === armazemIdFiltro && destinoId !== armazemIdFiltro) {
+          qty = -Math.abs(qty);
+        }
+      }
+      return {
+        ...row,
+        'Tipo de Movimento': 'Transferencia',
+        QTY: qty,
+      };
+    };
 
     // Histórico persistido (independente da tabela requisicoes) é a fonte primária quando existir.
     if (await movimentosHistoricoTableExists()) {
       const passesScopeHistorico = (row) => {
         if (isAdmin(req.user?.role)) return true;
-        const allowed = Array.isArray(req.requisicaoArmazemOrigemIds) ? req.requisicaoArmazemOrigemIds : [];
-        if (allowed.length === 0) return false;
+        if (allowedScopeIds.length === 0) return false;
         const origemId = Number(row?.armazem_origem_id);
         const destinoId = Number(row?.armazem_id);
         const origemTipo = String(row?.armazem_origem_tipo || '').toLowerCase();
         const destinoTipo = String(row?.armazem_destino_tipo || '').toLowerCase();
+        const observacoesRow = String(row?.Observações || '').toUpperCase();
+        const isRecebimentoTransfer = observacoesRow.startsWith(RECEBIMENTO_TRANSFERENCIA_MARKER);
         if (isFluxoDevolucaoViaturaCentral(origemTipo, destinoTipo)) {
-          return Number.isFinite(destinoId) && allowed.includes(destinoId);
+          return Number.isFinite(destinoId) && allowedScopeIds.includes(destinoId);
         }
-        if (Number.isFinite(origemId)) return allowed.includes(origemId);
+        // Recebimento de transferência: o armazém "lógico" do utilizador pode estar em armazem_id.
+        if (isRecebimentoTransfer && Number.isFinite(destinoId)) {
+          return allowedScopeIds.includes(destinoId);
+        }
+        if (Number.isFinite(origemId)) return allowedScopeIds.includes(origemId);
         // Compatibilidade com snapshots antigos (sem metadados de escopo):
         // não bloquear para evitar "sumir" após apagar a requisição original.
         return true;
@@ -4681,6 +4768,7 @@ router.get('/movimentos-clog/consulta', ...requisicaoAuth, denyOperador, async (
         const serialOk = !serial || String(row['S/N'] || '').toLowerCase().includes(serial);
         const loteOk = !lote || String(row.Lote || '').toLowerCase().includes(lote);
         const armOk = !armazem || String(row['Novo Armazém'] || '').toLowerCase().includes(armazem);
+        const armIdOk = rowMatchesArmazemFiltro(row);
         const locOk =
           !localizacao ||
           String(row.Loc_Inicial || '').toLowerCase().includes(localizacao) ||
@@ -4714,7 +4802,7 @@ router.get('/movimentos-clog/consulta', ...requisicaoAuth, denyOperador, async (
             row.DEP,
             row.Observações,
           ].some((v) => String(v || '').toLowerCase().includes(q));
-        return Boolean(tipoOk && refOk && descOk && serialOk && loteOk && armOk && locOk && traOk && dtOk && minhasOk && qOk);
+        return Boolean(tipoOk && refOk && descOk && serialOk && loteOk && armOk && armIdOk && locOk && traOk && dtOk && minhasOk && qOk);
       };
 
       const outRows = [];
@@ -4742,7 +4830,7 @@ router.get('/movimentos-clog/consulta', ...requisicaoAuth, denyOperador, async (
         const batchStart = histOffset;
         let filledPageThisBatch = false;
         for (let i = 0; i < mergedSlots.length; i++) {
-          const row = mergedSlots[i];
+          const row = normalizarTransferenciaCentralCentral(mergedSlots[i]);
           if (!row) continue;
           if (!passesScopeHistorico(row)) continue;
           if (!passesRowFilter(row)) continue;
@@ -4774,20 +4862,24 @@ router.get('/movimentos-clog/consulta', ...requisicaoAuth, denyOperador, async (
         const tsA = Number(a.__req_sort_ts || 0);
         const tsB = Number(b.__req_sort_ts || 0);
         if (tsA !== tsB) return tsB - tsA;
-        const reqA = Number(a.requisicao_id || 0);
-        const reqB = Number(b.requisicao_id || 0);
-        if (reqA !== reqB) return reqB - reqA;
         const traA = String(a['TRA / DEV'] || '');
         const traB = String(b['TRA / DEV'] || '');
         const traCmp = traB.localeCompare(traA);
         if (traCmp !== 0) return traCmp;
+        const tipoA = ordemTipoMovimentoClog(a['Tipo de Movimento']);
+        const tipoB = ordemTipoMovimentoClog(b['Tipo de Movimento']);
+        if (tipoA !== tipoB) return tipoA - tipoB;
+        const ordA = Number(a.__ordem_movimento || 9);
+        const ordB = Number(b.__ordem_movimento || 9);
+        if (ordA !== ordB) return ordA - ordB;
         const refA = String(a['REF.'] || '');
         const refB = String(b['REF.'] || '');
         const refCmp = refA.localeCompare(refB);
         if (refCmp !== 0) return refCmp;
-        const ordA = Number(a.__ordem_movimento || 9);
-        const ordB = Number(b.__ordem_movimento || 9);
-        return ordA - ordB;
+        const reqA = Number(a.requisicao_id || 0);
+        const reqB = Number(b.requisicao_id || 0);
+        if (reqA !== reqB) return reqB - reqA;
+        return 0;
       });
       const outRowsClean = outRows.map(
         ({
@@ -4836,7 +4928,11 @@ router.get('/movimentos-clog/consulta', ...requisicaoAuth, denyOperador, async (
     };
 
     // Requisições aptas para Clog na consulta.
-    where.push(`COALESCE(TRIM(r.tra_numero), '') <> ''`);
+    // Devoluções podem não ter tra_numero clássico; usar marcador DEV como elegível.
+    where.push(`(
+      COALESCE(TRIM(r.tra_numero), '') <> ''
+      OR r.devolucao_tra_gerada_em IS NOT NULL
+    )`);
     where.push(`(
       r.status = 'FINALIZADO'
       OR (r.status = 'Entregue' AND (r.tra_gerada_em IS NOT NULL OR r.devolucao_tra_gerada_em IS NOT NULL))
@@ -4862,8 +4958,7 @@ router.get('/movimentos-clog/consulta', ...requisicaoAuth, denyOperador, async (
     }
 
     if (!isAdmin(req.user?.role)) {
-      const allowed = Array.isArray(req.requisicaoArmazemOrigemIds) ? req.requisicaoArmazemOrigemIds : [];
-      if (allowed.length === 0) {
+      if (allowedScopeIds.length === 0) {
         return res.json({
           columns,
           rows: [],
@@ -4884,7 +4979,7 @@ router.get('/movimentos-clog/consulta', ...requisicaoAuth, denyOperador, async (
           AND r.armazem_id = ANY($${idx + 1}::int[])
         )
       )`);
-      params.push(allowed, allowed);
+      params.push(allowedScopeIds, allowedScopeIds);
       idx += 2;
     }
 
@@ -4895,6 +4990,7 @@ router.get('/movimentos-clog/consulta', ...requisicaoAuth, denyOperador, async (
       const serialOk = !serial || String(row['S/N'] || '').toLowerCase().includes(serial);
       const loteOk = !lote || String(row.Lote || '').toLowerCase().includes(lote);
       const armOk = !armazem || String(row['Novo Armazém'] || '').toLowerCase().includes(armazem);
+      const armIdOk = rowMatchesArmazemFiltro(row);
       const locOk =
         !localizacao ||
         String(row.Loc_Inicial || '').toLowerCase().includes(localizacao) ||
@@ -4916,7 +5012,7 @@ router.get('/movimentos-clog/consulta', ...requisicaoAuth, denyOperador, async (
           row.DEP,
           row.Observações,
         ].some((v) => String(v || '').toLowerCase().includes(q));
-      return Boolean(tipoOk && refOk && descOk && serialOk && loteOk && armOk && locOk && qOk);
+      return Boolean(tipoOk && refOk && descOk && serialOk && loteOk && armOk && armIdOk && locOk && qOk);
     };
 
     const outRows = [];
@@ -4965,7 +5061,7 @@ router.get('/movimentos-clog/consulta', ...requisicaoAuth, denyOperador, async (
       rows = (await applyMovimentosOverrides(rows)).map((r) => ({
         ...r,
         Observações: r?.Observações == null ? '' : r.Observações
-      }));
+      })).map((r) => normalizarTransferenciaCentralCentral(r));
       for (const row of rows) {
         if (!passesRowFilter(row)) continue;
         outRows.push(row);
@@ -4991,20 +5087,24 @@ router.get('/movimentos-clog/consulta', ...requisicaoAuth, denyOperador, async (
       const tsA = Number(a.__req_sort_ts || 0);
       const tsB = Number(b.__req_sort_ts || 0);
       if (tsA !== tsB) return tsB - tsA;
-      const reqA = Number(a.requisicao_id || 0);
-      const reqB = Number(b.requisicao_id || 0);
-      if (reqA !== reqB) return reqB - reqA;
       const traA = String(a['TRA / DEV'] || '');
       const traB = String(b['TRA / DEV'] || '');
       const traCmp = traB.localeCompare(traA);
       if (traCmp !== 0) return traCmp;
+      const tipoA = ordemTipoMovimentoClog(a['Tipo de Movimento']);
+      const tipoB = ordemTipoMovimentoClog(b['Tipo de Movimento']);
+      if (tipoA !== tipoB) return tipoA - tipoB;
+      const ordA = Number(a.__ordem_movimento || 9);
+      const ordB = Number(b.__ordem_movimento || 9);
+      if (ordA !== ordB) return ordA - ordB;
       const refA = String(a['REF.'] || '');
       const refB = String(b['REF.'] || '');
       const refCmp = refA.localeCompare(refB);
       if (refCmp !== 0) return refCmp;
-      const ordA = Number(a.__ordem_movimento || 9);
-      const ordB = Number(b.__ordem_movimento || 9);
-      return ordA - ordB;
+      const reqA = Number(a.requisicao_id || 0);
+      const reqB = Number(b.requisicao_id || 0);
+      if (reqA !== reqB) return reqB - reqA;
+      return 0;
     });
     const outRowsClean = outRows.map(({ __ordem_movimento, __req_sort_ts, ...rest }) => {
       const tipoEpi =
@@ -5125,7 +5225,10 @@ router.post('/movimentos-clog/backfill-historico', ...requisicaoAuth, denyOperad
         `
         SELECT r.id
         FROM requisicoes r
-        WHERE COALESCE(r.tra_numero, '') <> ''
+        WHERE (
+            COALESCE(r.tra_numero, '') <> ''
+            OR r.devolucao_tra_gerada_em IS NOT NULL
+          )
           AND (
             r.status = 'FINALIZADO'
             OR (r.status = 'Entregue' AND (r.tra_gerada_em IS NOT NULL OR r.devolucao_tra_gerada_em IS NOT NULL))
@@ -5163,7 +5266,8 @@ router.post('/movimentos-clog/backfill-historico', ...requisicaoAuth, denyOperad
 
 async function buildClogRowsFromRequisicao(requisicao, dateStr) {
   if (!requisicao?.armazem_origem_id) return { rows: [], eligible: false, reason: 'Requisição sem armazém de origem.' };
-  if (!String(requisicao?.tra_numero || '').trim()) {
+  const numeroTraDev = String(requisicao?.tra_numero || requisicao?.devolucao_tra_apeados_numero || '').trim();
+  if (!numeroTraDev && !requisicao?.devolucao_tra_gerada_em) {
     return { rows: [], eligible: false, reason: 'Guarde o Nº TRA antes de gerar/abrir o Clog.' };
   }
 
@@ -5286,7 +5390,7 @@ async function buildClogRowsFromRequisicao(requisicao, dateStr) {
     dateStr,
     codigoDestino,
     colaboradorObs,
-    requisicao.tra_numero || '',
+    numeroTraDev,
     localizacaoOrigemTRA,
     localizacaoFERR,
     localizacaoNormal,
@@ -7379,7 +7483,11 @@ router.patch('/:id/atender-item', ...requisicaoAuth, async (req, res) => {
       }
 
       if (tipoControlo === 'S/N') {
-        const origemControlaSeriais = armazemControlaSerialNumbers(check.rows[0].armazem_origem_tipo);
+        const origemControlaSeriais = await obterCompartilhaStockSerialArmazem(
+          client,
+          check.rows[0].armazem_origem_id,
+          check.rows[0].armazem_origem_tipo
+        );
         await client.query(
           `UPDATE stock_serial
            SET status = 'disponivel',
@@ -8536,67 +8644,72 @@ router.patch('/:id/finalizar', ...requisicaoAuth, denyOperador, async (req, res)
         }
 
         let observacoesFinal = String(finRow.observacoes || '');
+        const podeControlarStock = usuarioTemPermissaoControloStock(req);
         if (markerFlagAtivo(observacoesFinal, DEV_APEADOS_STOCK_PENDENTE_MARKER)) {
-          const centralId = finRow.armazem_id;
-          const destinoApeadoId = Number(finRow.devolucao_apeado_destino_id || 0) || null;
-          if (centralId && destinoApeadoId) {
-            let locRecCentral = await localizacaoArmazemPorTipoConn(cFin, centralId, 'recebimento');
-            if (!locRecCentral) locRecCentral = LOCALIZACAO_RECEBIMENTO_FALLBACK;
-            let locRecApeado = await localizacaoArmazemPorTipoConn(cFin, destinoApeadoId, 'recebimento');
-            if (!locRecApeado) {
-              const apeadoQ = await cFin.query('SELECT codigo FROM armazens WHERE id = $1', [destinoApeadoId]);
-              locRecApeado = String(apeadoQ.rows?.[0]?.codigo || '').trim();
-            }
-            if (!locRecApeado) {
-              throw makeStockPrepBizError(400, 'Localização de recebimento do armazém APEADO não encontrada.');
-            }
-            const apeadosItens = (requisicaoAtual.itens || []).filter((it) => (parseInt(it.quantidade_apeados ?? 0, 10) || 0) > 0);
-            try {
-              await aplicarStockTraApeadosDevolucao(cFin, {
-                centralId,
-                locOrigemCentral: locRecCentral,
-                destinoApeadoId,
-                locRecApeado,
-                apeadosItens,
-                bobinasByRequisicaoItemId,
-              });
-            } catch (stApe) {
-              if (stApe.code !== '42P01') throw stApe;
+          if (podeControlarStock) {
+            const centralId = finRow.armazem_id;
+            const destinoApeadoId = Number(finRow.devolucao_apeado_destino_id || 0) || null;
+            if (centralId && destinoApeadoId) {
+              let locRecCentral = await localizacaoArmazemPorTipoConn(cFin, centralId, 'recebimento');
+              if (!locRecCentral) locRecCentral = LOCALIZACAO_RECEBIMENTO_FALLBACK;
+              let locRecApeado = await localizacaoArmazemPorTipoConn(cFin, destinoApeadoId, 'recebimento');
+              if (!locRecApeado) {
+                const apeadoQ = await cFin.query('SELECT codigo FROM armazens WHERE id = $1', [destinoApeadoId]);
+                locRecApeado = String(apeadoQ.rows?.[0]?.codigo || '').trim();
+              }
+              if (!locRecApeado) {
+                throw makeStockPrepBizError(400, 'Localização de recebimento do armazém APEADO não encontrada.');
+              }
+              const apeadosItens = (requisicaoAtual.itens || []).filter((it) => (parseInt(it.quantidade_apeados ?? 0, 10) || 0) > 0);
+              try {
+                await aplicarStockTraApeadosDevolucao(cFin, {
+                  centralId,
+                  locOrigemCentral: locRecCentral,
+                  destinoApeadoId,
+                  locRecApeado,
+                  apeadosItens,
+                  bobinasByRequisicaoItemId,
+                });
+              } catch (stApe) {
+                if (stApe.code !== '42P01') throw stApe;
+              }
             }
           }
           observacoesFinal = upsertMarkerFlag(observacoesFinal, DEV_APEADOS_STOCK_PENDENTE_MARKER, false);
         }
 
         if (markerFlagAtivo(observacoesFinal, DEV_TRFL_PENDENTE_STOCK_MARKER)) {
-          const centralId = finRow.armazem_id;
-          if (centralId) {
-            let locRecCentral = await localizacaoArmazemPorTipoConn(cFin, centralId, 'recebimento');
-            if (!locRecCentral) locRecCentral = LOCALIZACAO_RECEBIMENTO_FALLBACK;
-            const locRows = await cFin.query(
-              'SELECT localizacao FROM armazens_localizacoes WHERE armazem_id = $1 ORDER BY id',
-              [centralId]
-            );
-            const codigoCentral = String(requisicaoAtual.armazem_destino_codigo || '').trim() || 'E';
-            const { localizacaoNormal } = computeDestLocFerrNormal(codigoCentral, locRows.rows || []);
-            const locOrigemMovimento = finRow.devolucao_trfl_gerada_em ? localizacaoNormal : locRecCentral;
-            const itemLocalizacoes = {};
-            for (const it of requisicaoAtual.itens || []) {
-              const rid = Number(it.id);
-              if (!Number.isFinite(rid)) continue;
-              const loc = getTaggedValue(it.observacoes, TRFL_PENDENTE_LOC_TAG);
-              if (loc) itemLocalizacoes[String(rid)] = loc;
-            }
-            try {
-              await aplicarStockTrflPendenteDevolucao(cFin, {
-                centralId,
-                locOrigemMovimento,
-                localizacaoDefault: null,
-                itemLocalizacoes,
-                itens: requisicaoAtual.itens || [],
-                bobinasByRequisicaoItemId,
-              });
-            } catch (stPend) {
-              if (stPend.code !== '42P01') throw stPend;
+          if (podeControlarStock) {
+            const centralId = finRow.armazem_id;
+            if (centralId) {
+              let locRecCentral = await localizacaoArmazemPorTipoConn(cFin, centralId, 'recebimento');
+              if (!locRecCentral) locRecCentral = LOCALIZACAO_RECEBIMENTO_FALLBACK;
+              const locRows = await cFin.query(
+                'SELECT localizacao FROM armazens_localizacoes WHERE armazem_id = $1 ORDER BY id',
+                [centralId]
+              );
+              const codigoCentral = String(requisicaoAtual.armazem_destino_codigo || '').trim() || 'E';
+              const { localizacaoNormal } = computeDestLocFerrNormal(codigoCentral, locRows.rows || []);
+              const locOrigemMovimento = finRow.devolucao_trfl_gerada_em ? localizacaoNormal : locRecCentral;
+              const itemLocalizacoes = {};
+              for (const it of requisicaoAtual.itens || []) {
+                const rid = Number(it.id);
+                if (!Number.isFinite(rid)) continue;
+                const loc = getTaggedValue(it.observacoes, TRFL_PENDENTE_LOC_TAG);
+                if (loc) itemLocalizacoes[String(rid)] = loc;
+              }
+              try {
+                await aplicarStockTrflPendenteDevolucao(cFin, {
+                  centralId,
+                  locOrigemMovimento,
+                  localizacaoDefault: null,
+                  itemLocalizacoes,
+                  itens: requisicaoAtual.itens || [],
+                  bobinasByRequisicaoItemId,
+                });
+              } catch (stPend) {
+                if (stPend.code !== '42P01') throw stPend;
+              }
             }
           }
           observacoesFinal = upsertMarkerFlag(observacoesFinal, DEV_TRFL_PENDENTE_STOCK_MARKER, false);
@@ -9527,7 +9640,8 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
         }
 
         const itensQ = await client.query(
-          `SELECT ri.id, ri.item_id, ri.quantidade, ri.quantidade_preparada, i.codigo AS item_codigo, i.tipocontrolo
+          `SELECT ri.id, ri.requisicao_id, ri.item_id, ri.quantidade, ri.quantidade_preparada,
+                  ri.serialnumber, ri.lote, i.codigo AS item_codigo, i.tipocontrolo
            FROM requisicoes_itens ri
            INNER JOIN itens i ON i.id = ri.item_id
            WHERE ri.requisicao_id = $1`,
@@ -9543,6 +9657,21 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
               [requisicaoItemIds]
             )
           : { rows: [] };
+        const serialsByReqItemId = new Map();
+        for (const b of bobinasQ.rows || []) {
+          const rid = Number(b.requisicao_item_id);
+          const sn = String(b.serialnumber || '').trim();
+          if (!Number.isFinite(rid) || !sn) continue;
+          if (!serialsByReqItemId.has(rid)) serialsByReqItemId.set(rid, []);
+          serialsByReqItemId.get(rid).push(sn);
+        }
+        const itensComSeriais = (itensQ.rows || []).map((ri) => {
+          const snRi = String(ri.serialnumber || '').trim();
+          if (snRi) return ri;
+          const fromBobinas = serialsByReqItemId.get(Number(ri.id)) || [];
+          if (!fromBobinas.length) return ri;
+          return { ...ri, serialnumber: fromBobinas.join('\n') };
+        });
 
         const locRec =
           (await localizacaoArmazemPorTipoConn(client, row.armazem_origem_id, 'recebimento')) ||
@@ -9550,7 +9679,7 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
         await aplicarStockDevolucaoEntradaRecebimento(client, {
           centralId: row.armazem_origem_id,
           locRec,
-          itensComFerramenta: itensQ.rows || [],
+          itensComFerramenta: itensComSeriais,
           bobinas: bobinasQ.rows || [],
         });
 
@@ -9579,49 +9708,109 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
     ...requisicaoAuth,
     denyOperador,
     async (req, res) => {
+      const client = await pool.connect();
       try {
         const reqId = parseInt(String(req.params.id || ''), 10);
         if (!Number.isFinite(reqId)) return res.status(400).json({ error: 'ID inválido.' });
 
-        const lock = await pool.query(
-          `SELECT r.id, r.status, r.observacoes, r.armazem_origem_id
+        await client.query('BEGIN');
+        const lock = await client.query(
+          `SELECT r.id, r.status, r.observacoes, r.armazem_origem_id, r.tra_baixa_expedicao_aplicada_em
            FROM requisicoes r
-           WHERE r.id = $1`,
+           WHERE r.id = $1
+           FOR UPDATE`,
           [reqId]
         );
-        if (!lock.rows.length) return res.status(404).json({ error: 'Requisição não encontrada.' });
+        if (!lock.rows.length) {
+          await client.query('ROLLBACK');
+          return res.status(404).json({ error: 'Requisição não encontrada.' });
+        }
         const row = lock.rows[0];
         if (!hasRecebimentoMarker(row)) {
+          await client.query('ROLLBACK');
           return res.status(400).json({ error: 'Requisição não é do fluxo de recebimento de mercadoria.' });
         }
         if (!isAdmin(req.user?.role)) {
           const allowed = req.requisicaoArmazemOrigemIds || [];
           if (!allowed.includes(row.armazem_origem_id)) {
+            await client.query('ROLLBACK');
             return res.status(403).json({ error: 'Sem acesso a este recebimento.' });
           }
         }
         if (String(row.status || '') !== 'EM EXPEDICAO') {
+          await client.query('ROLLBACK');
           return res.status(400).json({ error: 'Só é possível finalizar quando estiver Em processo.' });
         }
         if (!markerFlagAtivo(row.observacoes, 'TRA_CONFIRMED')) {
+          await client.query('ROLLBACK');
           return res.status(400).json({ error: 'Confirme a TRA do armazém de origem antes de finalizar.' });
         }
         const reqOrigemId = getAutoFromReqId(row);
         if (Number.isFinite(reqOrigemId)) {
-          const origemQ = await pool.query('SELECT tra_numero FROM requisicoes WHERE id = $1', [reqOrigemId]);
+          const origemQ = await client.query('SELECT tra_numero FROM requisicoes WHERE id = $1', [reqOrigemId]);
           const traNumeroOrigem = String(origemQ.rows?.[0]?.tra_numero || '').trim();
           if (!traNumeroOrigem) {
+            await client.query('ROLLBACK');
             return res.status(400).json({ error: 'Aguardando Nº TRA do armazém de origem para finalizar.' });
           }
         }
 
-        await pool.query(
+        // No recebimento, a entrada efetiva no stock acontece no finalizar.
+        // Mantemos idempotência via tra_baixa_expedicao_aplicada_em para evitar duplicidade.
+        if (!row.tra_baixa_expedicao_aplicada_em) {
+          const itensQ = await client.query(
+            `SELECT ri.id, ri.requisicao_id, ri.item_id, ri.quantidade, ri.quantidade_preparada,
+                    ri.serialnumber, ri.lote, i.codigo AS item_codigo, i.tipocontrolo
+             FROM requisicoes_itens ri
+             INNER JOIN itens i ON i.id = ri.item_id
+             WHERE ri.requisicao_id = $1`,
+            [reqId]
+          );
+          const requisicaoItemIds = (itensQ.rows || []).map((x) => Number(x.id)).filter(Number.isFinite);
+          const bobinasQ = requisicaoItemIds.length > 0
+            ? await client.query(
+                `SELECT b.requisicao_item_id, ri.item_id, b.lote, b.serialnumber, b.metros
+                 FROM requisicoes_itens_bobinas b
+                 INNER JOIN requisicoes_itens ri ON ri.id = b.requisicao_item_id
+                 WHERE b.requisicao_item_id = ANY($1::int[])`,
+                [requisicaoItemIds]
+              )
+            : { rows: [] };
+          const serialsByReqItemId = new Map();
+          for (const b of bobinasQ.rows || []) {
+            const rid = Number(b.requisicao_item_id);
+            const sn = String(b.serialnumber || '').trim();
+            if (!Number.isFinite(rid) || !sn) continue;
+            if (!serialsByReqItemId.has(rid)) serialsByReqItemId.set(rid, []);
+            serialsByReqItemId.get(rid).push(sn);
+          }
+          const itensComSeriais = (itensQ.rows || []).map((ri) => {
+            const snRi = String(ri.serialnumber || '').trim();
+            if (snRi) return ri;
+            const fromBobinas = serialsByReqItemId.get(Number(ri.id)) || [];
+            if (!fromBobinas.length) return ri;
+            return { ...ri, serialnumber: fromBobinas.join('\n') };
+          });
+          const locRec =
+            (await localizacaoArmazemPorTipoConn(client, row.armazem_origem_id, 'recebimento')) ||
+            LOCALIZACAO_RECEBIMENTO_FALLBACK;
+          await aplicarStockDevolucaoEntradaRecebimento(client, {
+            centralId: row.armazem_origem_id,
+            locRec,
+            itensComFerramenta: itensComSeriais,
+            bobinas: bobinasQ.rows || [],
+          });
+        }
+
+        await client.query(
           `UPDATE requisicoes
            SET status = 'FINALIZADO',
+               tra_baixa_expedicao_aplicada_em = COALESCE(tra_baixa_expedicao_aplicada_em, CURRENT_TIMESTAMP),
                updated_at = CURRENT_TIMESTAMP
            WHERE id = $1`,
           [reqId]
         );
+        await client.query('COMMIT');
         try {
           await persistMovimentosHistoricoForRequisicoes([reqId]);
         } catch (eh) {
@@ -9630,8 +9819,11 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
         const updated = await getRequisicaoComItens(reqId);
         return res.json(updated);
       } catch (e) {
+        await client.query('ROLLBACK').catch(() => {});
         console.error('Erro ao finalizar recebimento de mercadoria:', e);
         return res.status(500).json({ error: 'Erro ao finalizar recebimento', details: e.message });
+      } finally {
+        client.release();
       }
     }
   );
@@ -10724,7 +10916,11 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
         return res.status(404).json({ error: 'Item de requisição não encontrado' });
       }
       const itemRow = reqItem.rows[0];
-      const origemControlaSeriais = armazemControlaSerialNumbers(itemRow.armazem_origem_tipo);
+      const origemControlaSeriais = await obterCompartilhaStockSerialArmazem(
+        client,
+        itemRow.armazem_origem_id,
+        itemRow.armazem_origem_tipo
+      );
 
       if (!origemControlaSeriais) {
         await client.query(

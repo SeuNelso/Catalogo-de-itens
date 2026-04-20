@@ -6224,7 +6224,16 @@ app.post('/api/armazens', authenticateToken, async (req, res) => {
       return res.status(403).json({ error: 'Apenas administradores podem criar armazéns' });
     }
 
-    const { codigo, descricao, localizacao, localizacoes, tipo, armazem_central_vinculado_id, recebimento_transferencia_digital } = req.body;
+    const {
+      codigo,
+      descricao,
+      localizacao,
+      localizacoes,
+      tipo,
+      armazem_central_vinculado_id,
+      recebimento_transferencia_digital,
+      compartilha_stock_serial,
+    } = req.body;
 
     if (!codigo || !codigo.toString().trim()) {
       return res.status(400).json({ error: 'Código é obrigatório (ex: V848 ou E)' });
@@ -6303,18 +6312,23 @@ app.post('/api/armazens', authenticateToken, async (req, res) => {
 
     const recebimentoTransferenciaDigitalCriar =
       tipoArmazem === 'central' ? recebimento_transferencia_digital !== false : true;
+    const compartilhaStockSerialCriar =
+      compartilha_stock_serial !== undefined
+        ? !(compartilha_stock_serial === false || compartilha_stock_serial === 0 || compartilha_stock_serial === '0' || String(compartilha_stock_serial).toLowerCase() === 'false')
+        : !(['viatura', 'epi'].includes(tipoArmazem));
 
     let result;
     try {
       result = await pool.query(`
-        INSERT INTO armazens (codigo, descricao, localizacao, tipo, armazem_central_vinculado_id, recebimento_transferencia_digital)
-        VALUES ($1, $2, $3, $4, $5, $6)
+        INSERT INTO armazens (codigo, descricao, localizacao, tipo, armazem_central_vinculado_id, recebimento_transferencia_digital, compartilha_stock_serial)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
         RETURNING *
-      `, [codigoNorm, descricaoTrim, (locsWithTipo[0] && locsWithTipo[0].localizacao) || null, tipoArmazem, armazemCentralVinculadoId, recebimentoTransferenciaDigitalCriar]);
+      `, [codigoNorm, descricaoTrim, (locsWithTipo[0] && locsWithTipo[0].localizacao) || null, tipoArmazem, armazemCentralVinculadoId, recebimentoTransferenciaDigitalCriar, compartilhaStockSerialCriar]);
     } catch (insertError) {
       if (insertError.code === '42703') {
         const missingColMsg = String(insertError.message || '').toLowerCase();
         const missingRecTransDig = missingColMsg.includes('recebimento_transferencia_digital');
+        const missingCompartilhaStockSerial = missingColMsg.includes('compartilha_stock_serial');
         const missingVinculoCol = missingColMsg.includes('armazem_central_vinculado_id');
         const missingTipoCol = missingColMsg.includes('tipo');
         if (missingRecTransDig) {
@@ -6327,6 +6341,11 @@ app.post('/api/armazens', authenticateToken, async (req, res) => {
           } catch (retryErr) {
             throw retryErr;
           }
+        } else if (missingCompartilhaStockSerial) {
+          return res.status(503).json({
+            error: 'Coluna compartilha_stock_serial em falta na base de dados.',
+            details: 'Execute a migração: server/migrate-armazens-compartilha-stock-serial.sql'
+          });
         } else if (armazemCentralVinculadoId && missingVinculoCol) {
           return res.status(503).json({
             error: 'A base de dados não suporta vínculo central para APEADO/EPI.',
@@ -6510,7 +6529,17 @@ app.put('/api/armazens/:id', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'ID de armazém inválido' });
     }
 
-    const { codigo, descricao, localizacao, localizacoes, ativo, tipo, armazem_central_vinculado_id, recebimento_transferencia_digital } = req.body;
+    const {
+      codigo,
+      descricao,
+      localizacao,
+      localizacoes,
+      ativo,
+      tipo,
+      armazem_central_vinculado_id,
+      recebimento_transferencia_digital,
+      compartilha_stock_serial,
+    } = req.body;
 
     const updates = [];
     const params = [];
@@ -6577,6 +6606,12 @@ app.put('/api/armazens/:id', authenticateToken, async (req, res) => {
       const v = recebimento_transferencia_digital;
       const boolVal = !(v === false || v === 0 || v === '0' || String(v).toLowerCase() === 'false');
       updates.push(`recebimento_transferencia_digital = $${paramCount++}`);
+      params.push(boolVal);
+    }
+    if (compartilha_stock_serial !== undefined) {
+      const v = compartilha_stock_serial;
+      const boolVal = !(v === false || v === 0 || v === '0' || String(v).toLowerCase() === 'false');
+      updates.push(`compartilha_stock_serial = $${paramCount++}`);
       params.push(boolVal);
     }
 
@@ -6649,6 +6684,12 @@ app.put('/api/armazens/:id', authenticateToken, async (req, res) => {
             return res.status(503).json({
               error: 'Coluna recebimento_transferencia_digital em falta na base de dados.',
               details: 'Execute a migração: server/migrate-armazens-recebimento-transferencia-digital.sql',
+            });
+          }
+          if (missingColMsg.includes('compartilha_stock_serial')) {
+            return res.status(503).json({
+              error: 'Coluna compartilha_stock_serial em falta na base de dados.',
+              details: 'Execute a migração: server/migrate-armazens-compartilha-stock-serial.sql',
             });
           }
         }
