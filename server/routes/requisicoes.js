@@ -2206,7 +2206,40 @@ async function serialsRecolhidosRequisicaoItem(poolConn, requisicaoItemId, ri) {
   return serialsNormalizadosList(ri.serialnumber);
 }
 
-// ZIP com um Excel por linha S/N (modelo stock-entry-serial-numbers), coluna A = número de série.
+/** Mapa serial (UPPER TRIM) → código da caixa (`stock_caixas.codigo_caixa`) quando o serial está ligado via `stock_caixa_seriais`. */
+async function mapCodigoCaixaPorSerialStock(poolConn, itemId, armazemId, serials) {
+  const map = new Map();
+  const list = (serials || []).map((s) => String(s || '').trim()).filter(Boolean);
+  if (!itemId || !list.length) return map;
+  const armNum = Number(armazemId);
+  const armFilter = Number.isFinite(armNum) && armNum > 0 ? armNum : null;
+  try {
+    const r = await poolConn.query(
+      `SELECT UPPER(TRIM(ss.serialnumber)) AS sn_key,
+              TRIM(c.codigo_caixa) AS codigo_caixa
+       FROM stock_serial ss
+       LEFT JOIN stock_caixa_seriais scs ON scs.stock_serial_id = ss.id
+       LEFT JOIN stock_caixas c ON c.id = scs.caixa_id
+       WHERE ss.item_id = $1
+         AND ($2::int IS NULL OR ss.armazem_id = $2)
+         AND UPPER(TRIM(ss.serialnumber)) = ANY(
+           SELECT UPPER(TRIM(u.x)) FROM unnest($3::text[]) AS u(x)
+         )`,
+      [itemId, armFilter, list]
+    );
+    for (const row of r.rows || []) {
+      const k = row.sn_key;
+      const cod = row.codigo_caixa != null ? String(row.codigo_caixa).trim() : '';
+      if (k && cod) map.set(k, cod);
+    }
+  } catch (e) {
+    if (e.code === '42P01') return map;
+    throw e;
+  }
+  return map;
+}
+
+// ZIP com um Excel por linha S/N (modelo stock-entry-serial-numbers): coluna A = número de série; coluna B = N.º caixa (se existir em stock).
 router.get('/:id/export-seriais-entrada', ...requisicaoAuth, denyOperador, async (req, res) => {
   try {
     const { id } = req.params;
@@ -2238,14 +2271,25 @@ router.get('/:id/export-seriais-entrada', ...requisicaoAuth, denyOperador, async
       if (!serials.length) continue;
 
       // eslint-disable-next-line no-await-in-loop
+      const caixaBySerial = await mapCodigoCaixaPorSerialStock(
+        pool,
+        ri.item_id,
+        requisicao.armazem_origem_id,
+        serials
+      );
+
+      // eslint-disable-next-line no-await-in-loop
       const wb = new ExcelJS.Workbook();
       // eslint-disable-next-line no-await-in-loop
       await wb.xlsx.readFile(templatePath);
       const ws = wb.worksheets[0];
       if (!ws) continue;
+      ws.getCell(1, 2).value = 'N.º caixa';
       let rowNum = 2;
       for (const sn of serials) {
         ws.getCell(rowNum, 1).value = sn;
+        const codCaixa = caixaBySerial.get(String(sn || '').trim().toUpperCase()) || '';
+        ws.getCell(rowNum, 2).value = codCaixa || null;
         rowNum += 1;
       }
       // eslint-disable-next-line no-await-in-loop
