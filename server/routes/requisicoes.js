@@ -212,7 +212,6 @@ async function assertStockSuficientePreparacaoLocalizacao(client, opts) {
       );
     }
   } catch (e) {
-    if (e.code === '42P01') return;
     throw e;
   }
 }
@@ -7601,6 +7600,12 @@ router.patch('/:id/atender-item', ...requisicaoAuth, async (req, res) => {
         return res.status(503).json({
           error: 'Erro ao preparar item: coluna preparacao_confirmada não existe no banco.',
           details: 'Execute a migração: npm run db:migrate:preparacao-confirmada (ou server/migrate-requisicoes-itens-preparacao-confirmada.sql)'
+        });
+      }
+      if (e.code === '42P01') {
+        return res.status(503).json({
+          error: 'Estrutura de stock por localização em falta na base de dados.',
+          details: 'Execute a migração: npm run db:migrate:localizacao-estoque'
         });
       }
       if (e.code === '23514' && e.constraint === 'requisicoes_status_check') {
