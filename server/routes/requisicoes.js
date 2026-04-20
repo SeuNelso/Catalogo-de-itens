@@ -161,6 +161,16 @@ function armazemControlaSerialNumbers(tipoArmazem, compartilhaStockSerial) {
 
 async function obterCompartilhaStockSerialArmazem(db, armazemId, tipoArmazemFallback) {
   if (!armazemId) return armazemControlaSerialNumbers(tipoArmazemFallback);
+  // Em transação, um SELECT que falha (ex. coluna em falta, 42703) aborta o bloco até ROLLBACK.
+  // SAVEPOINT permite recuperar e aplicar o fallback sem invalidar o resto da transação.
+  const sp = `sp_cs_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`.replace(/[^a-zA-Z0-9_]/g, '_');
+  let savepointAtivo = false;
+  try {
+    await db.query(`SAVEPOINT ${sp}`);
+    savepointAtivo = true;
+  } catch (spErr) {
+    if (spErr.code !== '25P01') throw spErr;
+  }
   try {
     const q = await db.query(
       `SELECT compartilha_stock_serial
@@ -168,11 +178,25 @@ async function obterCompartilhaStockSerialArmazem(db, armazemId, tipoArmazemFall
        WHERE id = $1`,
       [armazemId]
     );
+    if (savepointAtivo) {
+      try {
+        await db.query(`RELEASE SAVEPOINT ${sp}`);
+      } catch (_) {
+        /* ignore */
+      }
+    }
     if (!q.rows.length) return armazemControlaSerialNumbers(tipoArmazemFallback);
     const v = q.rows[0].compartilha_stock_serial;
     if (v === true || v === false) return v;
     return armazemControlaSerialNumbers(tipoArmazemFallback);
   } catch (e) {
+    if (savepointAtivo) {
+      try {
+        await db.query(`ROLLBACK TO SAVEPOINT ${sp}`);
+      } catch (_) {
+        /* ignore */
+      }
+    }
     if (e.code === '42703') {
       return armazemControlaSerialNumbers(tipoArmazemFallback);
     }
@@ -227,6 +251,14 @@ async function resolveLocalizacaoIdPorCodigo(client, armazemId, label) {
 }
 
 async function resolveLocalizacaoExpedicaoId(client, armazemId) {
+  const sp = `sp_exp_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`.replace(/[^a-zA-Z0-9_]/g, '_');
+  let savepointAtivo = false;
+  try {
+    await client.query(`SAVEPOINT ${sp}`);
+    savepointAtivo = true;
+  } catch (spErr) {
+    if (spErr.code !== '25P01') throw spErr;
+  }
   try {
     const r = await client.query(
       `SELECT id FROM armazens_localizacoes
@@ -239,8 +271,22 @@ async function resolveLocalizacaoExpedicaoId(client, armazemId) {
        LIMIT 1`,
       [armazemId]
     );
+    if (savepointAtivo) {
+      try {
+        await client.query(`RELEASE SAVEPOINT ${sp}`);
+      } catch (_) {
+        /* ignore */
+      }
+    }
     return r.rows[0]?.id ?? null;
   } catch (e) {
+    if (savepointAtivo) {
+      try {
+        await client.query(`ROLLBACK TO SAVEPOINT ${sp}`);
+      } catch (_) {
+        /* ignore */
+      }
+    }
     if (e.code === '42703') {
       const r2 = await client.query(
         `SELECT id FROM armazens_localizacoes
@@ -298,6 +344,14 @@ async function validarVinculoTransferenciaCentral(client, { armazemOrigemId, arm
   if (!Number.isFinite(origemId) || !Number.isFinite(destinoId)) return;
 
   let armRows;
+  const sp = `sp_vvtc_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`.replace(/[^a-zA-Z0-9_]/g, '_');
+  let savepointAtivo = false;
+  try {
+    await client.query(`SAVEPOINT ${sp}`);
+    savepointAtivo = true;
+  } catch (spErr) {
+    if (spErr.code !== '25P01') throw spErr;
+  }
   try {
     const arm = await client.query(
       `SELECT id, LOWER(TRIM(COALESCE(tipo, ''))) AS tipo, armazem_central_vinculado_id
@@ -306,7 +360,21 @@ async function validarVinculoTransferenciaCentral(client, { armazemOrigemId, arm
       [[origemId, destinoId]]
     );
     armRows = arm.rows || [];
+    if (savepointAtivo) {
+      try {
+        await client.query(`RELEASE SAVEPOINT ${sp}`);
+      } catch (_) {
+        /* ignore */
+      }
+    }
   } catch (e) {
+    if (savepointAtivo) {
+      try {
+        await client.query(`ROLLBACK TO SAVEPOINT ${sp}`);
+      } catch (_) {
+        /* ignore */
+      }
+    }
     if (e.code !== '42703') throw e;
     const arm = await client.query(
       `SELECT id, LOWER(TRIM(COALESCE(tipo, ''))) AS tipo
@@ -389,12 +457,34 @@ function requisicaoTemLinhasQuantidadeTrfl(itens, bobinas) {
  */
 async function aplicarStockTrflSePendenteNormais(client, { requisicaoId, armazemOrigemId, itens, bobinas }) {
   let doc;
+  const spTrfl = `sp_trfl_rd_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`.replace(/[^a-zA-Z0-9_]/g, '_');
+  let spTrflAtivo = false;
+  try {
+    await client.query(`SAVEPOINT ${spTrfl}`);
+    spTrflAtivo = true;
+  } catch (spErr) {
+    if (spErr.code !== '25P01') throw spErr;
+  }
   try {
     doc = await client.query(
       `SELECT trfl_estoque_aplicado_em FROM requisicoes WHERE id = $1 FOR UPDATE`,
       [requisicaoId]
     );
+    if (spTrflAtivo) {
+      try {
+        await client.query(`RELEASE SAVEPOINT ${spTrfl}`);
+      } catch (_) {
+        /* ignore */
+      }
+    }
   } catch (e) {
+    if (spTrflAtivo) {
+      try {
+        await client.query(`ROLLBACK TO SAVEPOINT ${spTrfl}`);
+      } catch (_) {
+        /* ignore */
+      }
+    }
     if (e.code === '42703') return;
     throw e;
   }
@@ -465,12 +555,34 @@ async function aplicarStockTrflSePendenteNormais(client, { requisicaoId, armazem
     await moverParaExpedicao(ri.localizacao_origem, ri.item_id, ri.item_codigo, qty);
   }
 
+  const spTrflUp = `sp_trfl_up_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`.replace(/[^a-zA-Z0-9_]/g, '_');
+  let spTrflUpAtivo = false;
+  try {
+    await client.query(`SAVEPOINT ${spTrflUp}`);
+    spTrflUpAtivo = true;
+  } catch (spErr) {
+    if (spErr.code !== '25P01') throw spErr;
+  }
   try {
     await client.query(
       `UPDATE requisicoes SET trfl_estoque_aplicado_em = CURRENT_TIMESTAMP WHERE id = $1`,
       [requisicaoId]
     );
+    if (spTrflUpAtivo) {
+      try {
+        await client.query(`RELEASE SAVEPOINT ${spTrflUp}`);
+      } catch (_) {
+        /* ignore */
+      }
+    }
   } catch (e) {
+    if (spTrflUpAtivo) {
+      try {
+        await client.query(`ROLLBACK TO SAVEPOINT ${spTrflUp}`);
+      } catch (_) {
+        /* ignore */
+      }
+    }
     if (e.code === '42703') {
       /* coluna em falta: movimento já feito na BD de stock */
       return;
@@ -493,12 +605,34 @@ async function baixarStockTraExpedicaoSePendenteNormais(client, {
   localizacaoRecebimentoDestino,
 }) {
   let doc;
+  const spTraRd = `sp_tra_rd_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`.replace(/[^a-zA-Z0-9_]/g, '_');
+  let spTraRdAtivo = false;
+  try {
+    await client.query(`SAVEPOINT ${spTraRd}`);
+    spTraRdAtivo = true;
+  } catch (spErr) {
+    if (spErr.code !== '25P01') throw spErr;
+  }
   try {
     doc = await client.query(
       `SELECT tra_baixa_expedicao_aplicada_em FROM requisicoes WHERE id = $1 FOR UPDATE`,
       [requisicaoId]
     );
+    if (spTraRdAtivo) {
+      try {
+        await client.query(`RELEASE SAVEPOINT ${spTraRd}`);
+      } catch (_) {
+        /* ignore */
+      }
+    }
   } catch (e) {
+    if (spTraRdAtivo) {
+      try {
+        await client.query(`ROLLBACK TO SAVEPOINT ${spTraRd}`);
+      } catch (_) {
+        /* ignore */
+      }
+    }
     if (e.code === '42703') return;
     throw e;
   }
@@ -566,12 +700,34 @@ async function baixarStockTraExpedicaoSePendenteNormais(client, {
     await baixaLinha(ri.item_id, ri.item_codigo, qty);
   }
 
+  const spTraUp = `sp_tra_up_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`.replace(/[^a-zA-Z0-9_]/g, '_');
+  let spTraUpAtivo = false;
+  try {
+    await client.query(`SAVEPOINT ${spTraUp}`);
+    spTraUpAtivo = true;
+  } catch (spErr) {
+    if (spErr.code !== '25P01') throw spErr;
+  }
   try {
     await client.query(
       `UPDATE requisicoes SET tra_baixa_expedicao_aplicada_em = CURRENT_TIMESTAMP WHERE id = $1`,
       [requisicaoId]
     );
+    if (spTraUpAtivo) {
+      try {
+        await client.query(`RELEASE SAVEPOINT ${spTraUp}`);
+      } catch (_) {
+        /* ignore */
+      }
+    }
   } catch (e) {
+    if (spTraUpAtivo) {
+      try {
+        await client.query(`ROLLBACK TO SAVEPOINT ${spTraUp}`);
+      } catch (_) {
+        /* ignore */
+      }
+    }
     if (e.code === '42703') return;
     throw e;
   }
@@ -7643,14 +7799,12 @@ router.patch('/:id/atender-item', ...requisicaoAuth, async (req, res) => {
           requisicao_item_id,
         ]);
         if (!isZero && Array.isArray(serialsNormalizados) && serialsNormalizados.length > 0) {
-          for (let i = 0; i < serialsNormalizados.length; i++) {
-            // eslint-disable-next-line no-await-in-loop
-            await client.query(
-              `INSERT INTO requisicoes_itens_seriais (requisicao_item_id, serialnumber, ordem)
-               VALUES ($1, $2, $3)`,
-              [requisicao_item_id, serialsNormalizados[i], i + 1]
-            );
-          }
+          await client.query(
+            `INSERT INTO requisicoes_itens_seriais (requisicao_item_id, serialnumber, ordem)
+             SELECT $1::int, u.x, u.ord::int
+             FROM unnest($2::text[]) WITH ORDINALITY AS u(x, ord)`,
+            [requisicao_item_id, serialsNormalizados]
+          );
         }
       }
 
