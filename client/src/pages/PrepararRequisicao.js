@@ -39,7 +39,19 @@ function labelArmazem(armazem) {
 }
 
 const MAX_BOBINAS_LOTE = 500;
+const SN_LISTA_PAGE_SIZE = 20;
 const RECEBIMENTO_TRANSFERENCIA_MARKER = 'RECEBIMENTO_TRANSFERENCIA_V1';
+
+/** Garante _ordemColeta 1..n por índice da grelha para dados já existentes (S/N). */
+function aplicarOrdemInicialSN(bobinas) {
+  let o = 0;
+  return (bobinas || []).map((b) => {
+    const sn = String(b?.serialnumber || '').trim();
+    if (!sn) return { ...b, _ordemColeta: undefined };
+    o += 1;
+    return { ...b, _ordemColeta: o };
+  });
+}
 
 const normPrepLocBusca = (v) =>
   String(v || '')
@@ -104,6 +116,11 @@ const PrepararRequisicao = () => {
   const [showCaixaScanner, setShowCaixaScanner] = useState(false);
   const [showCaixaManualModal, setShowCaixaManualModal] = useState(false);
   const [caixaManualInput, setCaixaManualInput] = useState('');
+  const [showSeriaisLoteModal, setShowSeriaisLoteModal] = useState(false);
+  const [seriaisLoteInput, setSeriaisLoteInput] = useState('');
+  const [serialRapidoInput, setSerialRapidoInput] = useState('');
+  const [serialRapidoCameraOpen, setSerialRapidoCameraOpen] = useState(false);
+  const [snPagina, setSnPagina] = useState(1);
   const [reservandoCaixa, setReservandoCaixa] = useState(false);
   const [lotesDisponiveisPrep, setLotesDisponiveisPrep] = useState([]);
   const [loadingLotesPrep, setLoadingLotesPrep] = useState(false);
@@ -132,11 +149,104 @@ const PrepararRequisicao = () => {
     return ['1', 'true', 'yes', 'sim'].includes(String(p.get('receber') || '').toLowerCase());
   }, [location.search]);
   const abortStockPrepRef = useRef(null);
+  const coletaOrdemRef = useRef(0);
+  const prevSnPreenchidosRef = useRef(0);
+  const bumpColetaOrdem = () => {
+    coletaOrdemRef.current += 1;
+    return coletaOrdemRef.current;
+  };
   const navigate = useNavigate();
   const { user } = useAuth();
   const confirm = useConfirm();
   const canPrepare = user && ['admin', 'operador', 'backoffice_armazem', 'supervisor_armazem'].includes(user.role);
   const podeDocsPosSeparacao = operadorPodeDocsELogisticaAposSeparacao(user?.role);
+
+  const splitSerialsInput = (raw) =>
+    String(raw || '')
+      .split(/\r?\n|;|\||,/)
+      .map((s) => String(s || '').trim())
+      .filter(Boolean);
+
+  const inserirSeriaisNoFormulario = (entrada, opts = {}) => {
+    const { origem = 'manual', mostrarToast = true } = opts;
+    const seriaisEntrada = Array.isArray(entrada) ? entrada : splitSerialsInput(entrada);
+    if (!seriaisEntrada.length) {
+      if (mostrarToast) setToast({ type: 'error', message: 'Informe pelo menos um serial válido.' });
+      return { adicionados: 0, duplicados: 0, excedentes: 0, preenchidos: 0, alvo: 0, firstEmpty: -1 };
+    }
+
+    let resumo = { adicionados: 0, duplicados: 0, excedentes: 0, preenchidos: 0, alvo: 0, firstEmpty: -1 };
+    setFormItem((prev) => {
+      const nDigitado = Math.max(0, Math.min(MAX_BOBINAS_LOTE, Math.floor(Number(prev.quantidade_preparada)) || 0));
+      let bobinas = Array.isArray(prev.bobinas) ? [...prev.bobinas] : [];
+      const alvoInicial = nDigitado > 0 ? nDigitado : bobinas.length;
+      if (alvoInicial > 0) bobinas = resizeBobinasArray(bobinas, alvoInicial);
+
+      const seen = new Set(
+        bobinas.map((b) => String(b?.serialnumber || '').trim().toUpperCase()).filter(Boolean)
+      );
+
+      for (const serialRaw of seriaisEntrada) {
+        const sn = String(serialRaw || '').trim();
+        const key = sn.toUpperCase();
+        if (!key) continue;
+        if (seen.has(key)) {
+          resumo.duplicados += 1;
+          continue;
+        }
+        let idxLivre = bobinas.findIndex((b) => !String(b?.serialnumber || '').trim());
+        if (idxLivre >= 0) {
+          bobinas[idxLivre] = {
+            ...bobinas[idxLivre],
+            serialnumber: sn,
+            _ordemColeta: bumpColetaOrdem(),
+          };
+          seen.add(key);
+          resumo.adicionados += 1;
+          continue;
+        }
+        if (nDigitado === 0 && bobinas.length < MAX_BOBINAS_LOTE) {
+          bobinas.push({
+            lote: '',
+            serialnumber: sn,
+            metros: '',
+            _ordemColeta: bumpColetaOrdem(),
+          });
+          seen.add(key);
+          resumo.adicionados += 1;
+          continue;
+        }
+        resumo.excedentes += 1;
+      }
+
+      resumo.preenchidos = bobinas.filter((b) => String(b?.serialnumber || '').trim()).length;
+      resumo.alvo = bobinas.length;
+      resumo.firstEmpty = bobinas.findIndex((b) => !String(b?.serialnumber || '').trim());
+
+      return {
+        ...prev,
+        quantidade_preparada: String(bobinas.length),
+        bobinas,
+      };
+    });
+
+    if (mostrarToast) {
+      const partes = [
+        `${resumo.adicionados} adicionados`,
+        resumo.duplicados ? `${resumo.duplicados} duplicados ignorados` : '',
+        resumo.excedentes ? `${resumo.excedentes} fora da quantidade alvo` : '',
+      ].filter(Boolean);
+      setToast({
+        type: resumo.adicionados > 0 ? 'success' : 'error',
+        message:
+          origem === 'scanner'
+            ? `Leitura de serial: ${partes.join(', ')}.`
+            : `Seriais processados: ${partes.join(', ')}.`,
+      });
+    }
+
+    return resumo;
+  };
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
@@ -470,6 +580,14 @@ const PrepararRequisicao = () => {
         nBobinas
       )
       : (item.bobinas || []);
+    const bobinasComOrdem = isSerial ? aplicarOrdemInicialSN(bobinasInicial) : bobinasInicial;
+    coletaOrdemRef.current = isSerial
+      ? bobinasComOrdem.reduce((m, b) => Math.max(m, Number(b._ordemColeta) || 0), 0)
+      : 0;
+    setSnPagina(1);
+    prevSnPreenchidosRef.current = isSerial
+      ? bobinasComOrdem.filter((b) => String(b?.serialnumber || '').trim()).length
+      : 0;
     setFormItem({
       quantidade_preparada: qtdPreparada,
       localizacao_origem: isOrigemCustom ? '_custom_' : locOrigem,
@@ -479,7 +597,7 @@ const PrepararRequisicao = () => {
       lote: item.lote || '',
       serialnumber: item.serialnumber || '',
       quantidade_apeados: 0,
-      bobinas: bobinasInicial
+      bobinas: bobinasComOrdem
     });
   };
 
@@ -856,6 +974,10 @@ const PrepararRequisicao = () => {
   const fecharPrepararItem = () => {
     setPrepLocBusca('');
     setItemPreparando(null);
+    setSerialRapidoCameraOpen(false);
+    setSnPagina(1);
+    coletaOrdemRef.current = 0;
+    prevSnPreenchidosRef.current = 0;
     setPreparacaoStockLoc({
       loading: false,
       filtroAtivo: false,
@@ -1163,10 +1285,22 @@ const PrepararRequisicao = () => {
           .map((b) => ({ ...b, lote: '', metros: '' }));
         for (const sn of novos) {
           if (bobinas.length >= nAlvo) break;
-          bobinas.push({ lote: '', serialnumber: sn, metros: '' });
+          bobinas.push({
+            lote: '',
+            serialnumber: sn,
+            metros: '',
+            _ordemColeta: bumpColetaOrdem(),
+          });
         }
         while (bobinas.length < nAlvo) {
           bobinas.push({ lote: '', serialnumber: '', metros: '' });
+        }
+        for (let i = 0; i < bobinas.length; i++) {
+          const snRow = String(bobinas[i]?.serialnumber || '').trim();
+          if (!snRow) continue;
+          if (bobinas[i]._ordemColeta == null) {
+            bobinas[i] = { ...bobinas[i], _ordemColeta: bumpColetaOrdem() };
+          }
         }
 
         const preenchidos = bobinas.filter((b) => String(b.serialnumber || '').trim()).length;
@@ -1195,11 +1329,59 @@ const PrepararRequisicao = () => {
     }
   };
 
+  const aplicarSeriaisEmLote = () => {
+    const bruto = String(seriaisLoteInput || '').trim();
+    if (!bruto) {
+      setToast({ type: 'error', message: 'Cole pelo menos um serial.' });
+      return;
+    }
+    inserirSeriaisNoFormulario(bruto, { origem: 'manual', mostrarToast: true });
+    setShowSeriaisLoteModal(false);
+    setSeriaisLoteInput('');
+  };
+
   const handleLerSeriaisPorCaixa = async () => {
     if (!itemPreparando?.id) return;
     setCaixaManualInput('');
     setShowCaixaManualModal(true);
   };
+
+  const seriaisSnOrdenadosLista = useMemo(() => {
+    const b = formItem.bobinas || [];
+    return b
+      .map((bob, idxBob) => ({ bob, idxBob }))
+      .filter((x) => String(x.bob?.serialnumber || '').trim())
+      .sort((a, b2) => {
+        const oa = Number(a.bob._ordemColeta);
+        const ob = Number(b2.bob._ordemColeta);
+        const va = Number.isFinite(oa) ? oa : 1e9 + a.idxBob;
+        const vb = Number.isFinite(ob) ? ob : 1e9 + b2.idxBob;
+        if (va !== vb) return va - vb;
+        return a.idxBob - b2.idxBob;
+      });
+  }, [formItem.bobinas]);
+
+  const snTotalPaginas = Math.max(1, Math.ceil(seriaisSnOrdenadosLista.length / SN_LISTA_PAGE_SIZE));
+  const snPaginaEfetiva = Math.min(Math.max(1, snPagina), snTotalPaginas);
+
+  const seriaisSnPagina = useMemo(() => {
+    const start = (snPaginaEfetiva - 1) * SN_LISTA_PAGE_SIZE;
+    return seriaisSnOrdenadosLista.slice(start, start + SN_LISTA_PAGE_SIZE);
+  }, [seriaisSnOrdenadosLista, snPaginaEfetiva]);
+
+  useEffect(() => {
+    if ((itemPreparando?.tipocontrolo || '').toUpperCase() !== 'S/N') return;
+    const n = (formItem.bobinas || []).filter((b) => String(b?.serialnumber || '').trim()).length;
+    if (n > prevSnPreenchidosRef.current) {
+      const tp = Math.max(1, Math.ceil(n / SN_LISTA_PAGE_SIZE));
+      setSnPagina(tp);
+    }
+    prevSnPreenchidosRef.current = n;
+  }, [formItem.bobinas, itemPreparando?.tipocontrolo]);
+
+  useEffect(() => {
+    if (snPagina > snTotalPaginas) setSnPagina(snTotalPaginas);
+  }, [snPagina, snTotalPaginas]);
 
   const locsOrigemParaPreparacao = useMemo(() => {
     const todas = armazemOrigem?.localizacoes?.map((l) => l.localizacao).filter(Boolean) || [];
@@ -2084,47 +2266,108 @@ const PrepararRequisicao = () => {
                       )}
                       {(item.tipocontrolo || '').toUpperCase() === 'S/N' && (
                         <section className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm space-y-3">
-                          <div className="flex flex-wrap items-center justify-between gap-2">
-                            <h4 className="text-sm font-semibold text-gray-800">Seriais (S/N)</h4>
-                            <div className="flex items-center gap-2">
+                          <div
+                            className="sticky top-0 z-30 -mx-4 px-4 py-2 -mt-1 mb-2 space-y-2 bg-white/95 backdrop-blur-md border-b border-gray-100 shadow-[0_6px_16px_-8px_rgba(0,0,0,0.12)]"
+                          >
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <h4 className="text-sm font-semibold text-gray-800 shrink-0">Seriais (S/N)</h4>
+                              <div className="flex flex-wrap items-center justify-end gap-2 w-full sm:w-auto">
+                                <button
+                                  type="button"
+                                  onClick={() => setShowCaixaScanner(true)}
+                                  disabled={reservandoCaixa}
+                                  className="px-2.5 py-1.5 border border-indigo-300 rounded text-indigo-700 hover:bg-indigo-50 flex items-center gap-1 text-xs disabled:opacity-50"
+                                  title="Ler o código da caixa por câmara (barcode/QR)"
+                                >
+                                  <FaQrcode /> {reservandoCaixa ? 'A ler...' : 'Ler caixa (câmara)'}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={handleLerSeriaisPorCaixa}
+                                  disabled={reservandoCaixa}
+                                  className="px-2.5 py-1.5 border border-slate-300 rounded text-slate-700 hover:bg-slate-50 flex items-center gap-1 text-xs disabled:opacity-50"
+                                  title="Digitar o código da caixa manualmente"
+                                >
+                                  {reservandoCaixa ? 'A ler...' : 'Digitar caixa'}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setShowSeriaisLoteModal(true)}
+                                  className="px-2.5 py-1.5 border border-emerald-300 rounded text-emerald-700 hover:bg-emerald-50 flex items-center gap-1 text-xs"
+                                  title="Colar vários seriais de uma vez (1 por linha)"
+                                >
+                                  <FaPlus /> Colar seriais
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const firstEmpty = (formItem.bobinas || []).findIndex((b) => !(b.serialnumber || '').trim());
+                                    const startIdx = firstEmpty >= 0 ? firstEmpty : 0;
+                                    if ((formItem.bobinas || []).length === 0) {
+                                      setToast({
+                                        type: 'error',
+                                        message: 'Defina primeiro a quantidade preparada para gerar as linhas de S/N.'
+                                      });
+                                      return;
+                                    }
+                                    setSerialScannerContinuous(true);
+                                    setSerialScannerIdx(startIdx);
+                                  }}
+                                  className="px-2.5 py-1.5 border border-gray-300 rounded text-gray-700 hover:bg-gray-100 flex items-center gap-1 text-xs"
+                                  title="Ler vários seriais em sequência"
+                                >
+                                  <FaQrcode /> Scanner contínuo
+                                </button>
+                              </div>
+                            </div>
+                            <div className="grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_auto_auto_auto] gap-2 p-2 border border-emerald-200 bg-emerald-50/50 rounded-lg">
+                              <input
+                                type="text"
+                                value={serialRapidoInput}
+                                onChange={(e) => setSerialRapidoInput(e.target.value)}
+                                placeholder="Serial rápido (Enter)"
+                                className="w-full px-2.5 py-2 border border-emerald-300 rounded text-sm"
+                                onKeyDown={(e) => {
+                                  if (e.key !== 'Enter') return;
+                                  e.preventDefault();
+                                  const input = String(serialRapidoInput || '').trim();
+                                  if (!input) return;
+                                  inserirSeriaisNoFormulario(input, { origem: 'manual', mostrarToast: false });
+                                  setSerialRapidoInput('');
+                                }}
+                              />
                               <button
                                 type="button"
-                                onClick={() => setShowCaixaScanner(true)}
-                                disabled={reservandoCaixa}
-                                className="px-2.5 py-1.5 border border-indigo-300 rounded text-indigo-700 hover:bg-indigo-50 flex items-center gap-1 text-xs disabled:opacity-50"
-                                title="Ler o código da caixa por câmara (barcode/QR)"
-                              >
-                                <FaQrcode /> {reservandoCaixa ? 'A ler...' : 'Ler caixa (câmara)'}
-                              </button>
-                              <button
-                                type="button"
-                                onClick={handleLerSeriaisPorCaixa}
-                                disabled={reservandoCaixa}
-                                className="px-2.5 py-1.5 border border-slate-300 rounded text-slate-700 hover:bg-slate-50 flex items-center gap-1 text-xs disabled:opacity-50"
-                                title="Digitar o código da caixa manualmente"
-                              >
-                                {reservandoCaixa ? 'A ler...' : 'Digitar caixa'}
-                              </button>
-                              <button
-                                type="button"
+                                className="px-3 py-2 border border-emerald-300 rounded text-emerald-700 hover:bg-emerald-100 text-sm whitespace-nowrap"
                                 onClick={() => {
-                                  const firstEmpty = (formItem.bobinas || []).findIndex((b) => !(b.serialnumber || '').trim());
-                                  const startIdx = firstEmpty >= 0 ? firstEmpty : 0;
-                                  if ((formItem.bobinas || []).length === 0) {
+                                  const input = String(serialRapidoInput || '').trim();
+                                  if (!input) return;
+                                  inserirSeriaisNoFormulario(input, { origem: 'manual', mostrarToast: false });
+                                  setSerialRapidoInput('');
+                                }}
+                              >
+                                Adicionar
+                              </button>
+                              <button
+                                type="button"
+                                className="px-3 py-2 border border-emerald-400 rounded text-emerald-800 bg-white hover:bg-emerald-50 text-sm whitespace-nowrap flex items-center justify-center gap-1"
+                                title="Ler código com a câmara e adicionar de seguida"
+                                onClick={() => {
+                                  if (!(formItem.bobinas || []).length) {
                                     setToast({
                                       type: 'error',
-                                      message: 'Defina primeiro a quantidade preparada para gerar as linhas de S/N.'
+                                      message: 'Defina primeiro a quantidade preparada para gerar as linhas de S/N.',
                                     });
                                     return;
                                   }
-                                  setSerialScannerContinuous(true);
-                                  setSerialScannerIdx(startIdx);
+                                  setSerialRapidoCameraOpen(true);
                                 }}
-                                className="px-2.5 py-1.5 border border-gray-300 rounded text-gray-700 hover:bg-gray-100 flex items-center gap-1 text-xs"
-                                title="Ler vários seriais em sequência"
                               >
-                                <FaQrcode /> Scanner contínuo
+                                <FaQrcode /> Câmara
                               </button>
+                              <div className="px-3 py-2 rounded border border-emerald-200 bg-white text-xs text-emerald-800 flex items-center justify-center tabular-nums whitespace-nowrap">
+                                {`${(formItem.bobinas || []).filter((bb) => String(bb?.serialnumber || '').trim()).length}/${(formItem.bobinas || []).length || 0}`}
+                              </div>
                             </div>
                           </div>
                           {(formItem.bobinas || []).length === 0 && (
@@ -2132,66 +2375,201 @@ const PrepararRequisicao = () => {
                               Indique acima a quantidade preparada para mostrar os campos de serial number.
                             </p>
                           )}
-                          <div className="space-y-2">
-                            {(formItem.bobinas || []).map((b, idxBob) => (
-                              <div
-                                key={idxBob}
-                                className="grid grid-cols-1 sm:grid-cols-4 gap-2 items-end border border-gray-200 rounded-lg p-2"
+                          {seriaisSnOrdenadosLista.length === 0 && (formItem.bobinas || []).length > 0 && (
+                            <p className="text-xs text-gray-500">
+                              Os seriais aparecem aqui à medida que adiciona (serial rápido, caixa ou leitor). Ordem: sequência de digitação/leitura. Até {SN_LISTA_PAGE_SIZE} por página.
+                            </p>
+                          )}
+                          {seriaisSnOrdenadosLista.length > 0 && (
+                            <div className="flex items-center justify-between gap-2 text-xs text-gray-600 flex-wrap py-1">
+                              <button
+                                type="button"
+                                disabled={snPaginaEfetiva <= 1}
+                                onClick={() => setSnPagina((p) => Math.max(1, Math.min(snTotalPaginas, p) - 1))}
+                                className="px-2 py-1 rounded border border-gray-300 bg-white disabled:opacity-40"
                               >
-                                <div className="sm:col-span-3">
-                                  <label className="block text-xs font-medium text-gray-700 mb-1">
-                                    Serial number {idxBob + 1}
-                                  </label>
-                                  <div className="flex gap-2">
-                                    <input
-                                      type="text"
-                                      value={b.serialnumber}
-                                      onChange={(e) => {
-                                        const val = e.target.value;
-                                        setFormItem(prev => ({
-                                          ...prev,
-                                          bobinas: prev.bobinas.map((bb, i) =>
-                                            i === idxBob ? { ...bb, serialnumber: val } : bb
-                                          )
-                                        }));
-                                      }}
-                                      className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm"
-                                      placeholder="Informe o serial"
-                                    />
+                                Anterior
+                              </button>
+                              <span className="tabular-nums text-center">
+                                Página {snPaginaEfetiva} / {snTotalPaginas} · {seriaisSnOrdenadosLista.length} serial(is)
+                              </span>
+                              <button
+                                type="button"
+                                disabled={snPaginaEfetiva >= snTotalPaginas}
+                                onClick={() => setSnPagina((p) => Math.min(snTotalPaginas, Math.max(1, p) + 1))}
+                                className="px-2 py-1 rounded border border-gray-300 bg-white disabled:opacity-40"
+                              >
+                                Seguinte
+                              </button>
+                            </div>
+                          )}
+                          <div className="space-y-2">
+                            {seriaisSnPagina.map((row, i) => {
+                              const idxBob = row.idxBob;
+                              const b = row.bob;
+                              const labelNum = (snPaginaEfetiva - 1) * SN_LISTA_PAGE_SIZE + i + 1;
+                              return (
+                                <div
+                                  key={`sn-ord-${idxBob}`}
+                                  className="grid grid-cols-1 sm:grid-cols-4 gap-2 items-end border border-gray-200 rounded-lg p-2"
+                                >
+                                  <div className="sm:col-span-3">
+                                    <label className="block text-xs font-medium text-gray-700 mb-1">
+                                      Serial number {labelNum}
+                                      <span className="ml-1 font-normal text-gray-400">(pos. requisição {idxBob + 1})</span>
+                                    </label>
+                                    <div className="flex gap-2">
+                                      <input
+                                        type="text"
+                                        value={b.serialnumber}
+                                        onChange={(e) => {
+                                          const val = e.target.value;
+                                          setFormItem((prev) => ({
+                                            ...prev,
+                                            bobinas: prev.bobinas.map((bb, i) => {
+                                              if (i !== idxBob) return bb;
+                                              const had = String(bb.serialnumber || '').trim();
+                                              const nextTrim = String(val).trim();
+                                              if (!had && nextTrim) {
+                                                return { ...bb, serialnumber: val, _ordemColeta: bumpColetaOrdem() };
+                                              }
+                                              if (had && !nextTrim) {
+                                                return { ...bb, serialnumber: val, _ordemColeta: undefined };
+                                              }
+                                              return { ...bb, serialnumber: val };
+                                            }),
+                                          }));
+                                        }}
+                                        className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm"
+                                        placeholder="Informe o serial"
+                                        onKeyDown={(e) => {
+                                          if (e.key === 'Enter') e.preventDefault();
+                                        }}
+                                      />
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setSerialScannerContinuous(false);
+                                          setSerialScannerIdx(idxBob);
+                                        }}
+                                        className="px-2.5 py-1.5 border border-gray-300 rounded text-gray-700 hover:bg-gray-100 flex items-center gap-1 text-xs shrink-0"
+                                        title="Ler serial com câmara"
+                                      >
+                                        <FaQrcode /> Câmara
+                                      </button>
+                                    </div>
+                                  </div>
+                                  <div className="flex items-center gap-2">
                                     <button
                                       type="button"
-                                      onClick={() => {
-                                        setSerialScannerContinuous(false);
-                                        setSerialScannerIdx(idxBob);
-                                      }}
-                                      className="px-2.5 py-1.5 border border-gray-300 rounded text-gray-700 hover:bg-gray-100 flex items-center gap-1 text-xs shrink-0"
-                                      title="Ler serial com câmara"
+                                      onClick={() =>
+                                        setFormItem((prev) => {
+                                          const bobinas = (prev.bobinas || []).filter((_, i) => i !== idxBob);
+                                          return {
+                                            ...prev,
+                                            bobinas,
+                                            quantidade_preparada: String(bobinas.length),
+                                          };
+                                        })
+                                      }
+                                      className="px-2 py-1 text-xs border border-red-300 text-red-600 rounded hover:bg-red-50"
                                     >
-                                      <FaQrcode /> Câmara
+                                      Remover linha
                                     </button>
                                   </div>
                                 </div>
-                                <div className="flex items-center gap-2">
-                                  <button
-                                    type="button"
-                                    onClick={() =>
-                                      setFormItem((prev) => {
-                                        const bobinas = (prev.bobinas || []).filter((_, i) => i !== idxBob);
-                                        return {
-                                          ...prev,
-                                          bobinas,
-                                          quantidade_preparada: String(bobinas.length)
-                                        };
-                                      })
-                                    }
-                                    className="px-2 py-1 text-xs border border-red-300 text-red-600 rounded hover:bg-red-50"
-                                  >
-                                    Remover
-                                  </button>
-                                </div>
-                              </div>
-                            ))}
+                              );
+                            })}
                           </div>
+                          {(formItem.bobinas || []).length > 0 && (
+                            <details className="rounded-lg border border-gray-200 bg-gray-50/60 text-sm">
+                              <summary className="cursor-pointer px-3 py-2 font-medium text-gray-700 select-none">
+                                Grelha completa por posição na requisição ({(formItem.bobinas || []).length} linhas)
+                              </summary>
+                              <div className="p-2 pt-0 space-y-2 border-t border-gray-100">
+                                {(formItem.bobinas || []).map((b, idxBob) => (
+                                  <div
+                                    key={`sn-grid-${idxBob}`}
+                                    className="grid grid-cols-1 sm:grid-cols-4 gap-2 items-end border border-gray-200 rounded-lg p-2 bg-white"
+                                  >
+                                    <div className="sm:col-span-3">
+                                      <label className="block text-xs font-medium text-gray-700 mb-1">
+                                        Posição {idxBob + 1}
+                                      </label>
+                                      <div className="flex gap-2">
+                                        <input
+                                          type="text"
+                                          value={b.serialnumber}
+                                          onChange={(e) => {
+                                            const val = e.target.value;
+                                            setFormItem((prev) => ({
+                                              ...prev,
+                                              bobinas: prev.bobinas.map((bb, i) => {
+                                                if (i !== idxBob) return bb;
+                                                const had = String(bb.serialnumber || '').trim();
+                                                const nextTrim = String(val).trim();
+                                                if (!had && nextTrim) {
+                                                  return { ...bb, serialnumber: val, _ordemColeta: bumpColetaOrdem() };
+                                                }
+                                                if (had && !nextTrim) {
+                                                  return { ...bb, serialnumber: val, _ordemColeta: undefined };
+                                                }
+                                                return { ...bb, serialnumber: val };
+                                              }),
+                                            }));
+                                          }}
+                                          className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm"
+                                          placeholder="Serial"
+                                        />
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setSerialScannerContinuous(false);
+                                            setSerialScannerIdx(idxBob);
+                                          }}
+                                          className="px-2.5 py-1.5 border border-gray-300 rounded text-gray-700 hover:bg-gray-100 flex items-center gap-1 text-xs shrink-0"
+                                        >
+                                          <FaQrcode /> Câmara
+                                        </button>
+                                      </div>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          setFormItem((prev) => {
+                                            const bobinas = (prev.bobinas || []).filter((_, i) => i !== idxBob);
+                                            return {
+                                              ...prev,
+                                              bobinas,
+                                              quantidade_preparada: String(bobinas.length),
+                                            };
+                                          })
+                                        }
+                                        className="px-2 py-1 text-xs border border-red-300 text-red-600 rounded hover:bg-red-50"
+                                      >
+                                        Remover
+                                      </button>
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            </details>
+                          )}
+                          <QrScannerModal
+                            open={serialRapidoCameraOpen}
+                            onClose={() => setSerialRapidoCameraOpen(false)}
+                            onScan={(texto) => {
+                              const sn = String(texto || '').trim();
+                              if (!sn) return;
+                              inserirSeriaisNoFormulario([sn], { origem: 'scanner', mostrarToast: true });
+                              setSerialRapidoCameraOpen(false);
+                            }}
+                            title="Ler serial com a câmara (adiciona automaticamente)"
+                            readerId="qr-reader-serial-rapido"
+                            closeOnScan
+                            formatsToSupport={FORMATOS_QR_BARCODE}
+                          />
                           <QrScannerModal
                             open={serialScannerIdx != null}
                             onClose={() => {
@@ -2201,18 +2579,25 @@ const PrepararRequisicao = () => {
                             onScan={(texto) => {
                               const sn = (texto || '').trim();
                               if (!sn || serialScannerIdx == null) return;
-                              setFormItem((prev) => ({
-                                ...prev,
-                                bobinas: (prev.bobinas || []).map((bb, i) =>
-                                  i === serialScannerIdx ? { ...bb, serialnumber: sn } : bb
-                                )
-                              }));
+                              let resumo;
                               if (serialScannerContinuous) {
-                                const total = (formItem.bobinas || []).length;
-                                const nextIdx = serialScannerIdx + 1;
-                                if (nextIdx < total) {
-                                  setSerialScannerIdx(nextIdx);
-                                  setToast({ type: 'success', message: `Serial ${serialScannerIdx + 1}/${total} lido.` });
+                                resumo = inserirSeriaisNoFormulario([sn], { origem: 'scanner', mostrarToast: false });
+                              } else {
+                                setFormItem((prev) => ({
+                                  ...prev,
+                                  bobinas: (prev.bobinas || []).map((bb, i) =>
+                                    i === serialScannerIdx
+                                      ? { ...bb, serialnumber: sn, _ordemColeta: bumpColetaOrdem() }
+                                      : bb
+                                  ),
+                                }));
+                              }
+                              if (serialScannerContinuous) {
+                                const total = Number(resumo?.alvo || 0);
+                                const preenchidos = Number(resumo?.preenchidos || 0);
+                                if (resumo?.firstEmpty >= 0) {
+                                  setSerialScannerIdx(resumo.firstEmpty);
+                                  setToast({ type: 'success', message: `Leitura contínua: ${preenchidos}/${total} preenchidos.` });
                                 } else {
                                   setSerialScannerIdx(null);
                                   setSerialScannerContinuous(false);
@@ -2289,6 +2674,45 @@ const PrepararRequisicao = () => {
                                     className="px-3 py-2 bg-[#0915FF] text-white rounded-lg text-sm hover:bg-[#070FCC] disabled:opacity-50"
                                   >
                                     {reservandoCaixa ? 'A ler...' : 'Confirmar'}
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+                          )}
+                          {showSeriaisLoteModal && (
+                            <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/40 p-4">
+                              <div className="w-full max-w-xl rounded-xl bg-white shadow-xl border border-gray-200 p-4 space-y-4">
+                                <div>
+                                  <h5 className="text-base font-semibold text-gray-900">Colar seriais em lote</h5>
+                                  <p className="text-sm text-gray-500">
+                                    Cole um serial por linha (também aceita vírgula, ponto e vírgula ou barra vertical).
+                                  </p>
+                                </div>
+                                <textarea
+                                  value={seriaisLoteInput}
+                                  onChange={(e) => setSeriaisLoteInput(e.target.value)}
+                                  placeholder={"SN001\nSN002\nSN003"}
+                                  autoFocus
+                                  rows={10}
+                                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono"
+                                />
+                                <div className="flex justify-end gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setShowSeriaisLoteModal(false);
+                                      setSeriaisLoteInput('');
+                                    }}
+                                    className="px-3 py-2 border border-gray-300 rounded-lg text-sm hover:bg-gray-50"
+                                  >
+                                    Cancelar
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={aplicarSeriaisEmLote}
+                                    className="px-3 py-2 bg-[#0915FF] text-white rounded-lg text-sm hover:bg-[#070FCC]"
+                                  >
+                                    Aplicar seriais
                                   </button>
                                 </div>
                               </div>
