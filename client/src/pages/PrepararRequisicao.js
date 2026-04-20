@@ -1144,19 +1144,41 @@ const PrepararRequisicao = () => {
           Math.min(MAX_BOBINAS_LOTE, Math.floor(Number(prev.quantidade_preparada)) || 0)
         );
         const nAlvo = nDigitado > 0 ? nDigitado : seriais.length;
-        const bobinas = Array.from({ length: nAlvo }, (_, i) => {
-          const sn = i < seriais.length ? seriais[i] : '';
-          return { lote: '', serialnumber: sn, metros: '' };
-        });
-        const preenchidos = Math.min(nAlvo, seriais.length);
-        const vaziosParaManual = Math.max(0, nAlvo - preenchidos);
-        const msgExtra =
-          nDigitado > 0 && seriais.length > nAlvo
-            ? ` (${seriais.length} na caixa; preenchidos os primeiros ${preenchidos})`
-            : vaziosParaManual > 0
-              ? ` (${preenchidos} da caixa; ${vaziosParaManual} campo(s) em branco para completar)`
-              : '';
-        toastMessage = `Caixa ${codigoCaixa}: ${preenchidos} serial(is) carregado(s)${msgExtra}. A reserva será feita ao preparar.`;
+
+        const existentes = Array.isArray(prev.bobinas) ? prev.bobinas : [];
+        const existentesPreenchidos = existentes.filter((b) => String(b?.serialnumber || '').trim());
+        const seen = new Set(
+          existentesPreenchidos.map((b) => String(b.serialnumber || '').trim().toUpperCase())
+        );
+        const novos = [];
+        for (const sn of seriais) {
+          const norm = String(sn || '').trim().toUpperCase();
+          if (!norm || seen.has(norm)) continue;
+          seen.add(norm);
+          novos.push(String(sn || '').trim());
+        }
+
+        const bobinas = existentesPreenchidos
+          .slice(0, nAlvo)
+          .map((b) => ({ ...b, lote: '', metros: '' }));
+        for (const sn of novos) {
+          if (bobinas.length >= nAlvo) break;
+          bobinas.push({ lote: '', serialnumber: sn, metros: '' });
+        }
+        while (bobinas.length < nAlvo) {
+          bobinas.push({ lote: '', serialnumber: '', metros: '' });
+        }
+
+        const preenchidos = bobinas.filter((b) => String(b.serialnumber || '').trim()).length;
+        const faltantes = Math.max(0, nAlvo - preenchidos);
+        const adicionadosAgora = Math.max(0, Math.min(novos.length, nAlvo - existentesPreenchidos.length));
+        const msgExtra = faltantes > 0
+          ? ` (${adicionadosAgora} novo(s); ${preenchidos}/${nAlvo} preenchidos, faltam ${faltantes})`
+          : ` (${adicionadosAgora} novo(s); ${preenchidos}/${nAlvo} preenchidos)`;
+        toastMessage =
+          `Caixa ${codigoCaixa}: seriais adicionados sem sobrescrever os anteriores${msgExtra}. ` +
+          'A reserva será feita ao preparar.';
+
         return {
           ...prev,
           quantidade_preparada: String(nAlvo),
