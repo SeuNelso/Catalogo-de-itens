@@ -40,7 +40,20 @@ function labelArmazem(armazem) {
 
 const MAX_BOBINAS_LOTE = 500;
 const SN_LISTA_PAGE_SIZE = 20;
+/** Máximo de seriais mostrados na lista do item; acima disso abre modal paginado. */
+const SN_INLINE_PREVIEW = 5;
 const RECEBIMENTO_TRANSFERENCIA_MARKER = 'RECEBIMENTO_TRANSFERENCIA_V1';
+
+/** Preferir `seriais` da API; senão partir `serialnumber` (legado). */
+function seriaisListFromItem(item) {
+  if (Array.isArray(item?.seriais) && item.seriais.length > 0) {
+    return item.seriais.map((s) => String(s || '').trim()).filter(Boolean);
+  }
+  return String(item?.serialnumber || '')
+    .split(/\r?\n|;|\|/)
+    .map((s) => String(s || '').trim())
+    .filter(Boolean);
+}
 
 /** Garante _ordemColeta 1..n por índice da grelha para dados já existentes (S/N). */
 function aplicarOrdemInicialSN(bobinas) {
@@ -96,6 +109,12 @@ const PrepararRequisicao = () => {
     columns: [],
     rows: [],
     loading: false
+  });
+  const [seriaisListaModal, setSeriaisListaModal] = useState({
+    open: false,
+    titulo: '',
+    seriais: [],
+    page: 1
   });
   const [itemPreparando, setItemPreparando] = useState(null);
   const [formItem, setFormItem] = useState({
@@ -567,10 +586,7 @@ const PrepararRequisicao = () => {
     const tipoControlo = (item.tipocontrolo || '').toUpperCase();
     const isLote = tipoControlo === 'LOTE';
     const isSerial = tipoControlo === 'S/N';
-    const serialsExistentes = String(item.serialnumber || '')
-      .split(/\r?\n|;|\|/)
-      .map((s) => s.trim())
-      .filter(Boolean);
+    const serialsExistentes = seriaisListFromItem(item);
     const nBobinas = Math.max(0, Math.min(MAX_BOBINAS_LOTE, Math.floor(Number(qtdPreparada)) || 0));
     const bobinasInicial = (isLote || isSerial)
       ? resizeBobinasArray(
@@ -1839,6 +1855,8 @@ const PrepararRequisicao = () => {
               const completo = qtdPreparada >= qtdTotal;
               const isPreparando = itemPreparando?.id === item.id;
               const preparado = item.preparacao_confirmada === true;
+              const seriaisDoItem = seriaisListFromItem(item);
+              const seriaisInlineMuitos = seriaisDoItem.length > SN_INLINE_PREVIEW;
 
               return (
                 <div
@@ -1903,8 +1921,33 @@ const PrepararRequisicao = () => {
                               <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-indigo-50 border border-indigo-200 rounded">
                                 <strong>Lote:</strong> {String(item.lote || '').trim() || '—'}
                               </span>
-                              <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-indigo-50 border border-indigo-200 rounded">
-                                <strong>S/N:</strong> {String(item.serialnumber || '').trim() || '—'}
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-indigo-50 border border-indigo-200 rounded max-w-full flex-wrap">
+                                <strong>S/N:</strong>{' '}
+                                {seriaisDoItem.length === 0 ? (
+                                  '—'
+                                ) : seriaisInlineMuitos ? (
+                                  <span className="inline-flex flex-wrap items-center gap-2 min-w-0">
+                                    <span className="break-all">
+                                      {seriaisDoItem.slice(0, SN_INLINE_PREVIEW).join(', ')} …
+                                    </span>
+                                    <button
+                                      type="button"
+                                      className="shrink-0 text-[11px] font-semibold text-[#0915FF] hover:underline"
+                                      onClick={() =>
+                                        setSeriaisListaModal({
+                                          open: true,
+                                          titulo: `${item.item_codigo || ''} · Seriais (${seriaisDoItem.length})`,
+                                          seriais: seriaisDoItem,
+                                          page: 1
+                                        })
+                                      }
+                                    >
+                                      Ver todos ({seriaisDoItem.length})
+                                    </button>
+                                  </span>
+                                ) : (
+                                  <span className="break-all">{seriaisDoItem.join(', ')}</span>
+                                )}
                               </span>
                             </div>
                           )}
@@ -1986,11 +2029,33 @@ const PrepararRequisicao = () => {
                                 {String(item.lote || '').trim() || '—'}
                               </span>
                             </div>
-                            <div className="rounded-md border border-indigo-200 bg-white px-2 py-1.5">
+                            <div className="rounded-md border border-indigo-200 bg-white px-2 py-1.5 sm:col-span-2">
                               <span className="text-indigo-700 font-semibold">S/N:</span>{' '}
-                              <span className="text-indigo-900 break-all">
-                                {String(item.serialnumber || '').trim() || '—'}
-                              </span>
+                              {seriaisDoItem.length === 0 ? (
+                                <span className="text-indigo-900">—</span>
+                              ) : seriaisInlineMuitos ? (
+                                <span className="text-indigo-900 inline-flex flex-wrap items-center gap-2">
+                                  <span className="break-all">
+                                    {seriaisDoItem.slice(0, SN_INLINE_PREVIEW).join(', ')} …
+                                  </span>
+                                  <button
+                                    type="button"
+                                    className="text-[11px] font-semibold text-indigo-800 hover:underline"
+                                    onClick={() =>
+                                      setSeriaisListaModal({
+                                        open: true,
+                                        titulo: `${item.item_codigo || ''} · Seriais (${seriaisDoItem.length})`,
+                                        seriais: seriaisDoItem,
+                                        page: 1
+                                      })
+                                    }
+                                  >
+                                    Ver todos ({seriaisDoItem.length})
+                                  </button>
+                                </span>
+                              ) : (
+                                <span className="text-indigo-900 break-all">{seriaisDoItem.join(', ')}</span>
+                              )}
                             </div>
                           </div>
                         </section>
@@ -3007,6 +3072,83 @@ const PrepararRequisicao = () => {
             </div>
           )}
         </div>
+
+        {seriaisListaModal.open &&
+          (() => {
+            const total = seriaisListaModal.seriais.length;
+            const totalPages = Math.max(1, Math.ceil(total / SN_LISTA_PAGE_SIZE));
+            const page = Math.min(Math.max(1, seriaisListaModal.page), totalPages);
+            const start = (page - 1) * SN_LISTA_PAGE_SIZE;
+            const slice = seriaisListaModal.seriais.slice(start, start + SN_LISTA_PAGE_SIZE);
+            return (
+              <div
+                className="fixed inset-0 z-[10000] flex items-center justify-center p-4 bg-black/50"
+                aria-modal="true"
+                role="dialog"
+                onClick={(e) => {
+                  if (e.target === e.currentTarget) {
+                    setSeriaisListaModal({ open: false, titulo: '', seriais: [], page: 1 });
+                  }
+                }}
+              >
+                <div className="bg-white rounded-xl shadow-xl w-full max-w-lg max-h-[85vh] flex flex-col">
+                  <div className="flex items-center justify-between p-4 border-b shrink-0">
+                    <h3 className="text-base font-semibold text-gray-900 pr-2">
+                      {seriaisListaModal.titulo || 'Seriais'}
+                    </h3>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setSeriaisListaModal({ open: false, titulo: '', seriais: [], page: 1 })
+                      }
+                      className="px-3 py-1 rounded-lg border border-gray-200 text-gray-700 hover:bg-gray-50 shrink-0"
+                    >
+                      Fechar
+                    </button>
+                  </div>
+                  <div className="p-4 overflow-y-auto flex-1 min-h-0">
+                    <ol className="list-decimal list-inside space-y-1.5 text-sm text-gray-900" start={start + 1}>
+                      {slice.map((sn, i) => (
+                        <li key={`${start + i}-${sn}`} className="break-all font-mono pl-1">
+                          {sn}
+                        </li>
+                      ))}
+                    </ol>
+                  </div>
+                  <div className="p-4 border-t flex flex-wrap items-center justify-between gap-2 shrink-0">
+                    <span className="text-xs text-gray-600">
+                      Página {page} / {totalPages} · {total} serial(is)
+                    </span>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        disabled={page <= 1}
+                        onClick={() =>
+                          setSeriaisListaModal((m) => ({ ...m, page: Math.max(1, (m.page || 1) - 1) }))
+                        }
+                        className="px-3 py-1.5 rounded-lg border border-gray-200 text-sm disabled:opacity-50"
+                      >
+                        Anterior
+                      </button>
+                      <button
+                        type="button"
+                        disabled={page >= totalPages}
+                        onClick={() =>
+                          setSeriaisListaModal((m) => ({
+                            ...m,
+                            page: Math.min(totalPages, (m.page || 1) + 1)
+                          }))
+                        }
+                        className="px-3 py-1.5 rounded-lg border border-gray-200 text-sm disabled:opacity-50"
+                      >
+                        Seguinte
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
 
         {reporteModal.open && (
           <div

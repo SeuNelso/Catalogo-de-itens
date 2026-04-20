@@ -1331,6 +1331,12 @@ router.get('/', ...requisicaoAuth, async (req, res) => {
       for (const req of requisicoes) {
         req.itens = itensPorRequisicao.get(req.id) || [];
       }
+
+      const allItensList = [];
+      for (const rq of requisicoes) {
+        for (const it of rq.itens || []) allItensList.push(it);
+      }
+      await attachSeriaisToRequisicaoItens(pool, allItensList);
     }
 
     // Enriquecer fluxo central->central com estado de receção no destino.
@@ -1571,6 +1577,7 @@ router.get('/:id/export-excel', ...requisicaoAuth, denyOperador, async (req, res
       ORDER BY ri.id
     `, [id]);
     requisicao.itens = itensResult.rows;
+    await attachSeriaisToRequisicaoItens(pool, requisicao.itens);
 
     const dataFormat = new Date(requisicao.created_at);
     const dateStr = `${String(dataFormat.getDate()).padStart(2, '0')}/${String(dataFormat.getMonth() + 1).padStart(2, '0')}/${dataFormat.getFullYear()}`;
@@ -1858,6 +1865,41 @@ async function buildExcelClog(rows, res, filename) {
   res.end();
 }
 
+/** Anexa `seriais: string[]` e reconstrói `serialnumber` (join \\n) para compatibilidade com clientes antigos. */
+async function attachSeriaisToRequisicaoItens(poolConn, itens) {
+  if (!Array.isArray(itens) || itens.length === 0) return;
+  const ids = itens.map((it) => it.id).filter((id) => Number.isFinite(Number(id)));
+  if (!ids.length) return;
+  try {
+    const sr = await poolConn.query(
+      `SELECT requisicao_item_id, serialnumber
+       FROM requisicoes_itens_seriais
+       WHERE requisicao_item_id = ANY($1::int[])
+       ORDER BY requisicao_item_id, ordem, id`,
+      [ids]
+    );
+    const map = new Map();
+    for (const row of sr.rows || []) {
+      const rid = row.requisicao_item_id;
+      const sn = String(row.serialnumber || '').trim();
+      if (!sn) continue;
+      if (!map.has(rid)) map.set(rid, []);
+      map.get(rid).push(sn);
+    }
+    for (const it of itens) {
+      const arr = map.get(it.id);
+      if (arr && arr.length) {
+        it.seriais = arr;
+        it.serialnumber = arr.join('\n');
+      } else {
+        it.seriais = null;
+      }
+    }
+  } catch (e) {
+    if (e.code !== '42P01') throw e;
+  }
+}
+
 // Buscar requisição + itens (reutilizado por TRFL e TRA).
 // includeItens=false evita consulta pesada quando os itens são carregados noutro passo (ex.: Clog).
 async function getRequisicaoComItens(id, includeItens = true) {
@@ -1891,6 +1933,7 @@ async function getRequisicaoComItens(id, includeItens = true) {
     ORDER BY ri.id
   `, [id]);
   requisicao.itens = itensResult.rows;
+  await attachSeriaisToRequisicaoItens(pool, requisicao.itens);
   return requisicao;
 }
 
@@ -1977,6 +2020,19 @@ function equipaSlugSeriaisEntrada(requisicao) {
 }
 
 async function serialsRecolhidosRequisicaoItem(poolConn, requisicaoItemId, ri) {
+  try {
+    const snRows = await poolConn.query(
+      `SELECT TRIM(serialnumber) AS sn
+       FROM requisicoes_itens_seriais
+       WHERE requisicao_item_id = $1
+       ORDER BY ordem, id`,
+      [requisicaoItemId]
+    );
+    const fromTable = (snRows.rows || []).map((r) => String(r.sn || '').trim()).filter(Boolean);
+    if (fromTable.length) return fromTable;
+  } catch (e) {
+    if (e.code !== '42P01') throw e;
+  }
   try {
     const b = await poolConn.query(
       `SELECT TRIM(serialnumber) AS sn
@@ -6048,6 +6104,7 @@ router.get('/:id', ...requisicaoAuth, async (req, res) => {
       bobinas: bobinasPorItem[it.item_id] || [],
       preparacao_confirmada: it.preparacao_confirmada === true
     }));
+    await attachSeriaisToRequisicaoItens(pool, requisicao.itens);
     res.json(requisicao);
   } catch (error) {
     console.error('Erro ao buscar requisição:', error);
@@ -6225,6 +6282,7 @@ router.post('/', ...requisicaoAuth, denyOperador, async (req, res) => {
     `, [requisicaoId]);
 
     requisicao.itens = itensResult.rows;
+    await attachSeriaisToRequisicaoItens(pool, requisicao.itens);
 
     console.log(`✅ Requisição criada: ID ${requisicaoId} com ${itens.length} item(ns)`);
     res.status(201).json(requisicao);
@@ -7158,6 +7216,7 @@ router.put('/:id', ...requisicaoAuth, denyOperador, async (req, res) => {
     `, [id]);
 
     requisicao.itens = itensResult.rows;
+    await attachSeriaisToRequisicaoItens(pool, requisicao.itens);
 
     console.log(`✅ Requisição atualizada: ID ${id}`);
     res.json(requisicao);
@@ -7389,9 +7448,23 @@ router.patch('/:id/atender-item', ...requisicaoAuth, async (req, res) => {
 
     const serialnumberFinal = isZero
       ? null
-      : (serialsNormalizados ? serialsNormalizados.join('\n') : (serialnumber || null));
+      : tipoControlo === 'S/N'
+        ? null
+        : (serialsNormalizados ? serialsNormalizados.join('\n') : (serialnumber || null));
 
-    const updateQuery = `
+    const updateQuery =
+      tipoControlo === 'S/N'
+        ? `
+      UPDATE requisicoes_itens 
+      SET quantidade_preparada = $1, 
+          localizacao_destino = $2, 
+          localizacao_origem = $3, 
+          lote = COALESCE($4, lote),
+          serialnumber = $5,
+          quantidade_apeados = $6,
+          preparacao_confirmada = true
+      WHERE id = $7`
+        : `
       UPDATE requisicoes_itens 
       SET quantidade_preparada = $1, 
           localizacao_destino = $2, 
@@ -7565,6 +7638,22 @@ router.patch('/:id/atender-item', ...requisicaoAuth, async (req, res) => {
         }
       }
 
+      if (tipoControlo === 'S/N') {
+        await client.query('DELETE FROM requisicoes_itens_seriais WHERE requisicao_item_id = $1', [
+          requisicao_item_id,
+        ]);
+        if (!isZero && Array.isArray(serialsNormalizados) && serialsNormalizados.length > 0) {
+          for (let i = 0; i < serialsNormalizados.length; i++) {
+            // eslint-disable-next-line no-await-in-loop
+            await client.query(
+              `INSERT INTO requisicoes_itens_seriais (requisicao_item_id, serialnumber, ordem)
+               VALUES ($1, $2, $3)`,
+              [requisicao_item_id, serialsNormalizados[i], i + 1]
+            );
+          }
+        }
+      }
+
       await client.query(updateQuery, params);
 
       // Se houver bobinas para itens de lote e quantidade > 0, registrar detalhamento por bobina.
@@ -7603,6 +7692,13 @@ router.patch('/:id/atender-item', ...requisicaoAuth, async (req, res) => {
         });
       }
       if (e.code === '42P01') {
+        const msg = String(e.message || '');
+        if (msg.includes('requisicoes_itens_seriais')) {
+          return res.status(503).json({
+            error: 'Tabela requisicoes_itens_seriais em falta na base de dados.',
+            details: 'Execute a migração: npm run db:migrate:requisicoes-itens-seriais',
+          });
+        }
         return res.status(503).json({
           error: 'Estrutura de stock por localização em falta na base de dados.',
           details: 'Execute a migração: npm run db:migrate:localizacao-estoque'
@@ -7641,6 +7737,7 @@ router.patch('/:id/atender-item', ...requisicaoAuth, async (req, res) => {
       ...it,
       preparacao_confirmada: it.preparacao_confirmada === true
     }));
+    await attachSeriaisToRequisicaoItens(pool, requisicao.itens);
 
     res.json(requisicao);
   } catch (error) {
@@ -7747,6 +7844,7 @@ router.post('/:id/requisicao-itens', ...requisicaoAuth, async (req, res) => {
       ...it,
       preparacao_confirmada: it.preparacao_confirmada === true,
     }));
+    await attachSeriaisToRequisicaoItens(pool, requisicao.itens);
     return res.status(201).json(requisicao);
   } catch (error) {
     console.error('Erro ao adicionar item na requisição:', error);
@@ -7856,6 +7954,7 @@ router.delete('/:id/requisicao-itens/:requisicaoItemId', ...requisicaoAuth, asyn
       ...it,
       preparacao_confirmada: it.preparacao_confirmada === true,
     }));
+    await attachSeriaisToRequisicaoItens(pool, requisicao.itens);
 
     res.json(requisicao);
   } catch (error) {
@@ -7953,6 +8052,7 @@ router.patch('/:id/atender', ...requisicaoAuth, async (req, res) => {
       WHERE ri.requisicao_id = $1
     `, [id]);
     requisicao.itens = itensResult.rows;
+    await attachSeriaisToRequisicaoItens(pool, requisicao.itens);
 
     console.log(`✅ Requisição marcada como separado: ID ${id}`);
     res.json(requisicao);

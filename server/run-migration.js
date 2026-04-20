@@ -67,6 +67,8 @@ const migrationFile = path.join(
                           ? 'migrate-requisicoes-itens-quantidade-apeados.sql'
                       : arg === 'requisicoes-itens-serial-long' || arg === 'serial-long'
                         ? 'migrate-requisicoes-itens-serial-long.sql'
+                      : arg === 'requisicoes-itens-seriais' || arg === 'itens-seriais'
+                        ? 'migrate-requisicoes-itens-seriais.sql'
                       : arg === 'integrations-v1' || arg === 'integracoes-v1'
                         ? 'migrate-integrations-v1.sql'
                       : arg === 'localizacao-estoque' || arg === 'armazens-localizacao-item'
