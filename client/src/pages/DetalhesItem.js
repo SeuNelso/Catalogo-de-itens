@@ -353,7 +353,16 @@ const DetalhesItem = () => {
               <h2 className="text-[#0915FF] text-lg sm:text-xl font-bold mb-3 sm:mb-4">Quantidades por Armazém</h2>
               {item.armazens && item.armazens.length > 0 ? (
                 <div className="space-y-2">
-                  {[...item.armazens].sort((a, b) => (a.armazem || '').localeCompare(b.armazem || '')).map((a, idx) => (
+                  {[...item.armazens]
+                    .sort((a, b) => {
+                      const aNome = String(a.armazem || '');
+                      const bNome = String(b.armazem || '');
+                      const aIsApeado = aNome.toUpperCase().includes('APEADO');
+                      const bIsApeado = bNome.toUpperCase().includes('APEADO');
+                      if (aIsApeado !== bIsApeado) return aIsApeado ? 1 : -1; // Stock primeiro, apeado depois.
+                      return aNome.localeCompare(bNome);
+                    })
+                    .map((a, idx) => (
                     <div key={idx} className="flex items-center justify-between p-2 bg-gray-50 rounded-lg">
                       <span className="text-sm font-medium text-gray-700">{a.armazem}</span>
                       <span className={`px-3 py-1 rounded-full font-bold text-sm ${a.quantidade === 0 ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>

@@ -352,6 +352,65 @@ function warehouseColumnDisplayLabel(rawHeader) {
     .trim();
 }
 
+function normalizeAliasText(s) {
+  return String(s || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase()
+    .replace(/\./g, ' ')
+    .replace(/[^A-Z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function loadWarehouseAliasMapFromXlsx() {
+  const byCode = new Map();
+  const byDescNorm = new Map();
+  try {
+    const aliasPath = path.join(__dirname, 'ALIAS.xlsx');
+    if (!fs.existsSync(aliasPath)) return { byCode, byDescNorm };
+    const wb = XLSX.readFile(aliasPath);
+    const sheetName = wb.SheetNames?.[0];
+    if (!sheetName) return { byCode, byDescNorm };
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { defval: '' });
+    for (const r of rows || []) {
+      const codeRaw = String(r['CODIGO ARMAZEM'] || r['codigo armazem'] || r.codigo || '').trim();
+      const descRaw = String(r['DESCRIÇÃO FICHEIRO'] || r['DESCRICAO FICHEIRO'] || r.descricao || '').trim();
+      if (!codeRaw || !descRaw) continue;
+      const codeNorm = normalizeAliasText(codeRaw);
+      const descNorm = normalizeAliasText(descRaw);
+      byCode.set(codeNorm, descRaw.toUpperCase());
+      byDescNorm.set(descNorm, descRaw.toUpperCase());
+    }
+    console.log(`🔗 ALIAS.xlsx carregado: ${byCode.size} aliases por código.`);
+  } catch (e) {
+    console.warn(`⚠️ Não foi possível carregar ALIAS.xlsx: ${e.message}`);
+  }
+  return { byCode, byDescNorm };
+}
+
+const STOCK_ALIAS_MAP = loadWarehouseAliasMapFromXlsx();
+
+function resolveWarehouseLabelWithAlias(rawLabel) {
+  const oneLine = String(rawLabel || '')
+    .replace(/\r?\n/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!oneLine) return '';
+  const normLabel = normalizeAliasText(oneLine);
+  const byDesc = STOCK_ALIAS_MAP.byDescNorm.get(normLabel);
+  if (byDesc) return byDesc;
+
+  const codeMatch = oneLine
+    .toUpperCase()
+    .match(/^WH\s*-\s*((?:APE\.)?[A-Z0-9]+)\b/);
+  if (codeMatch?.[1]) {
+    const byCode = STOCK_ALIAS_MAP.byCode.get(normalizeAliasText(codeMatch[1]));
+    if (byCode) return byCode;
+  }
+  return oneLine.toUpperCase();
+}
+
 function stockArmazensFromRow(row) {
   const armazens = {};
   for (const col of Object.keys(row || {})) {
@@ -359,7 +418,7 @@ function stockArmazensFromRow(row) {
     if (!norm || STOCK_NON_WAREHOUSE_KEYS.has(norm)) continue;
     if (norm === 'unidade' || norm === 'medida' || norm.includes('unidade')) continue;
     if (!isWarehouseColumnName(col)) continue;
-    const label = warehouseColumnDisplayLabel(col);
+    const label = resolveWarehouseLabelWithAlias(warehouseColumnDisplayLabel(col));
     armazens[label] = parseStockQuantity(row[col]);
   }
   return armazens;
@@ -432,6 +491,79 @@ function pickStockNationalSheetName(workbook) {
   if (resume) return resume;
   const anyResume = names.find((n) => /resume|resumo/i.test(n) && !/detail|detalhe/i.test(n));
   return anyResume || names[0];
+}
+
+/** Folha secundária com stock de apeados (quando existir). */
+function pickApeadosSheetName(workbook, mainSheetName) {
+  const names = (workbook.SheetNames || []).filter((n) => String(n) !== String(mainSheetName || ''));
+  if (!names.length) return undefined;
+  const byApeados = names.find((n) => /\bapeados?\b/i.test(String(n)));
+  if (byApeados) return byApeados;
+  const byApe = names.find((n) => /\bape\b/i.test(String(n)));
+  if (byApe) return byApe;
+  return undefined;
+}
+
+function formatApeadosWarehouseLabel(rawLabel) {
+  const oneLine = String(rawLabel || '')
+    .replace(/\r?\n/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!oneLine) return '';
+
+  const upper = oneLine.toUpperCase();
+  if (upper.includes('APEADOS')) return upper;
+
+  const m = upper.match(/^WH\s*-\s*([A-Z0-9]+)\s+(.+)$/);
+  if (m) {
+    return resolveWarehouseLabelWithAlias(`WH - APE.${m[1]} APEADOS ${m[2].trim()}`);
+  }
+  const mOnly = upper.match(/^WH\s*-\s*([A-Z0-9]+)$/);
+  if (mOnly) {
+    return resolveWarehouseLabelWithAlias(`WH - APE.${mOnly[1]} APEADOS`);
+  }
+  if (/^WH\b/.test(upper)) {
+    return resolveWarehouseLabelWithAlias(upper.replace(/^WH\s*-\s*/i, 'WH - APEADOS '));
+  }
+  return resolveWarehouseLabelWithAlias(`WH - APEADOS ${upper}`);
+}
+
+function mapRecordToApeadosLabels(rec) {
+  const mapped = { ...rec, armazens: {} };
+  for (const [k, v] of Object.entries(rec.armazens || {})) {
+    const label = formatApeadosWarehouseLabel(k);
+    if (!label) continue;
+    mapped.armazens[label] = (mapped.armazens[label] || 0) + (Math.round(Number(v)) || 0);
+  }
+  return mapped;
+}
+
+function mergeAggregatedStock(mainRecords, apeadosRecords) {
+  const out = new Map();
+  for (const r of mainRecords || []) {
+    out.set(r.codigo, {
+      ...r,
+      armazens: { ...(r.armazens || {}) },
+    });
+  }
+  for (const r of apeadosRecords || []) {
+    const codigo = String(r.codigo || '').trim();
+    if (!codigo) continue;
+    const curr = out.get(codigo);
+    if (!curr) {
+      out.set(codigo, {
+        ...r,
+        armazens: { ...(r.armazens || {}) },
+      });
+      continue;
+    }
+    for (const [k, v] of Object.entries(r.armazens || {})) {
+      const kk = String(k || '').trim();
+      if (!kk) continue;
+      curr.armazens[kk] = (curr.armazens[kk] || 0) + (Math.round(Number(v)) || 0);
+    }
+  }
+  return Array.from(out.values());
 }
 
 /** Departamento / local pivot (cabeçalhos variam entre ficheiros e exportações). */
@@ -686,7 +818,30 @@ app.post('/api/importar-excel', authenticateToken, excelUpload.single('arquivo')
           if (rec.codigo) rawStockRecs.push({ ...rec, lineIdx });
         }
       });
-      const aggregatedStock = aggregateStockRecordsByCodigo(rawStockRecs);
+      const aggregatedStockMain = aggregateStockRecordsByCodigo(rawStockRecs);
+      let aggregatedStock = aggregatedStockMain;
+
+      const apeadosSheetName = pickApeadosSheetName(workbook, sheetName);
+      if (apeadosSheetName) {
+        const apeSheet = workbook.Sheets[apeadosSheetName];
+        const apeHeaderRowIndex = detectStockImportStartRow(apeSheet);
+        const apeData = XLSX.utils.sheet_to_json(apeSheet, {
+          defval: '',
+          range: apeHeaderRowIndex,
+          raw: false,
+        });
+        const rawApeRecs = [];
+        apeData.forEach((row, lineIdx) => {
+          for (const rec of stockRecordsFromImportRow(row)) {
+            if (rec.codigo) rawApeRecs.push({ ...mapRecordToApeadosLabels(rec), lineIdx });
+          }
+        });
+        const aggregatedApe = aggregateStockRecordsByCodigo(rawApeRecs);
+        aggregatedStock = mergeAggregatedStock(aggregatedStockMain, aggregatedApe);
+        console.log(
+          `📄 Folha de apeados: "${apeadosSheetName}" (${aggregatedApe.length} artigos com detalhe apeados)`
+        );
+      }
 
       console.log(
         `📊 Importação iniciada: ${data.length} linhas Excel → ${aggregatedStock.length} artigos únicos (cabeçalho linha ${headerRowIndex + 1})`
@@ -1550,6 +1705,7 @@ app.get('/api/itens', async (req, res) => {
   const quantidadeMax = req.query.quantidadeMax || '';
   const unidadeArmazenamento = req.query.unidadeArmazenamento || '';
   const tipocontrolo = req.query.tipocontrolo || '';
+  const somenteApeados = req.query.somenteApeados === 'true';
   
   // Parâmetros de ordenação
   const sortBy = req.query.sortBy || '';
@@ -1639,6 +1795,16 @@ app.get('/api/itens', async (req, res) => {
     params.push(`%${tipocontrolo.trim()}%`);
     paramIndex++;
   }
+
+  if (somenteApeados) {
+    whereConditions.push(`EXISTS (
+      SELECT 1
+      FROM armazens_item ai_ape
+      WHERE ai_ape.item_id = i.id
+        AND UPPER(COALESCE(ai_ape.armazem, '')) LIKE '%APEADO%'
+        AND COALESCE(ai_ape.quantidade, 0) > 0
+    )`);
+  }
   
   const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(' AND ')}` : '';
 
@@ -1658,10 +1824,17 @@ app.get('/api/itens', async (req, res) => {
     SELECT i.*, 
            STRING_AGG(DISTINCT img.caminho, ',') as imagens,
            COUNT(DISTINCT img.id) as total_imagens,
-           STRING_AGG(DISTINCT is2.setor, ', ') as setores
+           STRING_AGG(DISTINCT is2.setor, ', ') as setores,
+           COALESCE(MAX(ape.qtd_apeados), 0) AS quantidade_apeados
     FROM itens i
     LEFT JOIN imagens_itens img ON i.id = img.item_id
     LEFT JOIN itens_setores is2 ON i.id = is2.item_id
+    LEFT JOIN LATERAL (
+      SELECT COALESCE(SUM(ai.quantidade), 0) AS qtd_apeados
+      FROM armazens_item ai
+      WHERE ai.item_id = i.id
+        AND UPPER(COALESCE(ai.armazem, '')) LIKE '%APEADO%'
+    ) ape ON true
     ${whereClause}
     GROUP BY i.id
     ${orderByClause}

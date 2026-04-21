@@ -26,7 +26,8 @@ const ListarItens = () => {
     quantidadeMax: '',
     categoria: '',
     unidadeArmazenamento: '',
-    tipocontrolo: ''
+    tipocontrolo: '',
+    somenteApeados: false,
   });
   const [mostrarFiltros, setMostrarFiltros] = useState(false);
   
@@ -119,6 +120,7 @@ const ListarItens = () => {
       if (filtros.quantidadeMax.trim()) filtrosParams.push(`quantidadeMax=${encodeURIComponent(filtros.quantidadeMax.trim())}`);
       if (filtros.unidadeArmazenamento.trim()) filtrosParams.push(`unidadeArmazenamento=${encodeURIComponent(filtros.unidadeArmazenamento.trim())}`);
       if (filtros.tipocontrolo.trim()) filtrosParams.push(`tipocontrolo=${encodeURIComponent(filtros.tipocontrolo.trim())}`);
+      if (filtros.somenteApeados) filtrosParams.push('somenteApeados=true');
       
       const filtrosString = filtrosParams.length > 0 ? `&${filtrosParams.join('&')}` : '';
       
@@ -281,9 +283,12 @@ const ListarItens = () => {
 
   // Resetar página quando busca, filtros ou ordenação mudarem
   useEffect(() => {
-    const temFiltrosAtivos = Object.values(filtros).some(valor => 
-      Array.isArray(valor) ? valor.length > 0 : valor.trim() !== ''
-    );
+    const temFiltrosAtivos = Object.values(filtros).some((valor) => {
+      if (Array.isArray(valor)) return valor.length > 0;
+      if (typeof valor === 'string') return valor.trim() !== '';
+      if (typeof valor === 'boolean') return valor;
+      return Boolean(valor);
+    });
     
     // Resetar página se há busca, filtros ou ordenação
     if (debouncedSearchTerm !== '' || temFiltrosAtivos || ordenacao.campo) {
@@ -345,7 +350,8 @@ const ListarItens = () => {
       quantidadeMax: '',
       categoria: '',
       unidadeArmazenamento: '',
-      tipocontrolo: ''
+      tipocontrolo: '',
+      somenteApeados: false,
     });
     handleMudancaPagina(1);
   };
@@ -624,6 +630,21 @@ const ListarItens = () => {
                         placeholder="Ex: Lote"
                       />
                     </div>
+
+                    {/* Somente stock apeados */}
+                    <div className="flex flex-col gap-1 sm:flex-row sm:items-center bg-gray-50 rounded-lg p-2">
+                      <label className="w-full sm:w-32 flex-shrink-0 text-sm font-semibold text-gray-700">Apeados:</label>
+                      <div className="w-full sm:flex-1">
+                        <label className="inline-flex items-center gap-2 text-sm text-gray-700">
+                          <input
+                            type="checkbox"
+                            checked={Boolean(filtros.somenteApeados)}
+                            onChange={(e) => handleFiltroChange('somenteApeados', e.target.checked)}
+                          />
+                          Somente itens com stock em apeados
+                        </label>
+                      </div>
+                    </div>
                   </div>
                 </div>
 
@@ -728,9 +749,12 @@ const ListarItens = () => {
                 <div className="text-center my-8">
                   <div className="text-gray-400 text-lg mb-2">Nenhum item encontrado</div>
                   <div className="text-gray-500 text-sm">
-                    {debouncedSearchTerm.trim() || Object.values(filtros).some(valor => 
-                      Array.isArray(valor) ? valor.length > 0 : valor.trim() !== ''
-                    ) 
+                    {debouncedSearchTerm.trim() || Object.values(filtros).some((valor) => {
+                      if (Array.isArray(valor)) return valor.length > 0;
+                      if (typeof valor === 'string') return valor.trim() !== '';
+                      if (typeof valor === 'boolean') return valor;
+                      return Boolean(valor);
+                    })
                       ? 'Tente ajustar os filtros ou termos de busca' 
                       : 'Não há itens cadastrados no sistema'
                     }
@@ -755,7 +779,16 @@ const ListarItens = () => {
                         )}
                       </div>
                     </div>
-                    <div className="font-semibold text-[#222] text-sm sm:text-base">Quantidade: <span className={`ml-1 px-2 py-1 rounded ${item.quantidade > 0 ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>{item.quantidade != null && item.quantidade !== '' ? item.quantidade : 0}</span></div>
+                    <div className="flex items-center gap-2 text-xs sm:text-sm">
+                      <span className="text-gray-600 font-semibold">STOCK:</span>
+                      <span className={`px-2 py-0.5 rounded-full font-bold ${item.quantidade > 0 ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                        {item.quantidade != null && item.quantidade !== '' ? item.quantidade : 0}
+                      </span>
+                      <span className="text-gray-600 font-semibold ml-2">APEADO:</span>
+                      <span className={`px-2 py-0.5 rounded-full font-bold ${Number(item.quantidade_apeados || 0) > 0 ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                        {Number(item.quantidade_apeados || 0)}
+                      </span>
+                    </div>
                     <div className="flex gap-2 sm:gap-4 mt-2">
                       <button onClick={() => navigate(`/item/${item.id}`)} className="bg-[#0915FF] text-white rounded-lg px-3 py-2 font-bold text-xs sm:text-base w-full transition hover:bg-[#2336ff]">Detalhes</button>
                       {userCanEdit && (
@@ -934,9 +967,12 @@ const ListarItens = () => {
                               Nenhum item encontrado
                             </div>
                             <div style={{ color: '#9CA3AF', fontSize: '14px' }}>
-                              {debouncedSearchTerm.trim() || Object.values(filtros).some(valor => 
-                                Array.isArray(valor) ? valor.length > 0 : valor.trim() !== ''
-                              ) 
+                              {debouncedSearchTerm.trim() || Object.values(filtros).some((valor) => {
+                                if (Array.isArray(valor)) return valor.length > 0;
+                                if (typeof valor === 'string') return valor.trim() !== '';
+                                if (typeof valor === 'boolean') return valor;
+                                return Boolean(valor);
+                              })
                                 ? 'Tente ajustar os filtros ou termos de busca' 
                                 : 'Não há itens cadastrados no sistema'
                               }
@@ -977,10 +1013,15 @@ const ListarItens = () => {
                                   )}
                                 </div>
                               </td>
-                              <td className="py-3 px-6 w-32">
-                                <span className={`inline-flex items-center gap-1 px-3 py-1 rounded-full font-bold text-[15px] shadow-sm ${item.quantidade === 0 ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>
-                                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" class="lucide lucide-check-circle w-4 h-4"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="m9 11 3 3L22 4"/></svg> {item.quantidade != null && item.quantidade !== '' ? item.quantidade : 0}
-                                </span>
+                              <td className="py-3 px-6 w-40">
+                                <div className="flex flex-col gap-1">
+                                  <div className="text-[12px] leading-none text-gray-700 font-semibold">
+                                    STOCK: <span className={item.quantidade === 0 ? 'text-red-700' : 'text-green-700'}>{item.quantidade != null && item.quantidade !== '' ? item.quantidade : 0}</span>
+                                  </div>
+                                  <div className="text-[12px] leading-none text-gray-700 font-semibold">
+                                    APEADO: <span className={Number(item.quantidade_apeados || 0) === 0 ? 'text-red-700' : 'text-green-700'}>{Number(item.quantidade_apeados || 0)}</span>
+                                  </div>
+                                </div>
                               </td>
 
                               <td className="py-3 px-6 w-40">
@@ -1041,13 +1082,15 @@ const ListarItens = () => {
                             
                             {/* Quantidade */}
                             <div className="flex justify-between items-center">
-                              <span className="text-sm font-semibold text-gray-600">Quantidade:</span>
-                              <span className={`inline-flex items-center gap-1 px-3 py-1 rounded-full font-bold text-xs shadow-sm ${item.quantidade === 0 ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>
-                                <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                  <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
-                                  <path d="m9 11 3 3L22 4"/>
-                                </svg>
+                              <span className="text-sm font-semibold text-gray-600">STOCK:</span>
+                              <span className={`font-bold text-sm ${item.quantidade === 0 ? 'text-red-700' : 'text-green-700'}`}>
                                 {item.quantidade != null && item.quantidade !== '' ? item.quantidade : 0}
+                              </span>
+                            </div>
+                            <div className="flex justify-between items-center">
+                              <span className="text-sm font-semibold text-gray-600">APEADO:</span>
+                              <span className={`font-bold text-sm ${Number(item.quantidade_apeados || 0) === 0 ? 'text-red-700' : 'text-green-700'}`}>
+                                {Number(item.quantidade_apeados || 0)}
                               </span>
                             </div>
                             

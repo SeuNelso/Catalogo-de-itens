@@ -55,11 +55,16 @@ async function ensureContagemSemanalSchema(pool) {
       qtd_ape NUMERIC(18, 4) NOT NULL DEFAULT 0,
       total NUMERIC(18, 4) NOT NULL DEFAULT 0,
       quantidade_sistema NUMERIC(18, 4) NOT NULL DEFAULT 0,
+      quantidade_apeados_sistema NUMERIC(18, 4) NOT NULL DEFAULT 0,
       diferenca NUMERIC(18, 4) NOT NULL DEFAULT 0,
       atualizado_por_user_id INTEGER NULL REFERENCES usuarios(id),
       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     )`
+  );
+  await pool.query(
+    `ALTER TABLE inventario_contagem_semanal_linhas
+     ADD COLUMN IF NOT EXISTS quantidade_apeados_sistema NUMERIC(18, 4) NOT NULL DEFAULT 0`
   );
   await pool.query(
     `CREATE INDEX IF NOT EXISTS idx_inv_cont_sem_tarefa_updated
@@ -144,13 +149,27 @@ function createInventarioRouter(deps = {}) {
     }
 
     const out = new Map();
+    const codigoArmazemNorm = String(armazem?.codigo || '').trim().toUpperCase();
     for (const itemId of itemIds) {
       const item = byItemId.get(itemId);
       if (!item) continue;
-      const qtd = quantidadeStockNacionalNoArmazem(rowsByItem.get(itemId) || [], armazem);
+      const rowsItem = rowsByItem.get(itemId) || [];
+      const qtd = quantidadeStockNacionalNoArmazem(rowsItem, armazem);
+      let qtdApeados = 0;
+      if (codigoArmazemNorm) {
+        const rx = new RegExp(`\\bAPE\\.?\\s*${codigoArmazemNorm}\\b`, 'i');
+        qtdApeados = rowsItem
+          .filter((r) => rx.test(String(r.armazem || '')))
+          .reduce((acc, r) => acc + (Number(r.quantidade) || 0), 0);
+      } else {
+        qtdApeados = rowsItem
+          .filter((r) => String(r.armazem || '').toUpperCase().includes('APEADO'))
+          .reduce((acc, r) => acc + (Number(r.quantidade) || 0), 0);
+      }
       out.set(String(item.codigo || '').trim(), {
         descricao: String(item.descricao || '').trim(),
         quantidade_sistema: Number(qtd || 0),
+        quantidade_apeados_sistema: Number(qtdApeados || 0),
       });
     }
     return out;
@@ -253,7 +272,9 @@ function createInventarioRouter(deps = {}) {
       const out = cleaned.map((r) => {
         const hit = byCodigo.get(r.artigo);
         const qtdSistema = Number(hit?.quantidade_sistema || 0);
+        const qtdApeadosSistema = Number(hit?.quantidade_apeados_sistema || 0);
         const total = Number(r.qtd || 0) + Number(r.qtd_ape || 0);
+        const baseSistema = qtdSistema + qtdApeadosSistema;
         return {
           artigo: r.artigo,
           descricao: r.descricao || String(hit?.descricao || ''),
@@ -261,7 +282,8 @@ function createInventarioRouter(deps = {}) {
           qtd_ape: Number(r.qtd_ape || 0),
           total,
           quantidade_sistema: qtdSistema,
-          diferenca: total - qtdSistema,
+          quantidade_apeados_sistema: qtdApeadosSistema,
+          diferenca: total - baseSistema,
           encontrado: Boolean(hit),
         };
       });
@@ -325,8 +347,8 @@ function createInventarioRouter(deps = {}) {
       if (!Number.isFinite(armazemId) || !rowsIn.length) {
         return res.status(400).json({ error: 'armazem_id e rows são obrigatórios.' });
       }
-      if (descricaoIdentificacao.length < 20) {
-        return res.status(400).json({ error: 'A descrição de identificação deve ter no mínimo 20 caracteres.' });
+      if (descricaoIdentificacao.length > 20) {
+        return res.status(400).json({ error: 'A descrição de identificação deve ter no máximo 20 caracteres.' });
       }
       if (!isAdmin(req.user?.role)) {
         const allowed = Array.isArray(req.requisicaoArmazemOrigemIds) ? req.requisicaoArmazemOrigemIds : [];
@@ -360,11 +382,13 @@ function createInventarioRouter(deps = {}) {
         for (const row of cleaned) {
           const hit = byCodigo.get(row.artigo);
           const qtdSistema = Number(hit?.quantidade_sistema || 0);
+          const qtdApeadosSistema = Number(hit?.quantidade_apeados_sistema || 0);
           const total = Number(row.qtd || 0) + Number(row.qtd_ape || 0);
+          const baseSistema = qtdSistema + qtdApeadosSistema;
           await client.query(
             `INSERT INTO inventario_contagem_semanal_linhas
-               (tarefa_id, artigo, descricao, qtd, qtd_ape, total, quantidade_sistema, diferenca, created_at, updated_at)
-             VALUES ($1, $2, $3, $4::numeric, $5::numeric, $6::numeric, $7::numeric, $8::numeric, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+               (tarefa_id, artigo, descricao, qtd, qtd_ape, total, quantidade_sistema, quantidade_apeados_sistema, diferenca, created_at, updated_at)
+             VALUES ($1, $2, $3, $4::numeric, $5::numeric, $6::numeric, $7::numeric, $8::numeric, $9::numeric, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
             [
               tarefaId,
               row.artigo,
@@ -373,7 +397,8 @@ function createInventarioRouter(deps = {}) {
               Number(row.qtd_ape || 0),
               total,
               qtdSistema,
-              total - qtdSistema,
+              qtdApeadosSistema,
+              total - baseSistema,
             ]
           );
         }
@@ -459,7 +484,7 @@ function createInventarioRouter(deps = {}) {
       if (!canView) return res.status(403).json({ error: 'Sem acesso a esta tarefa.' });
 
       const l = await pool.query(
-        `SELECT id, tarefa_id, artigo, descricao, qtd, qtd_ape, total, quantidade_sistema, diferenca, updated_at
+        `SELECT id, tarefa_id, artigo, descricao, qtd, qtd_ape, total, quantidade_sistema, quantidade_apeados_sistema, diferenca, updated_at
          FROM inventario_contagem_semanal_linhas
          WHERE tarefa_id = $1
          ORDER BY id`,
@@ -503,8 +528,9 @@ function createInventarioRouter(deps = {}) {
         );
         if (!l.rows.length) return res.status(404).json({ error: 'Linha não encontrada.' });
         const qtdSistema = Number(l.rows[0].quantidade_sistema || 0);
+        const qtdApeadosSistema = Number(l.rows[0].quantidade_apeados_sistema || 0);
         const total = Number(qtd || 0) + Number(qtdApe || 0);
-        const dif = total - qtdSistema;
+        const dif = total - (qtdSistema + qtdApeadosSistema);
         await client.query(
           `UPDATE inventario_contagem_semanal_linhas
            SET qtd = $3::numeric,
