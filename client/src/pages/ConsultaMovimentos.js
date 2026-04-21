@@ -24,6 +24,7 @@ const DEFAULT_COLUMNS = [
 const SN_COLUMN = 'S/N';
 /** Texto na célula acima disto → resumo + botão (alinha com split no servidor: \n ; |). */
 const SN_INLINE_MAX_LEN = 52;
+const SN_MODAL_PAGE_SIZE = 20;
 
 function parseSeriaisMovimento(raw) {
   const s = String(raw || '').trim();
@@ -438,6 +439,7 @@ const ConsultaMovimentos = () => {
                                   ref: String(row['REF.'] ?? ''),
                                   tra: String(row['TRA / DEV'] ?? ''),
                                   description: String(row.DESCRIPTION ?? ''),
+                                  page: 1,
                                 })
                               }
                               className="px-2 py-0.5 text-xs rounded border border-gray-300 text-gray-700 hover:bg-gray-50"
@@ -528,62 +530,100 @@ const ConsultaMovimentos = () => {
           </span>
         </div>
 
-        {serialModal && (
-          <div
-            className="fixed inset-0 z-[10000] flex items-center justify-center p-4 bg-black/50"
-            aria-modal="true"
-            role="dialog"
-            aria-labelledby="consulta-seriais-titulo"
-            onClick={(e) => {
-              if (e.target === e.currentTarget) setSerialModal(null);
-            }}
-          >
-            <div className="bg-white rounded-xl shadow-xl w-full max-w-lg max-h-[85vh] flex flex-col">
-              <div className="flex items-center justify-between gap-2 p-4 border-b border-gray-200 shrink-0">
-                <div>
-                  <h3 id="consulta-seriais-titulo" className="text-base font-semibold text-gray-900">
-                    Seriais (S/N)
-                  </h3>
-                  <p className="text-xs text-gray-500 mt-1">
-                    {serialModal.ref ? (
-                      <>
-                        REF. <span className="font-medium text-gray-700">{serialModal.ref}</span>
-                        {serialModal.tra ? (
+        {serialModal &&
+          (() => {
+            const total = Array.isArray(serialModal.serials) ? serialModal.serials.length : 0;
+            const totalPages = Math.max(1, Math.ceil(total / SN_MODAL_PAGE_SIZE));
+            const page = Math.min(Math.max(1, Number(serialModal.page) || 1), totalPages);
+            const start = (page - 1) * SN_MODAL_PAGE_SIZE;
+            const slice = (serialModal.serials || []).slice(start, start + SN_MODAL_PAGE_SIZE);
+            return (
+              <div
+                className="fixed inset-0 z-[10000] flex items-center justify-center p-4 bg-black/50"
+                aria-modal="true"
+                role="dialog"
+                aria-labelledby="consulta-seriais-titulo"
+                onClick={(e) => {
+                  if (e.target === e.currentTarget) setSerialModal(null);
+                }}
+              >
+                <div className="bg-white rounded-xl shadow-xl w-full max-w-lg max-h-[85vh] flex flex-col">
+                  <div className="flex items-center justify-between gap-2 p-4 border-b border-gray-200 shrink-0">
+                    <div>
+                      <h3 id="consulta-seriais-titulo" className="text-base font-semibold text-gray-900">
+                        Seriais (S/N)
+                      </h3>
+                      <p className="text-xs text-gray-500 mt-1">
+                        {serialModal.ref ? (
                           <>
-                            {' · '}
-                            TRA / DEV{' '}
-                            <span className="font-medium text-gray-700">{serialModal.tra}</span>
+                            REF. <span className="font-medium text-gray-700">{serialModal.ref}</span>
+                            {serialModal.tra ? (
+                              <>
+                                {' · '}
+                                TRA / DEV{' '}
+                                <span className="font-medium text-gray-700">{serialModal.tra}</span>
+                              </>
+                            ) : null}
                           </>
-                        ) : null}
-                      </>
-                    ) : (
-                      serialModal.tra || 'Movimento'
-                    )}
-                  </p>
-                  {serialModal.description ? (
-                    <p className="text-xs text-gray-600 mt-1 line-clamp-2">{serialModal.description}</p>
-                  ) : null}
+                        ) : (
+                          serialModal.tra || 'Movimento'
+                        )}
+                      </p>
+                      {serialModal.description ? (
+                        <p className="text-xs text-gray-600 mt-1 line-clamp-2">{serialModal.description}</p>
+                      ) : null}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setSerialModal(null)}
+                      className="px-3 py-1.5 rounded-lg border border-gray-200 text-gray-700 hover:bg-gray-50 text-sm shrink-0"
+                    >
+                      Fechar
+                    </button>
+                  </div>
+                  <div className="p-4 overflow-y-auto flex-1 min-h-0">
+                    <ol className="list-decimal list-inside space-y-2 text-sm text-gray-800" start={start + 1}>
+                      {slice.map((sn, i) => (
+                        <li key={`${start + i}-${sn}`} className="break-all pl-1">
+                          {sn}
+                        </li>
+                      ))}
+                    </ol>
+                  </div>
+                  <div className="p-4 border-t flex flex-wrap items-center justify-between gap-2 shrink-0">
+                    <span className="text-xs text-gray-600">
+                      Página {page} / {totalPages} · {total} serial(is)
+                    </span>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        disabled={page <= 1}
+                        onClick={() =>
+                          setSerialModal((m) => ({ ...m, page: Math.max(1, (Number(m?.page) || 1) - 1) }))
+                        }
+                        className="px-3 py-1.5 rounded-lg border border-gray-200 text-sm disabled:opacity-50"
+                      >
+                        Anterior
+                      </button>
+                      <button
+                        type="button"
+                        disabled={page >= totalPages}
+                        onClick={() =>
+                          setSerialModal((m) => ({
+                            ...m,
+                            page: Math.min(totalPages, (Number(m?.page) || 1) + 1),
+                          }))
+                        }
+                        className="px-3 py-1.5 rounded-lg border border-gray-200 text-sm disabled:opacity-50"
+                      >
+                        Seguinte
+                      </button>
+                    </div>
+                  </div>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setSerialModal(null)}
-                  className="px-3 py-1.5 rounded-lg border border-gray-200 text-gray-700 hover:bg-gray-50 text-sm shrink-0"
-                >
-                  Fechar
-                </button>
               </div>
-              <div className="p-4 overflow-y-auto flex-1 min-h-0">
-                <ol className="list-decimal list-inside space-y-2 text-sm text-gray-800">
-                  {serialModal.serials.map((sn, i) => (
-                    <li key={`${i}-${sn}`} className="break-all pl-1">
-                      {sn}
-                    </li>
-                  ))}
-                </ol>
-              </div>
-            </div>
-          </div>
-        )}
+            );
+          })()}
 
         {toast && <Toast type={toast.type} message={toast.message} onClose={() => setToast(null)} />}
       </div>

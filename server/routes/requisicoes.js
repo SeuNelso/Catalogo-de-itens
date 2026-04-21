@@ -2113,6 +2113,142 @@ function observacoesClogEpiSomenteColaborador(obsRaw) {
   return colabParts.join(' | ');
 }
 
+function observacoesClogEpiCodigoNome(obsRaw) {
+  const s = String(obsRaw || '').trim();
+  if (!s) return '';
+  const nomeMatch = s.match(/colaborador\s*:\s*([^|]+)/i);
+  const numeroMatch = s.match(/nr\.\s*colab\.?\s*:\s*([^|]+)/i);
+  const nome = String(nomeMatch?.[1] || '').trim();
+  const numero = String(numeroMatch?.[1] || '').trim();
+  if (numero && nome) return `${numero}-${nome}`;
+  return numero || nome || '';
+}
+
+function labelArmazem(codigo, descricao) {
+  const cod = String(codigo || '').trim();
+  const desc = String(descricao || '').trim();
+  if (cod && desc) return `${cod} - ${desc}`;
+  return cod || desc || '';
+}
+
+function formatarNumeroTraDev(valorRaw, prefixoPadrao) {
+  const s = String(valorRaw || '').trim();
+  if (!s) return '';
+  const now = new Date();
+  const anoAtual = String(now.getFullYear());
+  const prefixo = String(prefixoPadrao || '').trim().toUpperCase() || 'TRA';
+
+  const mComPrefixo = s.match(/^(TRA|DEV)\s*(\d+)(?:\s*\/\s*(\d{4}))?$/i);
+  if (mComPrefixo) {
+    const p = String(mComPrefixo[1] || prefixo).toUpperCase();
+    const numero = String(mComPrefixo[2] || '').trim();
+    const ano = String(mComPrefixo[3] || anoAtual).trim();
+    return `${p} ${numero}/${ano}`;
+  }
+
+  const mNumeroAno = s.match(/^(\d+)\s*\/\s*(\d{4})$/);
+  if (mNumeroAno) {
+    const numero = String(mNumeroAno[1] || '').trim();
+    const ano = String(mNumeroAno[2] || '').trim();
+    return `${prefixo} ${numero}/${ano}`;
+  }
+
+  const mSomenteNumero = s.match(/^(\d+)$/);
+  if (mSomenteNumero) {
+    const numero = String(mSomenteNumero[1] || '').trim();
+    return `${prefixo} ${numero}/${anoAtual}`;
+  }
+
+  return s;
+}
+
+function formatarNumeroTraApeados(valorRaw) {
+  const base = formatarNumeroTraDev(valorRaw, 'TRA');
+  const m = String(base || '').trim().match(/^(TRA|DEV)\s+(.+)$/i);
+  if (!m) return base;
+  return `TRA ${String(m[2] || '').trim()}`;
+}
+
+async function normalizarObservacoesConsultaMovimentos(rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  if (list.length === 0) return [];
+  const armazemIds = [
+    ...new Set(
+      list
+        .flatMap((row) => [Number(row?.armazem_origem_id), Number(row?.armazem_id)])
+        .filter((id) => Number.isFinite(id) && id > 0)
+    ),
+  ];
+  const armazemById = new Map();
+  if (armazemIds.length > 0) {
+    const armRes = await pool.query(
+      `SELECT id, codigo, descricao
+       FROM armazens
+       WHERE id = ANY($1::int[])`,
+      [armazemIds]
+    );
+    for (const arm of armRes.rows || []) {
+      armazemById.set(Number(arm.id), labelArmazem(arm.codigo, arm.descricao));
+    }
+  }
+  return list.map((row) => {
+    const tipo = String(row?.['Tipo de Movimento'] || '').trim().toLowerCase();
+    const destinoTipo = String(row?.armazem_destino_tipo || '').trim().toLowerCase();
+    const origemLabel = armazemById.get(Number(row?.armazem_origem_id)) || '';
+    const destinoLabel = armazemById.get(Number(row?.armazem_id)) || '';
+    const rawObs = String(row?.Observações || '').trim();
+    let obs = '';
+    if (tipo === 'transf. apeado') {
+      obs = '';
+    } else if (tipo === 'transferencia') {
+      obs = origemLabel && destinoLabel ? `${origemLabel} > ${destinoLabel}` : '';
+    } else if (tipo === 'saida de armazem') {
+      const isEpi =
+        destinoTipo === 'epi' ||
+        String(row?.['Novo Armazém'] || '').toUpperCase().includes('EPI');
+      obs = isEpi ? observacoesClogEpiCodigoNome(rawObs) : destinoLabel;
+    } else if (tipo === 'devolucao de carrinha') {
+      obs = origemLabel;
+    }
+    return { ...row, Observações: obs };
+  });
+}
+
+async function normalizarTraDevTransfApeado(rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  if (list.length === 0) return [];
+  const reqIds = [
+    ...new Set(
+      list
+        .map((row) => Number(row?.requisicao_id))
+        .filter((id) => Number.isFinite(id) && id > 0)
+    ),
+  ];
+  const traApeadosByReqId = new Map();
+  if (reqIds.length > 0) {
+    const reqRes = await pool.query(
+      `SELECT id, devolucao_tra_apeados_numero
+       FROM requisicoes
+       WHERE id = ANY($1::int[])`,
+      [reqIds]
+    );
+    for (const r of reqRes.rows || []) {
+      const rid = Number(r.id);
+      if (!Number.isFinite(rid) || rid <= 0) continue;
+      const valor = formatarNumeroTraApeados(String(r.devolucao_tra_apeados_numero || '').trim());
+      if (valor) traApeadosByReqId.set(rid, valor);
+    }
+  }
+  return list.map((row) => {
+    const tipo = String(row?.['Tipo de Movimento'] || '').trim().toLowerCase();
+    if (tipo !== 'transf. apeado') return row;
+    const reqId = Number(row?.requisicao_id);
+    const traApeados = traApeadosByReqId.get(reqId);
+    if (!traApeados) return row;
+    return { ...row, 'TRA / DEV': traApeados };
+  });
+}
+
 /** Reporte/Clog: em Entregue exige TRA (`tra_gerada_em`); em FINALIZADO permite mesmo sem data (dados antigos / fluxo sem registo). */
 function podeExportarReporteOuClog(requisicao) {
   const st = requisicao?.status;
@@ -4359,6 +4495,7 @@ function clogRowsFromItemData(
   const isApeados = Boolean(opts?.isApeados);
   const qtySign = isDevolucao ? 1 : -1;
   const traDev = String(traNumero || '').trim();
+  const traApeados = formatarNumeroTraApeados(opts?.traApeadosNumero || '');
   const devolucaoDestinoLoc = String(opts?.devolucaoDestinoLoc || '').trim();
   const newLocDevolucao = devolucaoDestinoLoc || LOCALIZACAO_RECEBIMENTO_FALLBACK;
   const destinoTipo = String(opts?.destinoTipo || '').trim().toLowerCase();
@@ -4376,6 +4513,7 @@ function clogRowsFromItemData(
   const isCentralApeado =
     (origemTipo === 'central' && (destinoTipoNorm === 'apeado' || destinoTipoNorm === 'apeados')) ||
     ((origemTipo === 'apeado' || origemTipo === 'apeados') && destinoTipoNorm === 'central');
+  const isTransferenciaCentralCentral = origemTipo === 'central' && destinoTipoNorm === 'central';
   const tipoMovimento = isDevolucao
     ? 'Devolucao de carrinha'
     : (isCentralApeado ? 'Transf. Apeado' : 'Saida de Armazem');
@@ -4443,7 +4581,7 @@ function clogRowsFromItemData(
           'S/N': b.serialnumber || '',
           Lote: b.lote || '',
           'Novo Armazém': apeadoDestinoCodigo || codigoDestino,
-          'TRA / DEV': traDev,
+          'TRA / DEV': traApeados || traDev,
           'New Localização': apeadoDestinoLoc || apeadoDestinoCodigo || '',
           DEP: '',
           Observações: colaboradorObs
@@ -4461,6 +4599,40 @@ function clogRowsFromItemData(
       : ri.quantidade;
     const qty = qtySign * (Number(qtyBase) || 0);
     if (qty === 0) continue;
+    const serialsItem = tipoControlo === 'S/N' ? serialsNormalizadosList(ri.serialnumber) : [];
+    if (isTransferenciaCentralCentral && serialsItem.length > 0) {
+      const maxSerialRows = Math.min(serialsItem.length, Math.max(1, Math.abs(Number(qtyBase) || 0)));
+      for (let i = 0; i < maxSerialRows; i += 1) {
+        const sn = String(serialsItem[i] || '').trim();
+        if (!sn) continue;
+        rows.push({
+          requisicao_id: reqId,
+          usuario_id: reqUserId,
+          armazem_origem_id: armazemOrigemId,
+          armazem_id: armazemDestinoId,
+          armazem_origem_tipo: origemTipo,
+          armazem_destino_tipo: destinoTipoNorm,
+          mov_id: `req:${reqId}:ri:${Number(ri.id || 0)}:item:${Number(ri.item_id || 0)}:sn:${i + 1}`,
+          __ordem_movimento: 1,
+          'Tipo de Movimento': tipoMovimento,
+          'Dt_Recepção': dateStr,
+          'REF.': String(ri.item_codigo || ''),
+          DESCRIPTION: String(ri.item_descricao || ''),
+          QTY: qtySign,
+          Loc_Inicial: clogLocInicial(isDevolucao, localizacaoOrigemTRA, ri),
+          'S/N': sn,
+          Lote: ri.lote || '',
+          'Novo Armazém': codigoDestino,
+          'TRA / DEV': traDev,
+          'New Localização': isDevolucao
+            ? newLocDevolucao
+            : (isDestinoCentral ? (destinoTraLoc || localizacaoNormal) : (ri.is_ferramenta ? localizacaoFERR : localizacaoNormal)),
+          DEP: '',
+          Observações: colaboradorObs
+        });
+      }
+      continue;
+    }
 
     rows.push({
       requisicao_id: reqId,
@@ -4510,7 +4682,7 @@ function clogRowsFromItemData(
           'S/N': ri.serialnumber || '',
           Lote: ri.lote || '',
           'Novo Armazém': apeadoDestinoCodigo || codigoDestino,
-          'TRA / DEV': traDev,
+          'TRA / DEV': traApeados || traDev,
           'New Localização': apeadoDestinoLoc || apeadoDestinoCodigo || '',
           DEP: '',
           Observações: colaboradorObs
@@ -4896,6 +5068,7 @@ async function buildClogRowsForRequisicaoIds(idsClean, dateStr, opts = {}) {
           Boolean(String(r.devolucao_tra_apeados_numero || '').trim()) &&
           (itens || []).some((it) => (parseInt(it.quantidade_apeados ?? 0, 10) || 0) > 0),
         apeadoDestinoCodigo: String(r.devolucao_apeado_destino_codigo || '').trim(),
+        traApeadosNumero: String(r.devolucao_tra_apeados_numero || '').trim(),
         apeadoDestinoLoc: recByApeadoId.get(Number(r.devolucao_apeado_destino_id)) || '',
         apeadosOrigemLoc: recByDestArm.get(locArmDestinoLogico) || LOCALIZACAO_RECEBIMENTO_FALLBACK,
         devolucaoDestinoLoc: recByDestArm.get(locArmDestinoLogico) || LOCALIZACAO_RECEBIMENTO_FALLBACK,
@@ -5111,6 +5284,18 @@ router.get('/movimentos-clog/consulta', ...requisicaoAuth, denyOperador, async (
         return Number.isNaN(dt.getTime()) ? 0 : dt.getTime();
       };
       outRows.sort((a, b) => {
+        const tipoTxtA = String(a['Tipo de Movimento'] || '').trim().toLowerCase();
+        const tipoTxtB = String(b['Tipo de Movimento'] || '').trim().toLowerCase();
+        const isParDevolucaoApeado =
+          (tipoTxtA === 'transf. apeado' && tipoTxtB === 'devolucao de carrinha') ||
+          (tipoTxtA === 'devolucao de carrinha' && tipoTxtB === 'transf. apeado');
+        if (isParDevolucaoApeado) {
+          const reqA = Number(a.requisicao_id || 0);
+          const reqB = Number(b.requisicao_id || 0);
+          if (reqA === reqB) {
+            return tipoTxtA === 'transf. apeado' ? -1 : 1;
+          }
+        }
         const dA = parseDateBr(a['Dt_Recepção']);
         const dB = parseDateBr(b['Dt_Recepção']);
         if (dA !== dB) return dB - dA;
@@ -5136,7 +5321,8 @@ router.get('/movimentos-clog/consulta', ...requisicaoAuth, denyOperador, async (
         if (reqA !== reqB) return reqB - reqA;
         return 0;
       });
-      const outRowsClean = outRows.map(
+      const outRowsComTraApeados = await normalizarTraDevTransfApeado(outRows);
+      const outRowsClean = (await normalizarObservacoesConsultaMovimentos(outRowsComTraApeados)).map(
         ({
           __ordem_movimento,
           mov_id,
@@ -5147,16 +5333,10 @@ router.get('/movimentos-clog/consulta', ...requisicaoAuth, denyOperador, async (
           armazem_origem_tipo,
           armazem_destino_tipo,
           __req_sort_ts,
-          Observações,
           ...rest
         }) => {
-          const tipoEpi =
-            String(armazem_destino_tipo || '').toLowerCase() === 'epi' ||
-            String(rest['Novo Armazém'] || '').toUpperCase().includes('EPI');
-          const obs = tipoEpi ? observacoesClogEpiSomenteColaborador(Observações) : Observações;
           return {
             ...rest,
-            Observações: obs,
             mov_id,
             requisicao_id,
           };
@@ -5336,6 +5516,18 @@ router.get('/movimentos-clog/consulta', ...requisicaoAuth, denyOperador, async (
       return Number.isNaN(dt.getTime()) ? 0 : dt.getTime();
     };
     outRows.sort((a, b) => {
+      const tipoTxtA = String(a['Tipo de Movimento'] || '').trim().toLowerCase();
+      const tipoTxtB = String(b['Tipo de Movimento'] || '').trim().toLowerCase();
+      const isParDevolucaoApeado =
+        (tipoTxtA === 'transf. apeado' && tipoTxtB === 'devolucao de carrinha') ||
+        (tipoTxtA === 'devolucao de carrinha' && tipoTxtB === 'transf. apeado');
+      if (isParDevolucaoApeado) {
+        const reqA = Number(a.requisicao_id || 0);
+        const reqB = Number(b.requisicao_id || 0);
+        if (reqA === reqB) {
+          return tipoTxtA === 'transf. apeado' ? -1 : 1;
+        }
+      }
       const dA = parseDateBr(a['Dt_Recepção']);
       const dB = parseDateBr(b['Dt_Recepção']);
       if (dA !== dB) return dB - dA;
@@ -5361,13 +5553,10 @@ router.get('/movimentos-clog/consulta', ...requisicaoAuth, denyOperador, async (
       if (reqA !== reqB) return reqB - reqA;
       return 0;
     });
-    const outRowsClean = outRows.map(({ __ordem_movimento, __req_sort_ts, ...rest }) => {
-      const tipoEpi =
-        String(rest.armazem_destino_tipo || '').toLowerCase() === 'epi' ||
-        String(rest['Novo Armazém'] || '').toUpperCase().includes('EPI');
-      const obs = tipoEpi ? observacoesClogEpiSomenteColaborador(rest.Observações) : rest.Observações;
-      return { ...rest, Observações: obs };
-    });
+    const outRowsComTraApeados = await normalizarTraDevTransfApeado(outRows);
+    const outRowsClean = (await normalizarObservacoesConsultaMovimentos(outRowsComTraApeados)).map(
+      ({ __ordem_movimento, __req_sort_ts, ...rest }) => rest
+    );
 
     const nextOffset = reachedEnd || outRows.length < pageSize ? null : reqOffset;
     return res.json({
@@ -5820,6 +6009,8 @@ router.get('/:id/export-reporte', ...requisicaoAuth, denyOperador, async (req, r
       requisicao.armazem_origem_tipo,
       requisicao.armazem_destino_tipo
     );
+    const ocultarSeriaisReporte = String(requisicao.armazem_origem_tipo || '').toLowerCase() === 'central' &&
+      String(requisicao.armazem_destino_tipo || '').toLowerCase() === 'central';
     const origemReporte = isDevolucaoViaturaCentral
       ? (requisicao.armazem_origem_codigo || localizacaoOrigemTRA)
       : localizacaoOrigemTRA;
@@ -5847,7 +6038,7 @@ router.get('/:id/export-reporte', ...requisicaoAuth, denyOperador, async (req, r
         'Descrição': String(b.item_descricao || ''),
         Quantidade: Number(b.metros) || 0,
         ORIGEM: origemReporte,
-        'S/N': b.serialnumber || '',
+        'S/N': ocultarSeriaisReporte ? '' : (b.serialnumber || ''),
         LOTE: b.lote || '',
         DESTINO: codigoDestino,
         'Observações': colaboradorObs
@@ -5866,7 +6057,7 @@ router.get('/:id/export-reporte', ...requisicaoAuth, denyOperador, async (req, r
         'Descrição': String(ri.item_descricao || ''),
         Quantidade: qty,
         ORIGEM: origemReporte,
-        'S/N': ri.serialnumber || '',
+        'S/N': ocultarSeriaisReporte ? '' : (ri.serialnumber || ''),
         LOTE: ri.lote || '',
         DESTINO: codigoDestino,
         'Observações': colaboradorObs
@@ -5917,6 +6108,8 @@ router.get('/:id/reporte-dados', ...requisicaoAuth, denyOperador, async (req, re
       requisicao.armazem_origem_tipo,
       requisicao.armazem_destino_tipo
     );
+    const ocultarSeriaisReporte = String(requisicao.armazem_origem_tipo || '').toLowerCase() === 'central' &&
+      String(requisicao.armazem_destino_tipo || '').toLowerCase() === 'central';
     const origemReporte = isDevolucaoViaturaCentral
       ? (requisicao.armazem_origem_codigo || localizacaoOrigemTRA)
       : localizacaoOrigemTRA;
@@ -5942,7 +6135,7 @@ router.get('/:id/reporte-dados', ...requisicaoAuth, denyOperador, async (req, re
         'Descrição': String(b.item_descricao || ''),
         Quantidade: Number(b.metros) || 0,
         ORIGEM: origemReporte,
-        'S/N': b.serialnumber || '',
+        'S/N': ocultarSeriaisReporte ? '' : (b.serialnumber || ''),
         LOTE: b.lote || '',
         DESTINO: codigoDestino,
         'Observações': colaboradorObs
@@ -5962,7 +6155,7 @@ router.get('/:id/reporte-dados', ...requisicaoAuth, denyOperador, async (req, re
         'Descrição': String(ri.item_descricao || ''),
         Quantidade: qty,
         ORIGEM: origemReporte,
-        'S/N': ri.serialnumber || '',
+        'S/N': ocultarSeriaisReporte ? '' : (ri.serialnumber || ''),
         LOTE: ri.lote || '',
         DESTINO: codigoDestino,
         'Observações': colaboradorObs
@@ -6036,6 +6229,8 @@ router.post('/reporte-dados-multi', ...requisicaoAuth, denyOperador, async (req,
         requisicao.armazem_origem_tipo,
         requisicao.armazem_destino_tipo
       );
+      const ocultarSeriaisReporte = String(requisicao.armazem_origem_tipo || '').toLowerCase() === 'central' &&
+        String(requisicao.armazem_destino_tipo || '').toLowerCase() === 'central';
       const origemReporte = isDevolucaoViaturaCentral
         ? (requisicao.armazem_origem_codigo || localizacaoOrigemTRA)
         : localizacaoOrigemTRA;
@@ -6060,7 +6255,7 @@ router.post('/reporte-dados-multi', ...requisicaoAuth, denyOperador, async (req,
           'Descrição': String(b.item_descricao || ''),
           Quantidade: Number(b.metros) || 0,
           ORIGEM: origemReporte,
-          'S/N': b.serialnumber || '',
+          'S/N': ocultarSeriaisReporte ? '' : (b.serialnumber || ''),
           LOTE: b.lote || '',
           DESTINO: codigoDestino,
           'Observações': colaboradorObs
@@ -6080,7 +6275,7 @@ router.post('/reporte-dados-multi', ...requisicaoAuth, denyOperador, async (req,
           'Descrição': String(ri.item_descricao || ''),
           Quantidade: qty,
           ORIGEM: origemReporte,
-          'S/N': ri.serialnumber || '',
+          'S/N': ocultarSeriaisReporte ? '' : (ri.serialnumber || ''),
           LOTE: ri.lote || '',
           DESTINO: codigoDestino,
           'Observações': colaboradorObs
@@ -6145,6 +6340,8 @@ router.post('/export-reporte-multi', ...requisicaoAuth, denyOperador, async (req
         requisicao.armazem_origem_tipo,
         requisicao.armazem_destino_tipo
       );
+      const ocultarSeriaisReporte = String(requisicao.armazem_origem_tipo || '').toLowerCase() === 'central' &&
+        String(requisicao.armazem_destino_tipo || '').toLowerCase() === 'central';
       const origemReporte = isDevolucaoViaturaCentral
         ? (requisicao.armazem_origem_codigo || localizacaoOrigemTRA)
         : localizacaoOrigemTRA;
@@ -6169,7 +6366,7 @@ router.post('/export-reporte-multi', ...requisicaoAuth, denyOperador, async (req
           'Descrição': String(b.item_descricao || ''),
           Quantidade: Number(b.metros) || 0,
           ORIGEM: origemReporte,
-          'S/N': b.serialnumber || '',
+          'S/N': ocultarSeriaisReporte ? '' : (b.serialnumber || ''),
           LOTE: b.lote || '',
           DESTINO: codigoDestino,
           'Observações': colaboradorObs
@@ -6187,7 +6384,7 @@ router.post('/export-reporte-multi', ...requisicaoAuth, denyOperador, async (req
           'Descrição': String(ri.item_descricao || ''),
           Quantidade: qty,
           ORIGEM: origemReporte,
-          'S/N': ri.serialnumber || '',
+          'S/N': ocultarSeriaisReporte ? '' : (ri.serialnumber || ''),
           LOTE: ri.lote || '',
           DESTINO: codigoDestino,
           'Observações': colaboradorObs
@@ -9058,8 +9255,8 @@ router.patch('/:id/finalizar', ...requisicaoAuth, denyOperador, async (req, res)
 router.patch('/:id/tra-numero', ...requisicaoAuth, denyOperador, async (req, res) => {
   try {
     const { id } = req.params;
-    const traNumero = String(req.body?.tra_numero || '').trim();
-    if (!traNumero) {
+    const traNumeroRaw = String(req.body?.tra_numero || '').trim();
+    if (!traNumeroRaw) {
       return res.status(400).json({ error: 'Número da TRA é obrigatório.' });
     }
     const check = await pool.query(
@@ -9097,6 +9294,7 @@ router.patch('/:id/tra-numero', ...requisicaoAuth, denyOperador, async (req, res
     if (isDevolucaoFluxo && traJaDefinida && ['APEADOS', 'Entregue', 'FINALIZADO'].includes(String(row.status || ''))) {
       return res.status(400).json({ error: 'Número da DEV não pode ser alterado após mover para Transferências pendentes.' });
     }
+    const traNumero = formatarNumeroTraDev(traNumeroRaw, isDevolucaoFluxo ? 'DEV' : 'TRA');
 
     const statusDestino = isDevolucaoFluxo && String(row.status || '') === 'EM EXPEDICAO'
       ? 'APEADOS'
@@ -9131,8 +9329,8 @@ router.patch('/:id/tra-numero', ...requisicaoAuth, denyOperador, async (req, res
 router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperador, async (req, res) => {
   try {
     const { id } = req.params;
-    const valor = String(req.body?.devolucao_tra_apeados_numero || '').trim();
-    if (!valor) {
+    const valorRaw = String(req.body?.devolucao_tra_apeados_numero || '').trim();
+    if (!valorRaw) {
       return res.status(400).json({ error: 'Número da TRA APEADOS é obrigatório.' });
     }
     const check = await pool.query(
@@ -9164,6 +9362,7 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
     if (jaDefinido) {
       return res.status(400).json({ error: 'Número da TRA APEADOS já foi guardado e não pode ser alterado.' });
     }
+    const valor = formatarNumeroTraApeados(valorRaw);
     const up = await pool.query(
       `UPDATE requisicoes
        SET devolucao_tra_apeados_numero = $1,

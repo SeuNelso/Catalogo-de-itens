@@ -759,7 +759,6 @@ const ListarDevolucoes = () => {
       }
       await fetchDevolucoes();
       setToast({ type: 'success', message: `Nº TRA APEADOS guardado: ${valor}` });
-      navigate('/movimentos');
     } catch (error) {
       setToast({ type: 'error', message: error.message || 'Erro ao guardar número da TRA APEADOS' });
     } finally {
