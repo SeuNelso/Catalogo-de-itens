@@ -2,6 +2,14 @@ import React, { useEffect, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { useAuth } from '../contexts/AuthContext';
 
+const formatQuantidadeConsulta = (value) => {
+  if (value === null || value === undefined || value === '') return '—';
+  const num = Number(value);
+  if (!Number.isFinite(num)) return String(value);
+  if (Math.abs(num - Math.trunc(num)) < 1e-9) return String(Math.trunc(num));
+  return String(num);
+};
+
 const StockRastreavel = ({ mode = 'all' }) => {
   const { user } = useAuth();
   const [arquivo, setArquivo] = useState(null);
@@ -29,6 +37,10 @@ const StockRastreavel = ({ mode = 'all' }) => {
   const [armazemSelecionadoId, setArmazemSelecionadoId] = useState('');
   const [importArmazemId, setImportArmazemId] = useState('');
   const [savingManual, setSavingManual] = useState(false);
+  const [manualItemResultados, setManualItemResultados] = useState([]);
+  const [manualItemLoading, setManualItemLoading] = useState(false);
+  const [manualItemSelecionado, setManualItemSelecionado] = useState(null);
+  const [manualItemDropdownOpen, setManualItemDropdownOpen] = useState(false);
   const [manualForm, setManualForm] = useState({
     modo: 'serial',
     armazem_id: '',
@@ -83,8 +95,61 @@ const StockRastreavel = ({ mode = 'all' }) => {
   }, [armazemSelecionadoId]);
 
   const handleManualChange = (field, value) => {
+    if (field === 'artigo_codigo') {
+      setManualItemSelecionado(null);
+      setManualItemDropdownOpen(true);
+    }
     setManualForm((prev) => ({ ...prev, [field]: value }));
   };
+
+  useEffect(() => {
+    if (!showManual) return;
+    const termo = String(manualForm.artigo_codigo || '').trim();
+    if (termo.length < 2) {
+      setManualItemResultados([]);
+      setManualItemLoading(false);
+      return;
+    }
+    let ativo = true;
+    const timer = setTimeout(async () => {
+      try {
+        setManualItemLoading(true);
+        const token = localStorage.getItem('token');
+        const p = new URLSearchParams();
+        p.set('search', termo);
+        p.set('limit', '8');
+        const response = await fetch(`/api/itens?${p.toString()}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.error || 'Erro ao pesquisar itens');
+        if (!ativo) return;
+        const rows = Array.isArray(data.itens) ? data.itens : [];
+        const filtrados = rows.filter((it) => {
+          const tc = String(it?.tipocontrolo || '').trim().toUpperCase();
+          return tc === 'S/N' || tc === 'LOTE';
+        });
+        setManualItemResultados(filtrados);
+      } catch (_) {
+        if (!ativo) return;
+        setManualItemResultados([]);
+      } finally {
+        if (ativo) setManualItemLoading(false);
+      }
+    }, 250);
+    return () => {
+      ativo = false;
+      clearTimeout(timer);
+    };
+  }, [manualForm.artigo_codigo, showManual]);
+
+  const tipoControloManual = String(
+    manualItemSelecionado?.tipocontrolo ||
+    manualItemResultados.find((it) => String(it.codigo || '').trim() === String(manualForm.artigo_codigo || '').trim())?.tipocontrolo ||
+    ''
+  ).toUpperCase();
+  const manualAceitaSerial = tipoControloManual === 'S/N';
+  const manualAceitaLote = tipoControloManual === 'LOTE';
 
   const cadastrarSerialManual = async () => {
     const isModoSerial = manualForm.modo === 'serial';
@@ -102,6 +167,14 @@ const StockRastreavel = ({ mode = 'all' }) => {
     }
     if (!isModoSerial && (!Number.isFinite(Number(manualForm.quantidade)) || Number(manualForm.quantidade) <= 0)) {
       setErro('Informe uma quantidade válida para o lote.');
+      return;
+    }
+    if (tipoControloManual && isModoSerial && !manualAceitaSerial) {
+      setErro(`O item ${manualForm.artigo_codigo} não aceita cadastro por serial (controlo: ${tipoControloManual}).`);
+      return;
+    }
+    if (tipoControloManual && !isModoSerial && !manualAceitaLote) {
+      setErro(`O item ${manualForm.artigo_codigo} não aceita cadastro por lote (controlo: ${tipoControloManual}).`);
       return;
     }
     setErro('');
@@ -563,12 +636,36 @@ const StockRastreavel = ({ mode = 'all' }) => {
                 </option>
               ))}
             </select>
-            <input
-              value={manualForm.artigo_codigo}
-              onChange={(e) => handleManualChange('artigo_codigo', e.target.value)}
-              placeholder="Código do artigo"
-              className="px-3 py-2 border border-gray-300 rounded"
-            />
+            <div className="relative">
+              <input
+                value={manualForm.artigo_codigo}
+                onChange={(e) => handleManualChange('artigo_codigo', e.target.value)}
+                onFocus={() => setManualItemDropdownOpen(true)}
+                onBlur={() => setTimeout(() => setManualItemDropdownOpen(false), 120)}
+                placeholder="Código do artigo"
+                className="w-full px-3 py-2 border border-gray-300 rounded"
+              />
+              {manualItemDropdownOpen && manualItemResultados.length > 0 && (
+                <div className="absolute z-20 mt-1 w-full max-h-40 overflow-auto border border-gray-200 rounded bg-white shadow-sm">
+                  {manualItemResultados.map((it) => (
+                    <button
+                      type="button"
+                      key={it.id}
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        setManualForm((prev) => ({ ...prev, artigo_codigo: String(it.codigo || '') }));
+                        setManualItemSelecionado(it);
+                        setManualItemDropdownOpen(false);
+                      }}
+                      className="w-full text-left px-2 py-1.5 hover:bg-gray-50 border-b border-gray-100 last:border-b-0"
+                    >
+                      <div className="text-xs font-medium text-gray-800">{it.codigo}</div>
+                      <div className="text-[11px] text-gray-600">{it.descricao || 'Sem descrição'}</div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
             <input
               value={manualForm.localizacao}
               onChange={(e) => handleManualChange('localizacao', e.target.value)}
@@ -619,6 +716,22 @@ const StockRastreavel = ({ mode = 'all' }) => {
                     }
                   }}
                 />
+              </>
+            )}
+          </div>
+          <div className="text-[11px] text-gray-600 -mt-1">
+            {manualItemLoading
+              ? 'Pesquisando item...'
+              : (manualItemSelecionado
+                ? `${manualItemSelecionado.codigo || ''} - ${manualItemSelecionado.descricao || ''}`
+                : 'Digite 2+ caracteres para pesquisar e selecionar o material.')}
+            {tipoControloManual && (
+              <>
+                {' · '}
+                Tipo de controlo: <strong>{tipoControloManual}</strong>{' '}
+                {manualAceitaSerial && <span className="text-blue-700">· Aceita serial</span>}
+                {manualAceitaLote && <span className="text-emerald-700">· Aceita lote</span>}
+                {!manualAceitaSerial && !manualAceitaLote && <span className="text-amber-700">· Não aceita serial/lote</span>}
               </>
             )}
           </div>
@@ -689,7 +802,7 @@ const StockRastreavel = ({ mode = 'all' }) => {
                         </td>
                         <td className="px-2 py-1 uppercase">{r.tipo || (r.serialnumber ? 'serial' : 'lote')}</td>
                         <td className="px-2 py-1">{r.serialnumber || r.lote || '—'}</td>
-                        <td className="px-2 py-1">{r.quantidade ?? '—'}</td>
+                        <td className="px-2 py-1">{formatQuantidadeConsulta(r.quantidade)}</td>
                         <td className="px-2 py-1">{r.localizacao}</td>
                         <td className="px-2 py-1">{r.caixa_codigo || '—'}</td>
                         <td className="px-2 py-1">{r.status}</td>
@@ -750,10 +863,12 @@ const StockRastreavel = ({ mode = 'all' }) => {
                     <tr>
                       <th className="text-left px-2 py-1 border-b">Tipo</th>
                       <th className="text-left px-2 py-1 border-b">Artigo</th>
+                      <th className="text-left px-2 py-1 border-b">Descrição</th>
                       <th className="text-left px-2 py-1 border-b">Serial</th>
                       <th className="text-left px-2 py-1 border-b">Lote</th>
                       <th className="text-left px-2 py-1 border-b">Quantidade</th>
                       <th className="text-left px-2 py-1 border-b">Localização</th>
+                      <th className="text-left px-2 py-1 border-b">Nº Caixa</th>
                       <th className="text-left px-2 py-1 border-b">Status</th>
                       <th className="text-left px-2 py-1 border-b">Req</th>
                       {isAdminUser && <th className="text-left px-2 py-1 border-b">Ações</th>}
@@ -772,10 +887,12 @@ const StockRastreavel = ({ mode = 'all' }) => {
                       <tr key={r.id} className={`border-b last:border-b-0 ${statusBgClass}`}>
                         <td className="px-2 py-1 uppercase">{r.tipo || (r.serialnumber ? 'serial' : 'lote')}</td>
                         <td className="px-2 py-1">{r.item_codigo}</td>
+                        <td className="px-2 py-1">{r.item_descricao || '—'}</td>
                         <td className="px-2 py-1">{r.serialnumber || '—'}</td>
                         <td className="px-2 py-1">{r.lote || '—'}</td>
-                        <td className="px-2 py-1">{r.quantidade ?? '—'}</td>
+                        <td className="px-2 py-1">{formatQuantidadeConsulta(r.quantidade)}</td>
                         <td className="px-2 py-1">{r.localizacao}</td>
+                        <td className="px-2 py-1">{r.codigo_caixa || '—'}</td>
                         <td className="px-2 py-1">{r.status}</td>
                         <td className="px-2 py-1">{r.requisicao_id || '—'}</td>
                         {isAdminUser && (

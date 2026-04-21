@@ -1100,6 +1100,7 @@ const PrepararRequisicao = () => {
       setToast({ type: 'error', message: 'Informe uma quantidade válida (use 0 se não tiver o item).' });
       return;
     }
+    const isZero = Number(qtdDigitada) === 0;
 
     if (isLote) {
       qtdPreparadaParaComparacao = qtdDigitada; // quantidade de bobinas pedidas/separadas
@@ -1114,7 +1115,16 @@ const PrepararRequisicao = () => {
       qtdPreparadaParaPayload = qtdDigitada;
     }
 
-    if (qtdPreparadaParaComparacao !== qtdRequisitada) {
+    if (isZero) {
+      const okZero = await confirm({
+        title: 'Quantidade preparada igual a 0',
+        message:
+          'A quantidade preparada deste artigo está em 0. Deseja continuar? O artigo ficará fora de TRFL/TRA/Clog e da lista de movimentos, mas aparecerá no Reporte.',
+        confirmLabel: 'Continuar com 0',
+        variant: 'warning',
+      });
+      if (!okZero) return;
+    } else if (qtdPreparadaParaComparacao !== qtdRequisitada) {
       const unidade = isLote ? 'bobinas' : 'unidades';
       const msg = `A quantidade preparada (${qtdPreparadaParaComparacao} ${unidade}) é diferente da quantidade requisitada (${qtdRequisitada} ${unidade}). Confirma que esta diferença é intencional?`;
       const ok = await confirm({
@@ -1129,7 +1139,7 @@ const PrepararRequisicao = () => {
     const locOrigem = isFluxoRecebimentoMercadoria
       ? ''
       : ((formItem.localizacao_origem === '_custom_' ? formItem.localizacao_origem_custom : formItem.localizacao_origem)?.trim() || '');
-    if (!isFluxoRecebimentoMercadoria && !locOrigem) {
+    if (!isFluxoRecebimentoMercadoria && !isZero && !locOrigem) {
       setToast({ type: 'error', message: 'A localização de saída (onde está saindo) é obrigatória.' });
       return;
     }

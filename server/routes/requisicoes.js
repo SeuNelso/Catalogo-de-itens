@@ -6051,7 +6051,7 @@ router.get('/:id/export-reporte', ...requisicaoAuth, denyOperador, async (req, r
       if (tipoControlo === 'LOTE' && temBobinas) continue;
 
       const qty = parseFloat(ri.quantidade_preparada ?? ri.quantidade) || 0;
-      if (qty <= 0) continue;
+      if (qty < 0) continue;
       rows.push({
         Artigo: String(ri.item_codigo || ''),
         'Descrição': String(ri.item_descricao || ''),
@@ -6148,7 +6148,7 @@ router.get('/:id/reporte-dados', ...requisicaoAuth, denyOperador, async (req, re
       if (tipoControlo === 'LOTE' && temBobinas) continue;
 
       const qty = parseFloat(ri.quantidade_preparada ?? ri.quantidade) || 0;
-      if (qty <= 0) continue;
+      if (qty < 0) continue;
 
       rows.push({
         Artigo: String(ri.item_codigo || ''),
@@ -6268,7 +6268,7 @@ router.post('/reporte-dados-multi', ...requisicaoAuth, denyOperador, async (req,
         if (tipoControlo === 'LOTE' && temBobinas) continue;
 
         const qty = parseFloat(ri.quantidade_preparada ?? ri.quantidade) || 0;
-        if (qty <= 0) continue;
+        if (qty < 0) continue;
 
         allRows.push({
           Artigo: String(ri.item_codigo || ''),
@@ -6378,7 +6378,7 @@ router.post('/export-reporte-multi', ...requisicaoAuth, denyOperador, async (req
         const temBobinas = bobinas.some(b => b.item_id === ri.item_id);
         if (tipoControlo === 'LOTE' && temBobinas) continue;
         const qty = parseFloat(ri.quantidade_preparada ?? ri.quantidade) || 0;
-        if (qty <= 0) continue;
+        if (qty < 0) continue;
         allRows.push({
           Artigo: String(ri.item_codigo || ''),
           'Descrição': String(ri.item_descricao || ''),
@@ -11073,12 +11073,15 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
           1::numeric AS quantidade,
           s.requisicao_id,
           s.requisicao_item_id,
+          c.codigo_caixa,
           s.reservado_em,
           s.consumido_em,
           s.criado_em,
           s.atualizado_em
         FROM stock_serial s
         INNER JOIN itens i ON i.id = s.item_id
+        LEFT JOIN stock_caixa_seriais cs ON cs.stock_serial_id = s.id
+        LEFT JOIN stock_caixas c ON c.id = cs.caixa_id
         WHERE ${serialWhere}
         UNION ALL
         SELECT
@@ -11094,6 +11097,7 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
           l.quantidade_disponivel AS quantidade,
           NULL::int AS requisicao_id,
           NULL::int AS requisicao_item_id,
+          NULL::text AS codigo_caixa,
           NULL::timestamp AS reservado_em,
           NULL::timestamp AS consumido_em,
           l.criado_em,
