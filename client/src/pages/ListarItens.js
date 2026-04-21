@@ -55,7 +55,7 @@ const ListarItens = () => {
 
   const { user } = useAuth();
   const isAdmin = user && user.role === 'admin';
-  const canEdit = user && (user.role === 'admin' || user.role === 'controller');
+  const canEdit = user && ['admin', 'controller', 'analista'].includes(user.role);
   
   // Verificação adicional de segurança
   const userCanEdit = Boolean(canEdit);

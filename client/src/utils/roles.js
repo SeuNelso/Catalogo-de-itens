@@ -7,6 +7,7 @@
 export const ROLES = Object.freeze({
   ADMIN: 'admin',
   CONTROLLER: 'controller',
+  ANALISTA: 'analista',
   USUARIO: 'usuario',
   BASICO: 'basico',
   BACKOFFICE_OPERATIONS: 'backoffice_operations',
@@ -75,6 +76,7 @@ export function podeAcederInventario(role) {
 export const ROLE_OPTIONS = [
   { value: ROLES.ADMIN, label: 'Administrador (ADMIN)' },
   { value: ROLES.CONTROLLER, label: 'Controller' },
+  { value: ROLES.ANALISTA, label: 'Analista' },
   { value: ROLES.BACKOFFICE_OPERATIONS, label: 'BACKOFFICE OPERATIONS' },
   { value: ROLES.BACKOFFICE_ARMAZEM, label: 'BACKOFFICE ARMAZEM' },
   { value: ROLES.SUPERVISOR_ARMAZEM, label: 'Supervisor armazém' },

@@ -27,11 +27,10 @@ const ContagemSemanal = () => {
   const [toast, setToast] = useState(null);
   const [loading, setLoading] = useState(false);
   const [armazens, setArmazens] = useState([]);
-  const [utilizadores, setUtilizadores] = useState([]);
   const [tarefas, setTarefas] = useState([]);
   const [tarefaAtual, setTarefaAtual] = useState(null);
   const [armazemId, setArmazemId] = useState('');
-  const [atribuidoParaUserId, setAtribuidoParaUserId] = useState('');
+  const [descricaoIdentificacao, setDescricaoIdentificacao] = useState('');
   const [rows, setRows] = useState([]);
   const [busyLineId, setBusyLineId] = useState(null);
 
@@ -51,15 +50,12 @@ const ContagemSemanal = () => {
     const run = async () => {
       try {
         setLoading(true);
-        const [armazensRes, usersRes] = await Promise.all([
-          fetch('/api/inventario/contagem-semanal/armazens', { headers: { Authorization: `Bearer ${token}` } }),
-          fetch('/api/inventario/contagem-semanal/utilizadores', { headers: { Authorization: `Bearer ${token}` } }),
-        ]);
+        const armazensRes = await fetch('/api/inventario/contagem-semanal/armazens', {
+          headers: { Authorization: `Bearer ${token}` },
+        });
         const armazensData = await armazensRes.json().catch(() => []);
         if (!armazensRes.ok) throw new Error(armazensData.error || armazensData.details || 'Erro ao carregar armazéns');
         setArmazens(Array.isArray(armazensData) ? armazensData : []);
-        const usersData = await usersRes.json().catch(() => []);
-        if (usersRes.ok) setUtilizadores(Array.isArray(usersData) ? usersData : []);
         await carregarTarefas();
       } catch (e) {
         setToast({ type: 'error', message: e.message || 'Erro ao carregar dados' });
@@ -126,14 +122,21 @@ const ContagemSemanal = () => {
 
   const criarTarefa = async () => {
     if (!canGerirTarefa) return setToast({ type: 'error', message: 'Sem permissão para criar tarefa.' });
-    if (!armazemId || !atribuidoParaUserId) return setToast({ type: 'error', message: 'Selecione armazém e utilizador responsável.' });
+    if (!armazemId) return setToast({ type: 'error', message: 'Selecione o armazém.' });
+    if (descricaoIdentificacao.trim().length < 20) {
+      return setToast({ type: 'error', message: 'A descrição da contagem deve ter no mínimo 20 caracteres.' });
+    }
     if (!rows.length) return setToast({ type: 'error', message: 'Importe a tabela antes de criar tarefa.' });
     try {
       setLoading(true);
       const res = await fetch('/api/inventario/contagem-semanal/tarefas', {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ armazem_id: Number(armazemId), atribuido_para_user_id: Number(atribuidoParaUserId), rows }),
+        body: JSON.stringify({
+          armazem_id: Number(armazemId),
+          descricao_identificacao: descricaoIdentificacao.trim(),
+          rows,
+        }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || data.details || 'Erro ao criar tarefa');
@@ -156,6 +159,7 @@ const ContagemSemanal = () => {
       if (!res.ok) throw new Error(data.error || data.details || 'Erro ao abrir tarefa');
       setTarefaAtual(data);
       setArmazemId(String(data.armazem_id || ''));
+      setDescricaoIdentificacao(String(data.descricao_identificacao || ''));
       setRows(Array.isArray(data.linhas) ? data.linhas : []);
     } catch (e) {
       setToast({ type: 'error', message: e.message || 'Erro ao abrir tarefa' });
@@ -219,7 +223,7 @@ const ContagemSemanal = () => {
       <div className="max-w-7xl mx-auto">
         <div className="mb-6">
           <h1 className="text-2xl sm:text-3xl font-bold text-gray-800">Contagem semanal</h1>
-          <p className="text-gray-600 mt-1">Crie tarefa de contagem, atribua a outro utilizador e guarde as linhas individualmente.</p>
+          <p className="text-gray-600 mt-1">Crie tarefa com descrição identificadora e guarde as linhas individualmente.</p>
         </div>
 
         <div className="bg-white rounded-lg border border-gray-200 p-4 mb-4">
@@ -232,11 +236,14 @@ const ContagemSemanal = () => {
               </select>
             </div>
             <div>
-              <label className="block text-xs text-gray-600 mb-1">Atribuir para</label>
-              <select value={atribuidoParaUserId} onChange={(e) => setAtribuidoParaUserId(e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" disabled={!canGerirTarefa}>
-                <option value="">Selecione</option>
-                {utilizadores.map((u) => <option key={u.id} value={u.id}>{u.nome ? `${u.nome} (${u.username})` : u.username}</option>)}
-              </select>
+              <label className="block text-xs text-gray-600 mb-1">Descrição da contagem (mín. 20 chars)</label>
+              <input
+                value={descricaoIdentificacao}
+                onChange={(e) => setDescricaoIdentificacao(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                placeholder="Ex.: Contagem semanal central A - turno manhã"
+                maxLength={200}
+              />
             </div>
             <div>
               <label className="block text-xs text-gray-600 mb-1">Importar tabela</label>
@@ -244,37 +251,73 @@ const ContagemSemanal = () => {
             </div>
           </div>
           <div className="mt-3 flex justify-end gap-2">
-            {canGerirTarefa && <button type="button" onClick={criarTarefa} disabled={!rows.length || !armazemId || !atribuidoParaUserId || loading} className="px-4 py-2 rounded-lg text-sm font-semibold bg-emerald-600 text-white disabled:opacity-50">Criar tarefa de contagem</button>}
+            {canGerirTarefa && <button type="button" onClick={criarTarefa} disabled={!rows.length || !armazemId || descricaoIdentificacao.trim().length < 20 || loading} className="px-4 py-2 rounded-lg text-sm font-semibold bg-emerald-600 text-white disabled:opacity-50">Criar tarefa de contagem</button>}
             <button type="button" onClick={exportar} disabled={!rows.length} className="px-4 py-2 rounded-lg text-sm font-semibold bg-[#0915FF] text-white disabled:opacity-50">Exportar contagem</button>
           </div>
         </div>
 
-        <div className="bg-white rounded-lg border border-gray-200 p-4 mb-4 overflow-auto">
-          <table className="min-w-full text-xs">
-            <thead className="bg-gray-100">
-              <tr>
-                <th className="px-3 py-2 border-b text-left">ID</th>
-                <th className="px-3 py-2 border-b text-left">Armazém</th>
-                <th className="px-3 py-2 border-b text-left">Responsável</th>
-                <th className="px-3 py-2 border-b text-right">Linhas</th>
-                <th className="px-3 py-2 border-b text-left">Status</th>
-                <th className="px-3 py-2 border-b text-right">Ação</th>
-              </tr>
-            </thead>
-            <tbody>
-              {tarefas.map((t) => (
-                <tr key={t.id} className="border-b">
-                  <td className="px-3 py-2">#{t.id}</td>
-                  <td className="px-3 py-2">{t.armazem_codigo ? `${t.armazem_codigo} - ${t.armazem_descricao}` : t.armazem_descricao}</td>
-                  <td className="px-3 py-2">{t.atribuido_para_nome || t.atribuido_para_username || '—'}</td>
-                  <td className="px-3 py-2 text-right">{Number(t.linhas_total || 0)}</td>
-                  <td className="px-3 py-2">{t.status || 'ABERTA'}</td>
-                  <td className="px-3 py-2 text-right"><button type="button" onClick={() => abrirTarefa(t.id)} className="px-2 py-1 rounded bg-gray-100 hover:bg-gray-200">Abrir</button></td>
+        <div className="bg-white rounded-lg border border-gray-200 p-4 mb-4">
+          <div className="md:hidden space-y-3">
+            {tarefas.map((t) => (
+              <div key={t.id} className="border border-gray-200 rounded-lg p-3 bg-gray-50">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-sm font-semibold text-gray-800">#{t.id}</span>
+                  <span className="text-[11px] px-2 py-0.5 rounded-full bg-blue-100 text-blue-800">
+                    {t.status || 'ABERTA'}
+                  </span>
+                </div>
+                <div className="text-xs text-gray-600 mb-1">Armazém</div>
+                <div className="text-sm text-gray-800 mb-2">
+                  {t.armazem_codigo ? `${t.armazem_codigo} - ${t.armazem_descricao}` : t.armazem_descricao}
+                </div>
+                <div className="text-xs text-gray-600 mb-1">Descrição</div>
+                <div className="text-sm text-gray-800 mb-2 line-clamp-2">{t.descricao_identificacao || '—'}</div>
+                <div className="flex items-center justify-between">
+                  <div className="text-xs text-gray-600">
+                    Linhas: <span className="font-semibold text-gray-800">{Number(t.linhas_total || 0)}</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => abrirTarefa(t.id)}
+                    className="px-3 py-1.5 rounded bg-[#0915FF] text-white text-xs font-semibold"
+                  >
+                    Abrir
+                  </button>
+                </div>
+              </div>
+            ))}
+            {tarefas.length === 0 && (
+              <div className="px-3 py-4 text-center text-sm text-gray-500">Nenhuma tarefa criada.</div>
+            )}
+          </div>
+
+          <div className="hidden md:block overflow-auto">
+            <table className="min-w-full text-xs">
+              <thead className="bg-gray-100">
+                <tr>
+                  <th className="px-3 py-2 border-b text-left">ID</th>
+                  <th className="px-3 py-2 border-b text-left">Armazém</th>
+                  <th className="px-3 py-2 border-b text-left">Descrição</th>
+                  <th className="px-3 py-2 border-b text-right">Linhas</th>
+                  <th className="px-3 py-2 border-b text-left">Status</th>
+                  <th className="px-3 py-2 border-b text-right">Ação</th>
                 </tr>
-              ))}
-              {tarefas.length === 0 && <tr><td colSpan={6} className="px-3 py-4 text-center text-gray-500">Nenhuma tarefa criada.</td></tr>}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {tarefas.map((t) => (
+                  <tr key={t.id} className="border-b">
+                    <td className="px-3 py-2">#{t.id}</td>
+                    <td className="px-3 py-2">{t.armazem_codigo ? `${t.armazem_codigo} - ${t.armazem_descricao}` : t.armazem_descricao}</td>
+                    <td className="px-3 py-2">{t.descricao_identificacao || '—'}</td>
+                    <td className="px-3 py-2 text-right">{Number(t.linhas_total || 0)}</td>
+                    <td className="px-3 py-2">{t.status || 'ABERTA'}</td>
+                    <td className="px-3 py-2 text-right"><button type="button" onClick={() => abrirTarefa(t.id)} className="px-2 py-1 rounded bg-gray-100 hover:bg-gray-200">Abrir</button></td>
+                  </tr>
+                ))}
+                {tarefas.length === 0 && <tr><td colSpan={6} className="px-3 py-4 text-center text-gray-500">Nenhuma tarefa criada.</td></tr>}
+              </tbody>
+            </table>
+          </div>
         </div>
 
         <div className="bg-white rounded-lg border border-gray-200 overflow-auto">

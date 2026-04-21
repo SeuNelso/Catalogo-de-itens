@@ -10,6 +10,7 @@
 const ROLES = Object.freeze({
   ADMIN: 'admin',
   CONTROLLER: 'controller',
+  ANALISTA: 'analista',
   USUARIO: 'usuario',
   BASICO: 'basico',
   BACKOFFICE_OPERATIONS: 'backoffice_operations',

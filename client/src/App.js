@@ -87,7 +87,7 @@ function App() {
                 <Route 
                   path="/editar/:id" 
                   element={
-                    <ProtectedRoute allowedRoles={['admin', 'controller']}>
+                    <ProtectedRoute allowedRoles={['admin', 'controller', 'analista']}>
                       <EditarItem />
                     </ProtectedRoute>
                   } 

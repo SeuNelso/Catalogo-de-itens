@@ -32,7 +32,7 @@ ALTER TABLE public.usuarios ALTER COLUMN role TYPE VARCHAR(64);
 
 ALTER TABLE public.usuarios ADD CONSTRAINT usuarios_role_check CHECK (
   role IN (
-    'admin', 'controller', 'usuario', 'basico',
+    'admin', 'controller', 'analista', 'usuario', 'basico',
     'backoffice_operations', 'backoffice_armazem', 'supervisor_armazem', 'operador'
   )
 );

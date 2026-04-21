@@ -2,6 +2,7 @@ CREATE TABLE IF NOT EXISTS inventario_contagem_semanal_tarefas (
   id BIGSERIAL PRIMARY KEY,
   armazem_id INTEGER NOT NULL REFERENCES armazens(id),
   atribuido_para_user_id INTEGER NOT NULL REFERENCES usuarios(id),
+  descricao_identificacao TEXT NULL,
   criado_por_user_id INTEGER NOT NULL REFERENCES usuarios(id),
   status TEXT NOT NULL DEFAULT 'ABERTA',
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,

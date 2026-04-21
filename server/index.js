@@ -2554,8 +2554,8 @@ app.put('/api/itens/:id', authenticateToken, upload.fields([
   // Logar o corpo da requisição para depuração
   console.log('Dados recebidos na edição de item:', req.body);
   // Verificar permissão para editar
-  if (!req.user || (req.user.role !== 'admin' && req.user.role !== 'controller')) {
-    return res.status(403).json({ error: 'Apenas administradores ou controllers podem editar itens.' });
+  if (!req.user || !['admin', 'controller', 'analista'].includes(req.user.role)) {
+    return res.status(403).json({ error: 'Apenas administradores, controllers ou analistas podem editar itens.' });
   }
   const itemId = req.params.id;
   const {
@@ -3142,7 +3142,7 @@ app.post('/api/usuarios', authenticateToken, async (req, res) => {
   if (!username || !password || !nome || !role) {
     return res.status(400).json({ error: 'Preencha todos os campos obrigatórios.' });
   }
-  if (!['admin', 'controller'].includes(role)) {
+  if (!['admin', 'controller', 'analista'].includes(role)) {
     return res.status(400).json({ error: 'Role inválido.' });
   }
   try {

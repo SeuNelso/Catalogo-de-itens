@@ -40,6 +40,7 @@ const Navbar = () => {
 
   const isAdmin = user && user.role === 'admin';
   const isController = user && (user.role === 'admin' || user.role === 'controller');
+  const canSeeDashboardCliente = user && user.role === 'analista';
   const canSeeRequisicoes = user && podeAcederRequisicoes(user.role);
   const isArmazemLogistica = user && ['backoffice_armazem', 'supervisor_armazem'].includes(user.role);
   /** Admin: menu completo; backoffice/supervisor armazém: secção Armazém (links não ficam só dentro do bloco admin) */
@@ -287,11 +288,13 @@ const Navbar = () => {
                   Catálogo
                 </Link>
               </div>
-              <div className="relative font-medium text-sm lg:text-base uppercase tracking-wider text-white cursor-pointer flex items-center px-2 lg:px-3 xl:px-4 h-12 min-w-12 lg:min-w-14 xl:min-w-16 rounded-lg transition-all duration-200 hover:bg-white/10 hover:text-yellow-400">
-                <Link to="/dashboard-cliente-compostos" className="text-inherit no-underline px-0.5 font-semibold w-full h-full flex items-center justify-center">
-                  Dashboard CLIENTE
-                </Link>
-              </div>
+              {canSeeDashboardCliente && (
+                <div className="relative font-medium text-sm lg:text-base uppercase tracking-wider text-white cursor-pointer flex items-center px-2 lg:px-3 xl:px-4 h-12 min-w-12 lg:min-w-14 xl:min-w-16 rounded-lg transition-all duration-200 hover:bg-white/10 hover:text-yellow-400">
+                  <Link to="/dashboard-cliente-compostos" className="text-inherit no-underline px-0.5 font-semibold w-full h-full flex items-center justify-center">
+                    Dashboard CLIENTE
+                  </Link>
+                </div>
+              )}
               {canSeeClogMenu && (
                 <div className="flex items-center gap-1 lg:gap-2">
                   <div
@@ -847,11 +850,13 @@ const Navbar = () => {
                   Catálogo
                 </Link>
               </div>
-              <div className="w-[85vw] sm:w-[90vw] py-3 sm:py-4.5 px-0 h-auto rounded-xl text-center text-base sm:text-lg font-semibold bg-white/8 m-0 mb-1 sm:mb-0.5 transition-all duration-200">
-                <Link to="/dashboard-cliente-compostos" onClick={(e) => handleMobileNavigation('/dashboard-cliente-compostos', e)} className="text-white no-underline font-semibold w-full h-full flex items-center justify-center">
-                  Dashboard CLIENTE
-                </Link>
-              </div>
+              {canSeeDashboardCliente && (
+                <div className="w-[85vw] sm:w-[90vw] py-3 sm:py-4.5 px-0 h-auto rounded-xl text-center text-base sm:text-lg font-semibold bg-white/8 m-0 mb-1 sm:mb-0.5 transition-all duration-200">
+                  <Link to="/dashboard-cliente-compostos" onClick={(e) => handleMobileNavigation('/dashboard-cliente-compostos', e)} className="text-white no-underline font-semibold w-full h-full flex items-center justify-center">
+                    Dashboard CLIENTE
+                  </Link>
+                </div>
+              )}
               {canSeeClogMenu && (
                 <>
                   <div className="relative w-full clog-dropdown">

@@ -34,11 +34,16 @@ async function ensureContagemSemanalSchema(pool) {
       id BIGSERIAL PRIMARY KEY,
       armazem_id INTEGER NOT NULL REFERENCES armazens(id),
       atribuido_para_user_id INTEGER NOT NULL REFERENCES usuarios(id),
+      descricao_identificacao TEXT NULL,
       criado_por_user_id INTEGER NOT NULL REFERENCES usuarios(id),
       status TEXT NOT NULL DEFAULT 'ABERTA',
       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     )`
+  );
+  await pool.query(
+    `ALTER TABLE inventario_contagem_semanal_tarefas
+     ADD COLUMN IF NOT EXISTS descricao_identificacao TEXT NULL`
   );
   await pool.query(
     `CREATE TABLE IF NOT EXISTS inventario_contagem_semanal_linhas (
@@ -315,10 +320,13 @@ function createInventarioRouter(deps = {}) {
         return res.status(403).json({ error: 'Sem permissão para criar tarefa.' });
       }
       const armazemId = Number(req.body?.armazem_id);
-      const atribuidoParaUserId = Number(req.body?.atribuido_para_user_id);
+      const descricaoIdentificacao = String(req.body?.descricao_identificacao || '').trim();
       const rowsIn = Array.isArray(req.body?.rows) ? req.body.rows : [];
-      if (!Number.isFinite(armazemId) || !Number.isFinite(atribuidoParaUserId) || !rowsIn.length) {
-        return res.status(400).json({ error: 'armazem_id, atribuido_para_user_id e rows são obrigatórios.' });
+      if (!Number.isFinite(armazemId) || !rowsIn.length) {
+        return res.status(400).json({ error: 'armazem_id e rows são obrigatórios.' });
+      }
+      if (descricaoIdentificacao.length < 20) {
+        return res.status(400).json({ error: 'A descrição de identificação deve ter no mínimo 20 caracteres.' });
       }
       if (!isAdmin(req.user?.role)) {
         const allowed = Array.isArray(req.requisicaoArmazemOrigemIds) ? req.requisicaoArmazemOrigemIds : [];
@@ -343,10 +351,10 @@ function createInventarioRouter(deps = {}) {
         await client.query('BEGIN');
         const created = await client.query(
           `INSERT INTO inventario_contagem_semanal_tarefas
-             (armazem_id, atribuido_para_user_id, criado_por_user_id, status, created_at, updated_at)
-           VALUES ($1, $2, $3, 'ABERTA', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+             (armazem_id, atribuido_para_user_id, descricao_identificacao, criado_por_user_id, status, created_at, updated_at)
+           VALUES ($1, $2, $3, $4, 'ABERTA', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
            RETURNING id`,
-          [armazemId, atribuidoParaUserId, req.user.id]
+          [armazemId, req.user.id, descricaoIdentificacao, req.user.id]
         );
         const tarefaId = Number(created.rows[0]?.id);
         for (const row of cleaned) {
@@ -390,8 +398,10 @@ function createInventarioRouter(deps = {}) {
       let idx = 1;
       let where = 'WHERE 1=1';
       if (!isAdmin(req.user?.role)) {
-        where += ` AND (t.atribuido_para_user_id = $${idx} OR t.criado_por_user_id = $${idx}) `;
-        params.push(req.user.id);
+        const allowed = Array.isArray(req.requisicaoArmazemOrigemIds) ? req.requisicaoArmazemOrigemIds : [];
+        if (!allowed.length) return res.json([]);
+        where += ` AND t.armazem_id = ANY($${idx}::int[]) `;
+        params.push(allowed);
         idx += 1;
       }
       const q = await pool.query(
@@ -399,6 +409,7 @@ function createInventarioRouter(deps = {}) {
            t.id,
            t.armazem_id,
            t.atribuido_para_user_id,
+           t.descricao_identificacao,
            t.criado_por_user_id,
            t.status,
            t.created_at,
@@ -441,9 +452,10 @@ function createInventarioRouter(deps = {}) {
       );
       if (!t.rows.length) return res.status(404).json({ error: 'Tarefa não encontrada.' });
       const tarefa = t.rows[0];
-      const canView = isAdmin(req.user?.role) ||
-        Number(tarefa.atribuido_para_user_id) === Number(req.user.id) ||
-        Number(tarefa.criado_por_user_id) === Number(req.user.id);
+      const canView = isAdmin(req.user?.role) || (
+        Array.isArray(req.requisicaoArmazemOrigemIds) &&
+        req.requisicaoArmazemOrigemIds.includes(Number(tarefa.armazem_id))
+      );
       if (!canView) return res.status(403).json({ error: 'Sem acesso a esta tarefa.' });
 
       const l = await pool.query(
@@ -479,9 +491,10 @@ function createInventarioRouter(deps = {}) {
         );
         if (!t.rows.length) return res.status(404).json({ error: 'Tarefa não encontrada.' });
         const tarefa = t.rows[0];
-        const canEdit = isAdmin(req.user?.role) ||
-          Number(tarefa.atribuido_para_user_id) === Number(req.user.id) ||
-          Number(tarefa.criado_por_user_id) === Number(req.user.id);
+        const canEdit = isAdmin(req.user?.role) || (
+          Array.isArray(req.requisicaoArmazemOrigemIds) &&
+          req.requisicaoArmazemOrigemIds.includes(Number(tarefa.armazem_id))
+        );
         if (!canEdit) return res.status(403).json({ error: 'Sem acesso a esta tarefa.' });
 
         const l = await client.query(
