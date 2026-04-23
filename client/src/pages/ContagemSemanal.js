@@ -211,20 +211,90 @@ const ContagemSemanal = () => {
   const exportar = async () => {
     if (!rows.length) return setToast({ type: 'error', message: 'Não há linhas para exportar.' });
     try {
-      const XLSX = await import('xlsx');
-      const data = rows.map((r) => ({
-        Artigo: r.artigo,
-        'Descrição': r.descricao || '',
-        QTD: Number(r.qtd || 0),
-        'QTD APE': Number(r.qtd_ape || 0),
-        TOTAL: Number(r.total || 0),
-      }));
-      const ws = XLSX.utils.json_to_sheet(data);
-      const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, 'Contagem');
+      const ExcelJS = await import('exceljs');
+      const wb = new ExcelJS.Workbook();
+      const ws = wb.addWorksheet('Contagem');
+      ws.columns = [
+        { header: 'Artigo', key: 'artigo' },
+        { header: 'Descrição', key: 'descricao' },
+        { header: 'QTD', key: 'qtd' },
+        { header: 'QTD APE', key: 'qtd_ape' },
+        { header: 'TOTAL', key: 'total' },
+      ];
+
+      const headerRow = ws.getRow(1);
+      headerRow.eachCell((cell) => {
+        cell.font = { name: 'Calibri', size: 10, bold: true, color: { argb: 'FFFFFFFF' } };
+        cell.alignment = { horizontal: 'center', vertical: 'middle' };
+        cell.fill = {
+          type: 'pattern',
+          pattern: 'solid',
+          fgColor: { argb: 'FFB3B3B3' },
+        };
+        cell.border = {
+          top: { style: 'thin', color: { argb: 'FF000000' } },
+          left: { style: 'thin', color: { argb: 'FF000000' } },
+          bottom: { style: 'thin', color: { argb: 'FF000000' } },
+          right: { style: 'thin', color: { argb: 'FF000000' } },
+        };
+      });
+
+      rows.forEach((r) => {
+        ws.addRow({
+          artigo: String(r.artigo || ''),
+          descricao: String(r.descricao || ''),
+          qtd: Number(r.qtd || 0),
+          qtd_ape: Number(r.qtd_ape || 0),
+          total: Number(r.total || 0),
+        });
+      });
+
+      for (let i = 2; i <= ws.rowCount; i += 1) {
+        const row = ws.getRow(i);
+        row.eachCell((cell, colNumber) => {
+          cell.font = { name: 'Calibri', size: 10 };
+          cell.alignment = {
+            horizontal: colNumber >= 3 ? 'right' : 'left',
+            vertical: 'middle',
+            wrapText: false,
+          };
+          cell.border = {
+            top: { style: 'thin', color: { argb: 'FF000000' } },
+            left: { style: 'thin', color: { argb: 'FF000000' } },
+            bottom: { style: 'thin', color: { argb: 'FF000000' } },
+            right: { style: 'thin', color: { argb: 'FF000000' } },
+          };
+          if (colNumber >= 3) {
+            cell.numFmt = '0';
+          }
+        });
+      }
+
+      ws.columns.forEach((column) => {
+        const headerLength = String(column.header || '').trim().length;
+        let maxLength = headerLength;
+
+        column.eachCell({ includeEmpty: true }, (cell) => {
+          const value = cell.value;
+          const text = value == null ? '' : String(value).trim();
+          if (text.length > maxLength) maxLength = text.length;
+        });
+
+        column.width = Math.min(Math.max(maxLength + 2, 8), 60);
+      });
+
+      const buffer = await wb.xlsx.writeBuffer();
+      const blob = new Blob([buffer], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
       const ts = new Date().toISOString().slice(0, 19).replace(/[-:T]/g, '');
       const codigo = String(armazemSelecionado?.codigo || 'ARMAZEM').replace(/\s+/g, '_');
-      XLSX.writeFile(wb, `contagem_semanal_${codigo}_${ts}.xlsx`);
+      a.download = `contagem_semanal_${codigo}_${ts}.xlsx`;
+      a.click();
+      window.URL.revokeObjectURL(url);
       setToast({ type: 'success', message: 'Ficheiro exportado com sucesso.' });
     } catch (e) {
       setToast({ type: 'error', message: e.message || 'Erro ao exportar ficheiro.' });

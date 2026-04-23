@@ -32,6 +32,7 @@ const normalize = (v) =>
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase();
+const RECEBIMENTO_REFRESH_EVENT = 'recebimento-card-refresh';
 
 const ListarDevolucoes = () => {
   const { user } = useAuth();
@@ -584,6 +585,9 @@ const ListarDevolucoes = () => {
         `DEV_devolucao_${reqId}_${new Date().toISOString().slice(0, 10)}.xlsx`,
         isRedownload ? 'DEV baixado novamente.' : 'DEV da devolução gerado com sucesso.'
       );
+      if (!isRedownload) {
+        window.dispatchEvent(new CustomEvent(RECEBIMENTO_REFRESH_EVENT));
+      }
       if (!isRedownload) {
         setReceberAtivoIds((prev) => {
           const next = new Set(prev);

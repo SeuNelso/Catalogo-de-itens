@@ -37,11 +37,13 @@ import Armazens from './pages/Armazens';
 import ConsultaLocalizacoesEstoque from './pages/ConsultaLocalizacoesEstoque';
 import TransferenciaLocalizacao from './pages/TransferenciaLocalizacao';
 import ConsultaMovimentos from './pages/ConsultaMovimentos';
+import ConsultaStockNacionalArmazem from './pages/ConsultaStockNacionalArmazem';
 import Inventario from './pages/Inventario';
 import ContagemSemanal from './pages/ContagemSemanal';
 import StockRastreavelConsulta from './pages/StockRastreavelConsulta';
 import StockRastreavelCadastroManual from './pages/StockRastreavelCadastroManual';
 import StockRastreavelImportacao from './pages/StockRastreavelImportacao';
+import ReceptionMonitorCard from './components/ReceptionMonitorCard';
 import './App.css';
 import { ROLES_COM_ACESSO_REQUISICOES } from './utils/roles';
 
@@ -243,7 +245,7 @@ function App() {
                   path="/transferencias/localizacao"
                   element={
                     <ProtectedRoute
-                      requireControloStock
+                      allowedRoles={['admin', 'backoffice_armazem', 'supervisor_armazem', 'operador']}
                     >
                       <TransferenciaLocalizacao />
                     </ProtectedRoute>
@@ -288,6 +290,14 @@ function App() {
                       requireControloStock
                     >
                       <ConsultaLocalizacoesEstoque />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/consulta-stock-nacional-armazem"
+                  element={
+                    <ProtectedRoute allowedRoles={['admin', 'backoffice_armazem', 'supervisor_armazem', 'operador']}>
+                      <ConsultaStockNacionalArmazem />
                     </ProtectedRoute>
                   }
                 />
@@ -349,6 +359,7 @@ function App() {
             <footer className="border-t border-gray-200 bg-white/90 px-4 py-3 text-center text-xs text-gray-600">
               {`Copyright (c) ${currentYear} Catalogo de Itens. Todos os direitos reservados.`}
             </footer>
+            <ReceptionMonitorCard />
             {/* Renderizar a barra de progresso global */}
             <ImportProgressBar />
           </div>

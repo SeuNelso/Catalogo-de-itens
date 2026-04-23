@@ -1,5 +1,7 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import axios from 'axios';
+import { useNavigate } from 'react-router-dom';
+import { FaArrowLeft, FaPlus, FaTrash } from 'react-icons/fa';
 import Toast from '../components/Toast';
 import { useAuth } from '../contexts/AuthContext';
 import { podeUsarControloStock } from '../utils/controloStock';
@@ -41,7 +43,14 @@ const isCentralWarehouse = (a) => {
   return codigo.includes('central') || descricao.includes('central');
 };
 
+const extrairCodigoManual = (valor) => {
+  const s = String(valor || '').trim();
+  if (!s) return '';
+  return s.split(' - ')[0].trim();
+};
+
 const TransferenciasRecebimento = () => {
+  const navigate = useNavigate();
   const { user } = useAuth();
   const [toast, setToast] = useState(null);
 
@@ -71,6 +80,15 @@ const TransferenciasRecebimento = () => {
   const [manualCodigo, setManualCodigo] = useState('');
   const [manualQtd, setManualQtd] = useState('');
   const [manualDescricao, setManualDescricao] = useState('');
+  const [observacoesVisual, setObservacoesVisual] = useState('');
+  const [itensFiltradosManual, setItensFiltradosManual] = useState([]);
+  const [itensBuscaManualLoading, setItensBuscaManualLoading] = useState(false);
+  const [mostrarListaManual, setMostrarListaManual] = useState(false);
+  const [selectedItemManualIndex, setSelectedItemManualIndex] = useState(-1);
+  const debounceBuscaManualRef = useRef(null);
+  const abortBuscaManualRef = useRef(null);
+  const refManualBuscaWrap = useRef(null);
+  const refManualLista = useRef(null);
 
   // 'setup' → 'pendente' → 'em_processo'
   const [stage, setStage] = useState('setup');
@@ -91,6 +109,7 @@ const TransferenciasRecebimento = () => {
       { id: 'FORNECEDOR', codigo: 'FORNECEDOR', descricao: 'FORNECEDOR' }
     ];
   }, [armazens, receivingId]);
+  const origemFornecedor = String(origemId || '') === 'FORNECEDOR';
 
   useEffect(() => {
     const load = async () => {
@@ -119,8 +138,84 @@ const TransferenciasRecebimento = () => {
     setManualCodigo('');
     setManualQtd('');
     setManualDescricao('');
+    setObservacoesVisual('');
     setStage('setup');
   }, [receivingId]);
+
+  useEffect(() => {
+    const q = String(manualCodigo || '').trim();
+    if (!q || !receivingId || !origemId) {
+      if (abortBuscaManualRef.current) abortBuscaManualRef.current.abort();
+      setItensFiltradosManual([]);
+      setMostrarListaManual(false);
+      setSelectedItemManualIndex(-1);
+      setItensBuscaManualLoading(false);
+      return;
+    }
+    if (debounceBuscaManualRef.current) clearTimeout(debounceBuscaManualRef.current);
+    debounceBuscaManualRef.current = setTimeout(async () => {
+      if (abortBuscaManualRef.current) abortBuscaManualRef.current.abort();
+      const ac = new AbortController();
+      abortBuscaManualRef.current = ac;
+      setItensBuscaManualLoading(true);
+      try {
+        const token = localStorage.getItem('token');
+        const { data } = await axios.get('/api/itens', {
+          params: {
+            search: q,
+            limit: 50,
+            page: 1,
+            incluirInativos: true,
+          },
+          headers: { Authorization: `Bearer ${token}` },
+          signal: ac.signal,
+        });
+        if (abortBuscaManualRef.current !== ac) return;
+        const list = Array.isArray(data?.itens) ? data.itens : [];
+        setItensFiltradosManual(list);
+        setMostrarListaManual(true);
+        setSelectedItemManualIndex(list.length > 0 ? 0 : -1);
+      } catch (err) {
+        if (axios.isCancel?.(err) || err.code === 'ERR_CANCELED' || err.name === 'CanceledError') return;
+        setItensFiltradosManual([]);
+        setMostrarListaManual(false);
+      } finally {
+        if (abortBuscaManualRef.current === ac) setItensBuscaManualLoading(false);
+      }
+    }, 280);
+    return () => {
+      clearTimeout(debounceBuscaManualRef.current);
+      abortBuscaManualRef.current?.abort();
+    };
+  }, [manualCodigo, receivingId, origemId]);
+
+  useEffect(() => {
+    if (!mostrarListaManual || selectedItemManualIndex < 0 || !refManualLista.current) return;
+    const el = refManualLista.current.querySelector(`[data-manual-item-index="${selectedItemManualIndex}"]`);
+    el?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }, [mostrarListaManual, selectedItemManualIndex]);
+
+  useEffect(() => {
+    const onDocMouseDown = (e) => {
+      if (refManualBuscaWrap.current && !refManualBuscaWrap.current.contains(e.target)) {
+        setMostrarListaManual(false);
+      }
+    };
+    document.addEventListener('mousedown', onDocMouseDown);
+    return () => document.removeEventListener('mousedown', onDocMouseDown);
+  }, []);
+
+  const selecionarItemManual = useCallback((item) => {
+    const codigo = String(item?.codigo || '').trim();
+    const descricao = String(item?.descricao || '').trim();
+    if (!codigo) return;
+    setManualCodigo(descricao ? `${codigo} - ${descricao}` : codigo);
+    if (!String(manualDescricao || '').trim()) {
+      setManualDescricao(descricao);
+    }
+    setMostrarListaManual(false);
+    setSelectedItemManualIndex(-1);
+  }, [manualDescricao]);
 
   const adicionarLinhaManual = useCallback(() => {
     if (!receivingId) {
@@ -131,9 +226,14 @@ const TransferenciasRecebimento = () => {
       setToast({ type: 'error', message: 'Selecione o armazém de origem.' });
       return;
     }
-    const codigo = String(manualCodigo || '').trim();
+    const codigo = extrairCodigoManual(manualCodigo);
     const q = parseNumberPt(manualQtd);
-    const descricao = String(manualDescricao || '').trim();
+    const descricaoDigitada = String(manualDescricao || '').trim();
+    const codigoUpper = String(codigo || '').trim().toUpperCase();
+    const descricaoSugerida = (itensFiltradosManual || []).find(
+      (it) => String(it?.codigo || '').trim().toUpperCase() === codigoUpper
+    )?.descricao;
+    const descricao = descricaoDigitada || String(descricaoSugerida || '').trim();
     if (!codigo) {
       setToast({ type: 'error', message: 'Indique o código do artigo.' });
       return;
@@ -160,7 +260,7 @@ const TransferenciasRecebimento = () => {
     setManualCodigo('');
     setManualQtd('');
     setManualDescricao('');
-  }, [manualCodigo, manualDescricao, manualQtd, origemId, receivingId]);
+  }, [manualCodigo, manualDescricao, manualQtd, origemId, receivingId, itensFiltradosManual]);
 
   const removerLinhaImportada = useCallback((idx) => {
     setImportados((prev) => prev.filter((_, i) => i !== idx));
@@ -357,14 +457,14 @@ const TransferenciasRecebimento = () => {
         map[it.id] = Number(it.quantidade_preparada ?? it.quantidade ?? 0) || 0;
       }
       setConfirmQuantByItemId(map);
-      setStage('pendente');
-      setToast({ type: 'success', message: 'Transferência criada. Verifique em Pendente.' });
+      setToast({ type: 'success', message: 'Transferência criada. Aceda ao card de recebimento para preparar.' });
+      navigate('/transferencias?fluxo=recebimento');
     } catch (e) {
       setToast({ type: 'error', message: e.message || 'Erro ao criar transferência a receber.' });
     } finally {
       setCreating(false);
     }
-  }, [importados, origemId, receivingId]);
+  }, [importados, navigate, origemId, receivingId]);
 
   const confirmarMateriaisRecebimento = useCallback(async () => {
     if (!recebimentoReqId || !recebimentoReq) return;
@@ -499,53 +599,60 @@ const TransferenciasRecebimento = () => {
   return (
     <div className="min-h-screen bg-[#F7F8FA] p-4 sm:p-6 lg:p-8">
       <div className="max-w-4xl mx-auto">
-        <div className="mb-5">
-          <h1 className="text-xl sm:text-2xl font-bold text-gray-800">
-            Recebimento de transferência entre armazéns
+        <div className="mb-6">
+          <button
+            type="button"
+            onClick={() => navigate('/transferencias')}
+            className="mb-4 flex items-center gap-2 text-gray-600 hover:text-gray-800"
+          >
+            <FaArrowLeft /> Voltar
+          </button>
+          <h1 className="text-2xl sm:text-3xl font-bold text-gray-800 mb-2">
+            Nova tarefa de recebimento de mercadoria
           </h1>
-          <p className="text-xs text-gray-500 mt-1">
-            1) Escolha origem (diferente do destino) · 2) Importe um ficheiro ou adicione código e quantidade à mão · 3) Crie a transferência · 4) Confirme · 5) Gere report.
+          <p className="text-gray-600">
+            Etapa 1: Defina origem, materiais e quantidades. Depois crie a tarefa para confirmação e reporte.
           </p>
         </div>
 
-        {canUseReceivingOverride && (
-          <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-4 sm:p-5 mb-4">
-            <div className="flex flex-col sm:flex-row sm:items-end gap-3 justify-between">
-              <div>
-                <div className="text-sm font-medium text-gray-800 mb-1">Armazém destino (recebimento)</div>
-                <div className="text-xs text-gray-500">
-                  O valor é automático só quando o utilizador tem 1 único armazém de escopo.
+        {stage === 'setup' && (
+          <div className="bg-white rounded-lg shadow-sm p-6 mb-4">
+            {canUseReceivingOverride && (
+              <div className="mb-6 pb-6 border-b border-gray-200">
+                <div className="flex flex-col sm:flex-row sm:items-end gap-3 justify-between">
+                  <div>
+                    <div className="text-sm font-medium text-gray-700 mb-2">Armazém destino (recebimento)</div>
+                    <div className="text-xs text-gray-500">
+                      O valor é automático só quando o utilizador tem 1 único armazém de escopo.
+                    </div>
+                  </div>
+                  <select
+                    value={receivingWarehouseOverrideId}
+                    onChange={(e) => setReceivingWarehouseOverrideId(e.target.value)}
+                    className="w-full sm:w-[280px] px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0915FF] focus:border-transparent"
+                  >
+                    <option value="">Selecione o destino</option>
+                    {armazens
+                      .filter((a) => isCentralWarehouse(a))
+                      .slice()
+                      .sort((a, b) => String(a.codigo || '').localeCompare(String(b.codigo || '')))
+                      .map((a) => (
+                        <option key={a.id} value={a.id}>
+                          {a.codigo ? `${a.codigo} - ${a.descricao}` : a.descricao}
+                        </option>
+                      ))}
+                  </select>
                 </div>
               </div>
-              <select
-                value={receivingWarehouseOverrideId}
-                onChange={(e) => setReceivingWarehouseOverrideId(e.target.value)}
-                className="w-full sm:w-[280px] px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0915FF] text-sm"
-              >
-                <option value="">Selecione o destino</option>
-                {armazens
-                  .filter((a) => isCentralWarehouse(a))
-                  .slice()
-                  .sort((a, b) => String(a.codigo || '').localeCompare(String(b.codigo || '')))
-                  .map((a) => (
-                    <option key={a.id} value={a.id}>
-                      {a.codigo ? `${a.codigo} - ${a.descricao}` : a.descricao}
-                    </option>
-                  ))}
-              </select>
-            </div>
-          </div>
-        )}
-
-        <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-4 sm:p-5 mb-4">
+            )}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
-              <label className="block text-xs text-gray-600 mb-1">Armazém origem</label>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Armazém origem</label>
               <select
                 value={origemId}
                 onChange={(e) => setOrigemId(e.target.value)}
                 disabled={loadingArmazens || origemOptions.length === 0}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0915FF] text-sm disabled:opacity-50"
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0915FF] focus:border-transparent disabled:opacity-50"
               >
                 <option value="">{loadingArmazens ? 'A carregar…' : 'Selecione a origem'}</option>
                 {origemOptions.map((a) => (
@@ -556,13 +663,13 @@ const TransferenciasRecebimento = () => {
                   </option>
                 ))}
               </select>
-              <div className="text-[11px] text-gray-500 mt-2">
+              <div className="mt-1 text-xs text-gray-500">
                 Destino atual: <span className="font-mono">{receivingId || '—'}</span>
               </div>
             </div>
 
             <div>
-              <label className="block text-xs text-gray-600 mb-1">Importar lista de materiais</label>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Importar lista de materiais</label>
               <input
                 type="file"
                 accept=".xlsx,.xls,.csv,.pdf"
@@ -570,28 +677,92 @@ const TransferenciasRecebimento = () => {
                 onChange={(e) => handleFile(e.target.files?.[0])}
                 className="w-full text-sm disabled:opacity-50"
               />
-              <div className="text-[11px] text-gray-500 mt-2">
+              <div className="mt-1 text-xs text-gray-500">
                 Excel/CSV: colunas <span className="font-mono">Código</span> e <span className="font-mono">Quantidade</span>. PDF: usa a cópia ORIGINAL da guia.
               </div>
             </div>
           </div>
 
-          <div className="mt-5 pt-5 border-t border-gray-100">
-            <div className="text-xs font-semibold text-gray-700 mb-2">Ou adicionar linhas manualmente</div>
-            <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 sm:gap-3 items-end">
-              <div className="sm:col-span-3">
-                <label className="block text-[11px] text-gray-500 mb-1">Código do artigo</label>
-                <input
-                  type="text"
-                  value={manualCodigo}
-                  onChange={(e) => setManualCodigo(e.target.value)}
-                  disabled={!receivingId || !origemId}
-                  placeholder="Ex: ABC123"
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono disabled:opacity-50"
-                />
+          <div className="border-t border-gray-200 pt-6 mt-6">
+            <h3 className="text-lg font-semibold text-gray-800 mb-4">Itens da Requisição</h3>
+            <div className="mb-4 p-4 bg-gray-50 rounded-lg">
+              <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 sm:gap-3 items-end">
+              <div className="sm:col-span-7">
+                <label className="block text-sm font-medium text-gray-700 mb-2">Buscar Item</label>
+                <div className="relative" ref={refManualBuscaWrap}>
+                  <input
+                    type="text"
+                    value={manualCodigo}
+                    onChange={(e) => setManualCodigo(e.target.value)}
+                    onFocus={() => {
+                      if (String(manualCodigo || '').trim()) setMostrarListaManual(true);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'ArrowDown') {
+                        if (mostrarListaManual && itensFiltradosManual.length > 0) {
+                          e.preventDefault();
+                          setSelectedItemManualIndex((i) => (i < itensFiltradosManual.length - 1 ? i + 1 : i));
+                        }
+                      } else if (e.key === 'ArrowUp') {
+                        if (mostrarListaManual && itensFiltradosManual.length > 0) {
+                          e.preventDefault();
+                          setSelectedItemManualIndex((i) => (i > 0 ? i - 1 : 0));
+                        }
+                      } else if (e.key === 'Enter') {
+                        if (mostrarListaManual) {
+                          e.preventDefault();
+                          if (itensFiltradosManual.length > 0) {
+                            const idx = selectedItemManualIndex >= 0 ? selectedItemManualIndex : 0;
+                            selecionarItemManual(itensFiltradosManual[idx]);
+                          }
+                        }
+                      } else if (e.key === 'Escape') {
+                        setMostrarListaManual(false);
+                      }
+                    }}
+                    disabled={!receivingId || !origemId}
+                    placeholder="Ex: ABC123"
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0915FF] focus:border-transparent text-sm font-mono disabled:opacity-50"
+                  />
+                  {mostrarListaManual && (
+                    <div
+                      ref={refManualLista}
+                      className="absolute z-20 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-56 overflow-y-auto"
+                    >
+                      {itensBuscaManualLoading ? (
+                        <div className="px-3 py-2 text-sm text-gray-500">A pesquisar…</div>
+                      ) : itensFiltradosManual.length === 0 ? (
+                        <div className="px-3 py-2 text-sm text-gray-500">Nenhum item encontrado</div>
+                      ) : (
+                        <ul className="divide-y divide-gray-100">
+                          {itensFiltradosManual.map((item, idx) => (
+                            <li key={item.id || `${item.codigo}-${idx}`}>
+                              <button
+                                type="button"
+                                data-manual-item-index={idx}
+                                onMouseDown={(e) => {
+                                  e.preventDefault();
+                                  selecionarItemManual(item);
+                                }}
+                                className={`w-full text-left px-3 py-2 text-sm ${
+                                  idx === selectedItemManualIndex
+                                    ? 'bg-[#0915FF]/15 text-[#0915FF]'
+                                    : 'hover:bg-gray-100'
+                                }`}
+                              >
+                                <div className="font-mono font-medium">{item.codigo}</div>
+                                <div className="text-xs text-gray-500 truncate">{item.descricao}</div>
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  )}
+                </div>
               </div>
               <div className="sm:col-span-2">
-                <label className="block text-[11px] text-gray-500 mb-1">Quantidade</label>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Quantidade</label>
                 <input
                   type="text"
                   inputMode="decimal"
@@ -599,59 +770,108 @@ const TransferenciasRecebimento = () => {
                   onChange={(e) => setManualQtd(e.target.value)}
                   disabled={!receivingId || !origemId}
                   placeholder="0"
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm tabular-nums disabled:opacity-50"
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0915FF] focus:border-transparent text-sm tabular-nums disabled:opacity-50"
                 />
               </div>
-              <div className="sm:col-span-5">
-                <label className="block text-[11px] text-gray-500 mb-1">Descrição (opcional)</label>
-                <input
-                  type="text"
-                  value={manualDescricao}
-                  onChange={(e) => setManualDescricao(e.target.value)}
-                  disabled={!receivingId || !origemId}
-                  placeholder="Nota ou descrição livre"
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:opacity-50"
-                />
-              </div>
-              <div className="sm:col-span-2">
+              <div className="sm:col-span-3">
                 <button
                   type="button"
                   disabled={!receivingId || !origemId}
                   onClick={adicionarLinhaManual}
-                  className="w-full px-3 py-2 rounded-lg border border-[#0915FF] text-[#0915FF] text-sm font-semibold hover:bg-blue-50 disabled:opacity-50"
+                  className="w-full sm:w-auto min-w-[11rem] px-4 py-2 bg-[#0915FF] text-white rounded-lg hover:bg-[#070FCC] transition-colors flex items-center justify-center gap-2 shrink-0 disabled:opacity-50"
                 >
-                  Adicionar
+                  <FaPlus /> Adicionar Item
                 </button>
               </div>
             </div>
-            <p className="text-[11px] text-gray-500 mt-2">
-              O código tem de existir no catálogo. Se repetir o mesmo código, as quantidades são somadas.
-            </p>
+              <p className="mt-2 text-xs text-gray-500">
+                O código tem de existir no catálogo. Se repetir o mesmo código, as quantidades são somadas.
+              </p>
+            </div>
+          </div>
+
+              {importados.length > 0 && (
+                <div className="mt-4">
+                  <h4 className="text-sm font-medium text-gray-700 mb-2">
+                    Itens Adicionados ({importados.length})
+                  </h4>
+                  <div className="space-y-2">
+                    {importados.map((it, idx) => (
+                      <div
+                        key={`${it.codigo}-${idx}`}
+                        className="flex items-center justify-between p-3 bg-gray-50 rounded-lg border border-gray-200"
+                      >
+                        <div className="flex-1">
+                          <div className="font-medium text-gray-900">{it.codigo}</div>
+                          <div className="text-sm text-gray-500">{it.descricao || '—'}</div>
+                        </div>
+                        <div className="flex items-center gap-4">
+                          <span className="text-sm font-medium text-gray-700">
+                            Qtd: <span className="text-[#0915FF]">{Number(it.quantidade) || 0}</span>
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => removerLinhaImportada(idx)}
+                            className="text-red-600 hover:text-red-800 p-2"
+                            aria-label={`Remover item ${it.codigo}`}
+                            title="Remover item"
+                          >
+                            <FaTrash />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Observações
+            </label>
+            <textarea
+              value={observacoesVisual}
+              onChange={(e) => setObservacoesVisual(e.target.value)}
+              rows="4"
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0915FF] focus:border-transparent"
+              placeholder="Observações adicionais sobre a requisição (opcional)"
+            />
+          </div>
+
+          <div className="flex flex-col sm:flex-row gap-4 pt-4 border-t border-gray-200 mt-4">
+            <button
+              type="button"
+              onClick={() => navigate('/transferencias')}
+              className="flex-1 px-6 py-3 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+            >
+              Cancelar
+            </button>
+            <button
+              type="button"
+              disabled={creating || importing || importados.length === 0 || !origemId || !receivingId}
+              onClick={criarTransferenciaRecebimento}
+              className="flex-1 px-6 py-3 bg-[#0915FF] text-white rounded-lg hover:bg-[#070FCC] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {creating ? 'A criar…' : 'Criar transferência'}
+            </button>
           </div>
         </div>
+        )}
 
         {stage === 'pendente' && (
-          <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-4 sm:p-5 mb-4">
+          <div className="bg-white rounded-lg shadow-sm p-6 mb-4">
             <div className="flex items-center justify-between gap-3">
               <div>
                 <div className="text-sm font-semibold text-gray-900">Pendente</div>
                 <div className="text-xs text-gray-500">Revise e confirme as quantidades recebidas.</div>
               </div>
-              <button
-                type="button"
-                disabled={confirming || !(recebimentoReq?.itens?.length > 0)}
-                onClick={confirmarMateriaisRecebimento}
-                className="px-3 py-2 rounded-lg bg-[#0915FF] text-white text-sm font-bold hover:bg-[#070FCC] disabled:opacity-50"
-              >
-                {confirming ? 'A confirmar…' : 'Confirmar materiais'}
-              </button>
             </div>
 
             {!(recebimentoReq?.itens?.length > 0) ? (
               <p className="text-sm text-gray-500 mt-3">Sem itens para confirmar.</p>
             ) : (
-              <div className="mt-4 overflow-x-auto">
-                <table className="min-w-full text-sm">
+              <div className="mt-4 overflow-x-auto ui-table-wrap">
+                <table className="ui-table min-w-full text-sm">
                   <thead>
                     <tr className="bg-gray-100 text-xs text-gray-600 uppercase tracking-wide">
                       <th className="px-3 py-2 text-left">Código</th>
@@ -677,7 +897,7 @@ const TransferenciasRecebimento = () => {
                                 [it.id]: parseNumberPt(e.target.value) || 0
                               }))
                             }
-                            className="w-[140px] px-2 py-1.5 border border-gray-300 rounded-lg text-xs text-right tabular-nums"
+                            className="ui-input w-[140px] px-2 py-1.5 text-xs text-right tabular-nums"
                           />
                         </td>
                       </tr>
@@ -686,11 +906,28 @@ const TransferenciasRecebimento = () => {
                 </table>
               </div>
             )}
+            <div className="flex flex-col sm:flex-row gap-4 pt-4 border-t border-gray-200 mt-4">
+              <button
+                type="button"
+                onClick={() => navigate('/transferencias')}
+                className="flex-1 px-6 py-3 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={confirming || !(recebimentoReq?.itens?.length > 0)}
+                onClick={confirmarMateriaisRecebimento}
+                className="flex-1 px-6 py-3 bg-[#0915FF] text-white rounded-lg hover:bg-[#070FCC] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {confirming ? 'A confirmar…' : 'Confirmar materiais'}
+              </button>
+            </div>
           </div>
         )}
 
         {stage === 'em_processo' && (
-          <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-4 sm:p-5 mb-4">
+          <div className="bg-white rounded-lg shadow-sm p-6 mb-4">
             <div className="flex items-center justify-between gap-3">
               <div>
                 <div className="text-sm font-semibold text-blue-800">Em processo</div>
@@ -700,7 +937,7 @@ const TransferenciasRecebimento = () => {
                 type="button"
                 onClick={gerarReportMaterialRecebido}
                 disabled={exporting || !recebimentoReqId}
-                className="px-3 py-2 rounded-lg bg-emerald-600 text-white text-sm font-bold hover:bg-emerald-700 disabled:opacity-50"
+                className="px-6 py-3 rounded-lg bg-emerald-600 text-white text-sm font-bold hover:bg-emerald-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {exporting ? 'A gerar…' : 'Gerar report'}
               </button>
@@ -714,13 +951,13 @@ const TransferenciasRecebimento = () => {
             </div>
 
             <div className="mt-4">
-              <div className="flex items-center gap-2 flex-wrap">
+              <div className="flex flex-col sm:flex-row gap-4 pt-4 border-t border-gray-200">
                 {canReceberStock && (
                   <button
                     type="button"
                     onClick={receberStock}
                     disabled={recebendoStock}
-                    className="px-3 py-2 rounded-lg bg-[#0915FF] text-white text-sm font-bold hover:bg-[#070FCC] disabled:opacity-50"
+                    className="flex-1 px-6 py-3 bg-[#0915FF] text-white rounded-lg hover:bg-[#070FCC] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     {recebendoStock ? 'A receber stock…' : 'Receber stock'}
                   </button>
@@ -729,7 +966,7 @@ const TransferenciasRecebimento = () => {
                   type="button"
                   onClick={confirmarEntregaRecebimento}
                   disabled={confirmingEntrega || !recebimentoReqId}
-                  className="px-3 py-2 rounded-lg bg-amber-600 text-white text-sm font-bold hover:bg-amber-700 disabled:opacity-50"
+                  className="flex-1 px-6 py-3 rounded-lg bg-amber-600 text-white text-sm font-bold hover:bg-amber-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {confirmingEntrega ? 'A confirmar receção…' : 'Confirmar receção'}
                 </button>
@@ -741,68 +978,12 @@ const TransferenciasRecebimento = () => {
                 <button
                   type="button"
                   onClick={() => setStage('pendente')}
-                  className="px-3 py-2 rounded-lg border border-gray-300 bg-white text-sm font-semibold hover:bg-gray-50"
+                  className="flex-1 px-6 py-3 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors text-sm font-semibold"
                 >
                   Voltar e ajustar
                 </button>
               </div>
             </div>
-          </div>
-        )}
-
-        {stage === 'setup' && (
-          <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-4 sm:p-5 mb-4">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <div className="text-sm font-semibold text-gray-900">Setup</div>
-                <div className="text-xs text-gray-500">Com materiais na lista abaixo, crie a transferência a receber.</div>
-              </div>
-              <button
-                type="button"
-                disabled={creating || importing || importados.length === 0 || !origemId || !receivingId}
-                onClick={criarTransferenciaRecebimento}
-                className="px-3 py-2 rounded-lg bg-[#0915FF] text-white text-sm font-bold hover:bg-[#070FCC] disabled:opacity-50"
-              >
-                {creating ? 'A criar…' : 'Criar transferência'}
-              </button>
-            </div>
-            {importados.length > 0 && (
-              <>
-                <div className="mt-3 text-xs text-gray-600">
-                  Linhas na lista: <span className="font-mono tabular-nums">{importados.length}</span>
-                </div>
-                <div className="mt-3 overflow-x-auto border border-gray-200 rounded-lg">
-                  <table className="min-w-full text-sm">
-                    <thead>
-                      <tr className="bg-gray-100 text-xs text-gray-600 uppercase tracking-wide">
-                        <th className="px-3 py-2 text-left">Código</th>
-                        <th className="px-3 py-2 text-left">Descrição</th>
-                        <th className="px-3 py-2 text-right">Quantidade</th>
-                        <th className="px-3 py-2 text-right w-[88px]"> </th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-gray-100 bg-white">
-                      {importados.map((it, idx) => (
-                        <tr key={`${it.codigo}-${idx}`}>
-                          <td className="px-3 py-2 font-mono text-xs">{it.codigo}</td>
-                          <td className="px-3 py-2 text-xs text-gray-700 max-w-[420px]">{it.descricao || '—'}</td>
-                          <td className="px-3 py-2 text-right text-xs tabular-nums">{Number(it.quantidade) || 0}</td>
-                          <td className="px-3 py-2 text-right">
-                            <button
-                              type="button"
-                              onClick={() => removerLinhaImportada(idx)}
-                              className="text-xs text-red-600 hover:text-red-800 font-medium"
-                            >
-                              Remover
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </>
-            )}
           </div>
         )}
 

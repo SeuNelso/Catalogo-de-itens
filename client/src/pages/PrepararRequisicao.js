@@ -43,6 +43,7 @@ const SN_LISTA_PAGE_SIZE = 20;
 /** Máximo de seriais mostrados na lista do item; acima disso abre modal paginado. */
 const SN_INLINE_PREVIEW = 5;
 const RECEBIMENTO_TRANSFERENCIA_MARKER = 'RECEBIMENTO_TRANSFERENCIA_V1';
+const RECEBIMENTO_REFRESH_EVENT = 'recebimento-card-refresh';
 
 /** Preferir `seriais` da API; senão partir `serialnumber` (legado). */
 function seriaisListFromItem(item) {
@@ -754,6 +755,7 @@ const PrepararRequisicao = () => {
           }
         } catch (_) {}
         setReceberAtivo(false);
+        window.dispatchEvent(new CustomEvent(RECEBIMENTO_REFRESH_EVENT));
       }
 
       await fetchRequisicao(true);

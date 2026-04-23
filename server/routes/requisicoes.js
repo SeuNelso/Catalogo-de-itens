@@ -10,6 +10,9 @@ const path = require('path');
 const archiver = require('archiver');
 const pdfParseLib = require('pdf-parse');
 const { buildExcelTransferencia } = require('../utils/buildExcelTransferencia');
+const { quantidadeStockNacionalNoArmazem } = require('../utils/stockNacionalMatch');
+const ITENS_NACIONAL_CACHE_TTL_MS = 20000;
+const itensNacionalPorArmazemCache = new Map();
 
 /** Nome legível do utilizador que criou a requisição (nome+sobrenome → username → nº colaborador). */
 const SQL_CRIADOR_NOME = `COALESCE(
@@ -1122,6 +1125,7 @@ function createRequisicoesRouter(deps) {
     requisicaoArmazemOrigemAcessoPermitido,
     assertIdsRequisicoesPermitidas,
     excelUploadRequisicoes,
+    armazemMovimentacaoInternaTableExists,
   } = deps;
 
   const router = express.Router();
@@ -3801,10 +3805,15 @@ router.get('/:id/export-trfl-pendente-armazenagem', ...requisicaoAuth, denyOpera
     if (!centralId) return res.status(400).json({ error: 'Requisição sem armazém central de destino.' });
 
     const destLocRows = await pool.query(
-      `SELECT localizacao
+      `SELECT id, localizacao
          FROM armazens_localizacoes
         WHERE armazem_id = $1`,
       [centralId]
+    );
+    const locIdByLabel = new Map(
+      (destLocRows.rows || [])
+        .map((r) => [String(r.localizacao || '').trim().toUpperCase(), Number(r.id)])
+        .filter(([label, id]) => Boolean(label) && Number.isFinite(id))
     );
     const locDestinoSet = new Set(
       (destLocRows.rows || [])
@@ -3986,6 +3995,50 @@ router.get('/:id/export-trfl-pendente-armazenagem', ...requisicaoAuth, denyOpera
       throw ePend;
     } finally {
       cPend.release();
+    }
+
+    try {
+      if (typeof armazemMovimentacaoInternaTableExists === 'function' && await armazemMovimentacaoInternaTableExists()) {
+        const cTicket = await pool.connect();
+        try {
+          await cTicket.query('BEGIN');
+          const origemLocId = Number(locIdByLabel.get(String(locOrigemPendente || '').trim().toUpperCase()) || 0);
+          if (Number.isFinite(origemLocId) && origemLocId > 0) {
+            for (const row of rows) {
+              const itemCodigo = String(row.Article || '').trim();
+              const destinoLabel = String(row.DestinationLocation || '').trim().toUpperCase();
+              const destinoLocId = Number(locIdByLabel.get(destinoLabel) || 0);
+              const qty = Number(row.Quatity || 0);
+              if (!itemCodigo || !Number.isFinite(destinoLocId) || destinoLocId <= 0) continue;
+              if (!Number.isFinite(qty) || qty <= 0) continue;
+
+              // eslint-disable-next-line no-await-in-loop
+              const itemQ = await cTicket.query(
+                'SELECT id FROM itens WHERE UPPER(TRIM(codigo)) = UPPER(TRIM($1::text)) LIMIT 1',
+                [itemCodigo]
+              );
+              const itemId = Number(itemQ.rows?.[0]?.id || 0);
+              if (!Number.isFinite(itemId) || itemId <= 0) continue;
+
+              // eslint-disable-next-line no-await-in-loop
+              await cTicket.query(
+                `INSERT INTO armazem_movimentacao_interna (
+                   armazem_id, usuario_id, origem_localizacao_id, destino_localizacao_id, item_id, quantidade, trfl_gerada_em
+                 ) VALUES ($1, $2, $3, $4, $5, $6::numeric, CURRENT_TIMESTAMP)`,
+                [centralId, req.user.id, origemLocId, destinoLocId, itemId, qty]
+              );
+            }
+          }
+          await cTicket.query('COMMIT');
+        } catch (eTicket) {
+          await cTicket.query('ROLLBACK').catch(() => {});
+          if (eTicket.code !== '42P01') throw eTicket;
+        } finally {
+          cTicket.release();
+        }
+      }
+    } catch (eAutoTicket) {
+      if (eAutoTicket.code !== '42P01') throw eAutoTicket;
     }
 
     buildExcelTransferencia(rows, res, `TRFL_pendente_armazenagem_devolucao_${id}_${new Date().toISOString().slice(0, 10)}.xlsx`);
@@ -9271,8 +9324,10 @@ router.patch('/:id/tra-numero', ...requisicaoAuth, denyOperador, async (req, res
     );
     if (check.rows.length === 0) return res.status(404).json({ error: 'Requisição não encontrada' });
     const row = check.rows[0];
+    // Devolução: escopo do utilizador é pelo armazém central (destino lógico da devolução),
+    // não pela viatura de origem.
     if (
-      !requisicaoArmazemOrigemAcessoPermitido(req, row.armazem_origem_id, {
+      !requisicaoArmazemOrigemAcessoPermitido(req, row.armazem_id, {
         requisicao: row,
       })
     ) {
@@ -9342,8 +9397,10 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
     );
     if (check.rows.length === 0) return res.status(404).json({ error: 'Requisição não encontrada' });
     const row = check.rows[0];
+    // Devolução: o escopo de acesso é o armazém central (armazem_id),
+    // não a viatura de origem (armazem_origem_id).
     if (
-      !requisicaoArmazemOrigemAcessoPermitido(req, row.armazem_origem_id, {
+      !requisicaoArmazemOrigemAcessoPermitido(req, row.armazem_id, {
         requisicao: row,
       })
     ) {
@@ -10961,11 +11018,19 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
     try {
       if (isAdmin(req.user?.role)) {
         const all = await pool.query(
-          `SELECT id, codigo, descricao
-           FROM armazens
-           WHERE ativo = true
-             AND LOWER(TRIM(COALESCE(tipo, ''))) IN ('central', 'apeado', 'apeados')
-           ORDER BY codigo ASC, descricao ASC`
+          `SELECT a.id, a.codigo, a.descricao,
+                  (
+                    SELECT al.localizacao
+                    FROM armazens_localizacoes al
+                    WHERE al.armazem_id = a.id
+                      AND LOWER(COALESCE(al.tipo_localizacao, '')) = 'recebimento'
+                    ORDER BY al.id
+                    LIMIT 1
+                  ) AS localizacao_recebimento
+           FROM armazens a
+           WHERE a.ativo = true
+             AND LOWER(TRIM(COALESCE(a.tipo, ''))) IN ('central', 'apeado', 'apeados')
+           ORDER BY a.codigo ASC, a.descricao ASC`
         );
         return res.json({ rows: all.rows || [] });
       }
@@ -10978,16 +11043,167 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
       if (!ids.length) return res.json({ rows: [] });
 
       const rows = await pool.query(
-        `SELECT id, codigo, descricao
-         FROM armazens
-         WHERE id = ANY($1::int[])
-           AND LOWER(TRIM(COALESCE(tipo, ''))) IN ('central', 'apeado', 'apeados')
-         ORDER BY codigo ASC, descricao ASC`,
+        `SELECT a.id, a.codigo, a.descricao,
+                (
+                  SELECT al.localizacao
+                  FROM armazens_localizacoes al
+                  WHERE al.armazem_id = a.id
+                    AND LOWER(COALESCE(al.tipo_localizacao, '')) = 'recebimento'
+                  ORDER BY al.id
+                  LIMIT 1
+                ) AS localizacao_recebimento
+         FROM armazens a
+         WHERE a.id = ANY($1::int[])
+           AND LOWER(TRIM(COALESCE(a.tipo, ''))) IN ('central', 'apeado', 'apeados')
+         ORDER BY a.codigo ASC, a.descricao ASC`,
         [ids]
       );
       return res.json({ rows: rows.rows || [] });
     } catch (e) {
       return res.status(500).json({ error: e.message || 'Erro ao obter armazéns do utilizador' });
+    }
+  });
+
+  router.get('/stock/itens-nacional-por-armazem', ...requisicaoAuth, async (req, res) => {
+    try {
+      const armazemId = Number(req.query.armazem_id || 0);
+      const q = String(req.query.q || '').trim().toLowerCase();
+      const limit = Math.max(1, Math.min(500, Number(req.query.limit || 100)));
+      const offset = Math.max(0, Number(req.query.offset || 0));
+      if (!armazemId) return res.status(400).json({ error: 'armazem_id é obrigatório' });
+      if (!requisicaoArmazemOrigemAcessoPermitido(req, armazemId)) {
+        return res.status(403).json({ error: 'Sem acesso ao armazém informado.' });
+      }
+
+      const armazemRes = await pool.query(
+        `SELECT id, codigo, descricao
+         FROM armazens
+         WHERE id = $1
+         LIMIT 1`,
+        [armazemId]
+      );
+      if (!armazemRes.rows.length) {
+        return res.status(404).json({ error: 'Armazém não encontrado.' });
+      }
+      const armazemRef = armazemRes.rows[0];
+      const cacheKey = `${armazemId}::${q}`;
+      const cached = itensNacionalPorArmazemCache.get(cacheKey);
+      if (cached && (Date.now() - cached.ts) <= ITENS_NACIONAL_CACHE_TTL_MS) {
+        const totalCached = cached.rows.length;
+        return res.json({
+          total: totalCached,
+          limit,
+          offset,
+          rows: cached.rows.slice(offset, offset + limit),
+          suggestions: cached.suggestions,
+          cached: true,
+        });
+      }
+
+      const armazemDescricao = String(armazemRef?.descricao || '').trim();
+      if (!armazemDescricao) {
+        return res.json({
+          total: 0,
+          limit,
+          offset,
+          rows: [],
+          suggestions: [],
+        });
+      }
+
+      const aiRows = await pool.query(
+        `SELECT ai.item_id, ai.armazem, ai.quantidade::float AS quantidade
+         FROM armazens_item ai
+         WHERE (
+           UPPER(TRIM(ai.armazem)) = UPPER(TRIM($1::text))
+           OR UPPER(TRIM(ai.armazem)) LIKE UPPER(TRIM($2::text))
+           OR (
+             LENGTH(TRIM(COALESCE(ai.armazem, ''))) >= 3
+             AND UPPER(TRIM($3::text)) LIKE ('%' || UPPER(TRIM(ai.armazem)) || '%')
+           )
+         )
+         ORDER BY ai.item_id`,
+        [armazemDescricao, `%${armazemDescricao}%`, armazemDescricao]
+      );
+      const byItem = new Map();
+      for (const row of aiRows.rows || []) {
+        const itemId = Number(row.item_id);
+        if (!Number.isFinite(itemId) || itemId <= 0) continue;
+        if (!byItem.has(itemId)) byItem.set(itemId, []);
+        byItem.get(itemId).push({ armazem: row.armazem, quantidade: row.quantidade });
+      }
+      const itemIds = [...byItem.keys()];
+      if (!itemIds.length) {
+        return res.json({
+          total: 0,
+          limit,
+          offset,
+          rows: [],
+          suggestions: [],
+        });
+      }
+
+      const itensRes = await pool.query(
+        `SELECT id, codigo, descricao
+         FROM itens
+         WHERE id = ANY($1::int[])
+           AND ativo = true
+           ${q ? `AND (LOWER(COALESCE(codigo, '')) LIKE $2 OR LOWER(COALESCE(descricao, '')) LIKE $2)` : ''}`,
+        q ? [itemIds, `%${q}%`] : [itemIds]
+      );
+
+      let rows = (itensRes.rows || []).map((it) => {
+        const armazensRows = byItem.get(Number(it.id)) || [];
+        const qtd = quantidadeStockNacionalNoArmazem(armazensRows, armazemRef);
+        return {
+          item_id: Number(it.id),
+          codigo: String(it.codigo || ''),
+          descricao: String(it.descricao || ''),
+          quantidade: Number.isFinite(Number(qtd)) ? Number(qtd) : 0,
+        };
+      });
+      rows = rows.filter((r) => Number(r.quantidade) > 0);
+
+      if (q) {
+        rows = rows.filter((r) => {
+          const codigo = String(r.codigo || '').toLowerCase();
+          const descricao = String(r.descricao || '').toLowerCase();
+          return codigo.includes(q) || descricao.includes(q);
+        });
+      }
+
+      rows.sort((a, b) => {
+        const c = String(a.codigo || '').localeCompare(String(b.codigo || ''));
+        if (c !== 0) return c;
+        return String(a.descricao || '').localeCompare(String(b.descricao || ''));
+      });
+
+      const total = rows.length;
+      const suggestions = rows.slice(0, 10).map((r) => ({
+        item_id: r.item_id,
+        codigo: r.codigo,
+        descricao: r.descricao,
+      }));
+      const paged = rows.slice(offset, offset + limit);
+      itensNacionalPorArmazemCache.set(cacheKey, {
+        ts: Date.now(),
+        rows,
+        suggestions,
+      });
+      if (itensNacionalPorArmazemCache.size > 40) {
+        const firstKey = itensNacionalPorArmazemCache.keys().next().value;
+        if (firstKey) itensNacionalPorArmazemCache.delete(firstKey);
+      }
+
+      return res.json({
+        total,
+        limit,
+        offset,
+        rows: paged,
+        suggestions,
+      });
+    } catch (e) {
+      return res.status(500).json({ error: e.message || 'Erro ao consultar artigos por armazém.' });
     }
   });
 

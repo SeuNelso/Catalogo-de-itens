@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, Navigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import {
   FaChevronDown,
@@ -19,6 +19,9 @@ import { podeGerarTrflMovimentacaoInterna } from '../utils/roles';
 import Toast from '../components/Toast';
 
 const MAX_SUGESTOES = 40;
+const RECEBIMENTO_REFRESH_EVENT = 'recebimento-card-refresh';
+const TICKETS_PAGE_SIZE = 14;
+const MAX_SUGESTOES_CODIGO_ARTIGO = 8;
 
 const normBusca = (s) =>
   String(s || '')
@@ -26,6 +29,12 @@ const normBusca = (s) =>
     .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase()
     .trim();
+
+const extrairCodigoArtigo = (valor) => {
+  const s = String(valor || '').trim();
+  if (!s) return '';
+  return s.split(' - ')[0].trim();
+};
 
 /**
  * Uma única caixa: escrever filtra; clique na seta ou foco mostra lista; «Ler» mantém-se à direita.
@@ -155,6 +164,8 @@ function LocalizacaoCombobox({
 }
 
 const TransferenciaLocalizacao = () => {
+  const location = useLocation();
+  const navigate = useNavigate();
   const { user } = useAuth();
   const [armazens, setArmazens] = useState([]);
   const [loadingArmazens, setLoadingArmazens] = useState(true);
@@ -180,13 +191,31 @@ const TransferenciaLocalizacao = () => {
   const [ticketsSoPendentesTrfl, setTicketsSoPendentesTrfl] = useState(true);
   const [selectedTicketIds, setSelectedTicketIds] = useState([]);
   const [exportingTrfl, setExportingTrfl] = useState(false);
+  const [deletingTickets, setDeletingTickets] = useState(false);
+  const [ticketsPage, setTicketsPage] = useState(1);
+  const [sugestoesRemotasCodigo, setSugestoesRemotasCodigo] = useState([]);
+  const [sugestoesCodigoLoading, setSugestoesCodigoLoading] = useState(false);
+  const [mostrarListaCodigoArtigo, setMostrarListaCodigoArtigo] = useState(false);
+  const [selectedCodigoIndex, setSelectedCodigoIndex] = useState(-1);
   const [pesquisaArtigo, setPesquisaArtigo] = useState('');
+  const [loteRecebimento, setLoteRecebimento] = useState([]);
+  const [loteOrigemLabel, setLoteOrigemLabel] = useState('');
+  const [submittingLote, setSubmittingLote] = useState(false);
+  const prefillConsumidoRef = useRef(false);
   /** 1=origem, 2=artigo, 3=quantidade, 4=destino, 5=confirmar */
   const [wizardStep, setWizardStep] = useState(1);
   /** Linha de stock escolhida no passo 2 → passo 3 */
   const [artigoCorrente, setArtigoCorrente] = useState(null);
+  const refCodigoArtigoWrap = useRef(null);
+  const refCodigoArtigoInput = useRef(null);
+  const refListaCodigoArtigo = useRef(null);
 
   const pode = user && podeUsarControloStock(user);
+  const podeCriarTickets =
+    user &&
+    ['admin', 'backoffice_armazem', 'supervisor_armazem', 'operador'].includes(
+      String(user.role || '').toLowerCase()
+    );
   const podeExportarTrfl = podeGerarTrflMovimentacaoInterna(user?.role);
 
   const WIZARD_STEPS = [
@@ -196,6 +225,48 @@ const TransferenciaLocalizacao = () => {
     { n: 4, label: 'Destino' },
     { n: 5, label: 'Confirmar' }
   ];
+
+  useEffect(() => {
+    if (prefillConsumidoRef.current) return;
+    const payload = location.state?.recebimentoPrefill;
+    if (!payload || !Array.isArray(payload.items) || payload.items.length === 0) return;
+    prefillConsumidoRef.current = true;
+
+    const armazemPrefill = String(payload.armazemId || '').trim();
+    if (armazemPrefill) setArmazemId(armazemPrefill);
+
+    const origemLabel = String(payload.origemLocalizacao || '').trim();
+    setLoteOrigemLabel(origemLabel);
+    if (origemLabel) setFiltroOrigemLoc(origemLabel);
+
+    const byCodigo = new Map();
+    payload.items.forEach((it) => {
+      const codigo = String(it?.codigo || '').trim();
+      const qtd = Number(it?.quantidade || 0) || 0;
+      if (!codigo || qtd <= 0) return;
+      const key = codigo.toUpperCase();
+      const prev = byCodigo.get(key) || {
+        codigo,
+        descricao: String(it?.descricao || '').trim(),
+        quantidade: 0,
+        destinoId: '',
+      };
+      prev.quantidade += qtd;
+      if (!prev.descricao) prev.descricao = String(it?.descricao || '').trim();
+      byCodigo.set(key, prev);
+    });
+    setLoteRecebimento([...byCodigo.values()]);
+  }, [location.state]);
+
+  const limparPrefillRecebimento = useCallback(() => {
+    setLoteRecebimento([]);
+    setLoteOrigemLabel('');
+    setOrigemId('');
+    setFiltroOrigemLoc('');
+    setWizardStep(1);
+    // Limpa o state da rota para não reaplicar o pré-preenchimento ao regressar.
+    navigate(location.pathname, { replace: true, state: null });
+  }, [location.pathname, navigate]);
 
   useEffect(() => {
     const load = async () => {
@@ -345,6 +416,16 @@ const TransferenciaLocalizacao = () => {
   }, [armazemId]);
 
   useEffect(() => {
+    if (!loteRecebimento.length || origemId || !loteOrigemLabel || !locsComId.length) return;
+    const n = normBusca(loteOrigemLabel);
+    const exact = locsComId.find((l) => normBusca(l?.localizacao || '') === n);
+    if (exact) {
+      setOrigemId(String(exact.id));
+      setFiltroOrigemLoc(exact.localizacao || loteOrigemLabel);
+    }
+  }, [loteRecebimento, origemId, loteOrigemLabel, locsComId]);
+
+  useEffect(() => {
     setLinhasOrigem([]);
     setCodigoArtigo('');
     setQtdDigitada('');
@@ -354,7 +435,7 @@ const TransferenciaLocalizacao = () => {
     setPesquisaArtigo('');
     setWizardStep(1);
     setArtigoCorrente(null);
-    if (!armazemId || !origemId) return;
+    if (!pode || !armazemId || !origemId) return;
     let cancelled = false;
     (async () => {
       setLoadingEstoque(true);
@@ -409,6 +490,10 @@ const TransferenciaLocalizacao = () => {
   useEffect(() => {
     loadTickets();
   }, [loadTickets]);
+
+  useEffect(() => {
+    setTicketsPage(1);
+  }, [ticketsSoPendentesTrfl, armazemId]);
 
   const labelLoc = (id) => {
     const l = locsComId.find((x) => String(x.id) === String(id));
@@ -475,6 +560,142 @@ const TransferenciaLocalizacao = () => {
     };
   }, [linhasOrigem, pesquisaArtigo]);
 
+  const sugestoesCodigoArtigo = useMemo(() => {
+    const byCodigo = new Map();
+    (linhasOrigem || []).forEach((r) => {
+      const codigo = String(r?.codigo || '').trim();
+      if (!codigo) return;
+      const key = codigo.toUpperCase();
+      if (byCodigo.has(key)) return;
+      byCodigo.set(key, {
+        codigo,
+        descricao: String(r?.descricao || '').trim(),
+      });
+    });
+    (tickets || []).forEach((t) => {
+      const codigo = String(t?.item_codigo || '').trim();
+      if (!codigo) return;
+      const key = codigo.toUpperCase();
+      if (byCodigo.has(key)) return;
+      byCodigo.set(key, {
+        codigo,
+        descricao: String(t?.item_descricao || '').trim(),
+      });
+    });
+
+    const q = normBusca(extrairCodigoArtigo(codigoArtigo));
+    if (!q) return [];
+
+    const locais = [...byCodigo.values()]
+      .filter((x) => normBusca(x.codigo).includes(q) || normBusca(x.descricao).includes(q))
+      .slice(0, MAX_SUGESTOES_CODIGO_ARTIGO);
+
+    sugestoesRemotasCodigo.forEach((x) => {
+      const codigo = String(x?.codigo || '').trim();
+      if (!codigo) return;
+      const key = codigo.toUpperCase();
+      if (!byCodigo.has(key)) {
+        byCodigo.set(key, { codigo, descricao: String(x?.descricao || '').trim() });
+      }
+    });
+
+    return [...locais, ...[...byCodigo.values()].filter((x) => !locais.some((l) => l.codigo === x.codigo))]
+      .slice(0, MAX_SUGESTOES_CODIGO_ARTIGO);
+  }, [linhasOrigem, tickets, codigoArtigo, sugestoesRemotasCodigo]);
+
+  useEffect(() => {
+    if (wizardStep !== 2) {
+      setMostrarListaCodigoArtigo(false);
+      setSelectedCodigoIndex(-1);
+      return;
+    }
+    if (!mostrarListaCodigoArtigo) return;
+    const hasSugestoes = sugestoesCodigoArtigo.length > 0;
+    if (hasSugestoes) {
+      setSelectedCodigoIndex((idx) => {
+        if (idx < 0) return 0;
+        return Math.min(idx, sugestoesCodigoArtigo.length - 1);
+      });
+    } else {
+      setSelectedCodigoIndex(-1);
+    }
+  }, [wizardStep, sugestoesCodigoArtigo, mostrarListaCodigoArtigo]);
+
+  const descricaoCodigoSelecionado = useMemo(() => {
+    const codigo = extrairCodigoArtigo(codigoArtigo);
+    if (!codigo) return '';
+    const key = codigo.toUpperCase();
+
+    const local = (linhasOrigem || []).find(
+      (r) => String(r?.codigo || '').trim().toUpperCase() === key
+    );
+    if (String(local?.descricao || '').trim()) return String(local.descricao).trim();
+
+    const ticket = (tickets || []).find(
+      (t) => String(t?.item_codigo || '').trim().toUpperCase() === key
+    );
+    if (String(ticket?.item_descricao || '').trim()) return String(ticket.item_descricao).trim();
+
+    const remoto = (sugestoesRemotasCodigo || []).find(
+      (it) => String(it?.codigo || '').trim().toUpperCase() === key
+    );
+    if (String(remoto?.descricao || '').trim()) return String(remoto.descricao).trim();
+
+    return '';
+  }, [codigoArtigo, linhasOrigem, tickets, sugestoesRemotasCodigo]);
+
+  useEffect(() => {
+    const q = extrairCodigoArtigo(codigoArtigo);
+    if (!q || wizardStep !== 2) {
+      setSugestoesRemotasCodigo([]);
+      setSugestoesCodigoLoading(false);
+      return;
+    }
+    let cancelado = false;
+    const timer = window.setTimeout(async () => {
+      if (!cancelado) setSugestoesCodigoLoading(true);
+      try {
+        const token = localStorage.getItem('token');
+        const { data } = await axios.get('/api/itens', {
+          params: {
+            search: q,
+            limit: MAX_SUGESTOES_CODIGO_ARTIGO,
+            page: 1,
+            incluirInativos: true,
+          },
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (cancelado) return;
+        setSugestoesRemotasCodigo(Array.isArray(data?.itens) ? data.itens : []);
+      } catch (_) {
+        if (!cancelado) setSugestoesRemotasCodigo([]);
+      } finally {
+        if (!cancelado) setSugestoesCodigoLoading(false);
+      }
+    }, 220);
+    return () => {
+      cancelado = true;
+      window.clearTimeout(timer);
+    };
+  }, [codigoArtigo, wizardStep]);
+
+  useEffect(() => {
+    if (wizardStep !== 2) return undefined;
+    const onDocMouseDown = (e) => {
+      if (refCodigoArtigoWrap.current && !refCodigoArtigoWrap.current.contains(e.target)) {
+        setMostrarListaCodigoArtigo(false);
+      }
+    };
+    document.addEventListener('mousedown', onDocMouseDown);
+    return () => document.removeEventListener('mousedown', onDocMouseDown);
+  }, [wizardStep]);
+
+  useEffect(() => {
+    if (!mostrarListaCodigoArtigo || selectedCodigoIndex < 0 || !refListaCodigoArtigo.current) return;
+    const el = refListaCodigoArtigo.current.querySelector(`[data-sugestao-index="${selectedCodigoIndex}"]`);
+    el?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }, [mostrarListaCodigoArtigo, selectedCodigoIndex]);
+
   const selecionarArtigoDaPesquisa = (row) => {
     setArtigoCorrente(row);
     setCodigoArtigo(String(row.codigo || '').trim());
@@ -483,8 +704,25 @@ const TransferenciaLocalizacao = () => {
     setWizardStep(3);
   };
 
+  const selecionarSugestaoCodigo = (sugestao) => {
+    const codigo = String(sugestao?.codigo || '').trim();
+    const descricao = String(sugestao?.descricao || '').trim();
+    if (!codigo) return;
+    setCodigoArtigo(descricao ? `${codigo} - ${descricao}` : codigo);
+    setMostrarListaCodigoArtigo(false);
+    setSelectedCodigoIndex(-1);
+    if (pode) {
+      const row = findRowByCodigo(codigo);
+      if (row) {
+        setArtigoCorrente(row);
+        setQtdDigitada('');
+        setWizardStep(3);
+      }
+    }
+  };
+
   const findRowByCodigo = (cod) => {
-    const c = String(cod || '').trim();
+    const c = extrairCodigoArtigo(cod);
     if (!c) return null;
     const up = c.toUpperCase();
     return (
@@ -495,6 +733,24 @@ const TransferenciaLocalizacao = () => {
   };
 
   const validarCodigoManualParaPasso3 = () => {
+    if (!pode) {
+      const cod = extrairCodigoArtigo(codigoArtigo);
+      if (!cod) {
+        setToast({
+          type: 'error',
+          message: 'Informe o código do artigo.'
+        });
+        return;
+      }
+      setArtigoCorrente({
+        item_id: null,
+        codigo: cod,
+        descricao: '',
+        quantidade: null
+      });
+      setWizardStep(3);
+      return;
+    }
     const row = findRowByCodigo(codigoArtigo);
     if (!row) {
       setToast({
@@ -527,6 +783,18 @@ const TransferenciaLocalizacao = () => {
           break;
         case 'codigoArtigo': {
           setCodigoArtigo(raw);
+          if (!pode) {
+            setArtigoCorrente({
+              item_id: null,
+              codigo: raw,
+              descricao: '',
+              quantidade: null
+            });
+            setQtdDigitada('');
+            setWizardStep(3);
+            setToast({ type: 'success', message: 'Código lido — indique a quantidade.' });
+            break;
+          }
           const up = raw.toUpperCase();
           const r =
             linhasOrigem.find((x) => String(x.codigo || '').trim().toUpperCase() === up) ||
@@ -546,15 +814,39 @@ const TransferenciaLocalizacao = () => {
           break;
       }
     },
-    [aplicarScanOrigem, aplicarScanDestino, linhasOrigem]
+    [aplicarScanOrigem, aplicarScanDestino, linhasOrigem, pode]
   );
 
   useEffect(() => {
-    if (wizardStep === 3 && !artigoCorrente) setWizardStep(2);
-  }, [wizardStep, artigoCorrente]);
+    if (pode && wizardStep === 3 && !artigoCorrente) setWizardStep(2);
+  }, [wizardStep, artigoCorrente, pode]);
 
   const confirmarQuantidadeEIrDestino = () => {
-    const row = artigoCorrente || findRowByCodigo(codigoArtigo);
+    const q = Number(String(qtdDigitada).replace(',', '.'));
+    if (!Number.isFinite(q) || q <= 0) {
+      setToast({ type: 'error', message: 'Indique uma quantidade válida (> 0).' });
+      return;
+    }
+    const row = artigoCorrente || (pode ? findRowByCodigo(codigoArtigo) : null);
+    if (!pode && !row) {
+      const cod = extrairCodigoArtigo(codigoArtigo);
+      if (!cod) {
+        setToast({ type: 'error', message: 'Informe o código do artigo.' });
+        return;
+      }
+      setLinhaPendente({
+        item_id: null,
+        codigo: cod,
+        descricao: '',
+        quantidade: q
+      });
+      setCodigoArtigo('');
+      setQtdDigitada('');
+      setArtigoCorrente(null);
+      setWizardStep(4);
+      setToast({ type: 'success', message: 'Escolha a localização de destino.' });
+      return;
+    }
     if (!row) {
       setToast({
         type: 'error',
@@ -562,18 +854,15 @@ const TransferenciaLocalizacao = () => {
       });
       return;
     }
-    const q = Number(String(qtdDigitada).replace(',', '.'));
-    if (!Number.isFinite(q) || q <= 0) {
-      setToast({ type: 'error', message: 'Indique uma quantidade válida (> 0).' });
-      return;
-    }
-    const max = Number(row.quantidade) || 0;
-    if (q > max) {
-      setToast({
-        type: 'error',
-        message: `Quantidade superior ao disponível (${max}) para ${row.codigo}.`
-      });
-      return;
+    if (pode) {
+      const max = Number(row.quantidade) || 0;
+      if (q > max) {
+        setToast({
+          type: 'error',
+          message: `Quantidade superior ao disponível (${max}) para ${row.codigo}.`
+        });
+        return;
+      }
     }
     setLinhaPendente({
       item_id: row.item_id,
@@ -606,7 +895,11 @@ const TransferenciaLocalizacao = () => {
         {
           origem_localizacao_id: parseInt(origemId, 10),
           destino_localizacao_id: parseInt(destinoId, 10),
-          linhas: [{ item_id: linhaPendente.item_id, quantidade: linhaPendente.quantidade }]
+          linhas: [
+            pode
+              ? { item_id: linhaPendente.item_id, quantidade: linhaPendente.quantidade }
+              : { item_codigo: linhaPendente.codigo, quantidade: linhaPendente.quantidade }
+          ]
         },
         { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } }
       );
@@ -619,10 +912,12 @@ const TransferenciaLocalizacao = () => {
       setArtigoCorrente(null);
       setFiltroDestinoLoc('');
       setWizardStep(2);
-      const { data } = await axios.get(`/api/armazens/${armazemId}/localizacoes/${origemId}/estoque`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      setLinhasOrigem(Array.isArray(data) ? data : []);
+      if (pode) {
+        const { data } = await axios.get(`/api/armazens/${armazemId}/localizacoes/${origemId}/estoque`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        setLinhasOrigem(Array.isArray(data) ? data : []);
+      }
       loadTickets();
     } catch (e) {
       const d = e.response?.data;
@@ -646,15 +941,24 @@ const TransferenciaLocalizacao = () => {
     setSelectedTicketIds(pendentes);
   };
 
+  const totalTicketsPages = Math.max(1, Math.ceil(tickets.length / TICKETS_PAGE_SIZE));
+  const ticketsPageClamped = Math.min(ticketsPage, totalTicketsPages);
+  const ticketsPageStart = (ticketsPageClamped - 1) * TICKETS_PAGE_SIZE;
+  const ticketsPaginaAtual = tickets.slice(ticketsPageStart, ticketsPageStart + TICKETS_PAGE_SIZE);
+
   const gerarTrfl = async () => {
     if (!podeExportarTrfl) {
       setToast({ type: 'error', message: 'O seu perfil não pode gerar TRFL desta fila.' });
       return;
     }
     if (!armazemId || selectedTicketIds.length === 0) {
-      setToast({ type: 'error', message: 'Selecione pelo menos um ticket pendente de TRFL.' });
+      setToast({ type: 'error', message: 'Selecione pelo menos um ticket para gerar/retransferir a TRFL.' });
       return;
     }
+    const selectedSet = new Set(selectedTicketIds.map((x) => Number(x)));
+    const haviaPendenteSelecionado = tickets.some(
+      (t) => selectedSet.has(Number(t.id)) && t.trfl_gerada_em == null
+    );
     setExportingTrfl(true);
     setToast(null);
     try {
@@ -689,12 +993,138 @@ const TransferenciaLocalizacao = () => {
       a.click();
       window.URL.revokeObjectURL(url);
       setToast({ type: 'success', message: 'Ficheiro TRFL transferido.' });
+      if (haviaPendenteSelecionado) {
+        window.dispatchEvent(new CustomEvent(RECEBIMENTO_REFRESH_EVENT));
+      }
       setSelectedTicketIds([]);
+      setTicketsPage(1);
       loadTickets();
     } catch (err) {
       setToast({ type: 'error', message: err.message || 'Erro ao exportar.' });
     } finally {
       setExportingTrfl(false);
+    }
+  };
+
+  const excluirTicketsSelecionados = async () => {
+    if (!armazemId || selectedTicketIds.length === 0) {
+      setToast({ type: 'error', message: 'Selecione pelo menos um ticket para excluir.' });
+      return;
+    }
+    const ok = window.confirm(
+      `Confirma excluir ${selectedTicketIds.length} ticket(s) selecionado(s)?\n\n` +
+      'Apenas tickets sem TRFL gerada podem ser removidos.'
+    );
+    if (!ok) return;
+
+    setDeletingTickets(true);
+    setToast(null);
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch(`/api/armazens/${armazemId}/movimentacoes-internas`, {
+        method: 'DELETE',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ ids: selectedTicketIds }),
+      });
+      if (!res.ok) {
+        let msg = 'Erro ao excluir tickets.';
+        try {
+          const data = await res.json();
+          msg = data?.error || data?.message || msg;
+        } catch {
+          /* ignore */
+        }
+        throw new Error(msg);
+      }
+      const data = await res.json().catch(() => ({}));
+      const deleted = Number(data?.deleted || 0);
+      const skipped = Number(data?.skipped || 0);
+      if (skipped > 0) {
+        setToast({
+          type: 'warning',
+          message: `${deleted} ticket(s) excluído(s). ${skipped} não foram removidos (TRFL já gerada).`,
+        });
+      } else {
+        setToast({ type: 'success', message: `${deleted} ticket(s) excluído(s) com sucesso.` });
+      }
+      setSelectedTicketIds([]);
+      loadTickets();
+    } catch (e) {
+      setToast({ type: 'error', message: e.message || 'Erro ao excluir tickets.' });
+    } finally {
+      setDeletingTickets(false);
+    }
+  };
+
+  const gerarTicketsLoteRecebimento = async () => {
+    if (!loteRecebimento.length) return;
+    if (!armazemId || !origemId) {
+      setToast({ type: 'error', message: 'Defina armazém e localização de origem para continuar.' });
+      return;
+    }
+
+    const semDestino = loteRecebimento.find((it) => !it.destinoId || String(it.destinoId) === String(origemId));
+    if (semDestino) {
+      setToast({
+        type: 'error',
+        message: `Defina um destino válido para ${semDestino.codigo}.`,
+      });
+      return;
+    }
+
+    setSubmittingLote(true);
+    try {
+      const token = localStorage.getItem('token');
+      let criados = 0;
+      for (const it of loteRecebimento) {
+        const quantidade = Number(it.quantidade || 0) || 0;
+        if (quantidade <= 0) continue;
+        const codigo = String(it.codigo || '').trim();
+        if (!codigo) continue;
+
+        const rowStock = (linhasOrigem || []).find(
+          (r) => String(r?.codigo || '').trim().toUpperCase() === codigo.toUpperCase()
+        );
+        if (pode && !rowStock) {
+          throw new Error(`Artigo ${codigo} não encontrado no stock da origem.`);
+        }
+        if (pode) {
+          const disponivel = Number(rowStock?.quantidade || 0) || 0;
+          if (quantidade > disponivel) {
+            throw new Error(`Quantidade de ${codigo} superior ao disponível (${disponivel}).`);
+          }
+        }
+
+        const linhaPayload = pode
+          ? { item_id: rowStock.item_id, quantidade }
+          : { item_codigo: codigo, quantidade };
+
+        await axios.post(
+          `/api/armazens/${armazemId}/transferencia-localizacao`,
+          {
+            origem_localizacao_id: parseInt(origemId, 10),
+            destino_localizacao_id: parseInt(it.destinoId, 10),
+            linhas: [linhaPayload],
+          },
+          { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } }
+        );
+        criados += 1;
+      }
+
+      setToast({
+        type: 'success',
+        message: `${criados} ticket(s) criado(s) com sucesso para armazenagem.`,
+      });
+      limparPrefillRecebimento();
+      loadTickets();
+    } catch (e) {
+      const msg = e?.response?.data?.error || e?.message || 'Erro ao gerar tickets em lote.';
+      setToast({ type: 'error', message: msg });
+    } finally {
+      setSubmittingLote(false);
     }
   };
 
@@ -721,8 +1151,8 @@ const TransferenciaLocalizacao = () => {
     } else if (wizardStep === 2) setWizardStep(1);
   };
 
-  if (!pode) {
-    return <Navigate to="/transferencias" replace />;
+  if (!podeCriarTickets) {
+    return null;
   }
 
   if (loadingArmazens) {
@@ -737,8 +1167,8 @@ const TransferenciaLocalizacao = () => {
   }
 
   return (
-    <div className="min-h-screen bg-[#F7F8FA] p-4 sm:p-6 lg:p-8">
-      <div className="max-w-5xl mx-auto">
+    <div className="ui-page sm:p-6 lg:p-8">
+      <div className="ui-shell max-w-5xl">
         <div className="mb-5 flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
           <div>
             <h1 className="text-xl sm:text-2xl font-bold text-gray-800 flex items-center gap-2">
@@ -767,7 +1197,109 @@ const TransferenciaLocalizacao = () => {
           </div>
         ) : (
           <div className="space-y-6 max-w-3xl mx-auto">
-            <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-visible">
+            {loteRecebimento.length > 0 && (
+              <div className="ui-card overflow-hidden">
+                <div className="px-4 py-3 border-b border-gray-100 bg-indigo-50/60">
+                  <h2 className="text-sm font-semibold text-indigo-900">Armazenagem rápida (Recebimento)</h2>
+                  <p className="text-xs text-indigo-800/80 mt-1">
+                    Origem e itens pré-preenchidos. Defina o destino de cada item e gere os tickets.
+                  </p>
+                </div>
+                <div className="p-4 sm:p-5 space-y-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs text-gray-600 mb-1">Armazém central</label>
+                      <select
+                        value={armazemId}
+                        onChange={(e) => setArmazemId(e.target.value)}
+                        className="ui-select"
+                        disabled={armazemUnico}
+                      >
+                        <option value="">Selecione…</option>
+                        {centrais.map((a) => (
+                          <option key={a.id} value={String(a.id)}>
+                            {a.codigo} — {a.descricao}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-600 mb-1">Origem (recebimento)</label>
+                      <input
+                        value={labelLoc(origemId) || loteOrigemLabel || ''}
+                        readOnly
+                        className="ui-input bg-gray-50 text-sm font-mono"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="ui-table-wrap overflow-x-auto">
+                    <table className="ui-table w-full text-xs">
+                      <thead>
+                        <tr>
+                          <th className="px-2 py-2 text-left">Artigo</th>
+                          <th className="px-2 py-2 text-right">Qtd</th>
+                          <th className="px-2 py-2 text-left">Destino</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {loteRecebimento.map((it, idx) => (
+                          <tr key={`${it.codigo}-${idx}`}>
+                            <td className="px-2 py-2">
+                              <span className="font-mono font-medium">{it.codigo}</span>
+                              {it.descricao ? (
+                                <span className="block text-[11px] text-gray-500 truncate">{it.descricao}</span>
+                              ) : null}
+                            </td>
+                            <td className="px-2 py-2 text-right tabular-nums">{it.quantidade}</td>
+                            <td className="px-2 py-2">
+                              <select
+                                value={it.destinoId}
+                                onChange={(e) => {
+                                  const next = e.target.value;
+                                  setLoteRecebimento((prev) =>
+                                    prev.map((row, i) => (i === idx ? { ...row, destinoId: next } : row))
+                                  );
+                                }}
+                                className="ui-select"
+                              >
+                                <option value="">Selecione destino…</option>
+                                {locsDestinoCandidatas.map((l) => (
+                                  <option key={l.id} value={String(l.id)}>
+                                    {l.localizacao}
+                                  </option>
+                                ))}
+                              </select>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2 justify-end">
+                    <button
+                      type="button"
+                      className="ui-btn ui-btn-secondary"
+                      onClick={limparPrefillRecebimento}
+                      disabled={submittingLote}
+                    >
+                      Cancelar pré-preenchimento
+                    </button>
+                    <button
+                      type="button"
+                      className="ui-btn ui-btn-primary disabled:opacity-50"
+                      onClick={gerarTicketsLoteRecebimento}
+                      disabled={submittingLote || !armazemId || !origemId || locsDestinoCandidatas.length === 0}
+                    >
+                      {submittingLote ? 'A criar tickets…' : 'Gerar tickets de armazenagem'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <div className={`ui-card overflow-visible ${loteRecebimento.length > 0 ? 'hidden' : ''}`}>
               <div className="px-3 sm:px-4 py-3 border-b border-gray-100 bg-gray-50/90">
                 <div className="flex items-center justify-between gap-2 overflow-x-auto pb-1">
                   {WIZARD_STEPS.map((st, idx) => {
@@ -810,7 +1342,7 @@ const TransferenciaLocalizacao = () => {
                         <select
                           value={armazemId}
                           onChange={(e) => setArmazemId(e.target.value)}
-                          className="w-full px-3 py-2.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#0915FF]"
+                          className="ui-select"
                         >
                           <option value="">Selecione…</option>
                           {centrais.map((a) => (
@@ -859,12 +1391,17 @@ const TransferenciaLocalizacao = () => {
                         filterNoMatchMessage="Nenhuma localização corresponde ao texto."
                       />
                     </div>
-                    {origemId && !loadingEstoque && linhasOrigem.length === 0 && (
+                    {pode && origemId && !loadingEstoque && linhasOrigem.length === 0 && (
                       <p className="text-xs text-amber-800">Sem stock nesta localização.</p>
                     )}
-                    {origemId && !loadingEstoque && linhasOrigem.length > 0 && (
+                    {pode && origemId && !loadingEstoque && linhasOrigem.length > 0 && (
                       <p className="text-xs text-gray-500">
                         {linhasOrigem.length} artigo(s) nesta origem — avance para escolher o artigo.
+                      </p>
+                    )}
+                    {!pode && origemId && (
+                      <p className="text-xs text-gray-500">
+                        Modo sem controlo de stock ativo: indique artigo e quantidade manualmente para criar ticket.
                       </p>
                     )}
                     <button
@@ -872,11 +1409,10 @@ const TransferenciaLocalizacao = () => {
                       disabled={
                         !armazemId ||
                         !origemId ||
-                        loadingEstoque ||
-                        linhasOrigem.length === 0
+                        (pode && (loadingEstoque || linhasOrigem.length === 0))
                       }
                       onClick={() => setWizardStep(2)}
-                      className="w-full py-2.5 rounded-lg bg-[#0915FF] text-white text-sm font-semibold hover:bg-[#070FCC] disabled:opacity-50"
+                      className="ui-btn ui-btn-primary w-full disabled:opacity-50"
                     >
                       Continuar
                     </button>
@@ -892,72 +1428,148 @@ const TransferenciaLocalizacao = () => {
                       </button>
                     </div>
                     <p className="text-xs text-gray-500 font-mono bg-gray-50 rounded px-2 py-1">{labelLoc(origemId)}</p>
-                    <div>
-                      <label className="block text-xs text-gray-600 mb-1">
-                        <FaSearch className="inline mr-1" />
-                        Pesquisar (código ou descrição)
-                      </label>
-                      <PesquisaComLeitorQr
-                        inputType="search"
-                        value={pesquisaArtigo}
-                        onChange={(e) => setPesquisaArtigo(e.target.value)}
-                        disabled={loadingEstoque || linhasOrigem.length === 0}
-                        lerDisabled={loadingEstoque || linhasOrigem.length === 0}
-                        placeholder="Comece a escrever…"
-                        onLerClick={() => abrirLeitorQr('pesquisaArtigo')}
-                        lerTitle="Ler QR ou código de barras do artigo"
-                        lerAriaLabel="Ler QR ou código de barras do artigo"
-                      />
-                      {normBusca(pesquisaArtigo).length > 0 && (
-                        <div className="mt-2 rounded-lg border border-gray-200 max-h-[min(220px,38vh)] overflow-y-auto">
-                          {artigosFiltradosPesquisa.length === 0 ? (
-                            <p className="px-3 py-4 text-xs text-gray-500 text-center">Sem resultados.</p>
-                          ) : (
-                            <ul className="divide-y divide-gray-100">
-                              {artigosFiltradosPesquisa.map((row) => {
-                                const max = Number(row.quantidade) || 0;
-                                return (
-                                  <li key={row.item_id}>
-                                    <button
-                                      type="button"
-                                      onClick={() => selecionarArtigoDaPesquisa(row)}
-                                      className="w-full text-left px-3 py-2 text-sm hover:bg-[#0915FF]/5"
-                                    >
-                                      <span className="font-mono font-medium">{row.codigo}</span>
-                                      <span className="text-gray-700 block text-xs line-clamp-2">{row.descricao}</span>
-                                      <span className="text-[11px] text-gray-500">Disponível: {max}</span>
-                                    </button>
-                                  </li>
-                                );
-                              })}
-                            </ul>
-                          )}
-                          {pesquisaResultadosTruncados && (
-                            <p className="px-2 py-1.5 text-[10px] text-amber-800 bg-amber-50">Refine a pesquisa (máx. {MAX_SUGESTOES} linhas).</p>
-                          )}
-                        </div>
-                      )}
-                    </div>
+                    {pode && (
+                      <div>
+                        <label className="block text-xs text-gray-600 mb-1">
+                          <FaSearch className="inline mr-1" />
+                          Pesquisar (código ou descrição)
+                        </label>
+                        <PesquisaComLeitorQr
+                          inputType="search"
+                          value={pesquisaArtigo}
+                          onChange={(e) => setPesquisaArtigo(e.target.value)}
+                          disabled={loadingEstoque || linhasOrigem.length === 0}
+                          lerDisabled={loadingEstoque || linhasOrigem.length === 0}
+                          placeholder="Comece a escrever…"
+                          onLerClick={() => abrirLeitorQr('pesquisaArtigo')}
+                          lerTitle="Ler QR ou código de barras do artigo"
+                          lerAriaLabel="Ler QR ou código de barras do artigo"
+                        />
+                        {normBusca(pesquisaArtigo).length > 0 && (
+                          <div className="mt-2 rounded-lg border border-gray-200 max-h-[min(220px,38vh)] overflow-y-auto">
+                            {artigosFiltradosPesquisa.length === 0 ? (
+                              <p className="px-3 py-4 text-xs text-gray-500 text-center">Sem resultados.</p>
+                            ) : (
+                              <ul className="divide-y divide-gray-100">
+                                {artigosFiltradosPesquisa.map((row) => {
+                                  const max = Number(row.quantidade) || 0;
+                                  return (
+                                    <li key={row.item_id}>
+                                      <button
+                                        type="button"
+                                        onClick={() => selecionarArtigoDaPesquisa(row)}
+                                        className="w-full text-left px-3 py-2 text-sm hover:bg-[#0915FF]/5"
+                                      >
+                                        <span className="font-mono font-medium">{row.codigo}</span>
+                                        <span className="text-gray-700 block text-xs line-clamp-2">{row.descricao}</span>
+                                        <span className="text-[11px] text-gray-500">Disponível: {max}</span>
+                                      </button>
+                                    </li>
+                                  );
+                                })}
+                              </ul>
+                            )}
+                            {pesquisaResultadosTruncados && (
+                              <p className="px-2 py-1.5 text-[10px] text-amber-800 bg-amber-50">Refine a pesquisa (máx. {MAX_SUGESTOES} linhas).</p>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
                     <div className="flex flex-col gap-2">
-                      <div className="flex gap-2 items-stretch">
-                        <div className="flex-1 min-w-0">
+                      <div className="flex gap-2 items-stretch" ref={refCodigoArtigoWrap}>
+                        <div className="flex-1 min-w-0 relative">
                           <PesquisaComLeitorQr
                             showSearchIcon={false}
                             fontMono
                             value={codigoArtigo}
-                            onChange={(e) => setCodigoArtigo(e.target.value)}
+                            onChange={(e) => {
+                              const next = e.target.value;
+                              setCodigoArtigo(next);
+                              setArtigoCorrente(null);
+                              setSelectedCodigoIndex(0);
+                              setMostrarListaCodigoArtigo(normBusca(extrairCodigoArtigo(next)).length > 0);
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'ArrowDown') {
+                                if (mostrarListaCodigoArtigo && sugestoesCodigoArtigo.length > 0) {
+                                  e.preventDefault();
+                                  setSelectedCodigoIndex((idx) =>
+                                    idx < sugestoesCodigoArtigo.length - 1 ? idx + 1 : idx
+                                  );
+                                }
+                              } else if (e.key === 'ArrowUp') {
+                                if (mostrarListaCodigoArtigo && sugestoesCodigoArtigo.length > 0) {
+                                  e.preventDefault();
+                                  setSelectedCodigoIndex((idx) => (idx > 0 ? idx - 1 : 0));
+                                }
+                              } else if (e.key === 'Enter') {
+                                e.preventDefault();
+                                if (mostrarListaCodigoArtigo && sugestoesCodigoArtigo.length > 0) {
+                                  const idx = selectedCodigoIndex >= 0 ? selectedCodigoIndex : 0;
+                                  selecionarSugestaoCodigo(sugestoesCodigoArtigo[idx]);
+                                } else {
+                                  validarCodigoManualParaPasso3();
+                                }
+                              } else if (e.key === 'Escape') {
+                                setMostrarListaCodigoArtigo(false);
+                              }
+                            }}
                             placeholder="Ou código manual"
                             onLerClick={() => abrirLeitorQr('codigoArtigo')}
                             disabled={loadingEstoque}
                             lerDisabled={loadingEstoque}
                             lerTitle="Ler QR ou código de barras do artigo"
                             lerAriaLabel="Ler QR ou código de barras do código do artigo"
+                            id="transf-codigo-artigo-input"
+                            onFocus={() => {
+                              if (normBusca(extrairCodigoArtigo(codigoArtigo)).length > 0) {
+                                setMostrarListaCodigoArtigo(true);
+                              }
+                            }}
                           />
+                          {mostrarListaCodigoArtigo && (
+                            <div
+                              ref={refListaCodigoArtigo}
+                              className="absolute z-20 left-0 right-0 mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-60 overflow-y-auto"
+                            >
+                              {sugestoesCodigoLoading ? (
+                                <div className="px-3 py-2 text-sm text-gray-500">A pesquisar…</div>
+                              ) : sugestoesCodigoArtigo.length === 0 ? (
+                                <div className="px-3 py-2 text-sm text-gray-500">Nenhum item encontrado</div>
+                              ) : (
+                                <ul className="divide-y divide-gray-100">
+                                  {sugestoesCodigoArtigo.map((s, idx) => (
+                                    <li key={s.codigo}>
+                                      <button
+                                        type="button"
+                                        data-sugestao-index={idx}
+                                        onMouseDown={(e) => {
+                                          e.preventDefault();
+                                          selecionarSugestaoCodigo(s);
+                                        }}
+                                        className={`w-full text-left px-3 py-2 text-sm ${
+                                          idx === selectedCodigoIndex
+                                            ? 'bg-[#0915FF]/15 text-[#0915FF]'
+                                            : 'hover:bg-gray-100'
+                                        }`}
+                                      >
+                                        <span className="font-mono font-medium">{s.codigo}</span>
+                                        {s.descricao ? (
+                                          <span className="block text-xs text-gray-500 truncate">{s.descricao}</span>
+                                        ) : null}
+                                      </button>
+                                    </li>
+                                  ))}
+                                </ul>
+                              )}
+                            </div>
+                          )}
                         </div>
                         <button
                           type="button"
                           onClick={validarCodigoManualParaPasso3}
-                          className="px-3 py-2 rounded-lg bg-gray-800 text-white text-sm shrink-0 self-stretch"
+                          className="ui-btn ui-btn-secondary px-3 py-2 shrink-0 self-stretch"
                         >
                           OK
                         </button>
@@ -966,7 +1578,7 @@ const TransferenciaLocalizacao = () => {
                   </div>
                 )}
 
-                {wizardStep === 3 && artigoCorrente && (
+                {wizardStep === 3 && (artigoCorrente || !pode) && (
                   <div className="space-y-4">
                     <div className="flex items-center justify-between gap-2">
                       <p className="text-sm font-medium text-gray-800">Quantidade a transferir</p>
@@ -974,14 +1586,20 @@ const TransferenciaLocalizacao = () => {
                         ← Voltar
                       </button>
                     </div>
-                    <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-sm">
-                      <p className="font-mono font-semibold text-gray-900">{artigoCorrente.codigo}</p>
-                      <p className="text-gray-700 text-xs mt-1">{artigoCorrente.descricao}</p>
-                      <p className="text-sm mt-2">
-                        Disponível nesta origem:{' '}
-                        <strong className="tabular-nums text-[#0915FF]">{disponivelArtigoCorrente}</strong>
-                      </p>
-                    </div>
+                    {(artigoCorrente || codigoArtigo) && (
+                      <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-sm">
+                        <p className="font-mono font-semibold text-gray-900">{artigoCorrente?.codigo || codigoArtigo}</p>
+                        {artigoCorrente?.descricao ? (
+                          <p className="text-gray-700 text-xs mt-1">{artigoCorrente.descricao}</p>
+                        ) : null}
+                        {pode && (
+                          <p className="text-sm mt-2">
+                            Disponível nesta origem:{' '}
+                            <strong className="tabular-nums text-[#0915FF]">{disponivelArtigoCorrente}</strong>
+                          </p>
+                        )}
+                      </div>
+                    )}
                     <div>
                       <label className="block text-xs text-gray-600 mb-1">Quantidade</label>
                       <input
@@ -989,7 +1607,7 @@ const TransferenciaLocalizacao = () => {
                         inputMode="decimal"
                         value={qtdDigitada}
                         onChange={(e) => setQtdDigitada(e.target.value)}
-                        className="w-full px-3 py-2.5 border border-gray-300 rounded-lg text-sm text-right tabular-nums text-lg"
+                        className="ui-input text-right tabular-nums text-lg"
                         placeholder="0"
                         autoFocus
                       />
@@ -997,7 +1615,7 @@ const TransferenciaLocalizacao = () => {
                     <button
                       type="button"
                       onClick={confirmarQuantidadeEIrDestino}
-                      className="w-full py-2.5 rounded-lg bg-[#0915FF] text-white text-sm font-semibold hover:bg-[#070FCC]"
+                      className="ui-btn ui-btn-primary w-full"
                     >
                       Continuar para destino →
                     </button>
@@ -1056,7 +1674,7 @@ const TransferenciaLocalizacao = () => {
                           type="button"
                           disabled={!destinoId || destinoId === origemId}
                           onClick={() => setWizardStep(5)}
-                          className="w-full py-2.5 rounded-lg bg-[#0915FF] text-white text-sm font-semibold hover:bg-[#070FCC] disabled:opacity-50"
+                          className="ui-btn ui-btn-primary w-full disabled:opacity-50"
                         >
                           Rever e criar tickets →
                         </button>
@@ -1101,7 +1719,7 @@ const TransferenciaLocalizacao = () => {
                         destinoId === origemId ||
                         !linhaPendente
                       }
-                      className="w-full py-3 rounded-lg bg-emerald-600 text-white text-sm font-bold hover:bg-emerald-700 disabled:opacity-50"
+                      className="ui-btn w-full py-3 rounded-lg bg-emerald-600 text-white text-sm font-bold hover:bg-emerald-700 disabled:opacity-50"
                     >
                       {submitting ? 'A criar tickets…' : 'Finalizar — criar movimentação'}
                     </button>
@@ -1110,7 +1728,7 @@ const TransferenciaLocalizacao = () => {
               </div>
             </div>
 
-            <div className="bg-white rounded-xl border border-gray-200 shadow-md overflow-hidden ring-1 ring-gray-900/5">
+            <div className="ui-card overflow-hidden ring-1 ring-gray-900/5">
               <div className="px-4 py-3 bg-slate-800 text-white flex flex-wrap items-center gap-3 justify-between">
                 <h2 className="text-sm font-semibold flex items-center gap-2">
                   <FaList className="text-emerald-400" />
@@ -1137,7 +1755,7 @@ const TransferenciaLocalizacao = () => {
                     type="button"
                     onClick={loadTickets}
                     disabled={!armazemId || loadingTickets}
-                    className="px-3 py-1.5 border border-gray-300 rounded-lg bg-white hover:bg-gray-50 disabled:opacity-50 font-medium"
+                    className="ui-btn ui-btn-secondary px-3 py-1.5 disabled:opacity-50 font-medium"
                   >
                     Atualizar
                   </button>
@@ -1147,29 +1765,62 @@ const TransferenciaLocalizacao = () => {
                       <button
                         type="button"
                         onClick={selecionarTodosPendentes}
-                        className="px-3 py-1.5 border border-gray-300 rounded-lg hover:bg-gray-50"
+                        className="ui-btn ui-btn-secondary px-3 py-1.5"
                       >
                         Selecionar pendentes
                       </button>
                       <button
                         type="button"
                         onClick={() => setSelectedTicketIds([])}
-                        className="px-3 py-1.5 border border-gray-300 rounded-lg hover:bg-gray-50"
+                        className="ui-btn ui-btn-secondary px-3 py-1.5"
                       >
                         Limpar seleção
                       </button>
                       <button
                         type="button"
+                        onClick={excluirTicketsSelecionados}
+                        disabled={deletingTickets || selectedTicketIds.length === 0}
+                        className="px-3 py-1.5 rounded-lg bg-red-600 text-white font-semibold hover:bg-red-700 disabled:opacity-50"
+                      >
+                        {deletingTickets ? 'A excluir…' : 'Excluir selecionados'}
+                      </button>
+                      <button
+                        type="button"
                         onClick={gerarTrfl}
-                        disabled={exportingTrfl || selectedTicketIds.length === 0}
+                        disabled={exportingTrfl || deletingTickets || selectedTicketIds.length === 0}
                         className="px-3 py-1.5 rounded-lg bg-emerald-600 text-white font-semibold hover:bg-emerald-700 disabled:opacity-50"
                       >
-                        {exportingTrfl ? 'A gerar…' : 'Gerar TRFL (Excel)'}
+                        {exportingTrfl ? 'A gerar…' : 'Gerar / Re-download TRFL (Excel)'}
                       </button>
                       <span className="text-gray-500 self-center tabular-nums">{selectedTicketIds.length} selec.</span>
                     </>
                   )}
                 </div>
+                {tickets.length > 0 && (
+                  <div className="mb-3 flex items-center justify-between gap-2 text-xs">
+                    <span className="text-gray-500">
+                      Página {ticketsPageClamped} de {totalTicketsPages} · {tickets.length} registos
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setTicketsPage((p) => Math.max(1, p - 1))}
+                        disabled={ticketsPageClamped <= 1}
+                        className="px-2.5 py-1 border border-gray-300 rounded-md bg-white hover:bg-gray-50 disabled:opacity-50"
+                      >
+                        Anterior
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setTicketsPage((p) => Math.min(totalTicketsPages, p + 1))}
+                        disabled={ticketsPageClamped >= totalTicketsPages}
+                        className="px-2.5 py-1 border border-gray-300 rounded-md bg-white hover:bg-gray-50 disabled:opacity-50"
+                      >
+                        Próxima
+                      </button>
+                    </div>
+                  </div>
+                )}
                 {!podeExportarTrfl && (
                   <p className="text-xs text-gray-600 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-4">
                     A geração do ficheiro <strong>TRFL</strong> está reservada a <strong>administrador</strong>,{' '}
@@ -1188,53 +1839,56 @@ const TransferenciaLocalizacao = () => {
                       : 'Nenhum registo recente.'}
                   </p>
                 ) : (
-                  <div className="overflow-x-auto rounded-lg border border-gray-200">
-                    <table className="min-w-full text-sm">
+                  <div className="ui-table-wrap overflow-x-hidden">
+                    <table className="ui-table w-full table-fixed text-xs">
                       <thead className="bg-gray-100 text-left text-xs text-gray-600 uppercase tracking-wide">
                         <tr>
-                          {podeExportarTrfl && <th className="px-3 py-2.5 w-10" aria-label="Selecionar" />}
-                          <th className="px-3 py-2.5">Data</th>
-                          <th className="px-3 py-2.5">Origem</th>
-                          <th className="px-3 py-2.5">Destino</th>
-                          <th className="px-3 py-2.5">Artigo</th>
-                          <th className="px-3 py-2.5 text-right">Qtd</th>
-                          <th className="px-3 py-2.5">TRFL</th>
+                          {podeExportarTrfl && <th className="px-2 py-2 w-[5%]" aria-label="Selecionar" />}
+                          <th className="px-2 py-2 w-[20%]">Data</th>
+                          <th className="px-2 py-2 w-[14%]">Origem</th>
+                          <th className="px-2 py-2 w-[14%]">Destino</th>
+                          <th className="px-2 py-2 w-[31%]">Artigo</th>
+                          <th className="px-2 py-2 w-[8%] text-right">Qtd</th>
+                          <th className="px-2 py-2 w-[8%]">TRFL</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-gray-100 bg-white">
-                        {tickets.map((t) => {
+                        {ticketsPaginaAtual.map((t) => {
                           const pendente = t.trfl_gerada_em == null;
                           const checked = selectedTicketIds.includes(t.id);
                           return (
                             <tr key={t.id} className={pendente ? 'hover:bg-gray-50/80' : 'opacity-70 bg-gray-50/50'}>
                               {podeExportarTrfl && (
-                                <td className="px-3 py-2">
+                                <td className="px-2 py-2 align-top">
                                   <input
                                     type="checkbox"
-                                    disabled={!pendente}
-                                    checked={checked && pendente}
+                                    checked={checked}
                                     onChange={() => toggleTicket(t.id)}
-                                    title={pendente ? '' : 'TRFL já gerada para este ticket'}
+                                    title={pendente ? '' : 'TRFL já gerada: pode selecionar para re-download'}
                                   />
                                 </td>
                               )}
-                              <td className="px-3 py-2 whitespace-nowrap text-xs text-gray-700">
+                              <td className="px-2 py-2 text-[11px] text-gray-700 align-top">
                                 {t.created_at
                                   ? new Date(t.created_at).toLocaleString('pt-PT')
                                   : '—'}
                               </td>
-                              <td className="px-3 py-2 font-mono text-xs">{t.origem_localizacao_label || '—'}</td>
-                              <td className="px-3 py-2 font-mono text-xs">{t.destino_localizacao_label || '—'}</td>
-                              <td className="px-3 py-2">
-                                <span className="font-mono font-medium">{t.item_codigo}</span>
+                              <td className="px-2 py-2 font-mono text-[11px] truncate align-top" title={t.origem_localizacao_label || '—'}>
+                                {t.origem_localizacao_label || '—'}
+                              </td>
+                              <td className="px-2 py-2 font-mono text-[11px] truncate align-top" title={t.destino_localizacao_label || '—'}>
+                                {t.destino_localizacao_label || '—'}
+                              </td>
+                              <td className="px-2 py-2 align-top">
+                                <span className="font-mono font-medium text-[11px]">{t.item_codigo}</span>
                                 {t.item_descricao ? (
-                                  <span className="block text-xs text-gray-500 truncate max-w-[220px]">
+                                  <span className="block text-[11px] text-gray-500 truncate" title={t.item_descricao}>
                                     {t.item_descricao}
                                   </span>
                                 ) : null}
                               </td>
-                              <td className="px-3 py-2 text-right tabular-nums font-medium">{t.quantidade}</td>
-                              <td className="px-3 py-2 text-xs">
+                              <td className="px-2 py-2 text-right tabular-nums font-medium text-[11px] align-top">{t.quantidade}</td>
+                              <td className="px-2 py-2 text-[11px] align-top">
                                 {pendente ? (
                                   <span className="text-amber-700 font-medium">Pendente</span>
                                 ) : (

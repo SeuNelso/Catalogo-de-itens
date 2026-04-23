@@ -17,6 +17,7 @@ import { podeUsarConsultaMovimentos, podeUsarControloStock } from '../utils/cont
 
 const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
   const RECEBIMENTO_TRANSFERENCIA_MARKER = 'RECEBIMENTO_TRANSFERENCIA_V1';
+  const RECEBIMENTO_REFRESH_EVENT = 'recebimento-card-refresh';
   const [requisicoes, setRequisicoes] = useState([]);
   const [toast, setToast] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -57,6 +58,13 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
   const createTransferLink = hasFluxoTransferSelecionado
     ? `/transferencias/criar?transferencias=1&fluxo=${flowParam}`
     : '/transferencias/criar?transferencias=1';
+  const createRecebimentoLink = '/transferencias?recebimento=1';
+  const createActionLink =
+    isModoTransferencias && flowParam === 'recebimento'
+      ? createRecebimentoLink
+      : isModoTransferencias
+        ? createTransferLink
+        : '/requisicoes/criar';
   const rotaPrepararComOrigem = (reqId) =>
     isModoTransferencias
       ? `/requisicoes/preparar/${reqId}?origem=transferencias`
@@ -1004,6 +1012,7 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
         throw new Error(data.error || 'Erro ao confirmar TRA');
       }
       await fetchRequisicoes();
+      window.dispatchEvent(new CustomEvent(RECEBIMENTO_REFRESH_EVENT));
       setToast({ type: 'success', message: 'TRA confirmada. Finalização liberada.' });
     } catch (error) {
       setToast({ type: 'error', message: error.message || 'Erro ao confirmar TRA' });
@@ -1985,7 +1994,7 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
                 type="button"
                 onClick={() => {
                   if (isModoTransferencias && flowParam === 'recebimento') {
-                    navigate('/transferencias?recebimento=1');
+                    navigate(createRecebimentoLink);
                     return;
                   }
                   navigate('/requisicoes/importar');
@@ -1995,13 +2004,7 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
                 <FaFileImport /> {isModoTransferencias && flowParam === 'recebimento' ? 'Importar Guia AT' : 'Importar requisição'}
               </button>
               <Link
-                to={
-                  isModoTransferencias && flowParam === 'recebimento'
-                    ? '/transferencias?recebimento=1'
-                    : isModoTransferencias
-                      ? createTransferLink
-                      : '/requisicoes/criar'
-                }
+                to={createActionLink}
                 className="inline-flex items-center gap-2 px-4 py-2 bg-[#0915FF] text-white rounded-lg hover:bg-[#070FCC] transition-colors"
               >
                 <FaPlus /> {isModoTransferencias ? 'Nova Transferência' : 'Nova Requisição'}
@@ -2223,7 +2226,7 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
             </p>
             {podeCriarOuImportarRequisicao && (
               <Link
-                to={isModoTransferencias ? createTransferLink : '/requisicoes/criar'}
+                to={createActionLink}
                 className="mt-4 inline-block text-[#0915FF] hover:underline"
               >
                 Criar primeira {isModoTransferencias ? 'transferência' : 'requisição'}

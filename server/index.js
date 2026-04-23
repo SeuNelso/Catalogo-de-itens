@@ -5441,6 +5441,22 @@ app.get('/api/download-template-unidades', authenticateToken, (req, res) => {
 // ROTAS DE ARMAZÉNS
 // ============================================
 
+function usuarioPodeOperarTicketsMovInterna(req) {
+  const role = String(req?.user?.role || '').trim().toLowerCase();
+  return (
+    role === 'admin' ||
+    role === 'backoffice_armazem' ||
+    role === 'supervisor_armazem' ||
+    role === 'operador'
+  );
+}
+
+function usuarioPodeOperarMovInternaNoArmazem(req, armazemId) {
+  if (!req?.user) return false;
+  if (!Number.isFinite(Number(armazemId))) return false;
+  return usuarioPodeOperarTicketsMovInterna(req);
+}
+
 // Listar todos os armazéns (com localizações quando a tabela existir)
 // Query `destino_requisicao=1`: não aplica o filtro de supervisor — necessário para escolher
 // armazém destino (viatura, EPI, APEADO, etc.) ao criar/editar requisição; a origem continua validada no POST.
@@ -5454,7 +5470,11 @@ app.get('/api/armazens', authenticateToken, async (req, res) => {
     const listagemConsultaEstoqueLocalizacao =
       String(consulta_estoque_localizacao || '') === '1' ||
       String(consulta_estoque_localizacao || '').toLowerCase() === 'true';
-    if (listagemConsultaEstoqueLocalizacao && !usuarioTemPermissaoControloStock(req)) {
+    if (
+      listagemConsultaEstoqueLocalizacao &&
+      !usuarioTemPermissaoControloStock(req) &&
+      !usuarioPodeOperarTicketsMovInterna(req)
+    ) {
       return res.json([]);
     }
     let query = 'SELECT * FROM armazens WHERE 1=1';
@@ -6111,11 +6131,12 @@ app.post('/api/armazens/:armazemId/aplicar-stock-nacional-recebimento', authenti
 
 // Mover stock entre duas localizações do mesmo armazém central (sem requisição)
 app.post('/api/armazens/:armazemId/transferencia-localizacao', authenticateToken, async (req, res) => {
-  if (!usuarioTemPermissaoControloStock(req)) {
+  const podeControlarStock = usuarioTemPermissaoControloStock(req);
+  if (!podeControlarStock && !usuarioPodeOperarTicketsMovInterna(req)) {
     return res.status(403).json({
       error:
-        'O seu perfil não tem permissão para controlo de stock. Um administrador pode ativar esta opção no utilizador.',
-      code: 'CONTROLO_STOCK_NEGADO',
+        'Sem permissão para criar movimentações internas neste módulo.',
+      code: 'MOVIMENTACAO_INTERNA_NEGADA',
     });
   }
   try {
@@ -6140,9 +6161,10 @@ app.post('/api/armazens/:armazemId/transferencia-localizacao', authenticateToken
       return res.status(403).json({ error: 'Transferência entre localizações só é permitida em armazéns centrais.' });
     }
     const podeArm = await usuarioPodeConsultarEstoqueLocalizacaoArmazem(req, armazemId);
-    if (!podeArm) {
+    const podeArmSemStock = usuarioPodeOperarMovInternaNoArmazem(req, armazemId) && podeArm;
+    if (!podeArm && !podeArmSemStock) {
       return res.status(403).json({
-        error: 'Só pode movimentar stock nos armazéns centrais associados ao seu utilizador.',
+        error: 'Só pode criar movimentações internas nos armazéns centrais associados ao seu utilizador.',
         code: 'TRANSFERENCIA_LOCALIZACAO_ARMAZEM_NEGADA',
       });
     }
@@ -6164,15 +6186,21 @@ app.post('/api/armazens/:armazemId/transferencia-localizacao', authenticateToken
     const normalized = [];
     const seen = new Set();
     for (const row of linhas) {
-      const itemId = parseInt(row?.item_id, 10);
-      if (!Number.isFinite(itemId)) continue;
-      if (seen.has(itemId)) continue;
-      seen.add(itemId);
+      const itemIdRaw = parseInt(row?.item_id, 10);
+      const itemCodigoRaw = String(row?.item_codigo || '').trim();
+      const dedupeKey = Number.isFinite(itemIdRaw) ? `id:${itemIdRaw}` : `cod:${itemCodigoRaw.toUpperCase()}`;
+      if (!Number.isFinite(itemIdRaw) && !itemCodigoRaw) continue;
+      if (seen.has(dedupeKey)) continue;
+      seen.add(dedupeKey);
       const q = Number(row?.quantidade);
       if (!Number.isFinite(q) || q <= 0) {
-        return res.status(400).json({ error: `Quantidade inválida para item_id ${itemId} (deve ser > 0)` });
+        return res.status(400).json({ error: 'Quantidade inválida (deve ser > 0).' });
       }
-      normalized.push({ item_id: itemId, quantidade: q });
+      normalized.push({
+        item_id: Number.isFinite(itemIdRaw) ? itemIdRaw : null,
+        item_codigo: itemCodigoRaw,
+        quantidade: q,
+      });
     }
     if (normalized.length === 0) {
       return res.status(400).json({ error: 'Nenhuma linha válida em "linhas"' });
@@ -6184,44 +6212,51 @@ app.post('/api/armazens/:armazemId/transferencia-localizacao', authenticateToken
       await client.query('BEGIN');
       let moved = 0;
       const ticketIds = [];
-      for (const { item_id: itemId, quantidade: q } of normalized) {
+      for (const { item_id: itemIdRaw, item_codigo: itemCodigoRaw, quantidade: q } of normalized) {
+        let itemId = Number(itemIdRaw);
+        if (!Number.isFinite(itemId) || itemId <= 0) {
+          const byCode = await client.query('SELECT id FROM itens WHERE UPPER(TRIM(codigo)) = UPPER(TRIM($1::text)) LIMIT 1', [itemCodigoRaw]);
+          itemId = Number(byCode.rows?.[0]?.id || 0);
+        }
         const ir = await client.query('SELECT 1 FROM itens WHERE id = $1', [itemId]);
         if (ir.rows.length === 0) {
           await client.query('ROLLBACK');
-          return res.status(400).json({ error: `Item #${itemId} não existe` });
+          return res.status(400).json({ error: `Item inválido: "${itemCodigoRaw || itemIdRaw || ''}"` });
         }
-        const sub = await client.query(
-          `UPDATE armazens_localizacao_item
-           SET quantidade = quantidade - $1::numeric, updated_at = CURRENT_TIMESTAMP
-           WHERE localizacao_id = $2 AND item_id = $3 AND quantidade >= $1::numeric
-           RETURNING quantidade`,
-          [q, origemLocId, itemId]
-        );
-        if (sub.rows.length === 0) {
-          await client.query('ROLLBACK');
-          const cod = await pool.query('SELECT codigo FROM itens WHERE id = $1', [itemId]);
-          const c = cod.rows[0]?.codigo || String(itemId);
-          return res.status(400).json({
-            error: `Stock insuficiente na localização de origem para o artigo ${c}.`,
-            item_id: itemId,
-            code: 'STOCK_ORIGEM_INSUFICIENTE',
-          });
-        }
-        const rest = Number(sub.rows[0].quantidade);
-        if (rest <= 0) {
+        if (podeControlarStock) {
+          const sub = await client.query(
+            `UPDATE armazens_localizacao_item
+             SET quantidade = quantidade - $1::numeric, updated_at = CURRENT_TIMESTAMP
+             WHERE localizacao_id = $2 AND item_id = $3 AND quantidade >= $1::numeric
+             RETURNING quantidade`,
+            [q, origemLocId, itemId]
+          );
+          if (sub.rows.length === 0) {
+            await client.query('ROLLBACK');
+            const cod = await pool.query('SELECT codigo FROM itens WHERE id = $1', [itemId]);
+            const c = cod.rows[0]?.codigo || String(itemId);
+            return res.status(400).json({
+              error: `Stock insuficiente na localização de origem para o artigo ${c}.`,
+              item_id: itemId,
+              code: 'STOCK_ORIGEM_INSUFICIENTE',
+            });
+          }
+          const rest = Number(sub.rows[0].quantidade);
+          if (rest <= 0) {
+            await client.query(
+              'DELETE FROM armazens_localizacao_item WHERE localizacao_id = $1 AND item_id = $2',
+              [origemLocId, itemId]
+            );
+          }
           await client.query(
-            'DELETE FROM armazens_localizacao_item WHERE localizacao_id = $1 AND item_id = $2',
-            [origemLocId, itemId]
+            `INSERT INTO armazens_localizacao_item (localizacao_id, item_id, quantidade)
+             VALUES ($1, $2, $3::numeric)
+             ON CONFLICT (localizacao_id, item_id) DO UPDATE SET
+               quantidade = armazens_localizacao_item.quantidade + EXCLUDED.quantidade,
+               updated_at = CURRENT_TIMESTAMP`,
+            [destinoLocId, itemId, q]
           );
         }
-        await client.query(
-          `INSERT INTO armazens_localizacao_item (localizacao_id, item_id, quantidade)
-           VALUES ($1, $2, $3::numeric)
-           ON CONFLICT (localizacao_id, item_id) DO UPDATE SET
-             quantidade = armazens_localizacao_item.quantidade + EXCLUDED.quantidade,
-             updated_at = CURRENT_TIMESTAMP`,
-          [destinoLocId, itemId, q]
-        );
         moved += 1;
         if (temTabelaTickets) {
           const ti = await client.query(
@@ -6255,11 +6290,11 @@ app.post('/api/armazens/:armazemId/transferencia-localizacao', authenticateToken
 
 // Fila de tickets de movimentação interna (mesmo armazém central)
 app.get('/api/armazens/:armazemId/movimentacoes-internas', authenticateToken, async (req, res) => {
-  if (!usuarioTemPermissaoControloStock(req)) {
+  if (!usuarioTemPermissaoControloStock(req) && !usuarioPodeOperarTicketsMovInterna(req)) {
     return res.status(403).json({
       error:
-        'O seu perfil não tem permissão para controlo de stock. Um administrador pode ativar esta opção no utilizador.',
-      code: 'CONTROLO_STOCK_NEGADO',
+        'Sem permissão para consultar a fila de movimentações internas.',
+      code: 'MOVIMENTACAO_INTERNA_NEGADA',
     });
   }
   try {
@@ -6304,13 +6339,67 @@ app.get('/api/armazens/:armazemId/movimentacoes-internas', authenticateToken, as
   }
 });
 
+// Excluir tickets selecionados da fila (apenas pendentes de TRFL)
+app.delete('/api/armazens/:armazemId/movimentacoes-internas', authenticateToken, async (req, res) => {
+  if (!usuarioTemPermissaoControloStock(req) && !usuarioPodeOperarTicketsMovInterna(req)) {
+    return res.status(403).json({
+      error: 'Sem permissão para excluir tickets desta fila.',
+      code: 'MOVIMENTACAO_INTERNA_NEGADA',
+    });
+  }
+  try {
+    const armazemId = parseInt(req.params.armazemId, 10);
+    if (!Number.isFinite(armazemId)) {
+      return res.status(400).json({ error: 'armazemId inválido' });
+    }
+    const podeArm = await usuarioPodeConsultarEstoqueLocalizacaoArmazem(req, armazemId);
+    if (!podeArm) {
+      return res.status(403).json({ error: 'Sem acesso a este armazém.' });
+    }
+    if (!(await armazemMovimentacaoInternaTableExists())) {
+      return res.json({ ok: true, deleted: 0, skipped: 0 });
+    }
+    const rawIds = req.body?.ids;
+    if (!Array.isArray(rawIds) || rawIds.length === 0) {
+      return res.status(400).json({ error: 'Envie "ids": array de IDs de tickets.' });
+    }
+    const idNums = [...new Set(rawIds.map((x) => parseInt(x, 10)).filter((n) => Number.isFinite(n) && n > 0))];
+    if (idNums.length === 0) {
+      return res.status(400).json({ error: 'Nenhum id válido.' });
+    }
+
+    const before = await pool.query(
+      `SELECT id, trfl_gerada_em
+       FROM armazem_movimentacao_interna
+       WHERE id = ANY($1::int[]) AND armazem_id = $2`,
+      [idNums, armazemId]
+    );
+    if (before.rows.length === 0) {
+      return res.status(404).json({ error: 'Nenhum ticket encontrado para estes IDs neste armazém.' });
+    }
+
+    const del = await pool.query(
+      `DELETE FROM armazem_movimentacao_interna
+       WHERE id = ANY($1::int[]) AND armazem_id = $2 AND trfl_gerada_em IS NULL
+       RETURNING id`,
+      [idNums, armazemId]
+    );
+    const deleted = del.rows.length;
+    const skipped = before.rows.length - deleted;
+    return res.json({ ok: true, deleted, skipped });
+  } catch (e) {
+    console.error('Erro DELETE movimentacoes-internas:', e);
+    return res.status(500).json({ error: 'Erro ao excluir tickets', details: e.message });
+  }
+});
+
 // TRFL a partir de tickets selecionados (modelo interno Date, OriginWarehouse, …)
 app.post('/api/armazens/:armazemId/movimentacoes-internas/export-trfl', authenticateToken, async (req, res) => {
-  if (!usuarioTemPermissaoControloStock(req)) {
+  if (!usuarioTemPermissaoControloStock(req) && !usuarioPodeOperarTicketsMovInterna(req)) {
     return res.status(403).json({
       error:
-        'O seu perfil não tem permissão para controlo de stock. Um administrador pode ativar esta opção no utilizador.',
-      code: 'CONTROLO_STOCK_NEGADO',
+        'Sem permissão para gerar TRFL desta fila.',
+      code: 'MOVIMENTACAO_INTERNA_NEGADA',
     });
   }
   try {
@@ -7122,6 +7211,7 @@ app.use(
     requisicaoArmazemOrigemAcessoPermitido,
     assertIdsRequisicoesPermitidas,
     excelUploadRequisicoes,
+    armazemMovimentacaoInternaTableExists,
   })
 );
 

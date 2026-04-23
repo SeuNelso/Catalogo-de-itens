@@ -55,6 +55,8 @@ const Navbar = () => {
   const podeMovimentosMenu = user && podeUsarConsultaMovimentos(user);
   const podeInventarioMenu = user && podeAcederInventario(user.role) && podeUsarControloStock(user);
   const podeContagemSemanalMenu = user && podeAcederInventario(user.role);
+  const podeTicketsMovInterna =
+    user && ['admin', 'backoffice_armazem', 'supervisor_armazem'].includes(String(user.role || '').toLowerCase());
   const canSeeClogMenu = Boolean(canSeeRequisicoes || podeContagemSemanalMenu || podeMovimentosMenu || podeStockMenu);
   const normalizeName = (v) =>
     String(v || '')
@@ -373,7 +375,7 @@ const Navbar = () => {
                               Movimentos
                             </Link>
                           )}
-                          {podeStockMenu && (
+                          {podeTicketsMovInterna && (
                             <Link
                               to="/transferencias/localizacao"
                               onClick={(e) => {
@@ -438,6 +440,20 @@ const Navbar = () => {
                             >
                               <Database size={14} className="lg:w-4 lg:h-4" />
                               Consulta Seriais/Lotes
+                            </Link>
+                            <Link
+                              to="/consulta-stock-nacional-armazem"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                setConsultaOpen(false);
+                                setTimeout(() => navigate('/consulta-stock-nacional-armazem'), 100);
+                              }}
+                              className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded"
+                              title="Consulta de artigos por armazém"
+                            >
+                              <Package size={14} className="lg:w-4 lg:h-4" />
+                              Consulta Artigos Armazém
                             </Link>
                           </div>
                         </div>
@@ -909,7 +925,7 @@ const Navbar = () => {
                               Movimentos
                             </Link>
                           )}
-                          {podeStockMenu && (
+                          {podeTicketsMovInterna && (
                             <Link
                               to="/transferencias/localizacao"
                               onClick={(e) => handleMobileNavigation('/transferencias/localizacao', e)}
@@ -956,6 +972,15 @@ const Navbar = () => {
                             >
                               <Database size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" />
                               Consulta Seriais/Lotes
+                            </Link>
+                            <Link
+                              to="/consulta-stock-nacional-armazem"
+                              onClick={(e) => handleMobileNavigation('/consulta-stock-nacional-armazem', e)}
+                              className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10"
+                              title="Consulta de artigos por armazém"
+                            >
+                              <Package size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" />
+                              Consulta Artigos Armazém
                             </Link>
                           </div>
                         </div>
