@@ -353,7 +353,7 @@ function ReceptionMonitorCard() {
   if (!canView) return null;
 
   return (
-    <aside className="fixed bottom-4 right-4 z-[1000] w-[360px] max-w-[calc(100vw-1rem)] rounded-xl border border-gray-200 bg-white shadow-xl">
+    <aside className="static z-auto w-full max-w-none rounded-xl border border-gray-200 bg-white shadow-xl sm:fixed sm:bottom-4 sm:right-4 sm:z-[1000] sm:w-[360px] sm:max-w-[calc(100vw-1rem)]">
       <div className={`${collapsed ? '' : 'border-b border-gray-100'} px-4 py-3`}>
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">

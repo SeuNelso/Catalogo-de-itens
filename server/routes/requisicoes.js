@@ -5031,6 +5031,10 @@ async function buildClogRowsForRequisicaoIds(idsClean, dateStr, opts = {}) {
       : Promise.resolve({ rows: [] })
   ]);
 
+  // Reidrata seriais (tabela requisicoes_itens_seriais) no campo legado `serialnumber`
+  // para que a montagem do Clog reflita os S/N preparados.
+  await attachSeriaisToRequisicaoItens(pool, itensRes.rows || []);
+
   const expByArm = new Map(expRes.rows.map((row) => [row.armazem_id, row.localizacao]));
   const locsByDestArm = new Map();
   const recByDestArm = new Map();
@@ -9324,10 +9328,11 @@ router.patch('/:id/tra-numero', ...requisicaoAuth, denyOperador, async (req, res
     );
     if (check.rows.length === 0) return res.status(404).json({ error: 'Requisição não encontrada' });
     const row = check.rows[0];
-    // Devolução: escopo do utilizador é pelo armazém central (destino lógico da devolução),
-    // não pela viatura de origem.
+    // Devolução: escopo é o armazém central (armazem_id).
+    // Fluxo normal: escopo segue o armazém de origem (armazem_origem_id).
+    const armazemScopeId = row.devolucao_tra_gerada_em ? row.armazem_id : row.armazem_origem_id;
     if (
-      !requisicaoArmazemOrigemAcessoPermitido(req, row.armazem_id, {
+      !requisicaoArmazemOrigemAcessoPermitido(req, armazemScopeId, {
         requisicao: row,
       })
     ) {
