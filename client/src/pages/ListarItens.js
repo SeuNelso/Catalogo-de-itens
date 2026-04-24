@@ -489,18 +489,6 @@ const ListarItens = () => {
       }}>
         {/* Card de busca visual */}
         <div className="bg-white rounded-[16px] shadow-[0_8px_32px_rgba(9,21,255,0.08)] p-4 sm:p-8 min-w-[90vw] sm:min-w-[300px] max-w-[98vw] sm:max-w-[340px] flex flex-col items-center gap-4 sm:gap-6 relative">
-          <button
-            onClick={() => {
-              alert('📸 Funcionalidade em desenvolvimento!\n\nA consulta visual por imagem estará disponível em breve. Esta funcionalidade permitirá buscar itens através de fotos ou imagens enviadas.');
-            }}
-            className="w-full flex items-center justify-center gap-2 bg-[#0915FF] hover:bg-[#2336ff] text-white font-bold rounded-xl py-3 px-4 shadow-lg transition text-lg mb-4 border-2 border-[#0915FF] focus:outline-none focus:ring-2 focus:ring-[#2336ff]"
-          >
-            <svg className="w-6 h-6" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-              <path d="M15 10l4.553-2.276A2 2 0 0 1 22 9.618V17a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h3.382a2 2 0 0 1 1.447.618L10 7h4l.171-.382A2 2 0 0 1 15.618 5H19a2 2 0 0 1 2 2v2.382a2 2 0 0 1-.618 1.447L15 10z"/>
-              <circle cx="12" cy="13" r="4"/>
-            </svg>
-            Tirar foto / Enviar imagem
-          </button>
           <div className="text-blue-600 font-bold text-2xl mb-0 text-center">
             Consulta Visual de Itens
           </div>

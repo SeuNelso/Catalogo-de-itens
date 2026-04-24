@@ -86,6 +86,8 @@ function ReceptionMonitorCard() {
   const [targetLocation, setTargetLocation] = useState(FALLBACK_LOCATION);
   const [targetArmazemId, setTargetArmazemId] = useState(null);
   const [targetArmazemLabel, setTargetArmazemLabel] = useState('');
+  const [armazensDisponiveis, setArmazensDisponiveis] = useState([]);
+  const [selectedArmazemId, setSelectedArmazemId] = useState('');
   const [collapsed, setCollapsed] = useState(false);
   const [totalArtigosRececao, setTotalArtigosRececao] = useState(0);
   const [showAtualizado, setShowAtualizado] = useState(false);
@@ -105,25 +107,40 @@ function ReceptionMonitorCard() {
         headers: { Authorization: `Bearer ${token}` },
         cache: 'no-store',
       });
-      if (!response.ok) return FALLBACK_LOCATION;
+      if (!response.ok) {
+        return { location: FALLBACK_LOCATION, armazemId: null, armazemLabel: '' };
+      }
       const data = await response.json().catch(() => ({}));
-      const first = Array.isArray(data?.rows) ? data.rows[0] : null;
-      const loc = String(first?.localizacao_recebimento || '').trim();
-      const armazemId = Number(first?.id || 0);
-      const armazemLabel = firstNonEmpty(
-        first?.codigo && first?.descricao ? `${String(first.codigo).trim()} - ${String(first.descricao).trim()}` : '',
-        first?.codigo,
-        first?.descricao
-      );
+      const options = (Array.isArray(data?.rows) ? data.rows : [])
+        .filter((row) => String(row?.tipo || '').trim().toLowerCase() === 'central')
+        .map((row) => {
+          const armazemId = Number(row?.id || 0);
+          if (!Number.isFinite(armazemId) || armazemId <= 0) return null;
+          return {
+            id: String(armazemId),
+            label: firstNonEmpty(
+              row?.codigo && row?.descricao ? `${String(row.codigo).trim()} - ${String(row.descricao).trim()}` : '',
+              row?.codigo,
+              row?.descricao
+            ),
+            location: String(row?.localizacao_recebimento || '').trim() || FALLBACK_LOCATION,
+          };
+        })
+        .filter(Boolean);
+      setArmazensDisponiveis(options);
+      const selected = options.find((opt) => String(opt.id) === String(selectedArmazemId)) || options[0] || null;
+      if (selected && String(selected.id) !== String(selectedArmazemId)) {
+        setSelectedArmazemId(String(selected.id));
+      }
       return {
-        location: loc || FALLBACK_LOCATION,
-        armazemId: Number.isFinite(armazemId) && armazemId > 0 ? armazemId : null,
-        armazemLabel,
+        location: selected?.location || FALLBACK_LOCATION,
+        armazemId: selected ? Number(selected.id) : null,
+        armazemLabel: selected?.label || '',
       };
     } catch (_) {
       return { location: FALLBACK_LOCATION, armazemId: null, armazemLabel: '' };
     }
-  }, []);
+  }, [selectedArmazemId]);
 
   const fetchRows = useCallback(async () => {
     if (!canView) return;
@@ -358,7 +375,22 @@ function ReceptionMonitorCard() {
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">
             <h3 className="text-sm font-semibold text-gray-800">Zona de receção ({totalArtigosRececao})</h3>
-            {targetArmazemLabel ? (
+            {!collapsed && armazensDisponiveis.length > 1 ? (
+              <div className="mt-1">
+                <select
+                  value={selectedArmazemId}
+                  onChange={(e) => setSelectedArmazemId(e.target.value)}
+                  className="w-full rounded border border-indigo-200 bg-indigo-50 px-2 py-1 text-[11px] font-medium text-indigo-800"
+                  aria-label="Selecionar armazém da zona de receção"
+                >
+                  {armazensDisponiveis.map((opt) => (
+                    <option key={opt.id} value={opt.id}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            ) : targetArmazemLabel ? (
               <div className="mt-1">
                 <span className="inline-block max-w-full truncate rounded bg-indigo-50 px-2 py-0.5 text-[11px] font-medium text-indigo-700 border border-indigo-100">
                   {targetArmazemLabel}

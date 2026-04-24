@@ -11023,7 +11023,7 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
     try {
       if (isAdmin(req.user?.role)) {
         const all = await pool.query(
-          `SELECT a.id, a.codigo, a.descricao,
+          `SELECT a.id, a.codigo, a.descricao, a.tipo,
                   (
                     SELECT al.localizacao
                     FROM armazens_localizacoes al
@@ -11048,7 +11048,7 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
       if (!ids.length) return res.json({ rows: [] });
 
       const rows = await pool.query(
-        `SELECT a.id, a.codigo, a.descricao,
+        `SELECT a.id, a.codigo, a.descricao, a.tipo,
                 (
                   SELECT al.localizacao
                   FROM armazens_localizacoes al
@@ -11060,7 +11060,7 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
          FROM armazens a
          WHERE a.id = ANY($1::int[])
            AND LOWER(TRIM(COALESCE(a.tipo, ''))) IN ('central', 'apeado', 'apeados')
-         ORDER BY a.codigo ASC, a.descricao ASC`,
+           ORDER BY a.codigo ASC, a.descricao ASC`,
         [ids]
       );
       return res.json({ rows: rows.rows || [] });
