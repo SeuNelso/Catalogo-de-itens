@@ -30,7 +30,9 @@ const PesquisaComLeitorQr = ({
   id,
   fontMono = false,
   onKeyDown,
-  onFocus
+  onFocus,
+  onBlur,
+  inputProps = {}
 }) => {
   const baseInput = inputClassName || (showSearchIcon ? inputClassComIcone : inputClassSemIcone);
   const inputCn = [baseInput, fontMono ? 'font-mono' : ''].filter(Boolean).join(' ');
@@ -47,12 +49,14 @@ const PesquisaComLeitorQr = ({
           onChange={onChange}
           onKeyDown={onKeyDown}
           onFocus={onFocus}
+          onBlur={onBlur}
           placeholder={placeholder}
           disabled={disabled}
           className={inputCn}
           autoComplete={autoComplete}
           name={name}
           id={id}
+          {...inputProps}
         />
       </div>
       <button

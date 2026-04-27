@@ -10,6 +10,16 @@ const formatQuantidadeConsulta = (value) => {
   return String(num);
 };
 
+const formatLocalizacaoView = (value) => {
+  const text = String(value || '').trim();
+  return text ? text.toUpperCase() : '—';
+};
+
+const formatUpperView = (value) => {
+  const text = String(value || '').trim();
+  return text ? text.toUpperCase() : '—';
+};
+
 const StockRastreavel = ({ mode = 'all' }) => {
   const { user } = useAuth();
   const [arquivo, setArquivo] = useState(null);
@@ -98,6 +108,10 @@ const StockRastreavel = ({ mode = 'all' }) => {
     if (field === 'artigo_codigo') {
       setManualItemSelecionado(null);
       setManualItemDropdownOpen(true);
+    }
+    if (field === 'serialnumber' || field === 'lote') {
+      setManualForm((prev) => ({ ...prev, [field]: String(value || '').toUpperCase() }));
+      return;
     }
     setManualForm((prev) => ({ ...prev, [field]: value }));
   };
@@ -801,9 +815,9 @@ const StockRastreavel = ({ mode = 'all' }) => {
                           <div className="text-slate-500">{r.item_descricao || '—'}</div>
                         </td>
                         <td className="px-2 py-1 uppercase">{r.tipo || (r.serialnumber ? 'serial' : 'lote')}</td>
-                        <td className="px-2 py-1">{r.serialnumber || r.lote || '—'}</td>
+                        <td className="px-2 py-1">{formatUpperView(r.serialnumber || r.lote)}</td>
                         <td className="px-2 py-1">{formatQuantidadeConsulta(r.quantidade)}</td>
-                        <td className="px-2 py-1">{r.localizacao}</td>
+                        <td className="px-2 py-1">{formatLocalizacaoView(r.localizacao)}</td>
                         <td className="px-2 py-1">{r.caixa_codigo || '—'}</td>
                         <td className="px-2 py-1">{r.status}</td>
                       </tr>
@@ -888,10 +902,10 @@ const StockRastreavel = ({ mode = 'all' }) => {
                         <td className="px-2 py-1 uppercase">{r.tipo || (r.serialnumber ? 'serial' : 'lote')}</td>
                         <td className="px-2 py-1">{r.item_codigo}</td>
                         <td className="px-2 py-1">{r.item_descricao || '—'}</td>
-                        <td className="px-2 py-1">{r.serialnumber || '—'}</td>
-                        <td className="px-2 py-1">{r.lote || '—'}</td>
+                        <td className="px-2 py-1">{formatUpperView(r.serialnumber)}</td>
+                        <td className="px-2 py-1">{formatUpperView(r.lote)}</td>
                         <td className="px-2 py-1">{formatQuantidadeConsulta(r.quantidade)}</td>
-                        <td className="px-2 py-1">{r.localizacao}</td>
+                        <td className="px-2 py-1">{formatLocalizacaoView(r.localizacao)}</td>
                         <td className="px-2 py-1">{r.codigo_caixa || '—'}</td>
                         <td className="px-2 py-1">{r.status}</td>
                         <td className="px-2 py-1">{r.requisicao_id || '—'}</td>
@@ -935,15 +949,15 @@ const StockRastreavel = ({ mode = 'all' }) => {
           {serialData && (
             <div className="border border-slate-200 rounded overflow-hidden">
               <div className="p-2 bg-slate-50 text-xs text-slate-700">
-                {serialData.item_codigo} · {serialData.serialnumber}
+                {serialData.item_codigo} · {formatUpperView(serialData.serialnumber)}
               </div>
               <div className="p-3 text-xs grid grid-cols-1 sm:grid-cols-2 gap-2">
                 <div><strong>Armazém:</strong> {serialData.armazem_codigo ? `${serialData.armazem_codigo} - ` : ''}{serialData.armazem_descricao}</div>
-                <div><strong>Localização:</strong> {serialData.localizacao}</div>
+                <div><strong>Localização:</strong> {formatLocalizacaoView(serialData.localizacao)}</div>
                 <div><strong>Status:</strong> {serialData.status}</div>
                 <div><strong>Caixa:</strong> {serialData.codigo_caixa || '—'}</div>
                 <div><strong>Req:</strong> {serialData.requisicao_id || '—'}</div>
-                <div><strong>Lote:</strong> {serialData.lote || '—'}</div>
+                <div><strong>Lote:</strong> {formatUpperView(serialData.lote)}</div>
               </div>
             </div>
           )}
@@ -968,7 +982,7 @@ const StockRastreavel = ({ mode = 'all' }) => {
           {caixaData && (
             <div className="border border-slate-200 rounded overflow-hidden">
               <div className="p-2 bg-slate-50 text-xs text-slate-700">
-                Caixa: <strong>{caixaData.caixa?.codigo_caixa}</strong> · Artigo: <strong>{caixaData.caixa?.item_codigo}</strong> · Localização: <strong>{caixaData.caixa?.localizacao}</strong>
+                Caixa: <strong>{caixaData.caixa?.codigo_caixa}</strong> · Artigo: <strong>{caixaData.caixa?.item_codigo}</strong> · Localização: <strong>{formatLocalizacaoView(caixaData.caixa?.localizacao)}</strong>
               </div>
               <div className="max-h-64 overflow-auto">
                 <table className="min-w-full text-xs">
@@ -982,8 +996,8 @@ const StockRastreavel = ({ mode = 'all' }) => {
                   <tbody>
                     {(caixaData.seriais || []).map((s) => (
                       <tr key={s.id} className="border-b last:border-b-0">
-                        <td className="px-2 py-1">{s.serialnumber}</td>
-                        <td className="px-2 py-1">{s.lote || '—'}</td>
+                        <td className="px-2 py-1">{formatUpperView(s.serialnumber)}</td>
+                        <td className="px-2 py-1">{formatUpperView(s.lote)}</td>
                         <td className="px-2 py-1">{s.status}</td>
                       </tr>
                     ))}

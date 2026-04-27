@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown } from 'react-feather';
+import * as XLSX from 'xlsx';
 import Toast from '../components/Toast';
 import { useAuth } from '../contexts/AuthContext';
 
@@ -18,8 +19,8 @@ const DEFAULT_COLUMNS = [
   'Novo Armazém',
   'TRA / DEV',
   'New Localização',
-  'DEP',
   'Observações',
+  'DEP',
 ];
 
 const SN_COLUMN = 'S/N';
@@ -76,6 +77,28 @@ function destinoResumo(row) {
   return '—';
 }
 
+function armazemDescricaoPorId(armazens) {
+  const map = new Map();
+  for (const a of armazens || []) {
+    const id = Number(a?.id);
+    if (!Number.isFinite(id)) continue;
+    const descricao = String(a?.descricao || '').trim();
+    if (descricao) map.set(id, descricao);
+  }
+  return map;
+}
+
+function armazemDescricaoPorCodigo(armazens) {
+  const map = new Map();
+  for (const a of armazens || []) {
+    const codigo = String(a?.codigo || '').trim().toUpperCase();
+    const descricao = String(a?.descricao || '').trim();
+    if (!codigo || !descricao) continue;
+    map.set(codigo, descricao);
+  }
+  return map;
+}
+
 /** Conta critérios não vazios em `appliedFiltros` (o que foi aplicado na última consulta). */
 function countFiltrosAtivos(f) {
   if (!f) return 0;
@@ -117,6 +140,11 @@ const ConsultaMovimentos = () => {
   const [contextMenu, setContextMenu] = useState({ visible: false, x: 0, y: 0, row: null });
   const contextMenuRef = useRef(null);
   const [filtrosExpandido, setFiltrosExpandido] = useState(true);
+  const [exportMenuOpen, setExportMenuOpen] = useState(false);
+  const [exportCompleto, setExportCompleto] = useState(false);
+  const [exportDataInicio, setExportDataInicio] = useState('');
+  const [exportDataFim, setExportDataFim] = useState('');
+  const [exporting, setExporting] = useState(false);
   const pageSize = MOVIMENTOS_PAGE_SIZE;
   const [filtros, setFiltros] = useState({
     q: '',
@@ -222,13 +250,28 @@ const ConsultaMovimentos = () => {
     const carregarArmazens = async () => {
       try {
         const token = localStorage.getItem('token');
-        const response = await fetch('/api/requisicoes/stock/meus-armazens', {
+        const responseMeus = await fetch('/api/requisicoes/stock/meus-armazens', {
           headers: { Authorization: `Bearer ${token}` },
         });
-        if (!response.ok) return;
-        const data = await response.json().catch(() => ({}));
-        const rows = Array.isArray(data?.rows) ? data.rows : [];
-        setArmazens(rows);
+        const responseAll = await fetch('/api/armazens?ativo=true', {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+
+        const dataMeus = responseMeus.ok ? await responseMeus.json().catch(() => ({})) : {};
+        const dataAll = responseAll.ok ? await responseAll.json().catch(() => ({})) : {};
+        const rowsMeus = Array.isArray(dataMeus?.rows) ? dataMeus.rows : [];
+        const rowsAll = Array.isArray(dataAll?.armazens)
+          ? dataAll.armazens
+          : (Array.isArray(dataAll?.rows) ? dataAll.rows : []);
+
+        const merged = new Map();
+        for (const a of [...rowsAll, ...rowsMeus]) {
+          const id = Number(a?.id);
+          const key = Number.isFinite(id) ? `id:${id}` : `cod:${String(a?.codigo || '').trim().toUpperCase()}`;
+          if (!key || key === 'cod:') continue;
+          if (!merged.has(key)) merged.set(key, a);
+        }
+        setArmazens(Array.from(merged.values()));
       } catch (_) {
         // Sem bloquear a tela caso o endpoint esteja indisponível.
       }
@@ -247,6 +290,8 @@ const ConsultaMovimentos = () => {
 
   const visibleRows = useMemo(() => rows, [rows]);
   const nFiltrosAplicados = useMemo(() => countFiltrosAtivos(appliedFiltros), [appliedFiltros]);
+  const armazemDescById = useMemo(() => armazemDescricaoPorId(armazens), [armazens]);
+  const armazemDescByCodigo = useMemo(() => armazemDescricaoPorCodigo(armazens), [armazens]);
 
   const aplicarFiltros = () => {
     const next = { ...filtros };
@@ -254,6 +299,153 @@ const ConsultaMovimentos = () => {
     setOffset(0);
     setOffsetHistory([]);
     fetchMovimentos(next, 0);
+  };
+
+  const expandirLinhasParaExport = useCallback((rowsInput) => {
+    const baseRows = Array.isArray(rowsInput) ? rowsInput : [];
+    const linhas = [];
+    for (const row of baseRows) {
+      const serials = parseSeriaisMovimento(row?.[SN_COLUMN]);
+      const qtyNum = Number(row?.QTY);
+      const qtySign = Number.isFinite(qtyNum) && qtyNum < 0 ? -1 : 1;
+      if (serials.length > 1) {
+        for (const sn of serials) {
+          const out = {};
+          for (const c of columns) out[c] = row?.[c] ?? '';
+          out.QTY = qtySign;
+          out[SN_COLUMN] = sn;
+          linhas.push(out);
+        }
+        continue;
+      }
+      const out = {};
+      for (const c of columns) out[c] = row?.[c] ?? '';
+      linhas.push(out);
+    }
+    return linhas;
+  }, [columns]);
+
+  const baixarExcelMovimentos = useCallback((linhas, sufixo = '') => {
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.json_to_sheet(linhas, { header: columns });
+    XLSX.utils.book_append_sheet(wb, ws, 'Movimentos');
+    const dataHoje = new Date().toISOString().slice(0, 10);
+    const nome = sufixo ? `movimentos_clog_${sufixo}_${dataHoje}.xlsx` : `movimentos_clog_${dataHoje}.xlsx`;
+    XLSX.writeFile(wb, nome);
+  }, [columns]);
+
+  const exportarMovimentos = async () => {
+    try {
+      setExporting(true);
+      setToast(null);
+      const dataInicioNorm = normalizeDateFilterValue(exportDataInicio);
+      const dataFimNorm = normalizeDateFilterValue(exportDataFim);
+      if (dataInicioNorm && dataFimNorm && dataInicioNorm > dataFimNorm) {
+        setToast({ type: 'error', message: 'Período inválido: a data de início deve ser menor ou igual à data de fim.' });
+        return;
+      }
+      if (!exportCompleto) {
+        let sourceRows = visibleRows;
+        if (dataInicioNorm || dataFimNorm) {
+          sourceRows = visibleRows.filter((row) => {
+            const s = String(row?.['Dt_Recepção'] || '').trim();
+            const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(s);
+            if (!m) return false;
+            const iso = `${m[3]}-${m[2]}-${m[1]}`;
+            if (dataInicioNorm && iso < dataInicioNorm) return false;
+            if (dataFimNorm && iso > dataFimNorm) return false;
+            return true;
+          });
+        }
+        if (!sourceRows.length) {
+          setToast({ type: 'error', message: 'Não há movimentos na lista para exportar.' });
+          return;
+        }
+        const linhas = expandirLinhasParaExport(sourceRows);
+        baixarExcelMovimentos(linhas);
+        return;
+      }
+
+      const targetFiltros = { ...(appliedFiltros || filtros) };
+      delete targetFiltros.data_inicio;
+      delete targetFiltros.data_fim;
+      if (dataInicioNorm) targetFiltros.data_inicio = dataInicioNorm;
+      if (dataFimNorm) targetFiltros.data_fim = dataFimNorm;
+
+      if (!String(targetFiltros.armazem_id || '').trim() && !String(targetFiltros.armazem || '').trim()) {
+        setToast({
+          type: 'error',
+          message: 'No modo Completo, selecione um armazém (ou filtre por armazém) antes de exportar.',
+        });
+        return;
+      }
+
+      const token = localStorage.getItem('token');
+      const allRows = [];
+      const seen = new Set();
+      let next = 0;
+      let loops = 0;
+      const maxLoops = 400;
+      const visitedOffsets = new Set();
+
+      while (next !== null && loops < maxLoops) {
+        if (visitedOffsets.has(next)) break;
+        visitedOffsets.add(next);
+        const currentOffset = next;
+        const params = new URLSearchParams();
+        Object.entries(targetFiltros || {}).forEach(([k, v]) => {
+          if (typeof v === 'boolean') {
+            if (k === 'minhas' && v) params.set('minhas', '1');
+            return;
+          }
+          if (k === 'data_inicio' || k === 'data_fim') {
+            const normalized = normalizeDateFilterValue(v);
+            if (normalized) params.set(k, normalized);
+            return;
+          }
+          if (String(v || '').trim()) params.set(k, String(v).trim());
+        });
+        params.set('page_size', String(MOVIMENTOS_PAGE_SIZE));
+        params.set('offset', String(next));
+        const response = await fetch(`/api/requisicoes/movimentos-clog/consulta?${params.toString()}`, {
+          headers: { Authorization: `Bearer ${token}` },
+          cache: 'no-store',
+        });
+        if (!response.ok) {
+          const data = await response.json().catch(() => ({}));
+          throw new Error(data.error || 'Erro ao consultar movimentos para exportação completa');
+        }
+        const data = await response.json().catch(() => ({}));
+        const batch = Array.isArray(data?.rows) ? data.rows : [];
+        for (const row of batch) {
+          const k = String(row?.mov_id || '') || JSON.stringify(row);
+          if (seen.has(k)) continue;
+          seen.add(k);
+          allRows.push(row);
+        }
+        const nextOffset = Number.isFinite(Number(data?.next_offset)) ? Number(data.next_offset) : null;
+        if (nextOffset === null || nextOffset <= currentOffset || visitedOffsets.has(nextOffset)) {
+          next = null;
+        } else {
+          next = nextOffset;
+        }
+        loops += 1;
+      }
+
+      if (!allRows.length) {
+        setToast({ type: 'error', message: 'Não foram encontrados movimentos para exportação completa.' });
+        return;
+      }
+      const linhas = expandirLinhasParaExport(allRows);
+      const sufixo = dataInicioNorm || dataFimNorm
+        ? `completo_${dataInicioNorm || 'sem-inicio'}_${dataFimNorm || 'sem-fim'}`
+        : 'completo';
+      baixarExcelMovimentos(linhas, sufixo);
+    } catch (e) {
+      setToast({ type: 'error', message: e.message || 'Erro ao exportar movimentos' });
+    } finally {
+      setExporting(false);
+    }
   };
 
   const irProximaPagina = () => {
@@ -564,6 +756,68 @@ const ConsultaMovimentos = () => {
                 >
                   Limpar
                 </button>
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setExportMenuOpen((v) => !v)}
+                    className="rounded-lg border border-emerald-300 px-4 py-2 text-sm text-emerald-700 hover:bg-emerald-50"
+                  >
+                    Exportar
+                  </button>
+                  {exportMenuOpen && (
+                    <div className="mt-2 w-full min-w-[280px] rounded-lg border border-gray-200 bg-gray-50 p-3">
+                      <div className="space-y-3">
+                        <label className="inline-flex items-center gap-2 text-sm text-gray-700">
+                          <input
+                            type="checkbox"
+                            checked={exportCompleto}
+                            onChange={(e) => setExportCompleto(e.target.checked)}
+                          />
+                          Completo
+                        </label>
+                        <div className="grid grid-cols-2 gap-2">
+                          <label className="text-xs text-gray-600">
+                            Início
+                            <input
+                              type="date"
+                              value={exportDataInicio}
+                              onChange={(e) => setExportDataInicio(e.target.value)}
+                              className="mt-1 w-full rounded-lg border border-gray-300 px-2 py-1.5 text-sm"
+                              title="Opcional: data de início do período"
+                            />
+                          </label>
+                          <label className="text-xs text-gray-600">
+                            Fim
+                            <input
+                              type="date"
+                              value={exportDataFim}
+                              onChange={(e) => setExportDataFim(e.target.value)}
+                              className="mt-1 w-full rounded-lg border border-gray-300 px-2 py-1.5 text-sm"
+                              title="Opcional: data de fim do período"
+                            />
+                          </label>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={exportarMovimentos}
+                            disabled={loading || exporting || (!exportCompleto && visibleRows.length === 0)}
+                            className="rounded-lg border border-emerald-300 px-3 py-2 text-sm text-emerald-700 hover:bg-emerald-50 disabled:opacity-50"
+                          >
+                            {exporting ? 'A exportar...' : 'Baixar Excel'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setExportMenuOpen(false)}
+                            className="rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                          >
+                            Fechar
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
                 <span className="text-sm text-gray-600">Linhas nesta página: {total}</span>
                 <span className="text-xs text-gray-500">Offset: {offset}</span>
               </div>
@@ -669,10 +923,18 @@ const ConsultaMovimentos = () => {
                   })()}
                 </div>
                 <div className="line-clamp-2 min-w-0 break-words text-[11px] font-medium leading-snug text-gray-800">
-                  {cellOrDash(row, 'Loc_Inicial')}
+                  {String(row?.armazem_origem_descricao || '').trim() ||
+                    armazemDescById.get(Number(row?.armazem_origem_id)) ||
+                    armazemDescByCodigo.get(String(row?.armazem_origem_codigo || '').trim().toUpperCase()) ||
+                    armazemDescByCodigo.get(String(row?.Loc_Inicial || '').trim().toUpperCase()) ||
+                    cellOrDash(row, 'Loc_Inicial')}
                 </div>
                 <div className="line-clamp-2 min-w-0 break-words text-[11px] font-medium leading-snug text-gray-800">
-                  {destinoResumo(row)}
+                  {String(row?.armazem_destino_descricao || '').trim() ||
+                    armazemDescById.get(Number(row?.armazem_id)) ||
+                    armazemDescByCodigo.get(String(row?.armazem_destino_codigo || '').trim().toUpperCase()) ||
+                    armazemDescByCodigo.get(String(row?.['Novo Armazém'] || '').trim().toUpperCase()) ||
+                    destinoResumo(row)}
                 </div>
                 <div className="line-clamp-2 min-w-0 break-words text-[10px] font-mono font-semibold leading-snug text-indigo-800">
                   {cellOrDash(row, 'TRA / DEV')}

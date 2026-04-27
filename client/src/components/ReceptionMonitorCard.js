@@ -88,7 +88,7 @@ function ReceptionMonitorCard() {
   const [targetArmazemLabel, setTargetArmazemLabel] = useState('');
   const [armazensDisponiveis, setArmazensDisponiveis] = useState([]);
   const [selectedArmazemId, setSelectedArmazemId] = useState('');
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(true);
   const [totalArtigosRececao, setTotalArtigosRececao] = useState(0);
   const [showAtualizado, setShowAtualizado] = useState(false);
   const hideAtualizadoTimerRef = useRef(null);

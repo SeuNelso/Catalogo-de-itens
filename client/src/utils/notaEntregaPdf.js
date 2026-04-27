@@ -62,6 +62,60 @@ function quantidadeComoDigitada(value) {
   return raw;
 }
 
+function calcAdaptiveWidth(doc, values, { min = 36, max = 84, padding = 8 } = {}) {
+  let width = min;
+  for (const value of values) {
+    const text = String(value || '');
+    width = Math.max(width, doc.getTextWidth(text) + padding);
+  }
+  return Math.min(max, width);
+}
+
+function calcNotaTableColumnWidths(doc, body, tableWidth) {
+  const colValues = (idx, header) => body.map((row) => row[idx]).concat([header]);
+  const widths = {
+    linha: calcAdaptiveWidth(doc, colValues(0, 'Linha'), { min: 24, max: 34, padding: 7 }),
+    codigo: calcAdaptiveWidth(doc, colValues(1, 'Cód.'), { min: 38, max: 62, padding: 8 }),
+    qtd: calcAdaptiveWidth(doc, colValues(3, 'Qtd.'), { min: 26, max: 40, padding: 7 }),
+    serie: calcAdaptiveWidth(doc, colValues(4, 'N.º série'), { min: 44, max: 96, padding: 8 }),
+    lote: calcAdaptiveWidth(doc, colValues(5, 'Lote'), { min: 38, max: 96, padding: 8 }),
+    desc: 0,
+    obs: 0,
+  };
+
+  const minDesc = 120;
+  const minObs = 78;
+  const minVariable = minDesc + minObs;
+  let fixed = widths.linha + widths.codigo + widths.qtd + widths.serie + widths.lote;
+  let remaining = tableWidth - fixed;
+
+  if (remaining < minVariable) {
+    const shrinkPlan = [
+      ['serie', 44],
+      ['lote', 36],
+      ['codigo', 36],
+      ['linha', 22],
+      ['qtd', 24],
+    ];
+    let deficit = minVariable - remaining;
+    for (const [key, min] of shrinkPlan) {
+      if (deficit <= 0) break;
+      const canShrink = Math.max(0, widths[key] - min);
+      if (canShrink <= 0) continue;
+      const use = Math.min(canShrink, deficit);
+      widths[key] -= use;
+      deficit -= use;
+    }
+    fixed = widths.linha + widths.codigo + widths.qtd + widths.serie + widths.lote;
+    remaining = Math.max(140, tableWidth - fixed);
+  }
+
+  const descTarget = Math.max(minDesc, Math.round(remaining * 0.62));
+  widths.desc = Math.min(remaining - minObs, descTarget);
+  widths.obs = remaining - widths.desc;
+  return widths;
+}
+
 export function buildLinhasProdutoTableBody(req) {
   const itens = Array.isArray(req?.itens) ? req.itens : [];
   const body = [];
@@ -247,8 +301,10 @@ export function desenharPaginaNotaEntregaDigi(doc, req, opts = {}) {
   y += 10;
 
   const body = buildLinhasProdutoTableBody(req);
+  const tableWidth = pageWidth - 2 * MARGIN;
+  const colW = calcNotaTableColumnWidths(doc, body, tableWidth);
 
-  // Cabeçalhos curtos + larguras fixas evitam quebra de linha no título das colunas
+  // Mantém colunas técnicas compactas e ajusta S/N + Lote ao conteúdo.
   autoTable(doc, {
     startY: y,
     head: [['Linha', 'Cód.', 'Descrição', 'Qtd.', 'N.º série', 'Lote', 'Observações']],
@@ -273,14 +329,16 @@ export function desenharPaginaNotaEntregaDigi(doc, req, opts = {}) {
     bodyStyles: { textColor: [20, 20, 20], valign: 'top' },
     theme: 'grid',
     margin: { left: MARGIN, right: MARGIN },
-    tableWidth: pageWidth - 2 * MARGIN,
-    // Larguras mistas: colunas técnicas fixas e descrição/observações fluídas para layout mais orgânico.
+    tableWidth,
+    // Larguras adaptativas em todas as colunas, respeitando o limite da página.
     columnStyles: {
-      0: { cellWidth: 30, halign: 'center' },
-      1: { cellWidth: 46, halign: 'left' },
-      3: { cellWidth: 32, halign: 'right' },
-      4: { cellWidth: 58, halign: 'center' },
-      5: { cellWidth: 42, halign: 'left' }
+      0: { cellWidth: colW.linha, halign: 'center' },
+      1: { cellWidth: colW.codigo, halign: 'left' },
+      2: { cellWidth: colW.desc, overflow: 'linebreak' },
+      3: { cellWidth: colW.qtd, halign: 'right' },
+      4: { cellWidth: colW.serie, halign: 'center', overflow: 'linebreak' },
+      5: { cellWidth: colW.lote, halign: 'left', overflow: 'linebreak' },
+      6: { cellWidth: colW.obs, overflow: 'linebreak' }
     },
     didParseCell: (hookData) => {
       if (hookData.section === 'head') {

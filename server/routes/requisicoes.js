@@ -3375,7 +3375,11 @@ router.get('/:id/export-tra', ...requisicaoAuth, denyOperador, async (req, res) 
       const qty = parseInt(qtyBase, 10) || 0;
       if (qty <= 0) continue;
       if (tipoControlo === 'S/N') {
-        const serials = serialsNormalizadosList(ri.serialnumber);
+        // Para TRA, preferir os seriais recolhidos persistidos (tabela dedicada)
+        // e cair para o campo legado quando necessário.
+        // Objetivo: 1 linha por serial com quantidade 1.
+        // eslint-disable-next-line no-await-in-loop
+        const serials = await serialsRecolhidosRequisicaoItem(pool, ri.id, ri);
         if (serials.length > 0) {
           for (const sn of serials) {
             rows.push({
@@ -4183,6 +4187,30 @@ router.post('/export-tra-multi', ...requisicaoAuth, denyOperador, async (req, re
           : ri.quantidade;
         const qty = parseInt(qtyBase, 10) || 0;
         if (qty <= 0) continue;
+        if (tipoControlo === 'S/N') {
+          // eslint-disable-next-line no-await-in-loop
+          const serials = await serialsRecolhidosRequisicaoItem(pool, ri.id, ri);
+          if (serials.length > 0) {
+            for (const sn of serials) {
+              rows.push({
+                Date: dateStr,
+                OriginWarehouse: codigoOrigem,
+                OriginLocation: localizacaoOrigemTRA,
+                Article: String(ri.item_codigo || ''),
+                Quatity: 1,
+                SerialNumber1: sn, SerialNumber2: '', MacAddress: '', CentroCusto: '',
+                DestinationWarehouse: codigoDestino,
+                DestinationLocation:
+                  tipoDestNormMulti === 'central'
+                    ? localizacaoDestinoRecebimentoMulti
+                    : (ri.is_ferramenta ? localizacaoFERR : localizacaoNormal),
+                ProjectCode: '',
+                Batch: ri.lote || ''
+              });
+            }
+            continue;
+          }
+        }
 
         rows.push({
           Date: dateStr,
@@ -5183,8 +5211,48 @@ router.get('/movimentos-clog/consulta', ...requisicaoAuth, denyOperador, async (
     const startOffset = Number.isFinite(startOffsetRaw) ? Math.max(0, startOffsetRaw) : 0;
     const reqBatchSize = 200;
     const maxBatches = 25;
-    const columns = ['Tipo de Movimento', 'Dt_Recepção', 'REF.', 'DESCRIPTION', 'QTY', 'Loc_Inicial', 'S/N', 'Lote', 'Novo Armazém', 'TRA / DEV', 'New Localização', 'DEP', 'Observações'];
+    const columns = ['Tipo de Movimento', 'Dt_Recepção', 'REF.', 'DESCRIPTION', 'QTY', 'Loc_Inicial', 'S/N', 'Lote', 'Novo Armazém', 'TRA / DEV', 'New Localização', 'Observações', 'DEP'];
     const allowedScopeIds = Array.isArray(req.requisicaoArmazemOrigemIds) ? req.requisicaoArmazemOrigemIds : [];
+
+    const anexarDescricaoArmazens = async (rowsIn) => {
+      const rowsList = Array.isArray(rowsIn) ? rowsIn : [];
+      if (!rowsList.length) return rowsList;
+      const reqIds = [...new Set(
+        rowsList
+          .map((r) => Number(r?.requisicao_id || 0))
+          .filter((n) => Number.isFinite(n) && n > 0)
+      )];
+      if (!reqIds.length) return rowsList;
+      const metaQ = await pool.query(
+        `SELECT r.id,
+                r.armazem_origem_id,
+                r.armazem_id,
+                ao.codigo AS armazem_origem_codigo,
+                ao.descricao AS armazem_origem_descricao,
+                ad.codigo AS armazem_destino_codigo,
+                ad.descricao AS armazem_destino_descricao
+         FROM requisicoes r
+         LEFT JOIN armazens ao ON ao.id = r.armazem_origem_id
+         LEFT JOIN armazens ad ON ad.id = r.armazem_id
+         WHERE r.id = ANY($1::int[])`,
+        [reqIds]
+      );
+      const byReqId = new Map((metaQ.rows || []).map((m) => [Number(m.id), m]));
+      return rowsList.map((row) => {
+        const rid = Number(row?.requisicao_id || 0);
+        const meta = byReqId.get(rid);
+        if (!meta) return row;
+        return {
+          ...row,
+          armazem_origem_id: row?.armazem_origem_id ?? meta.armazem_origem_id ?? null,
+          armazem_id: row?.armazem_id ?? meta.armazem_id ?? null,
+          armazem_origem_codigo: row?.armazem_origem_codigo || meta.armazem_origem_codigo || '',
+          armazem_destino_codigo: row?.armazem_destino_codigo || meta.armazem_destino_codigo || '',
+          armazem_origem_descricao: row?.armazem_origem_descricao || meta.armazem_origem_descricao || '',
+          armazem_destino_descricao: row?.armazem_destino_descricao || meta.armazem_destino_descricao || '',
+        };
+      });
+    };
 
     if (!isAdmin(req.user?.role) && armazemIdFiltro && !allowedScopeIds.includes(armazemIdFiltro)) {
       return res.status(403).json({ error: 'Armazém fora do escopo do utilizador.' });
@@ -5378,15 +5446,13 @@ router.get('/movimentos-clog/consulta', ...requisicaoAuth, denyOperador, async (
         if (reqA !== reqB) return reqB - reqA;
         return 0;
       });
-      const outRowsComTraApeados = await normalizarTraDevTransfApeado(outRows);
+      const outRowsComMeta = await anexarDescricaoArmazens(outRows);
+      const outRowsComTraApeados = await normalizarTraDevTransfApeado(outRowsComMeta);
       const outRowsClean = (await normalizarObservacoesConsultaMovimentos(outRowsComTraApeados)).map(
         ({
           __ordem_movimento,
           mov_id,
           requisicao_id,
-          usuario_id,
-          armazem_origem_id,
-          armazem_id,
           armazem_origem_tipo,
           armazem_destino_tipo,
           __req_sort_ts,
@@ -5610,7 +5676,8 @@ router.get('/movimentos-clog/consulta', ...requisicaoAuth, denyOperador, async (
       if (reqA !== reqB) return reqB - reqA;
       return 0;
     });
-    const outRowsComTraApeados = await normalizarTraDevTransfApeado(outRows);
+    const outRowsComMeta = await anexarDescricaoArmazens(outRows);
+    const outRowsComTraApeados = await normalizarTraDevTransfApeado(outRowsComMeta);
     const outRowsClean = (await normalizarObservacoesConsultaMovimentos(outRowsComTraApeados)).map(
       ({ __ordem_movimento, __req_sort_ts, ...rest }) => rest
     );
@@ -5649,7 +5716,7 @@ router.patch('/movimentos-clog/linha', ...requisicaoAuth, denyOperador, async (r
     }
     const allowed = new Set([
       'Tipo de Movimento', 'Dt_Recepção', 'REF.', 'DESCRIPTION', 'QTY', 'Loc_Inicial', 'S/N',
-      'Lote', 'Novo Armazém', 'TRA / DEV', 'New Localização', 'DEP', 'Observações'
+      'Lote', 'Novo Armazém', 'TRA / DEV', 'New Localização', 'Observações', 'DEP'
     ]);
     const cleanPatch = {};
     for (const [k, v] of Object.entries(patchIn)) {
@@ -5995,7 +6062,7 @@ router.get('/:id/clog-dados', ...requisicaoAuth, denyOperador, async (req, res) 
     }
 
     const rowsModal = (rows || []).map((r) => ({ ...r, Observações: '' }));
-    const columns = ['Tipo de Movimento', 'Dt_Recepção', 'REF.', 'DESCRIPTION', 'QTY', 'Loc_Inicial', 'S/N', 'Lote', 'Novo Armazém', 'TRA / DEV', 'New Localização', 'DEP', 'Observações'];
+    const columns = ['Tipo de Movimento', 'Dt_Recepção', 'REF.', 'DESCRIPTION', 'QTY', 'Loc_Inicial', 'S/N', 'Lote', 'Novo Armazém', 'TRA / DEV', 'New Localização', 'Observações', 'DEP'];
     res.json({ columns, rows: rowsModal });
   } catch (error) {
     console.error('Erro ao obter dados do Clog:', error);
@@ -6029,7 +6096,7 @@ router.post('/clog-dados-multi', ...requisicaoAuth, denyOperador, async (req, re
     }
 
     const rowsModal = (allRows || []).map((r) => ({ ...r, Observações: '' }));
-    const columns = ['Tipo de Movimento', 'Dt_Recepção', 'REF.', 'DESCRIPTION', 'QTY', 'Loc_Inicial', 'S/N', 'Lote', 'Novo Armazém', 'TRA / DEV', 'New Localização', 'DEP', 'Observações'];
+    const columns = ['Tipo de Movimento', 'Dt_Recepção', 'REF.', 'DESCRIPTION', 'QTY', 'Loc_Inicial', 'S/N', 'Lote', 'Novo Armazém', 'TRA / DEV', 'New Localização', 'Observações', 'DEP'];
     res.json({ columns, rows: rowsModal });
   } catch (error) {
     console.error('Erro ao obter dados do Clog multi:', error);
@@ -10802,8 +10869,8 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
       const armazemId = Number(req.body?.armazem_id || 0) || null;
       const localizacao = String(req.body?.localizacao || '').trim();
       const modo = String(req.body?.modo || 'serial').trim().toLowerCase();
-      const serialnumber = String(req.body?.serialnumber || '').trim();
-      const lote = String(req.body?.lote || '').trim() || null;
+      const serialnumber = String(req.body?.serialnumber || '').trim().toUpperCase();
+      const lote = String(req.body?.lote || '').trim().toUpperCase() || null;
       const caixaCodigo = String(req.body?.caixa_codigo || '').trim();
       const quantidadeLote = Number(req.body?.quantidade || 0);
 
@@ -10841,7 +10908,7 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
       let itemDescricao = '';
       if (!itemId) {
         const itemQ = await client.query(
-          'SELECT id, codigo, descricao FROM itens WHERE codigo = $1 LIMIT 1',
+          'SELECT id, codigo, descricao FROM itens WHERE UPPER(TRIM(codigo::text)) = UPPER(TRIM($1::text)) LIMIT 1',
           [artigoCodigo]
         );
         if (!itemQ.rows.length) {
@@ -10996,7 +11063,10 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
           `SELECT id, serialnumber, lote
            FROM stock_serial
            WHERE item_id = $1 AND armazem_id = $2
-             AND ($3 = '' OR localizacao = $3)
+             AND (
+               $3 = ''
+               OR UPPER(TRIM(localizacao)) = UPPER(TRIM($3::text))
+             )
              AND status = 'disponivel'
            ORDER BY serialnumber`,
           [itemId, armazemId, localizacao]
@@ -11005,7 +11075,10 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
           `SELECT id, lote, quantidade_disponivel, quantidade_reservada
            FROM stock_lote
            WHERE item_id = $1 AND armazem_id = $2
-             AND ($3 = '' OR localizacao = $3)
+             AND (
+               $3 = ''
+               OR UPPER(TRIM(localizacao)) = UPPER(TRIM($3::text))
+             )
            ORDER BY lote`,
           [itemId, armazemId, localizacao]
         ),
@@ -11501,7 +11574,7 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
          INNER JOIN armazens a ON a.id = s.armazem_id
          LEFT JOIN stock_caixa_seriais cs ON cs.stock_serial_id = s.id
          LEFT JOIN stock_caixas c ON c.id = cs.caixa_id
-         WHERE s.serialnumber = $1${whereArmazem}
+        WHERE UPPER(TRIM(s.serialnumber)) = UPPER(TRIM($1::text))${whereArmazem}
          ORDER BY s.atualizado_em DESC
          LIMIT 1`,
         params

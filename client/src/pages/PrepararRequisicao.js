@@ -74,6 +74,12 @@ const normPrepLocBusca = (v) =>
     .toLowerCase()
     .trim();
 
+const findLocationMatch = (locations, input) => {
+  const typed = normPrepLocBusca(input);
+  if (!typed) return '';
+  return (locations || []).find((loc) => normPrepLocBusca(loc) === typed) || '';
+};
+
 const formatMetrosSemZeros = (value) => {
   const num = Number(value);
   if (!Number.isFinite(num)) return String(value || '');
@@ -130,7 +136,7 @@ const PrepararRequisicao = () => {
     bobinas: [] // itens controlados por LOTE ou S/N
   });
   const [showQrScanner, setShowQrScanner] = useState(false);
-  const [prepLocBusca, setPrepLocBusca] = useState('');
+  const [locOrigemSugestoesOpen, setLocOrigemSugestoesOpen] = useState(false);
   const [serialScannerIdx, setSerialScannerIdx] = useState(null);
   const [serialScannerContinuous, setSerialScannerContinuous] = useState(false);
   const [showCaixaScanner, setShowCaixaScanner] = useState(false);
@@ -990,7 +996,6 @@ const PrepararRequisicao = () => {
   };
 
   const fecharPrepararItem = () => {
-    setPrepLocBusca('');
     setItemPreparando(null);
     setSerialRapidoCameraOpen(false);
     setSnPagina(1);
@@ -1138,11 +1143,21 @@ const PrepararRequisicao = () => {
       if (!ok) return;
     }
 
-    const locOrigem = isFluxoRecebimentoMercadoria
+    const locOrigemDigitada = isFluxoRecebimentoMercadoria
       ? ''
       : ((formItem.localizacao_origem === '_custom_' ? formItem.localizacao_origem_custom : formItem.localizacao_origem)?.trim() || '');
-    if (!isFluxoRecebimentoMercadoria && !isZero && !locOrigem) {
+    const locOrigem = isFluxoRecebimentoMercadoria
+      ? ''
+      : findLocationMatch(locsOrigemParaPreparacao, locOrigemDigitada);
+    if (!isFluxoRecebimentoMercadoria && !isZero && !locOrigemDigitada) {
       setToast({ type: 'error', message: 'A localização de saída (onde está saindo) é obrigatória.' });
+      return;
+    }
+    if (!isFluxoRecebimentoMercadoria && !isZero && !locOrigem) {
+      setToast({
+        type: 'error',
+        message: 'A localização informada não existe neste armazém. Selecione uma localização existente.'
+      });
       return;
     }
 
@@ -1431,11 +1446,17 @@ const PrepararRequisicao = () => {
     return filtradas;
   }, [armazemOrigem, preparacaoStockLoc, itemPreparando?.localizacao_origem, user]);
 
+  const localizacaoOrigemInput = useMemo(() => (
+    formItem.localizacao_origem === '_custom_'
+      ? String(formItem.localizacao_origem_custom || '')
+      : String(formItem.localizacao_origem || '')
+  ), [formItem.localizacao_origem, formItem.localizacao_origem_custom]);
+
   const locsOrigemSelectFiltradas = useMemo(() => {
-    const q = normPrepLocBusca(prepLocBusca);
+    const q = normPrepLocBusca(localizacaoOrigemInput);
     if (!q) return locsOrigemParaPreparacao;
     return locsOrigemParaPreparacao.filter((loc) => normPrepLocBusca(loc).includes(q));
-  }, [locsOrigemParaPreparacao, prepLocBusca]);
+  }, [locsOrigemParaPreparacao, localizacaoOrigemInput]);
 
   const locOrigemPreparacaoAtual = useMemo(() => (
     formItem.localizacao_origem === '_custom_'
@@ -1443,9 +1464,14 @@ const PrepararRequisicao = () => {
       : String(formItem.localizacao_origem || '').trim()
   ), [formItem.localizacao_origem, formItem.localizacao_origem_custom]);
 
+  const locOrigemPreparacaoCanonica = useMemo(
+    () => findLocationMatch(locsOrigemParaPreparacao, locOrigemPreparacaoAtual),
+    [locsOrigemParaPreparacao, locOrigemPreparacaoAtual]
+  );
+
   useEffect(() => {
     const tipoControlo = String(itemPreparando?.tipocontrolo || '').toUpperCase();
-    if (tipoControlo !== 'LOTE' || !itemPreparando?.item_id || !armazemOrigem?.id || !locOrigemPreparacaoAtual) {
+    if (tipoControlo !== 'LOTE' || !itemPreparando?.item_id || !armazemOrigem?.id || !locOrigemPreparacaoCanonica) {
       setLotesDisponiveisPrep([]);
       setLoadingLotesPrep(false);
       return;
@@ -1459,7 +1485,7 @@ const PrepararRequisicao = () => {
         const p = new URLSearchParams();
         p.set('item_id', itemPreparando.item_id);
         p.set('armazem_id', armazemOrigem.id);
-        p.set('localizacao', locOrigemPreparacaoAtual);
+        p.set('localizacao', locOrigemPreparacaoCanonica);
         const response = await fetch(`/api/requisicoes/stock/disponibilidade?${p.toString()}`, {
           headers: { Authorization: `Bearer ${token}` },
         });
@@ -1481,7 +1507,7 @@ const PrepararRequisicao = () => {
     return () => {
       active = false;
     };
-  }, [itemPreparando?.item_id, itemPreparando?.tipocontrolo, armazemOrigem?.id, locOrigemPreparacaoAtual]);
+  }, [itemPreparando?.item_id, itemPreparando?.tipocontrolo, armazemOrigem?.id, locOrigemPreparacaoCanonica]);
 
   const aplicarLoteNaBobina = (idxBob, loteSelecionado) => {
     const loteNormalizado = String(loteSelecionado || '').trim();
@@ -1503,7 +1529,7 @@ const PrepararRequisicao = () => {
   };
 
   useEffect(() => {
-    setPrepLocBusca('');
+    setLocOrigemSugestoesOpen(false);
   }, [itemPreparando?.id]);
 
   if (loading) {
@@ -2289,7 +2315,7 @@ const PrepararRequisicao = () => {
                                   <p className="mt-1 text-[11px] text-gray-500">
                                     {loadingLotesPrep
                                       ? 'A carregar lotes disponíveis...'
-                                      : locOrigemPreparacaoAtual
+                                      : locOrigemPreparacaoCanonica
                                         ? 'Ao selecionar um lote disponível, a metragem será preenchida automaticamente.'
                                         : 'Selecione primeiro a localização de saída para ver os lotes disponíveis.'}
                                   </p>
@@ -2859,68 +2885,83 @@ const PrepararRequisicao = () => {
                         )}
                         {locsOrigem.length > 0 ? (
                           <>
-                            <div className="mb-2">
+                            <div className="relative">
                               <PesquisaComLeitorQr
-                                value={prepLocBusca}
-                                onChange={(e) => setPrepLocBusca(e.target.value)}
-                                placeholder="Filtrar ou ler localização de saída…"
+                                value={localizacaoOrigemInput}
+                                onChange={(e) => {
+                                  const typed = String(e.target.value || '');
+                                  const match = findLocationMatch(locsOrigemParaPreparacao, typed);
+                                  setFormItem((prev) => ({
+                                    ...prev,
+                                    localizacao_origem: match || typed,
+                                    localizacao_origem_custom: ''
+                                  }));
+                                  setLocOrigemSugestoesOpen(true);
+                                }}
+                                onFocus={() => setLocOrigemSugestoesOpen(true)}
+                                onBlur={() => setTimeout(() => setLocOrigemSugestoesOpen(false), 120)}
+                                placeholder="Filtrar, selecionar ou ler localização de saída"
                                 onLerClick={() => setShowQrScanner(true)}
                                 lerTitle="Ler QR ou código de barras da localização"
-                                lerAriaLabel="Ler QR ou código de barras da localização de saída"
+                                lerAriaLabel="Ler localização de saída"
                               />
+                              {locOrigemSugestoesOpen && locsOrigemSelectFiltradas.length > 0 && (
+                                <div className="absolute z-30 mt-1 w-full rounded-lg border border-gray-200 bg-white shadow-lg max-h-56 overflow-auto">
+                                  {locsOrigemSelectFiltradas.slice(0, 14).map((loc, i) => {
+                                    let label = loc;
+                                    if (preparacaoStockLoc.filtroAtivo) {
+                                      const r = preparacaoStockLoc.porLocalizacao.find(
+                                        (x) => String(x.localizacao || '').trim() === String(loc).trim()
+                                      );
+                                      if (r && Number(r.quantidade) > 0) {
+                                        label = `${loc} (${Number(r.quantidade)} disp.)`;
+                                      }
+                                    }
+                                    return (
+                                      <button
+                                        key={`origem-sug-${loc}-${i}`}
+                                        type="button"
+                                        onMouseDown={(e) => {
+                                          e.preventDefault();
+                                          setFormItem((prev) => ({
+                                            ...prev,
+                                            localizacao_origem: loc,
+                                            localizacao_origem_custom: ''
+                                          }));
+                                          setLocOrigemSugestoesOpen(false);
+                                        }}
+                                        className="w-full text-left px-3 py-2 text-sm hover:bg-gray-50 border-b border-gray-100 last:border-b-0"
+                                      >
+                                        {label}
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              )}
                             </div>
-                            <select
-                              value={formItem.localizacao_origem}
-                              onChange={(e) => setFormItem((prev) => ({ ...prev, localizacao_origem: e.target.value }))}
-                              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0915FF]"
-                              required
-                            >
-                              <option value="">Selecione a localização...</option>
-                              {locsOrigemSelectFiltradas.map((loc, i) => {
-                                let label = loc;
-                                if (preparacaoStockLoc.filtroAtivo) {
-                                  const r = preparacaoStockLoc.porLocalizacao.find(
-                                    (x) => String(x.localizacao || '').trim() === String(loc).trim()
-                                  );
-                                  if (r && Number(r.quantidade) > 0) {
-                                    label = `${loc} (${Number(r.quantidade)} disp.)`;
-                                  }
-                                }
-                                return (
-                                  <option key={`${loc}-${i}`} value={loc}>
-                                    {label}
-                                  </option>
-                                );
-                              })}
-                              {!preparacaoStockLoc.filtroAtivo && <option value="_custom_">Outra (digite)</option>}
-                            </select>
                             {locsOrigemParaPreparacao.length > 0 && locsOrigemSelectFiltradas.length === 0 && (
                               <p className="text-[11px] text-amber-800 mt-1">Nenhuma localização corresponde ao filtro.</p>
                             )}
-                            {formItem.localizacao_origem === '_custom_' && (
-                              <div className="mt-2">
-                                <PesquisaComLeitorQr
-                                  value={formItem.localizacao_origem_custom}
-                                  onChange={(e) =>
-                                    setFormItem((prev) => ({ ...prev, localizacao_origem_custom: e.target.value }))
-                                  }
-                                  placeholder="Digite a localização de saída"
-                                  onLerClick={() => setShowQrScanner(true)}
-                                  lerTitle="Ler QR ou código de barras da localização"
-                                  lerAriaLabel="Ler localização personalizada"
-                                />
-                              </div>
-                            )}
+                            <p className="text-[11px] text-gray-500 mt-1">
+                              Apenas localizações existentes são aceitas. A validação ignora maiúsculas/minúsculas.
+                            </p>
                           </>
                         ) : (
-                          <PesquisaComLeitorQr
-                            value={formItem.localizacao_origem}
-                            onChange={(e) => setFormItem((prev) => ({ ...prev, localizacao_origem: e.target.value }))}
-                            placeholder="Ex: Prateleira A3"
-                            onLerClick={() => setShowQrScanner(true)}
-                            lerTitle="Ler QR ou código de barras da localização"
-                            lerAriaLabel="Ler localização de saída"
-                          />
+                          <div className="space-y-2">
+                            <PesquisaComLeitorQr
+                              value={formItem.localizacao_origem}
+                              onChange={() => {}}
+                              placeholder="Sem localizações cadastradas"
+                              onLerClick={() => setShowQrScanner(true)}
+                              lerTitle="Ler QR ou código de barras da localização"
+                              lerAriaLabel="Ler localização de saída"
+                              disabled
+                              lerDisabled
+                            />
+                            <p className="text-[11px] text-amber-800">
+                              Cadastre localizações no armazém de origem para permitir a preparação deste item.
+                            </p>
+                          </div>
                         )}
                       </section>
                       )}
@@ -2931,28 +2972,22 @@ const PrepararRequisicao = () => {
                         onScan={(texto) => {
                           const loc = (texto || '').trim();
                           if (!loc) return;
-                          setPrepLocBusca(loc);
                           if (locsOrigem.length > 0) {
-                            let pendingToast = null;
-                            setFormItem((prev) => {
-                              if (locsOrigemParaPreparacao.includes(loc)) {
-                                pendingToast = { type: 'success', message: `Localização definida: ${loc}` };
-                                return { ...prev, localizacao_origem: loc, localizacao_origem_custom: '' };
-                              }
-                              if (prev.localizacao_origem === '_custom_') {
-                                pendingToast = { type: 'success', message: `Localização definida: ${loc}` };
-                                return { ...prev, localizacao_origem_custom: loc };
-                              }
-                              pendingToast = {
-                                type: 'error',
-                                message: `Localização não reconhecida. Use uma das opções permitidas: ${locsOrigemParaPreparacao.join(', ')}`
-                              };
-                              return prev;
+                            const match = findLocationMatch(locsOrigemParaPreparacao, loc);
+                            if (match) {
+                              setFormItem((prev) => ({ ...prev, localizacao_origem: match, localizacao_origem_custom: '' }));
+                              setToast({ type: 'success', message: `Localização definida: ${match}` });
+                              return;
+                            }
+                            setToast({
+                              type: 'error',
+                              message: 'Localização não reconhecida. Leia ou selecione uma localização existente.'
                             });
-                            if (pendingToast) setToast(pendingToast);
                           } else {
-                            setFormItem((prev) => ({ ...prev, localizacao_origem: loc }));
-                            setToast({ type: 'success', message: `Localização definida: ${loc}` });
+                            setToast({
+                              type: 'error',
+                              message: 'Não há localizações cadastradas para este armazém. Cadastre uma localização existente para continuar.'
+                            });
                           }
                         }}
                         title="Ler localização (QR ou código de barras)"
