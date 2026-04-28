@@ -53,6 +53,9 @@ const Navbar = () => {
     user &&
     (isAdmin || podeStockMenu || ['supervisor_armazem', 'backoffice_armazem', 'operador'].includes(user.role));
   const podeMovimentosMenu = user && podeUsarConsultaMovimentos(user);
+  const podeVerDashboardOp =
+    Boolean(user) &&
+    ['admin', 'backoffice_operations'].includes(String(user?.role || '').toLowerCase());
   const podeInventarioMenu = user && podeAcederInventario(user.role) && podeUsarControloStock(user);
   const podeContagemSemanalMenu = user && podeAcederInventario(user.role);
   const podeTicketsMovInterna =
@@ -299,6 +302,16 @@ const Navbar = () => {
               )}
               {canSeeClogMenu && (
                 <div className="flex items-center gap-1 lg:gap-2">
+                  {podeVerDashboardOp && (
+                    <div className="relative font-medium text-sm lg:text-base uppercase tracking-wider text-white cursor-pointer flex items-center px-2 lg:px-3 xl:px-4 h-12 min-w-12 lg:min-w-14 xl:min-w-16 rounded-lg transition-all duration-200 hover:bg-white/10 hover:text-yellow-400">
+                      <Link
+                        to="/movimentos/viaturas"
+                        className="text-inherit no-underline px-0.5 font-semibold w-full h-full flex items-center justify-center"
+                      >
+                        Dashboard OP
+                      </Link>
+                    </div>
+                  )}
                   <div
                     className="relative inline-block clog-dropdown"
                     onMouseEnter={() => setIsInteracting(true)}
@@ -373,6 +386,16 @@ const Navbar = () => {
                             >
                               <FileText size={14} className="lg:w-4 lg:h-4" />
                               Movimentos
+                            </Link>
+                          )}
+                          {podeMovimentosMenu && (
+                            <Link
+                              to="/movimentos/viaturas"
+                              onClick={(e) => { e.preventDefault(); e.stopPropagation(); setClogOpen(false); setTimeout(() => navigate('/movimentos/viaturas'), 100); }}
+                              className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded"
+                            >
+                              <Truck size={14} className="lg:w-4 lg:h-4" />
+                              Dashboard viaturas
                             </Link>
                           )}
                           {podeTicketsMovInterna && (
@@ -875,6 +898,13 @@ const Navbar = () => {
               )}
               {canSeeClogMenu && (
                 <>
+                  {podeVerDashboardOp && (
+                    <div className="w-[85vw] sm:w-[90vw] py-3 sm:py-4.5 px-0 h-auto rounded-xl text-center text-base sm:text-lg font-semibold bg-white/8 m-0 mb-1 sm:mb-0.5 transition-all duration-200">
+                      <Link to="/movimentos/viaturas" onClick={(e) => handleMobileNavigation('/movimentos/viaturas', e)} className="text-white no-underline font-semibold w-full h-full flex items-center justify-center">
+                        Dashboard OP
+                      </Link>
+                    </div>
+                  )}
                   <div className="relative w-full clog-dropdown">
                     <button
                       className="w-full justify-between py-3 sm:py-4 px-4 sm:px-5 bg-transparent border-none text-white font-semibold text-sm sm:text-base cursor-pointer flex items-center gap-2 transition-colors duration-200 rounded-lg"
@@ -923,6 +953,12 @@ const Navbar = () => {
                             <Link to="/movimentos" onClick={(e) => handleMobileNavigation('/movimentos', e)} className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10">
                               <FileText size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" />
                               Movimentos
+                            </Link>
+                          )}
+                          {podeMovimentosMenu && (
+                            <Link to="/movimentos/viaturas" onClick={(e) => handleMobileNavigation('/movimentos/viaturas', e)} className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10">
+                              <Truck size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" />
+                              Dashboard viaturas
                             </Link>
                           )}
                           {podeTicketsMovInterna && (

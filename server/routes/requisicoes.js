@@ -54,11 +54,33 @@ function adminPodeCorrigirPreparacaoItemSeparada(status, role) {
 
 /** Operador: só separação e entrega; bloqueia TRFL/TRA/Reporte/Clog, criar/editar/apagar req., finalizar, marcar em expedição. */
 function denyOperador(req, res, next) {
+  if (req.user && (isOperador(req.user.role) || req.user.role === 'backoffice_operations')) {
+    return res.status(403).json({
+      error:
+        'Perfil sem permissão para esta operação. Este utilizador pode apenas criar e monitorizar requisições no seu escopo.',
+      code: 'PERFIL_RESTRITO',
+    });
+  }
+  next();
+}
+
+function denyOnlyOperador(req, res, next) {
   if (req.user && isOperador(req.user.role)) {
     return res.status(403).json({
       error:
         'Operadores só podem consultar e separar requisições dos seus armazéns e marcar entrega; não podem executar esta operação.',
       code: 'OPERADOR_RESTRITO',
+    });
+  }
+  next();
+}
+
+function denyBackofficeOperations(req, res, next) {
+  if (req.user && req.user.role === 'backoffice_operations') {
+    return res.status(403).json({
+      error:
+        'Backoffice Operations pode apenas criar e monitorizar requisições/devoluções/transferências no seu escopo.',
+      code: 'BACKOFFICE_OPERATIONS_RESTRITO',
     });
   }
   next();
@@ -5184,9 +5206,11 @@ async function persistMovimentosHistoricoForRequisicoes(ids) {
   await upsertMovimentosHistorico(rows);
 }
 
-router.get('/movimentos-clog/consulta', ...requisicaoAuth, denyOperador, async (req, res) => {
+router.get('/movimentos-clog/consulta', ...requisicaoAuth, denyOnlyOperador, async (req, res) => {
   try {
-    if (!usuarioTemPermissaoConsultaMovimentos(req)) {
+    const roleNorm = String(req.user?.role || '').trim().toLowerCase();
+    const roleTemAcessoDashboardOp = roleNorm === 'admin' || roleNorm === 'backoffice_operations';
+    if (!usuarioTemPermissaoConsultaMovimentos(req) && !roleTemAcessoDashboardOp) {
       return res.status(403).json({ error: 'Sem permissão para consultar movimentos.' });
     }
     const q = String(req.query?.q || '').trim().toLowerCase();
@@ -5453,8 +5477,6 @@ router.get('/movimentos-clog/consulta', ...requisicaoAuth, denyOperador, async (
           __ordem_movimento,
           mov_id,
           requisicao_id,
-          armazem_origem_tipo,
-          armazem_destino_tipo,
           __req_sort_ts,
           ...rest
         }) => {
@@ -5737,6 +5759,178 @@ router.patch('/movimentos-clog/linha', ...requisicaoAuth, denyOperador, async (r
     return res.json({ ok: true });
   } catch (error) {
     return res.status(500).json({ error: 'Erro ao editar linha de movimento', details: error.message });
+  }
+});
+
+router.post('/movimentos-clog/linha', ...requisicaoAuth, denyOperador, async (req, res) => {
+  try {
+    const roleNorm = String(req.user?.role || '').trim().toLowerCase();
+    const podeCriarLinhaManual = isAdmin(req.user?.role) || roleNorm === 'supervisor_armazem';
+    if (!podeCriarLinhaManual) {
+      return res.status(403).json({ error: 'Apenas admin e supervisor de armazém podem adicionar linhas.' });
+    }
+    if (!(await movimentosHistoricoTableExists())) {
+      return res.status(503).json({
+        error: 'Tabela de histórico de movimentos em falta.',
+        details: 'Execute: npm run db:migrate:requisicoes-movimentos-historico'
+      });
+    }
+
+    const parseDateBr = (raw) => {
+      const s = String(raw || '').trim();
+      if (!s) return '';
+      const iso = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+      if (iso) return `${iso[3]}/${iso[2]}/${iso[1]}`;
+      const br = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(s);
+      if (br) return `${br[1]}/${br[2]}/${br[3]}`;
+      return '';
+    };
+    const normalizeTipoMov = (raw) => {
+      const t = String(raw || '').trim().toLowerCase();
+      if (!t) return { tipo: '', sign: 1 };
+      if (t === 'saida' || t === 'saída' || t === 'saida de armazem' || t === 'saída de armazém') {
+        return { tipo: 'Saida de Armazem', sign: -1 };
+      }
+      if (t === 'transferencia' || t === 'transferência') {
+        return { tipo: 'Transferencia', sign: 1 };
+      }
+      if (t === 'transf. apeado' || t === 'transf apeado' || t === 'apeado') {
+        return { tipo: 'Transf. Apeado', sign: 1 };
+      }
+      if (t === 'devolucao de carrinha' || t === 'devolução de carrinha' || t === 'devolucao' || t === 'devolução') {
+        return { tipo: 'Devolucao de carrinha', sign: 1 };
+      }
+      return { tipo: '', sign: 1 };
+    };
+    const formatTraDevByTipo = (rawValue, tipoMovimentoCanonical) => {
+      const tipo = String(tipoMovimentoCanonical || '').trim().toLowerCase();
+      const prefix = tipo === 'devolucao de carrinha' ? 'DEV' : 'TRA';
+      const raw = String(rawValue || '').trim();
+      if (!raw) return '';
+      const semPrefixo = raw.replace(/^(TRA|DEV)\s*/i, '').trim();
+      const year = String(new Date().getFullYear());
+      const onlyDigits = semPrefixo.replace(/[^\d]/g, '');
+      if (!semPrefixo) return '';
+      if (/^\d+$/.test(semPrefixo)) return `${prefix} ${semPrefixo}/${year}`;
+      if (/^\d+\/\d{4}$/.test(semPrefixo)) return `${prefix} ${semPrefixo}`;
+      if (onlyDigits) return `${prefix} ${onlyDigits}/${year}`;
+      return `${prefix} ${semPrefixo}`;
+    };
+
+    const tipoIn = req.body?.tipo_movimento;
+    const dataIn = req.body?.data_movimento;
+    const itemId = Number(req.body?.item_id || 0);
+    const qtdIn = Number(req.body?.quantidade);
+    const locInicial = String(req.body?.loc_inicial || '').trim();
+    const serial = String(req.body?.serial || '').trim();
+    const lote = String(req.body?.lote || '').trim();
+    const armazemDestinoId = Number(req.body?.novo_armazem_id || 0);
+    const traDevRaw = String(req.body?.tra_dev || '').trim();
+    const newLocalizacao = String(req.body?.new_localizacao || '').trim();
+    const observacoes = String(req.body?.observacoes || '').trim();
+    const dep = String(req.body?.dep || '').trim();
+
+    const { tipo: tipoMovimento, sign: tipoSign } = normalizeTipoMov(tipoIn);
+    if (!tipoMovimento) {
+      return res.status(400).json({ error: 'Tipo de movimento inválido.' });
+    }
+    const dtRecepcao = parseDateBr(dataIn);
+    if (!dtRecepcao) {
+      return res.status(400).json({ error: 'Data inválida. Use YYYY-MM-DD ou DD/MM/YYYY.' });
+    }
+    if (!Number.isFinite(itemId) || itemId <= 0) {
+      return res.status(400).json({ error: 'Artigo inválido.' });
+    }
+    if (!Number.isFinite(qtdIn) || qtdIn === 0) {
+      return res.status(400).json({ error: 'Quantidade inválida.' });
+    }
+    if (!locInicial) {
+      return res.status(400).json({ error: 'Loc inicial é obrigatória.' });
+    }
+    if (!Number.isFinite(armazemDestinoId) || armazemDestinoId <= 0) {
+      return res.status(400).json({ error: 'Novo armazém é obrigatório.' });
+    }
+    const traDev = formatTraDevByTipo(traDevRaw, tipoMovimento);
+    if (!traDev) {
+      return res.status(400).json({ error: 'TRA / DEV é obrigatório.' });
+    }
+    if (!newLocalizacao) {
+      return res.status(400).json({ error: 'Nova localização é obrigatória.' });
+    }
+
+    if (!isAdmin(req.user?.role)) {
+      const allowedScopeIds = Array.isArray(req.requisicaoArmazemOrigemIds) ? req.requisicaoArmazemOrigemIds : [];
+      if (!allowedScopeIds.includes(armazemDestinoId)) {
+        return res.status(403).json({ error: 'Armazém fora do escopo do utilizador.' });
+      }
+    }
+
+    const itemQ = await pool.query(
+      `SELECT id, codigo, descricao, tipocontrolo
+       FROM itens
+       WHERE id = $1
+       LIMIT 1`,
+      [itemId]
+    );
+    if (itemQ.rows.length === 0) {
+      return res.status(404).json({ error: 'Artigo não encontrado.' });
+    }
+    const item = itemQ.rows[0];
+    const tipoControlo = String(item?.tipocontrolo || '').trim().toUpperCase();
+    if (tipoControlo === 'SERIAL' && !serial) {
+      return res.status(400).json({ error: 'S/N é obrigatório para artigo de controlo serial.' });
+    }
+    if (tipoControlo === 'LOTE' && !lote) {
+      return res.status(400).json({ error: 'Lote é obrigatório para artigo de controlo lote.' });
+    }
+
+    const armQ = await pool.query(
+      `SELECT id, codigo, descricao, tipo
+       FROM armazens
+       WHERE id = $1
+       LIMIT 1`,
+      [armazemDestinoId]
+    );
+    if (armQ.rows.length === 0) {
+      return res.status(404).json({ error: 'Novo armazém não encontrado.' });
+    }
+    const arm = armQ.rows[0];
+    const qtyFinal = tipoSign < 0 ? -Math.abs(qtdIn) : Math.abs(qtdIn);
+    const movId = `MANUAL-${Date.now()}-${Math.random().toString(36).slice(2, 10).toUpperCase()}`;
+    const rowData = {
+      mov_id: movId,
+      mov_manual: true,
+      usuario_id: req.user?.id || null,
+      requisicao_id: null,
+      'Tipo de Movimento': tipoMovimento,
+      'Dt_Recepção': dtRecepcao,
+      'REF.': String(item?.codigo || '').trim(),
+      DESCRIPTION: String(item?.descricao || '').trim(),
+      QTY: qtyFinal,
+      Loc_Inicial: locInicial,
+      'S/N': serial,
+      Lote: lote,
+      'Novo Armazém': String(arm?.codigo || arm?.descricao || '').trim(),
+      'TRA / DEV': traDev,
+      'New Localização': newLocalizacao,
+      Observações: observacoes,
+      DEP: dep,
+      armazem_origem_id: null,
+      armazem_id: Number(arm.id),
+      armazem_destino_codigo: String(arm?.codigo || '').trim(),
+      armazem_destino_descricao: String(arm?.descricao || '').trim(),
+      armazem_destino_tipo: String(arm?.tipo || '').trim().toLowerCase(),
+    };
+
+    await pool.query(
+      `INSERT INTO requisicoes_movimentos_historico (mov_key, requisicao_id, row_data, updated_at)
+       VALUES ($1, NULL, $2::jsonb, CURRENT_TIMESTAMP)`,
+      [movId, JSON.stringify(rowData)]
+    );
+
+    return res.status(201).json({ ok: true, row: rowData });
+  } catch (error) {
+    return res.status(500).json({ error: 'Erro ao adicionar linha de movimento', details: error.message });
   }
 });
 
@@ -6634,7 +6828,7 @@ router.get('/:id', ...requisicaoAuth, async (req, res) => {
 });
 
 // Criar nova requisição (com múltiplos itens)
-router.post('/', ...requisicaoAuth, denyOperador, async (req, res) => {
+router.post('/', ...requisicaoAuth, denyOnlyOperador, async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -7532,7 +7726,7 @@ router.post(
 });
 
 // Atualizar requisição
-router.put('/:id', ...requisicaoAuth, denyOperador, async (req, res) => {
+router.put('/:id', ...requisicaoAuth, denyOnlyOperador, async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -7560,6 +7754,16 @@ router.put('/:id', ...requisicaoAuth, denyOperador, async (req, res) => {
     ) {
       await client.query('ROLLBACK');
       return res.status(403).json({ error: 'Sem acesso a esta requisição.' });
+    }
+    if (
+      req.user?.role === 'backoffice_operations' &&
+      Number(checkReq.rows[0]?.usuario_id || 0) !== Number(req.user?.id || 0)
+    ) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({
+        error: 'Backoffice Operations só pode editar requisições criadas pelo próprio utilizador.',
+        code: 'BACKOFFICE_OPERATIONS_OWN_ONLY',
+      });
     }
 
     const statusAtual = String(checkReq.rows[0].status || '');
@@ -7751,7 +7955,7 @@ router.put('/:id', ...requisicaoAuth, denyOperador, async (req, res) => {
 });
 
 // Preparar item individual da requisição (quantidade, localização origem, localização destino)
-router.patch('/:id/atender-item', ...requisicaoAuth, async (req, res) => {
+router.patch('/:id/atender-item', ...requisicaoAuth, denyBackofficeOperations, async (req, res) => {
   const client = await pool.connect();
   try {
     const { id } = req.params;
@@ -8268,7 +8472,7 @@ router.patch('/:id/atender-item', ...requisicaoAuth, async (req, res) => {
 });
 
 // Adicionar linha de item na requisição (fluxo de preparação; útil para correções em devolução)
-router.post('/:id/requisicao-itens', ...requisicaoAuth, async (req, res) => {
+router.post('/:id/requisicao-itens', ...requisicaoAuth, denyBackofficeOperations, async (req, res) => {
   try {
     const requisicaoId = parseInt(req.params.id, 10);
     const itemId = parseInt(req.body?.item_id, 10);
@@ -8372,7 +8576,7 @@ router.post('/:id/requisicao-itens', ...requisicaoAuth, async (req, res) => {
 });
 
 // Remover linha de requisição (só admin; só em Separadas ou Em expedição; tem de existir mais do que uma linha)
-router.delete('/:id/requisicao-itens/:requisicaoItemId', ...requisicaoAuth, async (req, res) => {
+router.delete('/:id/requisicao-itens/:requisicaoItemId', ...requisicaoAuth, denyBackofficeOperations, async (req, res) => {
   try {
     if (!isAdmin(req.user.role)) {
       return res.status(403).json({
@@ -8483,7 +8687,7 @@ router.delete('/:id/requisicao-itens/:requisicaoItemId', ...requisicaoAuth, asyn
 });
 
 // Atender requisição (marcar como separado e opcionalmente preencher localização) — legado/alternativo
-router.patch('/:id/atender', ...requisicaoAuth, async (req, res) => {
+router.patch('/:id/atender', ...requisicaoAuth, denyBackofficeOperations, async (req, res) => {
   try {
     const { id } = req.params;
     const { localizacao } = req.body;
@@ -8582,7 +8786,7 @@ router.patch('/:id/atender', ...requisicaoAuth, async (req, res) => {
 });
 
 // Completar separação da requisição (todos os itens preparados → status separado)
-router.patch('/:id/completar-separacao', ...requisicaoAuth, async (req, res) => {
+router.patch('/:id/completar-separacao', ...requisicaoAuth, denyBackofficeOperations, async (req, res) => {
   try {
     const { id } = req.params;
     const check = await pool.query(
@@ -8650,7 +8854,7 @@ router.patch('/:id/completar-separacao', ...requisicaoAuth, async (req, res) => 
 });
 
 // Confirmar separação (após os itens terem sido recolhidos) — só para requisições com status separado
-router.patch('/:id/confirmar-separacao', ...requisicaoAuth, async (req, res) => {
+router.patch('/:id/confirmar-separacao', ...requisicaoAuth, denyBackofficeOperations, async (req, res) => {
   try {
     const { id } = req.params;
     const check = await pool.query(
@@ -8744,7 +8948,7 @@ router.patch('/:id/marcar-em-expedicao', ...requisicaoAuth, denyOperador, async 
 });
 
 // Marcar como Entregue (após baixar o ficheiro TRA)
-router.patch('/:id/marcar-entregue', ...requisicaoAuth, async (req, res) => {
+router.patch('/:id/marcar-entregue', ...requisicaoAuth, denyBackofficeOperations, async (req, res) => {
   const client = await pool.connect();
   try {
     const { id } = req.params;
@@ -8901,7 +9105,7 @@ router.patch('/:id/marcar-entregue', ...requisicaoAuth, async (req, res) => {
 });
 
 // Voltar de Entregue para EM EXPEDICAO (correção após entrega indevida)
-router.patch('/:id/voltar-em-expedicao', ...requisicaoAuth, async (req, res) => {
+router.patch('/:id/voltar-em-expedicao', ...requisicaoAuth, denyBackofficeOperations, async (req, res) => {
   try {
     const { id } = req.params;
     const check = await pool.query(
@@ -11828,7 +12032,7 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
   });
 
 // Deletar requisição
-router.delete('/:id', ...requisicaoAuth, denyOperador, async (req, res) => {
+router.delete('/:id', ...requisicaoAuth, denyOnlyOperador, async (req, res) => {
   try {
     const { id } = req.params;
     const userRole = req.user?.role || '';
@@ -11848,6 +12052,15 @@ router.delete('/:id', ...requisicaoAuth, denyOperador, async (req, res) => {
     const requisicao = checkReq.rows[0];
     if (!requisicaoArmazemOrigemAcessoPermitido(req, requisicao.armazem_origem_id, { requisicao })) {
       return res.status(403).json({ error: 'Sem acesso a esta requisição.' });
+    }
+    if (
+      req.user?.role === 'backoffice_operations' &&
+      Number(requisicao?.usuario_id || 0) !== Number(req.user?.id || 0)
+    ) {
+      return res.status(403).json({
+        error: 'Backoffice Operations só pode apagar requisições criadas pelo próprio utilizador.',
+        code: 'BACKOFFICE_OPERATIONS_OWN_ONLY',
+      });
     }
     const status = String(requisicao.status || '');
     const statusRestritosAdmin = ['EM SEPARACAO', 'separado', 'EM EXPEDICAO', 'APEADOS', 'Entregue'];

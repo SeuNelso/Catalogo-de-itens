@@ -92,12 +92,28 @@ async function fetchRequisicoesArmazemIdsForUser(userId) {
   return [];
 }
 
+async function fetchAllViaturaArmazemIds() {
+  const r = await pool.query(
+    `SELECT id
+     FROM armazens
+     WHERE LOWER(TRIM(COALESCE(tipo, ''))) = 'viatura'
+     ORDER BY id`,
+  );
+  return (r.rows || [])
+    .map((row) => parseInt(row.id, 10))
+    .filter((id) => Number.isFinite(id) && id > 0);
+}
+
 /** Scope após requisicaoScopeMiddleware: requisicaoArmazemOrigemIds = ids permitidos (vazio para não admin ⇒ sem acesso a requisições). */
 async function requisicaoScopeMiddleware(req, res, next) {
   try {
     req.requisicaoArmazemOrigemIds = [];
     if (!req.user || !req.user.id) return next();
     if (roleComAcessoTotalRequisicoes(req.user.role)) {
+      return next();
+    }
+    if (String(req.user.role || '').trim().toLowerCase() === 'backoffice_operations') {
+      req.requisicaoArmazemOrigemIds = await fetchAllViaturaArmazemIds();
       return next();
     }
     req.requisicaoArmazemOrigemIds = await fetchRequisicoesArmazemIdsForUser(req.user.id);

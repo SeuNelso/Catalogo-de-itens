@@ -37,6 +37,7 @@ import Armazens from './pages/Armazens';
 import ConsultaLocalizacoesEstoque from './pages/ConsultaLocalizacoesEstoque';
 import TransferenciaLocalizacao from './pages/TransferenciaLocalizacao';
 import ConsultaMovimentos from './pages/ConsultaMovimentos';
+import DashboardViaturas from './pages/DashboardViaturas';
 import ConsultaStockNacionalArmazem from './pages/ConsultaStockNacionalArmazem';
 import Inventario from './pages/Inventario';
 import ContagemSemanal from './pages/ContagemSemanal';
@@ -254,7 +255,7 @@ function App() {
                 <Route 
                   path="/requisicoes/importar" 
                   element={
-                    <ProtectedRoute allowedRoles={['admin', 'backoffice_operations', 'backoffice_armazem', 'supervisor_armazem']}>
+                    <ProtectedRoute allowedRoles={['admin', 'backoffice_armazem', 'supervisor_armazem']}>
                       <ImportarRequisicao />
                     </ProtectedRoute>
                   } 
@@ -270,7 +271,7 @@ function App() {
                 <Route 
                   path="/requisicoes/preparar/:id" 
                   element={
-                    <ProtectedRoute allowedRoles={['admin', 'operador', 'backoffice_armazem', 'supervisor_armazem']}>
+                    <ProtectedRoute allowedRoles={['admin', 'operador', 'backoffice_operations', 'backoffice_armazem', 'supervisor_armazem']}>
                       <PrepararRequisicao />
                     </ProtectedRoute>
                   } 
@@ -327,6 +328,14 @@ function App() {
                   element={
                     <ProtectedRoute requireConsultaMovimentos>
                       <ConsultaMovimentos />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/movimentos/viaturas"
+                  element={
+                    <ProtectedRoute allowedRoles={['admin', 'backoffice_operations']}>
+                      <DashboardViaturas />
                     </ProtectedRoute>
                   }
                 />

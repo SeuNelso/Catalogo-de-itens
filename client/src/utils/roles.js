@@ -33,7 +33,7 @@ export function isSupervisorArmazem(role) {
  * `backoffice_armazem` e restantes não-operadores: true (inclui gestão completa de requisição além do operador).
  */
 export function operadorPodeDocsELogisticaAposSeparacao(role) {
-  return !isOperador(role);
+  return !isOperador(role) && role !== ROLES.BACKOFFICE_OPERATIONS;
 }
 
 /** Perfis que podem usar o módulo de requisições (UI e âmbito alinhados à API). */

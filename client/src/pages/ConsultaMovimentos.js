@@ -27,6 +27,12 @@ const SN_COLUMN = 'S/N';
 /** Texto na célula acima disto → resumo + botão (alinha com split no servidor: \n ; |). */
 const SN_INLINE_MAX_LEN = 52;
 const SN_MODAL_PAGE_SIZE = 20;
+const MOVIMENTO_TIPOS = [
+  { value: 'Saida de Armazem', label: 'Saída de Armazém' },
+  { value: 'Transferencia', label: 'Transferência' },
+  { value: 'Transf. Apeado', label: 'Transf. Apeado' },
+  { value: 'Devolucao de carrinha', label: 'Devolução de carrinha' },
+];
 
 function parseSeriaisMovimento(raw) {
   const s = String(raw || '').trim();
@@ -46,6 +52,16 @@ function parseListaDeValores(raw) {
     .flatMap((part) => String(part || '').split(/\s*,\s*/))
     .map((x) => x.trim())
     .filter(Boolean);
+}
+
+function isSupervisorArmazem(user) {
+  return String(user?.role || '').trim().toLowerCase() === 'supervisor_armazem';
+}
+
+function expectedTraDevPrefixByTipo(tipoMovimento) {
+  const t = String(tipoMovimento || '').trim().toLowerCase();
+  if (t === 'devolucao de carrinha' || t === 'devolução de carrinha') return 'DEV';
+  return 'TRA';
 }
 
 function normalizeDateFilterValue(raw) {
@@ -159,6 +175,28 @@ const ConsultaMovimentos = () => {
     armazem_id: '',
     localizacao: '',
     minhas: false,
+  });
+  const canAddMovimentoLinha = isAdmin || isSupervisorArmazem(user);
+  const [addLinhaOpen, setAddLinhaOpen] = useState(false);
+  const [addLinhaSaving, setAddLinhaSaving] = useState(false);
+  const [addItemSearch, setAddItemSearch] = useState('');
+  const [addItemResults, setAddItemResults] = useState([]);
+  const [addForm, setAddForm] = useState({
+    tipo_movimento: 'Saida de Armazem',
+    data_movimento: '',
+    item_id: '',
+    item_codigo: '',
+    item_descricao: '',
+    item_tipocontrolo: '',
+    quantidade: '',
+    loc_inicial: '',
+    serial: '',
+    lote: '',
+    novo_armazem_id: '',
+    tra_dev: '',
+    new_localizacao: '',
+    observacoes: '',
+    dep: '',
   });
 
   const fetchMovimentos = useCallback(async (targetFiltros, targetOffset) => {
@@ -299,6 +337,161 @@ const ConsultaMovimentos = () => {
     setOffset(0);
     setOffsetHistory([]);
     fetchMovimentos(next, 0);
+  };
+
+  const limparFormularioAdicionarLinha = useCallback(() => {
+    setAddForm({
+      tipo_movimento: 'Saida de Armazem',
+      data_movimento: new Date().toISOString().slice(0, 10),
+      item_id: '',
+      item_codigo: '',
+      item_descricao: '',
+      item_tipocontrolo: '',
+      quantidade: '',
+      loc_inicial: '',
+      serial: '',
+      lote: '',
+      novo_armazem_id: '',
+      tra_dev: '',
+      new_localizacao: '',
+      observacoes: '',
+      dep: '',
+    });
+    setAddItemSearch('');
+    setAddItemResults([]);
+  }, []);
+
+  const abrirModalAdicionarLinha = () => {
+    if (!canAddMovimentoLinha) return;
+    limparFormularioAdicionarLinha();
+    setAddLinhaOpen(true);
+  };
+
+  const selecionarArtigoAdicionarLinha = (item) => {
+    const id = Number(item?.id || 0);
+    if (!id) return;
+    const codigo = String(item?.codigo || '').trim();
+    const descricao = String(item?.descricao || '').trim();
+    const tipocontrolo = String(item?.tipocontrolo || '').trim().toUpperCase();
+    setAddForm((prev) => ({
+      ...prev,
+      item_id: String(id),
+      item_codigo: codigo,
+      item_descricao: descricao,
+      item_tipocontrolo: tipocontrolo,
+      serial: tipocontrolo === 'LOTE' ? '' : prev.serial,
+      lote: tipocontrolo === 'SERIAL' ? '' : prev.lote,
+    }));
+    setAddItemSearch(codigo && descricao ? `${codigo} - ${descricao}` : (codigo || descricao));
+    setAddItemResults([]);
+  };
+
+  useEffect(() => {
+    if (!addLinhaOpen) return;
+    const q = String(addItemSearch || '').trim();
+    if (q.length < 2) {
+      setAddItemResults([]);
+      return;
+    }
+    const t = setTimeout(async () => {
+      try {
+        const token = localStorage.getItem('token');
+        const response = await fetch(`/api/itens?search=${encodeURIComponent(q)}&limit=20`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!response.ok) return;
+        const data = await response.json().catch(() => ({}));
+        const itens = Array.isArray(data?.itens) ? data.itens : [];
+        setAddItemResults(itens);
+      } catch (_) {
+        setAddItemResults([]);
+      }
+    }, 250);
+    return () => clearTimeout(t);
+  }, [addItemSearch, addLinhaOpen]);
+
+  const adicionarLinhaMovimento = async () => {
+    if (!canAddMovimentoLinha) return;
+    const itemIdNum = Number(addForm.item_id || 0);
+    const qtdNum = Number(addForm.quantidade);
+    const tipoCtrl = String(addForm.item_tipocontrolo || '').trim().toUpperCase();
+    if (!String(addForm.tipo_movimento || '').trim()) {
+      setToast({ type: 'error', message: 'Tipo de movimento é obrigatório.' });
+      return;
+    }
+    if (!String(addForm.data_movimento || '').trim()) {
+      setToast({ type: 'error', message: 'Data é obrigatória.' });
+      return;
+    }
+    if (!Number.isFinite(itemIdNum) || itemIdNum <= 0) {
+      setToast({ type: 'error', message: 'Selecione um artigo válido.' });
+      return;
+    }
+    if (!Number.isFinite(qtdNum) || qtdNum === 0) {
+      setToast({ type: 'error', message: 'Quantidade inválida.' });
+      return;
+    }
+    if (!String(addForm.loc_inicial || '').trim()) {
+      setToast({ type: 'error', message: 'Loc inicial é obrigatória.' });
+      return;
+    }
+    if (tipoCtrl === 'SERIAL' && !String(addForm.serial || '').trim()) {
+      setToast({ type: 'error', message: 'S/N é obrigatório para artigo serial.' });
+      return;
+    }
+    if (tipoCtrl === 'LOTE' && !String(addForm.lote || '').trim()) {
+      setToast({ type: 'error', message: 'Lote é obrigatório para artigo lote.' });
+      return;
+    }
+    if (!String(addForm.novo_armazem_id || '').trim()) {
+      setToast({ type: 'error', message: 'Novo armazém é obrigatório.' });
+      return;
+    }
+    if (!String(addForm.tra_dev || '').trim()) {
+      setToast({ type: 'error', message: 'TRA / DEV é obrigatório.' });
+      return;
+    }
+    if (!String(addForm.new_localizacao || '').trim()) {
+      setToast({ type: 'error', message: 'Nova localização é obrigatória.' });
+      return;
+    }
+    try {
+      setAddLinhaSaving(true);
+      const token = localStorage.getItem('token');
+      const response = await fetch('/api/requisicoes/movimentos-clog/linha', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          tipo_movimento: addForm.tipo_movimento,
+          data_movimento: addForm.data_movimento,
+          item_id: itemIdNum,
+          quantidade: qtdNum,
+          loc_inicial: addForm.loc_inicial,
+          serial: addForm.serial,
+          lote: addForm.lote,
+          novo_armazem_id: Number(addForm.novo_armazem_id),
+          tra_dev: addForm.tra_dev,
+          new_localizacao: addForm.new_localizacao,
+          observacoes: addForm.observacoes,
+          dep: addForm.dep,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.error || data.details || 'Erro ao adicionar linha');
+      }
+      setToast({ type: 'success', message: 'Linha adicionada com sucesso.' });
+      setAddLinhaOpen(false);
+      limparFormularioAdicionarLinha();
+      if (appliedFiltros) await fetchMovimentos(appliedFiltros, offset);
+    } catch (error) {
+      setToast({ type: 'error', message: error.message || 'Erro ao adicionar linha' });
+    } finally {
+      setAddLinhaSaving(false);
+    }
   };
 
   const expandirLinhasParaExport = useCallback((rowsInput) => {
@@ -756,6 +949,15 @@ const ConsultaMovimentos = () => {
                 >
                   Limpar
                 </button>
+                {canAddMovimentoLinha && (
+                  <button
+                    type="button"
+                    onClick={abrirModalAdicionarLinha}
+                    className="rounded-lg border border-indigo-300 px-4 py-2 text-sm text-indigo-700 hover:bg-indigo-50"
+                  >
+                    Adicionar linha
+                  </button>
+                )}
                 <div className="relative">
                   <button
                     type="button"
@@ -1067,6 +1269,218 @@ const ConsultaMovimentos = () => {
                   )}
                 </div>
               )}
+            </div>
+          </div>
+        )}
+
+        {addLinhaOpen && canAddMovimentoLinha && (
+          <div
+            className="fixed inset-0 z-[10055] flex items-center justify-center bg-black/50 p-4"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="add-mov-linha-title"
+            onClick={(e) => {
+              if (e.target === e.currentTarget && !addLinhaSaving) {
+                setAddLinhaOpen(false);
+                limparFormularioAdicionarLinha();
+              }
+            }}
+          >
+            <div className="w-full max-w-3xl max-h-[90vh] overflow-hidden rounded-xl bg-white shadow-2xl">
+              <div className="flex items-center justify-between border-b border-gray-200 px-4 py-3">
+                <h3 id="add-mov-linha-title" className="text-base font-semibold text-gray-900">
+                  Adicionar linha de movimento
+                </h3>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (addLinhaSaving) return;
+                    setAddLinhaOpen(false);
+                    limparFormularioAdicionarLinha();
+                  }}
+                  className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm hover:bg-gray-50"
+                >
+                  Fechar
+                </button>
+              </div>
+              <div className="max-h-[calc(90vh-120px)] overflow-y-auto px-4 py-3">
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                  <label className="text-sm text-gray-700">
+                    Tipo de movimento *
+                    <select
+                      value={addForm.tipo_movimento}
+                      onChange={(e) => setAddForm((p) => ({ ...p, tipo_movimento: e.target.value }))}
+                      className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                    >
+                      {MOVIMENTO_TIPOS.map((t) => (
+                        <option key={t.value} value={t.value}>
+                          {t.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="text-sm text-gray-700">
+                    Data *
+                    <input
+                      type="date"
+                      value={addForm.data_movimento}
+                      onChange={(e) => setAddForm((p) => ({ ...p, data_movimento: e.target.value }))}
+                      className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                    />
+                  </label>
+                  <div className="md:col-span-2 relative">
+                    <label className="text-sm text-gray-700">
+                      Artigo (pesquisa) *
+                      <input
+                        value={addItemSearch}
+                        onChange={(e) => {
+                          const txt = e.target.value;
+                          setAddItemSearch(txt);
+                          setAddForm((p) => ({
+                            ...p,
+                            item_id: '',
+                            item_codigo: '',
+                            item_descricao: '',
+                            item_tipocontrolo: '',
+                          }));
+                        }}
+                        placeholder="Digite código ou descrição"
+                        className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                      />
+                    </label>
+                    {addItemResults.length > 0 && (
+                      <div className="absolute z-20 mt-1 max-h-56 w-full overflow-y-auto rounded-lg border border-gray-200 bg-white shadow-lg">
+                        {addItemResults.map((it) => (
+                          <button
+                            key={it.id}
+                            type="button"
+                            onClick={() => selecionarArtigoAdicionarLinha(it)}
+                            className="block w-full border-b border-gray-100 px-3 py-2 text-left text-sm hover:bg-indigo-50"
+                          >
+                            <span className="font-semibold">{it.codigo}</span> - {it.descricao}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    {addForm.item_id && (
+                      <p className="mt-1 text-xs text-gray-500">
+                        Selecionado: {addForm.item_codigo} - {addForm.item_descricao}
+                        {addForm.item_tipocontrolo ? ` · Controlo: ${addForm.item_tipocontrolo}` : ''}
+                      </p>
+                    )}
+                  </div>
+                  <label className="text-sm text-gray-700">
+                    Quantidade *
+                    <input
+                      type="number"
+                      step="any"
+                      value={addForm.quantidade}
+                      onChange={(e) => setAddForm((p) => ({ ...p, quantidade: e.target.value }))}
+                      className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                    />
+                  </label>
+                  <label className="text-sm text-gray-700">
+                    Loc inicial *
+                    <input
+                      value={addForm.loc_inicial}
+                      onChange={(e) => setAddForm((p) => ({ ...p, loc_inicial: e.target.value }))}
+                      className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                    />
+                  </label>
+                  <label className="text-sm text-gray-700">
+                    S/N {String(addForm.item_tipocontrolo || '').toUpperCase() === 'SERIAL' ? '*' : ''}
+                    <input
+                      value={addForm.serial}
+                      onChange={(e) => setAddForm((p) => ({ ...p, serial: e.target.value }))}
+                      className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                    />
+                  </label>
+                  <label className="text-sm text-gray-700">
+                    Lote {String(addForm.item_tipocontrolo || '').toUpperCase() === 'LOTE' ? '*' : ''}
+                    <input
+                      value={addForm.lote}
+                      onChange={(e) => setAddForm((p) => ({ ...p, lote: e.target.value }))}
+                      className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                    />
+                  </label>
+                  <label className="text-sm text-gray-700">
+                    Novo armazém *
+                    <select
+                      value={addForm.novo_armazem_id}
+                      onChange={(e) => setAddForm((p) => ({ ...p, novo_armazem_id: e.target.value }))}
+                      className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                    >
+                      <option value="">Selecione</option>
+                      {armazens.map((a) => (
+                        <option key={a.id} value={String(a.id)}>
+                          {a.codigo ? `${a.codigo} — ${a.descricao}` : a.descricao}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="text-sm text-gray-700">
+                    TRA / DEV *
+                    <input
+                      value={addForm.tra_dev}
+                      onChange={(e) => setAddForm((p) => ({ ...p, tra_dev: e.target.value.replace(/[^\d/]/g, '') }))}
+                      placeholder={`${expectedTraDevPrefixByTipo(addForm.tipo_movimento)} número (ex.: 123)`}
+                      className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                    />
+                    <div className="mt-1 text-xs text-gray-500">
+                      Digite só o número. Será salvo como{' '}
+                      <span className="font-semibold">
+                        {expectedTraDevPrefixByTipo(addForm.tipo_movimento)} {addForm.tra_dev || 'número'}/{new Date().getFullYear()}
+                      </span>
+                      .
+                    </div>
+                  </label>
+                  <label className="text-sm text-gray-700 md:col-span-2">
+                    Nova localização *
+                    <input
+                      value={addForm.new_localizacao}
+                      onChange={(e) => setAddForm((p) => ({ ...p, new_localizacao: e.target.value }))}
+                      className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                    />
+                  </label>
+                  <label className="text-sm text-gray-700">
+                    Observações
+                    <input
+                      value={addForm.observacoes}
+                      onChange={(e) => setAddForm((p) => ({ ...p, observacoes: e.target.value }))}
+                      className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                    />
+                  </label>
+                  <label className="text-sm text-gray-700">
+                    DEP
+                    <input
+                      value={addForm.dep}
+                      onChange={(e) => setAddForm((p) => ({ ...p, dep: e.target.value }))}
+                      className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                    />
+                  </label>
+                </div>
+              </div>
+              <div className="flex items-center justify-end gap-2 border-t border-gray-200 bg-gray-50 px-4 py-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (addLinhaSaving) return;
+                    setAddLinhaOpen(false);
+                    limparFormularioAdicionarLinha();
+                  }}
+                  className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm hover:bg-gray-100"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  onClick={adicionarLinhaMovimento}
+                  disabled={addLinhaSaving}
+                  className="rounded-lg border border-emerald-300 bg-white px-4 py-2 text-sm text-emerald-700 hover:bg-emerald-50 disabled:opacity-50"
+                >
+                  {addLinhaSaving ? 'A guardar...' : 'Guardar linha'}
+                </button>
+              </div>
             </div>
           </div>
         )}

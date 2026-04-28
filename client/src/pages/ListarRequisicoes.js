@@ -70,8 +70,10 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
       ? `/requisicoes/preparar/${reqId}?origem=transferencias`
       : `/requisicoes/preparar/${reqId}`;
   const canCreateOrEdit = user && ['admin', 'backoffice_operations', 'backoffice_armazem', 'supervisor_armazem'].includes(user.role);
-  const canDelete = user && ['admin', 'backoffice_armazem', 'supervisor_armazem'].includes(user.role);
+  const canImportRequisicao = user && ['admin', 'backoffice_armazem', 'supervisor_armazem'].includes(user.role);
+  const canDelete = user && ['admin', 'backoffice_operations', 'backoffice_armazem', 'supervisor_armazem'].includes(user.role);
   const canPrepare = user && ['admin', 'operador', 'backoffice_armazem', 'supervisor_armazem'].includes(user.role);
+  const canOpenMonitor = user && ['admin', 'operador', 'backoffice_operations', 'backoffice_armazem', 'supervisor_armazem'].includes(user.role);
   /** TRFL, TRA, Reporte, Clog, Finalizar — operador não */
   const canDocsELogisticaPosSeparacao =
     Boolean(canPrepare && operadorPodeDocsELogisticaAposSeparacao(user?.role));
@@ -1720,9 +1722,18 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
 
   const canDeleteRequisicao = (reqObj) => {
     if (!canDelete) return false;
+    if (user?.role === 'backoffice_operations' && !isRequisicaoDoUtilizadorAtual(reqObj, user)) return false;
     const status = String(reqObj?.status || '');
     const precisaAdmin = ['EM SEPARACAO', 'separado', 'EM EXPEDICAO', 'Entregue'].includes(status);
     return !precisaAdmin || user?.role === 'admin';
+  };
+
+  const canEditRequisicao = (reqObj) => {
+    if (!podeCriarOuImportarRequisicao) return false;
+    if (String(reqObj?.status || '') !== 'pendente') return false;
+    if (isFluxoRecebimentoMercadoria(reqObj)) return false;
+    if (user?.role === 'backoffice_operations' && !isRequisicaoDoUtilizadorAtual(reqObj, user)) return false;
+    return true;
   };
 
   const isFluxoRecebimentoMercadoria = (reqObj) => {
@@ -1990,19 +2001,21 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
                   </button>
                 </>
               )}
-              <button
-                type="button"
-                onClick={() => {
-                  if (isModoTransferencias && flowParam === 'recebimento') {
-                    navigate(createRecebimentoLink);
-                    return;
-                  }
-                  navigate('/requisicoes/importar');
-                }}
-                className="inline-flex items-center gap-2 px-4 py-2 border border-blue-300 text-blue-700 rounded-lg hover:bg-blue-50 transition-colors text-sm"
-              >
-                <FaFileImport /> {isModoTransferencias && flowParam === 'recebimento' ? 'Importar Guia AT' : 'Importar requisição'}
-              </button>
+              {canImportRequisicao && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (isModoTransferencias && flowParam === 'recebimento') {
+                      navigate(createRecebimentoLink);
+                      return;
+                    }
+                    navigate('/requisicoes/importar');
+                  }}
+                  className="inline-flex items-center gap-2 px-4 py-2 border border-blue-300 text-blue-700 rounded-lg hover:bg-blue-50 transition-colors text-sm"
+                >
+                  <FaFileImport /> {isModoTransferencias && flowParam === 'recebimento' ? 'Importar Guia AT' : 'Importar requisição'}
+                </button>
+              )}
               <Link
                 to={createActionLink}
                 className="inline-flex items-center gap-2 px-4 py-2 bg-[#0915FF] text-white rounded-lg hover:bg-[#070FCC] transition-colors"
@@ -2280,10 +2293,15 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
                     if (selectionMode || selectedIds.length > 0) {
                       const isSelected = selectedIds.includes(req.id);
                       handleToggleSelect(req.id, !isSelected);
-                    } else if (prepBloqueio) {
+                    } else if (canPrepare && prepBloqueio) {
                       setToast({
                         type: 'error',
                         message: `Esta requisição está reservada para separação (${separadorNome || 'outro operador'}).`
+                      });
+                    } else if (!canOpenMonitor) {
+                      setToast({
+                        type: 'error',
+                        message: 'Sem permissão para abrir esta requisição.'
                       });
                     } else {
                       navigate(rotaPrepararComOrigem(req.id));
@@ -2664,7 +2682,7 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
                         <FaBoxOpen /> {req.status === 'EM SEPARACAO' ? 'Continuar preparação' : 'Preparar'}
                       </button>
                     )}
-                    {req.status === 'pendente' && podeCriarOuImportarRequisicao && !isFluxoRecebimentoMercadoria(req) && (
+                    {canEditRequisicao(req) && (
                       <button
                         onClick={() => navigate(`/requisicoes/editar/${req.id}`)}
                         className="px-3 py-2 text-[#0915FF] hover:bg-[#0915FF] hover:text-white rounded-lg transition-colors"
@@ -2705,7 +2723,7 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
             <button
               className="block w-full text-left px-4 py-2 hover:bg-gray-100"
               onClick={() => {
-                if (preparacaoReservadaOutroUtilizador(contextMenu.req, user)) {
+                if (canPrepare && preparacaoReservadaOutroUtilizador(contextMenu.req, user)) {
                   const nome =
                     contextMenu.req.separador_nome != null &&
                     String(contextMenu.req.separador_nome).trim() !== ''
@@ -2715,6 +2733,11 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
                     type: 'error',
                     message: `Esta requisição está reservada para separação (${nome}).`
                   });
+                  setContextMenu(prev => ({ ...prev, visible: false }));
+                  return;
+                }
+                if (!canOpenMonitor) {
+                  setToast({ type: 'error', message: 'Sem permissão para abrir esta requisição.' });
                   setContextMenu(prev => ({ ...prev, visible: false }));
                   return;
                 }
@@ -2738,7 +2761,7 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
                 Selecionar / multi-seleção
               </button>
             )}
-            {podeCriarOuImportarRequisicao && contextMenu.req.status === 'pendente' && (
+            {canEditRequisicao(contextMenu.req) && (
               <button
                 className="block w-full text-left px-4 py-2 hover:bg-gray-100"
                 onClick={() => {

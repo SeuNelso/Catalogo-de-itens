@@ -77,14 +77,22 @@ const ListarDevolucoes = () => {
   const canPrepare =
     user && ['admin', 'operador', 'backoffice_armazem', 'supervisor_armazem'].includes(user.role);
   const canDelete =
-    user && ['admin', 'backoffice_armazem', 'supervisor_armazem'].includes(user.role);
+    user && ['admin', 'backoffice_operations', 'backoffice_armazem', 'supervisor_armazem'].includes(user.role);
 
   const canDeleteDevolucao = (reqObj) => {
     if (!canDelete) return false;
     if (!reqObj) return false;
+    if (user?.role === 'backoffice_operations' && !isRequisicaoDoUtilizadorAtual(reqObj, user)) return false;
     const status = String(reqObj?.status || '');
     const precisaAdmin = ['EM SEPARACAO', 'separado', 'EM EXPEDICAO', 'APEADOS', 'Entregue'].includes(status);
     return !precisaAdmin || user?.role === 'admin';
+  };
+
+  const canEditDevolucao = (reqObj) => {
+    if (!podeCriarOuImportarRequisicao) return false;
+    if (String(reqObj?.status || '') !== 'pendente') return false;
+    if (user?.role === 'backoffice_operations' && !isRequisicaoDoUtilizadorAtual(reqObj, user)) return false;
+    return true;
   };
 
   const canCancelarDevolucao = (reqObj) => {
@@ -96,6 +104,10 @@ const ListarDevolucoes = () => {
 
   const canCreateOrEdit =
     user && ['admin', 'backoffice_operations', 'backoffice_armazem', 'supervisor_armazem'].includes(user.role);
+  const canOpenMonitor =
+    user && ['admin', 'operador', 'backoffice_operations', 'backoffice_armazem', 'supervisor_armazem'].includes(user.role);
+  const canImportRequisicao =
+    user && ['admin', 'backoffice_armazem', 'supervisor_armazem'].includes(user.role);
 
   const semArmazemOrigemAtribuido = Boolean(
     user && user.role !== 'admin' && getRequisicoesArmazemOrigemIds(user).length === 0
@@ -1587,13 +1599,15 @@ const ListarDevolucoes = () => {
 
           {podeCriarOuImportarRequisicao && showStatusBoard && (
             <div className="flex flex-wrap gap-2 justify-end">
-              <button
-                type="button"
-                onClick={() => navigate('/requisicoes/importar')}
-                className="inline-flex items-center gap-2 px-4 py-2 border border-blue-300 text-blue-700 rounded-lg hover:bg-blue-50 transition-colors text-sm"
-              >
-                <FaFileImport /> Importar requisição
-              </button>
+              {canImportRequisicao && (
+                <button
+                  type="button"
+                  onClick={() => navigate('/requisicoes/importar')}
+                  className="inline-flex items-center gap-2 px-4 py-2 border border-blue-300 text-blue-700 rounded-lg hover:bg-blue-50 transition-colors text-sm"
+                >
+                  <FaFileImport /> Importar requisição
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => navigate('/requisicoes/criar?devolucao=1')}
@@ -1741,7 +1755,7 @@ const ListarDevolucoes = () => {
                     r.separador_nome != null && String(r.separador_nome).trim() !== '' ? String(r.separador_nome).trim() : null;
 
                   const podePrepararAqui = canPrepare && ['pendente', 'EM SEPARACAO', 'separado'].includes(r.status);
-                  const podeAbrir = Boolean(canPrepare || canEntregar);
+                  const podeAbrir = Boolean(canOpenMonitor || canEntregar);
 
                   return (
                     <div
@@ -2245,7 +2259,7 @@ const ListarDevolucoes = () => {
                                 </button>
                               )}
 
-                            {r.status === 'pendente' && podeCriarOuImportarRequisicao && (
+                            {canEditDevolucao(r) && (
                               <button
                                 type="button"
                                 onClick={() => navigate(`/requisicoes/editar/${r.id}`)}
@@ -2289,7 +2303,7 @@ const ListarDevolucoes = () => {
             <button
               className="block w-full text-left px-4 py-2 hover:bg-gray-100"
               onClick={() => {
-                if (preparacaoReservadaOutroUtilizador(contextMenu.req, user)) {
+                if (canPrepare && preparacaoReservadaOutroUtilizador(contextMenu.req, user)) {
                   const nome =
                     contextMenu.req.separador_nome != null &&
                     String(contextMenu.req.separador_nome).trim() !== ''
@@ -2299,6 +2313,11 @@ const ListarDevolucoes = () => {
                     type: 'error',
                     message: `Esta devolução está reservada para preparação (${nome}).`
                   });
+                  setContextMenu((prev) => ({ ...prev, visible: false }));
+                  return;
+                }
+                if (!canOpenMonitor && !canEntregar) {
+                  setToast({ type: 'error', message: 'Sem permissão para abrir esta devolução.' });
                   setContextMenu((prev) => ({ ...prev, visible: false }));
                   return;
                 }
@@ -2322,7 +2341,7 @@ const ListarDevolucoes = () => {
                 Selecionar / multi-seleção
               </button>
             )}
-            {podeCriarOuImportarRequisicao && contextMenu.req.status === 'pendente' && (
+            {canEditDevolucao(contextMenu.req) && (
               <button
                 className="block w-full text-left px-4 py-2 hover:bg-gray-100"
                 onClick={() => {
