@@ -58,6 +58,14 @@ function isSupervisorArmazem(user) {
   return String(user?.role || '').trim().toLowerCase() === 'supervisor_armazem';
 }
 
+function extrairCodigoArmazemDaDescricao(descricao) {
+  const s = String(descricao || '').trim();
+  if (!s) return '';
+  const sepIdx = s.indexOf(' - ');
+  if (sepIdx > 0) return s.slice(0, sepIdx).trim();
+  return '';
+}
+
 function expectedTraDevPrefixByTipo(tipoMovimento) {
   const t = String(tipoMovimento || '').trim().toLowerCase();
   if (t === 'devolucao de carrinha' || t === 'devolução de carrinha') return 'DEV';
@@ -77,6 +85,29 @@ function normalizeDateFilterValue(raw) {
   const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (iso) return s;
   return s;
+}
+
+function normalizeSearchText(raw) {
+  return String(raw || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toLowerCase();
+}
+
+function normalizeTipoArmazem(raw) {
+  return normalizeSearchText(raw);
+}
+
+function isTipoApeado(rawTipo) {
+  const t = normalizeTipoArmazem(rawTipo);
+  return t === 'apeado' || t === 'apeados' || t === 'epi';
+}
+
+function itemTemSetorFerramenta(rawSetores) {
+  const norm = normalizeSearchText(rawSetores);
+  if (!norm) return false;
+  return norm.includes('ferramenta');
 }
 
 function cellOrDash(row, key) {
@@ -181,6 +212,12 @@ const ConsultaMovimentos = () => {
   const [addLinhaSaving, setAddLinhaSaving] = useState(false);
   const [addItemSearch, setAddItemSearch] = useState('');
   const [addItemResults, setAddItemResults] = useState([]);
+  const [addLocInicialEdited, setAddLocInicialEdited] = useState(false);
+  const [addNewLocalizacaoEdited, setAddNewLocalizacaoEdited] = useState(false);
+  const [addOrigemArmazemSearch, setAddOrigemArmazemSearch] = useState('');
+  const [addOrigemArmazemOpen, setAddOrigemArmazemOpen] = useState(false);
+  const [addNovoArmazemSearch, setAddNovoArmazemSearch] = useState('');
+  const [addNovoArmazemOpen, setAddNovoArmazemOpen] = useState(false);
   const [addForm, setAddForm] = useState({
     tipo_movimento: 'Saida de Armazem',
     data_movimento: '',
@@ -188,7 +225,9 @@ const ConsultaMovimentos = () => {
     item_codigo: '',
     item_descricao: '',
     item_tipocontrolo: '',
+    item_setores: '',
     quantidade: '',
+    armazem_origem_id: '',
     loc_inicial: '',
     serial: '',
     lote: '',
@@ -291,16 +330,18 @@ const ConsultaMovimentos = () => {
         const responseMeus = await fetch('/api/requisicoes/stock/meus-armazens', {
           headers: { Authorization: `Bearer ${token}` },
         });
-        const responseAll = await fetch('/api/armazens?ativo=true', {
+        const responseAll = await fetch('/api/armazens?ativo=true&destino_requisicao=1', {
           headers: { Authorization: `Bearer ${token}` },
         });
 
         const dataMeus = responseMeus.ok ? await responseMeus.json().catch(() => ({})) : {};
         const dataAll = responseAll.ok ? await responseAll.json().catch(() => ({})) : {};
         const rowsMeus = Array.isArray(dataMeus?.rows) ? dataMeus.rows : [];
-        const rowsAll = Array.isArray(dataAll?.armazens)
-          ? dataAll.armazens
-          : (Array.isArray(dataAll?.rows) ? dataAll.rows : []);
+        const rowsAll = Array.isArray(dataAll)
+          ? dataAll
+          : (Array.isArray(dataAll?.armazens)
+              ? dataAll.armazens
+              : (Array.isArray(dataAll?.rows) ? dataAll.rows : []));
 
         const merged = new Map();
         for (const a of [...rowsAll, ...rowsMeus]) {
@@ -330,6 +371,65 @@ const ConsultaMovimentos = () => {
   const nFiltrosAplicados = useMemo(() => countFiltrosAtivos(appliedFiltros), [appliedFiltros]);
   const armazemDescById = useMemo(() => armazemDescricaoPorId(armazens), [armazens]);
   const armazemDescByCodigo = useMemo(() => armazemDescricaoPorCodigo(armazens), [armazens]);
+  const armazensFiltradosPorTipoMovimento = useMemo(() => {
+    const tipoMov = normalizeSearchText(addForm.tipo_movimento);
+    const base = Array.isArray(armazens) ? armazens : [];
+    const isCentral = (a) => normalizeTipoArmazem(a?.tipo) === 'central';
+    const isViatura = (a) => normalizeTipoArmazem(a?.tipo) === 'viatura';
+    const isApeadoGroup = (a) => isTipoApeado(a?.tipo);
+
+    if (tipoMov === 'devolucao de carrinha' || tipoMov === 'devolução de carrinha') {
+      return {
+        origem: base.filter(isViatura),
+        destino: base.filter(isCentral),
+      };
+    }
+    if (tipoMov === 'transferencia' || tipoMov === 'transferência') {
+      return {
+        origem: base.filter(isCentral),
+        destino: base.filter(isCentral),
+      };
+    }
+    if (tipoMov === 'transf. apeado' || tipoMov === 'transf apeado') {
+      return {
+        origem: base.filter((a) => isCentral(a) || isApeadoGroup(a)),
+        destino: base.filter((a) => isCentral(a) || isApeadoGroup(a)),
+      };
+    }
+    if (tipoMov === 'saida de armazem' || tipoMov === 'saída de armazém') {
+      return {
+        origem: base.filter(isCentral),
+        destino: base.filter(isViatura),
+      };
+    }
+    return { origem: base, destino: base };
+  }, [armazens, addForm.tipo_movimento]);
+  const addOrigemArmazemResults = useMemo(() => {
+    const q = normalizeSearchText(addOrigemArmazemSearch);
+    const base = armazensFiltradosPorTipoMovimento.origem || [];
+    if (!q) return base.slice(0, 40);
+    return base
+      .filter((a) => {
+        const codigo = normalizeSearchText(a?.codigo);
+        const descricao = normalizeSearchText(a?.descricao);
+        const tipo = normalizeSearchText(a?.tipo);
+        return codigo.includes(q) || descricao.includes(q) || tipo.includes(q);
+      })
+      .slice(0, 40);
+  }, [armazensFiltradosPorTipoMovimento.origem, addOrigemArmazemSearch]);
+  const addNovoArmazemResults = useMemo(() => {
+    const q = normalizeSearchText(addNovoArmazemSearch);
+    const base = armazensFiltradosPorTipoMovimento.destino || [];
+    if (!q) return base.slice(0, 40);
+    return base
+      .filter((a) => {
+        const codigo = normalizeSearchText(a?.codigo);
+        const descricao = normalizeSearchText(a?.descricao);
+        const tipo = normalizeSearchText(a?.tipo);
+        return codigo.includes(q) || descricao.includes(q) || tipo.includes(q);
+      })
+      .slice(0, 40);
+  }, [armazensFiltradosPorTipoMovimento.destino, addNovoArmazemSearch]);
 
   const aplicarFiltros = () => {
     const next = { ...filtros };
@@ -347,7 +447,9 @@ const ConsultaMovimentos = () => {
       item_codigo: '',
       item_descricao: '',
       item_tipocontrolo: '',
+      item_setores: '',
       quantidade: '',
+      armazem_origem_id: '',
       loc_inicial: '',
       serial: '',
       lote: '',
@@ -359,7 +461,38 @@ const ConsultaMovimentos = () => {
     });
     setAddItemSearch('');
     setAddItemResults([]);
+    setAddLocInicialEdited(false);
+    setAddNewLocalizacaoEdited(false);
+    setAddOrigemArmazemSearch('');
+    setAddOrigemArmazemOpen(false);
+    setAddNovoArmazemSearch('');
+    setAddNovoArmazemOpen(false);
   }, []);
+
+  useEffect(() => {
+    if (!addLinhaOpen) return;
+    const origemValida = (armazensFiltradosPorTipoMovimento.origem || []).some(
+      (a) => String(a?.id) === String(addForm.armazem_origem_id || '')
+    );
+    const destinoValido = (armazensFiltradosPorTipoMovimento.destino || []).some(
+      (a) => String(a?.id) === String(addForm.novo_armazem_id || '')
+    );
+    if (!origemValida || !destinoValido) {
+      setAddForm((p) => ({
+        ...p,
+        armazem_origem_id: origemValida ? p.armazem_origem_id : '',
+        novo_armazem_id: destinoValido ? p.novo_armazem_id : '',
+      }));
+      if (!origemValida) setAddOrigemArmazemSearch('');
+      if (!destinoValido) setAddNovoArmazemSearch('');
+    }
+  }, [
+    addLinhaOpen,
+    addForm.armazem_origem_id,
+    addForm.novo_armazem_id,
+    armazensFiltradosPorTipoMovimento.origem,
+    armazensFiltradosPorTipoMovimento.destino,
+  ]);
 
   const abrirModalAdicionarLinha = () => {
     if (!canAddMovimentoLinha) return;
@@ -373,18 +506,73 @@ const ConsultaMovimentos = () => {
     const codigo = String(item?.codigo || '').trim();
     const descricao = String(item?.descricao || '').trim();
     const tipocontrolo = String(item?.tipocontrolo || '').trim().toUpperCase();
+    const setores = String(item?.setores || '').trim();
     setAddForm((prev) => ({
       ...prev,
       item_id: String(id),
       item_codigo: codigo,
       item_descricao: descricao,
       item_tipocontrolo: tipocontrolo,
+      item_setores: setores,
       serial: tipocontrolo === 'LOTE' ? '' : prev.serial,
       lote: tipocontrolo === 'SERIAL' ? '' : prev.lote,
     }));
+    setAddLocInicialEdited(false);
+    setAddNewLocalizacaoEdited(false);
     setAddItemSearch(codigo && descricao ? `${codigo} - ${descricao}` : (codigo || descricao));
     setAddItemResults([]);
   };
+
+  useEffect(() => {
+    if (!addLinhaOpen) return;
+    const isFerramenta = itemTemSetorFerramenta(addForm.item_setores);
+    if (!isFerramenta) return;
+    const origem = armazens.find((a) => String(a?.id) === String(addForm.armazem_origem_id || ''));
+    const tipoOrigem = normalizeTipoArmazem(origem?.tipo);
+    if (tipoOrigem !== 'viatura') return;
+    const codigoOrigem = String(origem?.codigo || '').trim();
+    if (!codigoOrigem) return;
+    const locFerr = `${codigoOrigem}.FERR`;
+    const locAtual = String(addForm.loc_inicial || '').trim();
+    if (locAtual === locFerr) return;
+    if (addLocInicialEdited && locAtual) return;
+    setAddForm((prev) => ({ ...prev, loc_inicial: locFerr }));
+    setAddLocInicialEdited(false);
+  }, [
+    addLinhaOpen,
+    addForm.item_setores,
+    addForm.armazem_origem_id,
+    addForm.loc_inicial,
+    armazens,
+    addLocInicialEdited,
+  ]);
+
+  useEffect(() => {
+    if (!addLinhaOpen) return;
+    const tipoMov = normalizeSearchText(addForm.tipo_movimento);
+    if (tipoMov !== 'saida de armazem' && tipoMov !== 'saída de armazém') return;
+    const isFerramenta = itemTemSetorFerramenta(addForm.item_setores);
+    if (!isFerramenta) return;
+    const destino = armazens.find((a) => String(a?.id) === String(addForm.novo_armazem_id || ''));
+    const tipoDestino = normalizeTipoArmazem(destino?.tipo);
+    if (tipoDestino !== 'viatura') return;
+    const codigoDestino = String(destino?.codigo || '').trim();
+    if (!codigoDestino) return;
+    const locFerr = `${codigoDestino}.FERR`;
+    const locAtual = String(addForm.new_localizacao || '').trim();
+    if (locAtual === locFerr) return;
+    if (addNewLocalizacaoEdited && locAtual) return;
+    setAddForm((prev) => ({ ...prev, new_localizacao: locFerr }));
+    setAddNewLocalizacaoEdited(false);
+  }, [
+    addLinhaOpen,
+    addForm.tipo_movimento,
+    addForm.item_setores,
+    addForm.novo_armazem_id,
+    addForm.new_localizacao,
+    armazens,
+    addNewLocalizacaoEdited,
+  ]);
 
   useEffect(() => {
     if (!addLinhaOpen) return;
@@ -431,6 +619,10 @@ const ConsultaMovimentos = () => {
       setToast({ type: 'error', message: 'Quantidade inválida.' });
       return;
     }
+    if (!String(addForm.armazem_origem_id || '').trim()) {
+      setToast({ type: 'error', message: 'Armazém de origem é obrigatório.' });
+      return;
+    }
     if (!String(addForm.loc_inicial || '').trim()) {
       setToast({ type: 'error', message: 'Loc inicial é obrigatória.' });
       return;
@@ -469,6 +661,7 @@ const ConsultaMovimentos = () => {
           data_movimento: addForm.data_movimento,
           item_id: itemIdNum,
           quantidade: qtdNum,
+          armazem_origem_id: Number(addForm.armazem_origem_id),
           loc_inicial: addForm.loc_inicial,
           serial: addForm.serial,
           lote: addForm.lote,
@@ -1203,26 +1396,53 @@ const ConsultaMovimentos = () => {
                 <div className="space-y-3">
                   {columns.map((c) => {
                     const editingThis = isAdmin && editingMovId === String(detailRow?.mov_id || '').trim();
+                    const codigoOrigemDaLocInicial =
+                      String(detailRow?.armazem_origem_codigo || '').trim() ||
+                      (String(detailRow?.Loc_Inicial || '')
+                        .split('.')
+                        .map((p) => p.trim())
+                        .filter(Boolean)
+                        .pop() || '—');
                     if (editingThis) {
                       return (
-                        <div key={c} className="border-b border-gray-100 pb-3 last:border-0 last:pb-0">
-                          <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">{c}</div>
-                          <input
-                            value={editingDraft[c] ?? ''}
-                            onChange={(e) => setEditingDraft((p) => ({ ...p, [c]: e.target.value }))}
-                            className="mt-1 w-full rounded border border-gray-300 px-2 py-1.5 text-sm"
-                            aria-label={c}
-                          />
-                        </div>
+                        <React.Fragment key={c}>
+                          <div className="border-b border-gray-100 pb-3 last:border-0 last:pb-0">
+                            <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">{c}</div>
+                            <input
+                              value={editingDraft[c] ?? ''}
+                              onChange={(e) => setEditingDraft((p) => ({ ...p, [c]: e.target.value }))}
+                              className="mt-1 w-full rounded border border-gray-300 px-2 py-1.5 text-sm"
+                              aria-label={c}
+                            />
+                          </div>
+                          {c === 'QTY' && (
+                            <div className="border-b border-gray-100 pb-3">
+                              <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+                                Armazém origem
+                              </div>
+                              <div className="mt-1 break-words text-sm text-gray-900">{codigoOrigemDaLocInicial}</div>
+                            </div>
+                          )}
+                        </React.Fragment>
                       );
                     }
                     return (
-                      <div key={c} className="border-b border-gray-100 pb-3 last:border-0 last:pb-0">
-                        <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">{c}</div>
-                        <div className="mt-1 break-words text-sm text-gray-900">
-                          {renderCellContent(detailRow, c, 0, true)}
+                      <React.Fragment key={c}>
+                        <div className="border-b border-gray-100 pb-3 last:border-0 last:pb-0">
+                          <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">{c}</div>
+                          <div className="mt-1 break-words text-sm text-gray-900">
+                            {renderCellContent(detailRow, c, 0, true)}
+                          </div>
                         </div>
-                      </div>
+                        {c === 'QTY' && (
+                          <div className="border-b border-gray-100 pb-3">
+                            <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+                              Armazém origem
+                            </div>
+                            <div className="mt-1 break-words text-sm text-gray-900">{codigoOrigemDaLocInicial}</div>
+                          </div>
+                        )}
+                      </React.Fragment>
                     );
                   })}
                 </div>
@@ -1342,7 +1562,9 @@ const ConsultaMovimentos = () => {
                             item_codigo: '',
                             item_descricao: '',
                             item_tipocontrolo: '',
+                            item_setores: '',
                           }));
+                          setAddLocInicialEdited(false);
                         }}
                         placeholder="Digite código ou descrição"
                         className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
@@ -1380,10 +1602,77 @@ const ConsultaMovimentos = () => {
                     />
                   </label>
                   <label className="text-sm text-gray-700">
+                    Armazém de origem *
+                    <input
+                      value={addOrigemArmazemSearch}
+                      onFocus={() => {
+                        setAddOrigemArmazemOpen(true);
+                      }}
+                      onBlur={() => {
+                        setTimeout(() => setAddOrigemArmazemOpen(false), 120);
+                      }}
+                      onChange={(e) => {
+                        const txt = e.target.value;
+                        setAddOrigemArmazemSearch(txt);
+                        setAddForm((p) => ({ ...p, armazem_origem_id: '' }));
+                        setAddOrigemArmazemOpen(true);
+                      }}
+                      placeholder="Pesquisar origem por código, descrição ou tipo"
+                      className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                    />
+                    {addOrigemArmazemOpen && (
+                      <div className="relative">
+                        <div className="absolute z-20 mt-1 max-h-56 w-full overflow-y-auto rounded-lg border border-gray-200 bg-white shadow-lg">
+                          {addOrigemArmazemResults.length > 0 ? (
+                            addOrigemArmazemResults.map((a) => {
+                              const label = a.codigo ? `${a.codigo} — ${a.descricao}` : a.descricao;
+                              return (
+                                <button
+                                  key={a.id}
+                                  type="button"
+                                  onMouseDown={(e) => e.preventDefault()}
+                                  onClick={() => {
+                                    setAddForm((p) => ({ ...p, armazem_origem_id: String(a.id) }));
+                                    setAddOrigemArmazemSearch(label || '');
+                                    setAddOrigemArmazemOpen(false);
+                                    setAddLocInicialEdited(false);
+                                  }}
+                                  className="block w-full border-b border-gray-100 px-3 py-2 text-left text-sm hover:bg-indigo-50"
+                                >
+                                  <span className="font-semibold">{a.codigo || '—'}</span>
+                                  {' - '}
+                                  {a.descricao || 'Sem descrição'}
+                                  {a.tipo ? <span className="text-gray-500">{` · ${a.tipo}`}</span> : null}
+                                </button>
+                              );
+                            })
+                          ) : (
+                            <div className="px-3 py-2 text-sm text-gray-500">
+                              {armazens.length === 0 ? 'A carregar armazéns...' : 'Sem resultados para este tipo de movimento'}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                    {addForm.armazem_origem_id && (
+                      <p className="mt-1 text-xs text-gray-500">
+                        Selecionado:{' '}
+                        {(() => {
+                          const selected = armazens.find((a) => String(a?.id) === String(addForm.armazem_origem_id));
+                          if (!selected) return addForm.armazem_origem_id;
+                          return selected.codigo ? `${selected.codigo} — ${selected.descricao}` : selected.descricao;
+                        })()}
+                      </p>
+                    )}
+                  </label>
+                  <label className="text-sm text-gray-700">
                     Loc inicial *
                     <input
                       value={addForm.loc_inicial}
-                      onChange={(e) => setAddForm((p) => ({ ...p, loc_inicial: e.target.value }))}
+                      onChange={(e) => {
+                        setAddLocInicialEdited(true);
+                        setAddForm((p) => ({ ...p, loc_inicial: e.target.value }));
+                      }}
                       className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
                     />
                   </label>
@@ -1405,18 +1694,68 @@ const ConsultaMovimentos = () => {
                   </label>
                   <label className="text-sm text-gray-700">
                     Novo armazém *
-                    <select
-                      value={addForm.novo_armazem_id}
-                      onChange={(e) => setAddForm((p) => ({ ...p, novo_armazem_id: e.target.value }))}
+                    <input
+                      value={addNovoArmazemSearch}
+                      onFocus={() => {
+                        setAddNovoArmazemOpen(true);
+                      }}
+                      onBlur={() => {
+                        setTimeout(() => setAddNovoArmazemOpen(false), 120);
+                      }}
+                      onChange={(e) => {
+                        const txt = e.target.value;
+                        setAddNovoArmazemSearch(txt);
+                        setAddForm((p) => ({ ...p, novo_armazem_id: '' }));
+                        setAddNewLocalizacaoEdited(false);
+                        setAddNovoArmazemOpen(true);
+                      }}
+                      placeholder="Pesquisar por código, descrição ou tipo (ex.: viatura)"
                       className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
-                    >
-                      <option value="">Selecione</option>
-                      {armazens.map((a) => (
-                        <option key={a.id} value={String(a.id)}>
-                          {a.codigo ? `${a.codigo} — ${a.descricao}` : a.descricao}
-                        </option>
-                      ))}
-                    </select>
+                    />
+                    {addNovoArmazemOpen && (
+                      <div className="relative">
+                        <div className="absolute z-20 mt-1 max-h-56 w-full overflow-y-auto rounded-lg border border-gray-200 bg-white shadow-lg">
+                          {addNovoArmazemResults.length > 0 ? (
+                            addNovoArmazemResults.map((a) => {
+                              const label = a.codigo ? `${a.codigo} — ${a.descricao}` : a.descricao;
+                              return (
+                                <button
+                                  key={a.id}
+                                  type="button"
+                                  onMouseDown={(e) => e.preventDefault()}
+                                  onClick={() => {
+                                    setAddForm((p) => ({ ...p, novo_armazem_id: String(a.id) }));
+                                    setAddNovoArmazemSearch(label || '');
+                                    setAddNewLocalizacaoEdited(false);
+                                    setAddNovoArmazemOpen(false);
+                                  }}
+                                  className="block w-full border-b border-gray-100 px-3 py-2 text-left text-sm hover:bg-indigo-50"
+                                >
+                                  <span className="font-semibold">{a.codigo || '—'}</span>
+                                  {' - '}
+                                  {a.descricao || 'Sem descrição'}
+                                  {a.tipo ? <span className="text-gray-500">{` · ${a.tipo}`}</span> : null}
+                                </button>
+                              );
+                            })
+                          ) : (
+                            <div className="px-3 py-2 text-sm text-gray-500">
+                              {armazens.length === 0 ? 'A carregar armazéns...' : 'Sem resultados para este tipo de movimento'}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                    {addForm.novo_armazem_id && (
+                      <p className="mt-1 text-xs text-gray-500">
+                        Selecionado:{' '}
+                        {(() => {
+                          const selected = armazens.find((a) => String(a?.id) === String(addForm.novo_armazem_id));
+                          if (!selected) return addForm.novo_armazem_id;
+                          return selected.codigo ? `${selected.codigo} — ${selected.descricao}` : selected.descricao;
+                        })()}
+                      </p>
+                    )}
                   </label>
                   <label className="text-sm text-gray-700">
                     TRA / DEV *
@@ -1438,7 +1777,10 @@ const ConsultaMovimentos = () => {
                     Nova localização *
                     <input
                       value={addForm.new_localizacao}
-                      onChange={(e) => setAddForm((p) => ({ ...p, new_localizacao: e.target.value }))}
+                      onChange={(e) => {
+                        setAddNewLocalizacaoEdited(true);
+                        setAddForm((p) => ({ ...p, new_localizacao: e.target.value }));
+                      }}
                       className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
                     />
                   </label>

@@ -5262,18 +5262,48 @@ router.get('/movimentos-clog/consulta', ...requisicaoAuth, denyOnlyOperador, asy
         [reqIds]
       );
       const byReqId = new Map((metaQ.rows || []).map((m) => [Number(m.id), m]));
+      const armIds = [...new Set(
+        rowsList
+          .flatMap((r) => [Number(r?.armazem_origem_id || 0), Number(r?.armazem_id || 0)])
+          .filter((n) => Number.isFinite(n) && n > 0)
+      )];
+      let byArmId = new Map();
+      if (armIds.length) {
+        const armQ = await pool.query(
+          `SELECT id, codigo, descricao
+           FROM armazens
+           WHERE id = ANY($1::int[])`,
+          [armIds]
+        );
+        byArmId = new Map((armQ.rows || []).map((a) => [Number(a.id), a]));
+      }
       return rowsList.map((row) => {
         const rid = Number(row?.requisicao_id || 0);
         const meta = byReqId.get(rid);
-        if (!meta) return row;
+        const origemId = Number(row?.armazem_origem_id || meta?.armazem_origem_id || 0);
+        const destinoId = Number(row?.armazem_id || meta?.armazem_id || 0);
+        const armOrigem = byArmId.get(origemId);
+        const armDestino = byArmId.get(destinoId);
         return {
           ...row,
-          armazem_origem_id: row?.armazem_origem_id ?? meta.armazem_origem_id ?? null,
-          armazem_id: row?.armazem_id ?? meta.armazem_id ?? null,
-          armazem_origem_codigo: row?.armazem_origem_codigo || meta.armazem_origem_codigo || '',
-          armazem_destino_codigo: row?.armazem_destino_codigo || meta.armazem_destino_codigo || '',
-          armazem_origem_descricao: row?.armazem_origem_descricao || meta.armazem_origem_descricao || '',
-          armazem_destino_descricao: row?.armazem_destino_descricao || meta.armazem_destino_descricao || '',
+          armazem_origem_id: row?.armazem_origem_id ?? meta?.armazem_origem_id ?? null,
+          armazem_id: row?.armazem_id ?? meta?.armazem_id ?? null,
+          armazem_origem_codigo:
+            row?.armazem_origem_codigo ||
+            meta?.armazem_origem_codigo ||
+            String(armOrigem?.codigo || '').trim(),
+          armazem_destino_codigo:
+            row?.armazem_destino_codigo ||
+            meta?.armazem_destino_codigo ||
+            String(armDestino?.codigo || '').trim(),
+          armazem_origem_descricao:
+            row?.armazem_origem_descricao ||
+            meta?.armazem_origem_descricao ||
+            String(armOrigem?.descricao || '').trim(),
+          armazem_destino_descricao:
+            row?.armazem_destino_descricao ||
+            meta?.armazem_destino_descricao ||
+            String(armDestino?.descricao || '').trim(),
         };
       });
     };
@@ -5821,6 +5851,7 @@ router.post('/movimentos-clog/linha', ...requisicaoAuth, denyOperador, async (re
     const dataIn = req.body?.data_movimento;
     const itemId = Number(req.body?.item_id || 0);
     const qtdIn = Number(req.body?.quantidade);
+    const armazemOrigemId = Number(req.body?.armazem_origem_id || 0);
     const locInicial = String(req.body?.loc_inicial || '').trim();
     const serial = String(req.body?.serial || '').trim();
     const lote = String(req.body?.lote || '').trim();
@@ -5844,6 +5875,9 @@ router.post('/movimentos-clog/linha', ...requisicaoAuth, denyOperador, async (re
     if (!Number.isFinite(qtdIn) || qtdIn === 0) {
       return res.status(400).json({ error: 'Quantidade inválida.' });
     }
+    if (!Number.isFinite(armazemOrigemId) || armazemOrigemId <= 0) {
+      return res.status(400).json({ error: 'Armazém de origem é obrigatório.' });
+    }
     if (!locInicial) {
       return res.status(400).json({ error: 'Loc inicial é obrigatória.' });
     }
@@ -5860,6 +5894,9 @@ router.post('/movimentos-clog/linha', ...requisicaoAuth, denyOperador, async (re
 
     if (!isAdmin(req.user?.role)) {
       const allowedScopeIds = Array.isArray(req.requisicaoArmazemOrigemIds) ? req.requisicaoArmazemOrigemIds : [];
+      if (!allowedScopeIds.includes(armazemOrigemId)) {
+        return res.status(403).json({ error: 'Armazém de origem fora do escopo do utilizador.' });
+      }
       if (!allowedScopeIds.includes(armazemDestinoId)) {
         return res.status(403).json({ error: 'Armazém fora do escopo do utilizador.' });
       }
@@ -5883,6 +5920,18 @@ router.post('/movimentos-clog/linha', ...requisicaoAuth, denyOperador, async (re
     if (tipoControlo === 'LOTE' && !lote) {
       return res.status(400).json({ error: 'Lote é obrigatório para artigo de controlo lote.' });
     }
+
+    const armOrigemQ = await pool.query(
+      `SELECT id, codigo, descricao, tipo
+       FROM armazens
+       WHERE id = $1
+       LIMIT 1`,
+      [armazemOrigemId]
+    );
+    if (armOrigemQ.rows.length === 0) {
+      return res.status(404).json({ error: 'Armazém de origem não encontrado.' });
+    }
+    const armOrigem = armOrigemQ.rows[0];
 
     const armQ = await pool.query(
       `SELECT id, codigo, descricao, tipo
@@ -5915,7 +5964,10 @@ router.post('/movimentos-clog/linha', ...requisicaoAuth, denyOperador, async (re
       'New Localização': newLocalizacao,
       Observações: observacoes,
       DEP: dep,
-      armazem_origem_id: null,
+      armazem_origem_id: Number(armOrigem.id),
+      armazem_origem_codigo: String(armOrigem?.codigo || '').trim(),
+      armazem_origem_descricao: String(armOrigem?.descricao || '').trim(),
+      armazem_origem_tipo: String(armOrigem?.tipo || '').trim().toLowerCase(),
       armazem_id: Number(arm.id),
       armazem_destino_codigo: String(arm?.codigo || '').trim(),
       armazem_destino_descricao: String(arm?.descricao || '').trim(),
