@@ -2,7 +2,9 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import Toast from '../components/Toast';
 
 const PAGE_SIZE = 40;
-const MAX_PAGES = 250;
+const MAX_PAGES = 80;
+const VIATURAS_PAGE_SIZE = 10;
+const STATUS_PENDENTES = new Set(['pendente', 'em separacao', 'separado', 'em expedicao', 'apeados']);
 
 function normalizeDateFilterValue(raw) {
   const s = String(raw || '').trim();
@@ -56,18 +58,73 @@ function detectarViaturaDaLinha(row, tiposPorId, viaturaIdsFallback) {
   return null;
 }
 
+function statusRequisicaoPendente(rawStatus) {
+  const s = String(rawStatus || '')
+    .trim()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+  return STATUS_PENDENTES.has(s);
+}
+
+function formatDateTime(value) {
+  if (!value) return '—';
+  const dt = new Date(value);
+  if (Number.isNaN(dt.getTime())) return '—';
+  const dd = String(dt.getDate()).padStart(2, '0');
+  const mm = String(dt.getMonth() + 1).padStart(2, '0');
+  const yyyy = dt.getFullYear();
+  const hh = String(dt.getHours()).padStart(2, '0');
+  const mi = String(dt.getMinutes()).padStart(2, '0');
+  return `${dd}/${mm}/${yyyy} ${hh}:${mi}`;
+}
+
+function extrairSeriaisDoItem(item) {
+  const out = [];
+  const addStr = (v) => {
+    for (const s of parseSeriais(v)) out.push(s);
+  };
+  const addArr = (arr) => {
+    for (const v of arr || []) addStr(v);
+  };
+
+  if (Array.isArray(item?.seriais)) addArr(item.seriais);
+  if (Array.isArray(item?.serials)) addArr(item.serials);
+  if (Array.isArray(item?.serial_numbers)) addArr(item.serial_numbers);
+  addStr(item?.seriais_texto);
+  addStr(item?.serialnumber);
+  addStr(item?.serialnumbers);
+  addStr(item?.serial);
+  addStr(item?.sn);
+
+  return Array.from(new Set(out.filter(Boolean)));
+}
+
 const DashboardViaturas = () => {
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState(null);
   const [armazens, setArmazens] = useState([]);
   const [rows, setRows] = useState([]);
+  const [requisicoesPendentesEntrega, setRequisicoesPendentesEntrega] = useState([]);
+  const [requisicoesPendentesDevolucao, setRequisicoesPendentesDevolucao] = useState([]);
   const [selectedViaturaId, setSelectedViaturaId] = useState('');
+  const [filtroViaturaBusca, setFiltroViaturaBusca] = useState('');
+  const [filtroViaturaOpen, setFiltroViaturaOpen] = useState(false);
+  const [viaturasPage, setViaturasPage] = useState(1);
+  const [selectedReqDetail, setSelectedReqDetail] = useState(null);
+  const [selectedReqSeriais, setSelectedReqSeriais] = useState(null);
+  const [expandReqPend, setExpandReqPend] = useState(false);
+  const [expandReqConc, setExpandReqConc] = useState(false);
+  const [expandDevPend, setExpandDevPend] = useState(false);
+  const [expandDevConc, setExpandDevConc] = useState(false);
+  const [filtroReqPend, setFiltroReqPend] = useState('');
+  const [filtroReqConc, setFiltroReqConc] = useState('');
+  const [filtroDevPend, setFiltroDevPend] = useState('');
+  const [filtroDevConc, setFiltroDevConc] = useState('');
   const [filtros, setFiltros] = useState({
     data_inicio: '',
     data_fim: '',
     armazem_id: '',
-    ref: '',
-    description: '',
   });
 
   const tiposPorId = useMemo(() => {
@@ -117,9 +174,11 @@ const DashboardViaturas = () => {
       const dataMeus = responseMeus.ok ? await responseMeus.json().catch(() => ({})) : {};
       const dataAll = responseAll.ok ? await responseAll.json().catch(() => ({})) : {};
       const rowsMeus = Array.isArray(dataMeus?.rows) ? dataMeus.rows : [];
-      const rowsAll = Array.isArray(dataAll?.armazens)
-        ? dataAll.armazens
-        : (Array.isArray(dataAll?.rows) ? dataAll.rows : []);
+      const rowsAll = Array.isArray(dataAll)
+        ? dataAll
+        : (Array.isArray(dataAll?.armazens)
+            ? dataAll.armazens
+            : (Array.isArray(dataAll?.rows) ? dataAll.rows : []));
       const merged = new Map();
       for (const a of [...rowsAll, ...rowsMeus]) {
         const id = Number(a?.id || 0);
@@ -149,8 +208,6 @@ const DashboardViaturas = () => {
       if (dataInicioNorm) params.set('data_inicio', dataInicioNorm);
       if (dataFimNorm) params.set('data_fim', dataFimNorm);
       if (String(targetFiltros?.armazem_id || '').trim()) params.set('armazem_id', String(targetFiltros.armazem_id));
-      if (String(targetFiltros?.ref || '').trim()) params.set('ref', String(targetFiltros.ref).trim());
-      if (String(targetFiltros?.description || '').trim()) params.set('description', String(targetFiltros.description).trim());
 
       const response = await fetch(`/api/requisicoes/movimentos-clog/consulta?${params.toString()}`, {
         headers: { Authorization: `Bearer ${token}` },
@@ -172,22 +229,53 @@ const DashboardViaturas = () => {
     return rowsOut;
   }, []);
 
+  const fetchRequisicoesPendentes = useCallback(async () => {
+    const token = localStorage.getItem('token');
+    const [resEntrega, resDevolucao] = await Promise.all([
+      fetch('/api/requisicoes', {
+        headers: { Authorization: `Bearer ${token}` },
+        cache: 'no-store',
+      }),
+      fetch('/api/requisicoes?devolucoes=1', {
+        headers: { Authorization: `Bearer ${token}` },
+        cache: 'no-store',
+      }),
+    ]);
+    if (!resEntrega.ok || !resDevolucao.ok) {
+      const dataEntrega = await resEntrega.json().catch(() => ({}));
+      const dataDevolucao = await resDevolucao.json().catch(() => ({}));
+      throw new Error(
+        dataEntrega?.error ||
+          dataDevolucao?.error ||
+          'Erro ao carregar pendentes de entrega/devolução'
+      );
+    }
+    const dataEntrega = await resEntrega.json().catch(() => ([]));
+    const dataDevolucao = await resDevolucao.json().catch(() => ([]));
+    return {
+      entrega: Array.isArray(dataEntrega) ? dataEntrega : [],
+      devolucao: Array.isArray(dataDevolucao) ? dataDevolucao : [],
+    };
+  }, []);
+
   const carregarDashboard = useCallback(async () => {
     try {
       setLoading(true);
       setToast(null);
-      const allRows = await fetchAllRows(filtros);
+      const [{ entrega, devolucao }, allRows] = await Promise.all([
+        fetchRequisicoesPendentes(),
+        fetchAllRows(filtros),
+      ]);
+      setRequisicoesPendentesEntrega(entrega);
+      setRequisicoesPendentesDevolucao(devolucao);
       setRows(allRows);
-      if (selectedViaturaId && !allRows.some((r) => Number(r?.armazem_id || 0) === Number(selectedViaturaId) || Number(r?.armazem_origem_id || 0) === Number(selectedViaturaId))) {
-        setSelectedViaturaId('');
-      }
     } catch (error) {
       setToast({ type: 'error', message: error.message || 'Erro ao carregar dashboard' });
       setRows([]);
     } finally {
       setLoading(false);
     }
-  }, [fetchAllRows, filtros, selectedViaturaId]);
+  }, [fetchAllRows, fetchRequisicoesPendentes, filtros]);
 
   useEffect(() => {
     carregarArmazens();
@@ -207,7 +295,8 @@ const DashboardViaturas = () => {
     const byViatura = new Map();
     let totalAbastecido = 0;
     let totalDevolvido = 0;
-    let totalSeriais = 0;
+    let totalPendentesEntrega = 0;
+    let totalDevolucoesPendentes = 0;
 
     for (const row of rows || []) {
       const v = detectarViaturaDaLinha(row, tiposPorId, viaturaIdsFallback);
@@ -221,23 +310,27 @@ const DashboardViaturas = () => {
         viatura_id: Number(v.id || 0) || null,
         viatura_nome: nome,
         abastecido: 0,
+        abastecido_qtd: 0,
         devolvido: 0,
+        devolvido_qtd: 0,
+        requisicoes_atendidas_set: new Set(),
+        devolucoes_set: new Set(),
+        pendentes_entrega: 0,
+        devolucoes_pendentes: 0,
         movimentos: 0,
-        serials: 0,
         ultimo_ts: 0,
         ultimo_texto: '',
       };
 
       if (v.sentido === 'entrada') {
-        current.abastecido += qtdAbs;
-        totalAbastecido += qtdAbs;
+        current.abastecido_qtd += qtdAbs;
+        const reqId = Number(row?.requisicao_id || 0);
+        if (reqId > 0) current.requisicoes_atendidas_set.add(reqId);
       } else {
-        current.devolvido += qtdAbs;
-        totalDevolvido += qtdAbs;
+        current.devolvido_qtd += qtdAbs;
+        const reqId = Number(row?.requisicao_id || 0);
+        if (reqId > 0) current.devolucoes_set.add(reqId);
       }
-      const serialCount = parseSeriais(row?.['S/N']).length;
-      current.serials += serialCount;
-      totalSeriais += serialCount;
       current.movimentos += 1;
       const ts = parseDateBR(row?.['Dt_Recepção']);
       if (ts >= current.ultimo_ts) {
@@ -247,38 +340,136 @@ const DashboardViaturas = () => {
       byViatura.set(key, current);
     }
 
+    const pendentesEntregaPorViatura = new Map();
+    for (const req of requisicoesPendentesEntrega || []) {
+      if (!statusRequisicaoPendente(req?.status)) continue;
+      const viaturaId = Number(req?.armazem_id || 0);
+      if (!viaturaId || !viaturaIdsFallback.has(viaturaId)) continue;
+      const set = pendentesEntregaPorViatura.get(viaturaId) || new Set();
+      set.add(Number(req?.id || 0));
+      pendentesEntregaPorViatura.set(viaturaId, set);
+    }
+
+    const devolucoesPendentesPorViatura = new Map();
+    for (const req of requisicoesPendentesDevolucao || []) {
+      if (!statusRequisicaoPendente(req?.status)) continue;
+      const viaturaId = Number(req?.armazem_origem_id || 0);
+      if (!viaturaId || !viaturaIdsFallback.has(viaturaId)) continue;
+      const set = devolucoesPendentesPorViatura.get(viaturaId) || new Set();
+      set.add(Number(req?.id || 0));
+      devolucoesPendentesPorViatura.set(viaturaId, set);
+    }
+
     const lista = Array.from(byViatura.values())
-      .map((x) => ({ ...x, saldo: x.abastecido - x.devolvido }))
+      .map((x) => {
+        const requisicoesAtendidas = x.requisicoes_atendidas_set.size;
+        const devolucoes = x.devolucoes_set.size;
+        const pendentesEntrega = (pendentesEntregaPorViatura.get(Number(x.viatura_id || 0)) || new Set()).size;
+        const devolucoesPendentes = (devolucoesPendentesPorViatura.get(Number(x.viatura_id || 0)) || new Set()).size;
+        totalAbastecido += requisicoesAtendidas;
+        totalDevolvido += devolucoes;
+        totalPendentesEntrega += pendentesEntrega;
+        totalDevolucoesPendentes += devolucoesPendentes;
+        return {
+          ...x,
+          abastecido: requisicoesAtendidas,
+          devolvido: devolucoes,
+          pendentes_entrega: pendentesEntrega,
+          devolucoes_pendentes: devolucoesPendentes,
+        };
+      })
       .sort((a, b) => b.abastecido - a.abastecido || b.movimentos - a.movimentos);
 
     return {
       lista,
       totalAbastecido,
       totalDevolvido,
-      totalSeriais,
+      totalPendentesEntrega,
+      totalDevolucoesPendentes,
       totalViaturas: lista.length,
     };
-  }, [rows, tiposPorId, viaturaIdsFallback]);
+  }, [rows, viaturaIdsFallback, requisicoesPendentesEntrega, requisicoesPendentesDevolucao]);
 
   const detalhesViatura = useMemo(() => {
     const selected = Number(selectedViaturaId || 0);
-    if (!selected) return [];
-    const itens = new Map();
-    for (const row of rows || []) {
-      const v = detectarViaturaDaLinha(row, tiposPorId, viaturaIdsFallback);
-      if (!v || Number(v.id || 0) !== selected) continue;
-      const ref = String(row?.['REF.'] || '').trim();
-      const desc = String(row?.DESCRIPTION || '').trim();
-      const key = `${ref}__${desc}`;
-      const current = itens.get(key) || { ref, description: desc, abastecido: 0, devolvido: 0, saldo: 0 };
-      const qty = Math.abs(numberOrZero(row?.QTY));
-      if (v.sentido === 'entrada') current.abastecido += qty;
-      else current.devolvido += qty;
-      current.saldo = current.abastecido - current.devolvido;
-      itens.set(key, current);
+    if (!selected) {
+      return {
+        requisicoesPendentes: [],
+        requisicoesConcluidas: [],
+        devolucoesPendentes: [],
+        devolucoesConcluidas: [],
+      };
     }
-    return Array.from(itens.values()).sort((a, b) => b.abastecido - a.abastecido);
-  }, [rows, selectedViaturaId, tiposPorId, viaturaIdsFallback]);
+    const normalizeReq = (req) => ({
+      id: Number(req?.id || 0),
+      status: String(req?.status || '').trim() || '—',
+      data: formatDateTime(req?.created_at),
+      tra_dev: String(req?.tra_numero || req?.devolucao_tra_apeados_numero || '').trim() || '—',
+      descricao: String(req?.descricao || req?.armazem_descricao || '').trim() || '—',
+      itens: Array.isArray(req?.itens) ? req.itens : [],
+      raw: req,
+    });
+
+    const reqBase = (requisicoesPendentesEntrega || [])
+      .filter((req) => Number(req?.armazem_id || 0) === selected)
+      .map(normalizeReq)
+      .sort((a, b) => b.id - a.id);
+    const devBase = (requisicoesPendentesDevolucao || [])
+      .filter((req) => Number(req?.armazem_origem_id || 0) === selected)
+      .map(normalizeReq)
+      .sort((a, b) => b.id - a.id);
+
+    return {
+      requisicoesPendentes: reqBase.filter((x) => statusRequisicaoPendente(x.status)),
+      requisicoesConcluidas: reqBase.filter((x) => !statusRequisicaoPendente(x.status)),
+      devolucoesPendentes: devBase.filter((x) => statusRequisicaoPendente(x.status)),
+      devolucoesConcluidas: devBase.filter((x) => !statusRequisicaoPendente(x.status)),
+    };
+  }, [selectedViaturaId, requisicoesPendentesEntrega, requisicoesPendentesDevolucao]);
+
+  const filtrarListaReq = useCallback((lista, filtro) => {
+    const q = String(filtro || '').trim().toLowerCase();
+    if (!q) return Array.isArray(lista) ? lista : [];
+    const match = (r) => {
+      const idTxt = String(r?.id || '').toLowerCase();
+      const dataTxt = String(r?.data || '').toLowerCase();
+      const traTxt = String(r?.tra_dev || '').toLowerCase();
+      return idTxt.includes(q) || dataTxt.includes(q) || traTxt.includes(q);
+    };
+    return (lista || []).filter(match);
+  }, []);
+
+  const reqPendLista = useMemo(
+    () => filtrarListaReq(detalhesViatura.requisicoesPendentes, filtroReqPend),
+    [detalhesViatura.requisicoesPendentes, filtroReqPend, filtrarListaReq]
+  );
+  const reqConcLista = useMemo(
+    () => filtrarListaReq(detalhesViatura.requisicoesConcluidas, filtroReqConc),
+    [detalhesViatura.requisicoesConcluidas, filtroReqConc, filtrarListaReq]
+  );
+  const devPendLista = useMemo(
+    () => filtrarListaReq(detalhesViatura.devolucoesPendentes, filtroDevPend),
+    [detalhesViatura.devolucoesPendentes, filtroDevPend, filtrarListaReq]
+  );
+  const devConcLista = useMemo(
+    () => filtrarListaReq(detalhesViatura.devolucoesConcluidas, filtroDevConc),
+    [detalhesViatura.devolucoesConcluidas, filtroDevConc, filtrarListaReq]
+  );
+
+  const itensRequisicaoSelecionada = useMemo(() => {
+    const itens = Array.isArray(selectedReqDetail?.itens) ? selectedReqDetail.itens : [];
+    return itens.map((it, idx) => {
+      const seriais = extrairSeriaisDoItem(it);
+      return {
+        key: `${selectedReqDetail?.id || 'req'}-${Number(it?.id || 0) || idx}`,
+        ref: String(it?.item_codigo || it?.codigo || '').trim() || '—',
+        descricao: String(it?.item_descricao || it?.descricao || '').trim() || '—',
+        qtd: Number(it?.quantidade_preparada ?? it?.quantidade ?? 0) || 0,
+        lote: String(it?.lote || it?.batch || '').trim() || '—',
+        seriais,
+      };
+    });
+  }, [selectedReqDetail]);
 
   const viaturasSelectOptions = useMemo(() => {
     const byId = new Map();
@@ -287,15 +478,52 @@ const DashboardViaturas = () => {
       if (!id) continue;
       byId.set(id, String(v?.descricao || v?.codigo || `Viatura ${id}`).trim());
     }
-    for (const agg of agregados.lista || []) {
-      const id = Number(agg?.viatura_id || 0);
-      if (!id) continue;
-      if (!byId.has(id)) byId.set(id, String(agg?.viatura_nome || `Viatura ${id}`).trim());
-    }
     return Array.from(byId.entries())
       .map(([id, nome]) => ({ id, nome: nome || `Viatura ${id}` }))
       .sort((a, b) => a.nome.localeCompare(b.nome));
-  }, [armazensViatura, agregados.lista]);
+  }, [armazensViatura]);
+
+  const viaturasSelectFiltradas = useMemo(() => {
+    const q = String(filtroViaturaBusca || '').trim().toLowerCase();
+    const base = Array.isArray(viaturasSelectOptions) ? viaturasSelectOptions : [];
+    if (!q) return base.slice(0, 60);
+    return base
+      .filter((v) => String(v?.nome || '').toLowerCase().includes(q) || String(v?.id || '').includes(q))
+      .slice(0, 60);
+  }, [viaturasSelectOptions, filtroViaturaBusca]);
+
+  useEffect(() => {
+    const id = Number(filtros.armazem_id || 0);
+    if (!id) {
+      setFiltroViaturaBusca('');
+      return;
+    }
+    const selected = (viaturasSelectOptions || []).find((v) => Number(v?.id || 0) === id);
+    if (selected) setFiltroViaturaBusca(String(selected.nome || ''));
+  }, [filtros.armazem_id, viaturasSelectOptions]);
+
+  const totalPaginasViaturas = useMemo(
+    () => Math.max(1, Math.ceil((agregados.lista || []).length / VIATURAS_PAGE_SIZE)),
+    [agregados.lista]
+  );
+
+  const viaturasPaginaAtual = useMemo(
+    () => Math.min(Math.max(1, Number(viaturasPage) || 1), totalPaginasViaturas),
+    [viaturasPage, totalPaginasViaturas]
+  );
+
+  const viaturasPaginadas = useMemo(() => {
+    const start = (viaturasPaginaAtual - 1) * VIATURAS_PAGE_SIZE;
+    return (agregados.lista || []).slice(start, start + VIATURAS_PAGE_SIZE);
+  }, [agregados.lista, viaturasPaginaAtual]);
+
+  useEffect(() => {
+    setViaturasPage(1);
+  }, [filtros.data_inicio, filtros.data_fim, filtros.armazem_id]);
+
+  useEffect(() => {
+    if (viaturasPage > totalPaginasViaturas) setViaturasPage(totalPaginasViaturas);
+  }, [viaturasPage, totalPaginasViaturas]);
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-blue-50 via-indigo-50 to-white p-4 md:p-6">
@@ -322,40 +550,61 @@ const DashboardViaturas = () => {
             </div>
             <div>
               <label className="block text-xs font-medium text-gray-600 mb-1">Viatura</label>
-              <select
-                value={filtros.armazem_id}
-                onChange={(e) => {
-                  const viaturaId = String(e.target.value || '');
-                  setFiltros((prev) => ({ ...prev, armazem_id: viaturaId }));
-                  setSelectedViaturaId(viaturaId);
-                }}
-                className="h-10 rounded-lg border border-gray-300 px-3 text-sm min-w-[220px]"
-              >
-                <option value="">Todas</option>
-                {viaturasSelectOptions.map((v) => (
-                  <option key={v.id} value={v.id}>
-                    {v.nome}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-gray-600 mb-1">REF.</label>
-              <input
-                value={filtros.ref}
-                onChange={(e) => setFiltros((prev) => ({ ...prev, ref: e.target.value }))}
-                placeholder="Filtrar por referência"
-                className="h-10 rounded-lg border border-gray-300 px-3 text-sm"
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-gray-600 mb-1">Descrição</label>
-              <input
-                value={filtros.description}
-                onChange={(e) => setFiltros((prev) => ({ ...prev, description: e.target.value }))}
-                placeholder="Filtrar por descrição"
-                className="h-10 rounded-lg border border-gray-300 px-3 text-sm"
-              />
+              <div className="relative min-w-[220px]">
+                <input
+                  value={filtroViaturaBusca}
+                  onFocus={() => setFiltroViaturaOpen(true)}
+                  onBlur={() => {
+                    setTimeout(() => setFiltroViaturaOpen(false), 120);
+                  }}
+                  onChange={(e) => {
+                    const txt = e.target.value;
+                    setFiltroViaturaBusca(txt);
+                    setFiltros((prev) => ({ ...prev, armazem_id: '' }));
+                    setSelectedViaturaId('');
+                    setFiltroViaturaOpen(true);
+                  }}
+                  placeholder="Pesquisar viatura"
+                  className="h-10 w-full rounded-lg border border-gray-300 px-3 text-sm"
+                />
+                {filtroViaturaOpen && (
+                  <div className="absolute z-20 mt-1 max-h-64 w-full overflow-y-auto rounded-lg border border-gray-200 bg-white shadow-lg">
+                    <button
+                      type="button"
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => {
+                        setFiltros((prev) => ({ ...prev, armazem_id: '' }));
+                        setSelectedViaturaId('');
+                        setFiltroViaturaBusca('');
+                        setFiltroViaturaOpen(false);
+                      }}
+                      className="block w-full border-b border-gray-100 px-3 py-2 text-left text-sm hover:bg-indigo-50"
+                    >
+                      Todas
+                    </button>
+                    {viaturasSelectFiltradas.map((v) => (
+                      <button
+                        key={v.id}
+                        type="button"
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => {
+                          const viaturaId = String(v.id || '');
+                          setFiltros((prev) => ({ ...prev, armazem_id: viaturaId }));
+                          setSelectedViaturaId(viaturaId);
+                          setFiltroViaturaBusca(String(v.nome || ''));
+                          setFiltroViaturaOpen(false);
+                        }}
+                        className="block w-full border-b border-gray-100 px-3 py-2 text-left text-sm hover:bg-indigo-50"
+                      >
+                        {v.nome}
+                      </button>
+                    ))}
+                    {!viaturasSelectFiltradas.length && (
+                      <div className="px-3 py-2 text-sm text-gray-500">Sem resultados</div>
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
             <button
               type="button"
@@ -374,16 +623,16 @@ const DashboardViaturas = () => {
             <div className="text-2xl font-bold text-gray-900">{agregados.totalViaturas}</div>
           </div>
           <div className="bg-white border border-emerald-100 rounded-xl p-4">
-            <div className="text-xs text-gray-500">Total abastecido</div>
+            <div className="text-xs text-gray-500">Req. atendidas</div>
             <div className="text-2xl font-bold text-emerald-700">{agregados.totalAbastecido}</div>
           </div>
           <div className="bg-white border border-amber-100 rounded-xl p-4">
-            <div className="text-xs text-gray-500">Total devolvido</div>
+            <div className="text-xs text-gray-500">Devoluções (req.)</div>
             <div className="text-2xl font-bold text-amber-700">{agregados.totalDevolvido}</div>
           </div>
           <div className="bg-white border border-violet-100 rounded-xl p-4">
-            <div className="text-xs text-gray-500">Seriais movimentados</div>
-            <div className="text-2xl font-bold text-violet-700">{agregados.totalSeriais}</div>
+            <div className="text-xs text-gray-500">Devoluções pendentes (req.)</div>
+            <div className="text-2xl font-bold text-violet-700">{agregados.totalDevolucoesPendentes}</div>
           </div>
         </div>
 
@@ -392,17 +641,17 @@ const DashboardViaturas = () => {
             <table className="w-full text-sm">
               <thead className="bg-[#F6F8FF] text-gray-700">
                 <tr>
-                  <th className="text-left px-4 py-3">Viatura</th>
-                  <th className="text-right px-4 py-3">Abastecido</th>
-                  <th className="text-right px-4 py-3">Devolvido</th>
-                  <th className="text-right px-4 py-3">Saldo</th>
-                  <th className="text-right px-4 py-3">Movimentos</th>
-                  <th className="text-right px-4 py-3">Seriais</th>
-                  <th className="text-right px-4 py-3">Último movimento</th>
+                  <th className="text-center px-4 py-3">Viatura</th>
+                  <th className="text-center px-4 py-3">Abastecido</th>
+                  <th className="text-center px-4 py-3">Devolvido</th>
+                  <th className="text-center px-4 py-3">Pendentes entrega</th>
+                  <th className="text-center px-4 py-3">Devoluções pendentes</th>
+                  <th className="text-center px-4 py-3">Movimentos</th>
+                  <th className="text-center px-4 py-3">Último movimento</th>
                 </tr>
               </thead>
               <tbody>
-                {agregados.lista.map((row) => {
+                {viaturasPaginadas.map((row) => {
                   const active = Number(selectedViaturaId || 0) === Number(row.viatura_id || 0);
                   return (
                     <tr
@@ -410,13 +659,13 @@ const DashboardViaturas = () => {
                       onClick={() => setSelectedViaturaId(String(row.viatura_id || ''))}
                       className={`border-t cursor-pointer ${active ? 'bg-blue-50' : 'hover:bg-gray-50'}`}
                     >
-                      <td className="px-4 py-3 font-medium text-gray-900">{row.viatura_nome}</td>
-                      <td className="px-4 py-3 text-right text-emerald-700 font-semibold">{row.abastecido}</td>
-                      <td className="px-4 py-3 text-right text-amber-700 font-semibold">{row.devolvido}</td>
-                      <td className="px-4 py-3 text-right font-semibold">{row.saldo}</td>
-                      <td className="px-4 py-3 text-right">{row.movimentos}</td>
-                      <td className="px-4 py-3 text-right">{row.serials}</td>
-                      <td className="px-4 py-3 text-right">{row.ultimo_texto || '—'}</td>
+                      <td className="px-4 py-3 text-center font-medium text-gray-900">{row.viatura_nome}</td>
+                      <td className="px-4 py-3 text-center text-emerald-700 font-semibold">{row.abastecido}</td>
+                      <td className="px-4 py-3 text-center text-amber-700 font-semibold">{row.devolvido}</td>
+                      <td className="px-4 py-3 text-center font-semibold">{row.pendentes_entrega}</td>
+                      <td className="px-4 py-3 text-center">{row.devolucoes_pendentes}</td>
+                      <td className="px-4 py-3 text-center">{row.movimentos}</td>
+                      <td className="px-4 py-3 text-center">{row.ultimo_texto || '—'}</td>
                     </tr>
                   );
                 })}
@@ -430,38 +679,322 @@ const DashboardViaturas = () => {
               </tbody>
             </table>
           </div>
+          {agregados.lista.length > 0 && (
+            <div className="flex items-center justify-end gap-2 border-t border-gray-200 px-4 py-3 bg-white">
+              <button
+                type="button"
+                onClick={() => setViaturasPage((p) => Math.max(1, p - 1))}
+                disabled={viaturasPaginaAtual <= 1}
+                className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm disabled:opacity-50 hover:bg-gray-50"
+              >
+                Anterior
+              </button>
+              <span className="text-sm text-gray-600">
+                Página {viaturasPaginaAtual} / {totalPaginasViaturas}
+              </span>
+              <button
+                type="button"
+                onClick={() => setViaturasPage((p) => Math.min(totalPaginasViaturas, p + 1))}
+                disabled={viaturasPaginaAtual >= totalPaginasViaturas}
+                className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm disabled:opacity-50 hover:bg-gray-50"
+              >
+                Próxima
+              </button>
+            </div>
+          )}
         </div>
 
         {Number(selectedViaturaId || 0) > 0 && (
           <div className="bg-white border border-blue-100 rounded-2xl shadow-sm overflow-hidden">
             <div className="px-4 py-3 border-b bg-[#F6F8FF]">
-              <h3 className="font-semibold text-gray-900">Materiais da viatura selecionada</h3>
+              <h3 className="font-semibold text-gray-900">Requisições e devoluções da viatura selecionada</h3>
             </div>
-            <div className="overflow-x-auto">
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 p-4">
+              <div className="border border-gray-200 rounded-xl overflow-hidden">
+                <div className="px-4 py-2 bg-gray-50 border-b font-medium text-gray-800">Requisições pendentes</div>
+                {expandReqPend && (
+                  <div className="px-3 py-2 border-b bg-white">
+                    <input
+                      value={filtroReqPend}
+                      onChange={(e) => setFiltroReqPend(e.target.value)}
+                      placeholder="Filtrar por nº requisição, data ou TRA/DEV"
+                      className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                    />
+                  </div>
+                )}
+                <div className={`${expandReqPend ? 'max-h-[220px]' : ''} overflow-y-auto`}>
+                  <table className="w-full text-sm">
+                    <thead className="bg-white text-gray-600">
+                      <tr>
+                        <th className="text-center px-3 py-2">ID</th>
+                        <th className="text-center px-3 py-2">Status</th>
+                        <th className="text-center px-3 py-2">Data</th>
+                        <th className="text-center px-3 py-2">TRA/DEV</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(expandReqPend ? reqPendLista.slice(0, 5) : reqPendLista.slice(0, 2)).map((r) => (
+                        <tr
+                          key={`rp-${r.id}`}
+                          className="border-t cursor-pointer hover:bg-blue-50"
+                          onClick={() => setSelectedReqDetail(r)}
+                        >
+                          <td className="text-center px-3 py-2 font-medium">{r.id}</td>
+                          <td className="text-center px-3 py-2">{r.status}</td>
+                          <td className="text-center px-3 py-2">{r.data}</td>
+                          <td className="text-center px-3 py-2">{r.tra_dev}</td>
+                        </tr>
+                      ))}
+                      {!reqPendLista.length && (
+                        <tr>
+                          <td colSpan={4} className="text-center px-3 py-4 text-gray-500">Sem requisições pendentes.</td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="px-3 py-2 border-t bg-white">
+                  <button
+                    type="button"
+                    onClick={() => setExpandReqPend((v) => !v)}
+                    className="rounded-lg border border-gray-300 px-3 py-2 text-sm hover:bg-gray-50"
+                  >
+                    {expandReqPend ? 'Ver menos' : 'Ver mais'}
+                  </button>
+                </div>
+              </div>
+              <div className="border border-gray-200 rounded-xl overflow-hidden">
+                <div className="px-4 py-2 bg-gray-50 border-b font-medium text-gray-800">Requisições concluídas</div>
+                {expandReqConc && (
+                  <div className="px-3 py-2 border-b bg-white">
+                    <input
+                      value={filtroReqConc}
+                      onChange={(e) => setFiltroReqConc(e.target.value)}
+                      placeholder="Filtrar por nº requisição, data ou TRA/DEV"
+                      className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                    />
+                  </div>
+                )}
+                <div className={`${expandReqConc ? 'max-h-[220px]' : ''} overflow-y-auto`}>
+                  <table className="w-full text-sm">
+                    <thead className="bg-white text-gray-600">
+                      <tr>
+                        <th className="text-center px-3 py-2">ID</th>
+                        <th className="text-center px-3 py-2">Status</th>
+                        <th className="text-center px-3 py-2">Data</th>
+                        <th className="text-center px-3 py-2">TRA/DEV</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(expandReqConc ? reqConcLista.slice(0, 5) : reqConcLista.slice(0, 2)).map((r) => (
+                        <tr
+                          key={`rc-${r.id}`}
+                          className="border-t cursor-pointer hover:bg-blue-50"
+                          onClick={() => setSelectedReqDetail(r)}
+                        >
+                          <td className="text-center px-3 py-2 font-medium">{r.id}</td>
+                          <td className="text-center px-3 py-2">{r.status}</td>
+                          <td className="text-center px-3 py-2">{r.data}</td>
+                          <td className="text-center px-3 py-2">{r.tra_dev}</td>
+                        </tr>
+                      ))}
+                      {!reqConcLista.length && (
+                        <tr>
+                          <td colSpan={4} className="text-center px-3 py-4 text-gray-500">Sem requisições concluídas.</td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="px-3 py-2 border-t bg-white">
+                  <button
+                    type="button"
+                    onClick={() => setExpandReqConc((v) => !v)}
+                    className="rounded-lg border border-gray-300 px-3 py-2 text-sm hover:bg-gray-50"
+                  >
+                    {expandReqConc ? 'Ver menos' : 'Ver mais'}
+                  </button>
+                </div>
+              </div>
+              <div className="border border-gray-200 rounded-xl overflow-hidden">
+                <div className="px-4 py-2 bg-gray-50 border-b font-medium text-gray-800">Devoluções pendentes</div>
+                {expandDevPend && (
+                  <div className="px-3 py-2 border-b bg-white">
+                    <input
+                      value={filtroDevPend}
+                      onChange={(e) => setFiltroDevPend(e.target.value)}
+                      placeholder="Filtrar por nº requisição, data ou TRA/DEV"
+                      className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                    />
+                  </div>
+                )}
+                <div className={`${expandDevPend ? 'max-h-[220px]' : ''} overflow-y-auto`}>
+                  <table className="w-full text-sm">
+                    <thead className="bg-white text-gray-600">
+                      <tr>
+                        <th className="text-center px-3 py-2">ID</th>
+                        <th className="text-center px-3 py-2">Status</th>
+                        <th className="text-center px-3 py-2">Data</th>
+                        <th className="text-center px-3 py-2">TRA/DEV</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(expandDevPend
+                        ? devPendLista.slice(0, 5)
+                        : devPendLista.slice(0, 2)
+                      ).map((r) => (
+                        <tr
+                          key={`dp-${r.id}`}
+                          className="border-t cursor-pointer hover:bg-blue-50"
+                          onClick={() => setSelectedReqDetail(r)}
+                        >
+                          <td className="text-center px-3 py-2 font-medium">{r.id}</td>
+                          <td className="text-center px-3 py-2">{r.status}</td>
+                          <td className="text-center px-3 py-2">{r.data}</td>
+                          <td className="text-center px-3 py-2">{r.tra_dev}</td>
+                        </tr>
+                      ))}
+                      {!devPendLista.length && (
+                        <tr>
+                          <td colSpan={4} className="text-center px-3 py-4 text-gray-500">Sem devoluções pendentes.</td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="px-3 py-2 border-t bg-white">
+                  <button
+                    type="button"
+                    onClick={() => setExpandDevPend((v) => !v)}
+                    className="rounded-lg border border-gray-300 px-3 py-2 text-sm hover:bg-gray-50"
+                  >
+                    {expandDevPend ? 'Ver menos' : 'Ver mais'}
+                  </button>
+                </div>
+              </div>
+              <div className="border border-gray-200 rounded-xl overflow-hidden">
+                <div className="px-4 py-2 bg-gray-50 border-b font-medium text-gray-800">Devoluções concluídas</div>
+                {expandDevConc && (
+                  <div className="px-3 py-2 border-b bg-white">
+                    <input
+                      value={filtroDevConc}
+                      onChange={(e) => setFiltroDevConc(e.target.value)}
+                      placeholder="Filtrar por nº requisição, data ou TRA/DEV"
+                      className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                    />
+                  </div>
+                )}
+                <div className={`${expandDevConc ? 'max-h-[220px]' : ''} overflow-y-auto`}>
+                  <table className="w-full text-sm">
+                    <thead className="bg-white text-gray-600">
+                      <tr>
+                        <th className="text-center px-3 py-2">ID</th>
+                        <th className="text-center px-3 py-2">Status</th>
+                        <th className="text-center px-3 py-2">Data</th>
+                        <th className="text-center px-3 py-2">TRA/DEV</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(expandDevConc
+                        ? devConcLista.slice(0, 5)
+                        : devConcLista.slice(0, 2)
+                      ).map((r) => (
+                        <tr
+                          key={`dc-${r.id}`}
+                          className="border-t cursor-pointer hover:bg-blue-50"
+                          onClick={() => setSelectedReqDetail(r)}
+                        >
+                          <td className="text-center px-3 py-2 font-medium">{r.id}</td>
+                          <td className="text-center px-3 py-2">{r.status}</td>
+                          <td className="text-center px-3 py-2">{r.data}</td>
+                          <td className="text-center px-3 py-2">{r.tra_dev}</td>
+                        </tr>
+                      ))}
+                      {!devConcLista.length && (
+                        <tr>
+                          <td colSpan={4} className="text-center px-3 py-4 text-gray-500">Sem devoluções concluídas.</td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="px-3 py-2 border-t bg-white">
+                  <button
+                    type="button"
+                    onClick={() => setExpandDevConc((v) => !v)}
+                    className="rounded-lg border border-gray-300 px-3 py-2 text-sm hover:bg-gray-50"
+                  >
+                    {expandDevConc ? 'Ver menos' : 'Ver mais'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {selectedReqDetail && (
+        <div
+          className="fixed inset-0 z-[10070] flex items-center justify-center bg-black/50 p-4"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setSelectedReqDetail(null);
+          }}
+        >
+          <div className="w-full max-w-5xl max-h-[90vh] overflow-hidden rounded-xl bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-gray-200 px-4 py-3">
+              <div>
+                <h3 className="text-base font-semibold text-gray-900">
+                  Requisição #{selectedReqDetail.id}
+                </h3>
+                <p className="text-xs text-gray-500 mt-1">
+                  Status: {selectedReqDetail.status} · Data: {selectedReqDetail.data} · TRA/DEV: {selectedReqDetail.tra_dev}
+                </p>
+              </div>
+              <button
+                type="button"
+                className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm hover:bg-gray-50"
+                onClick={() => setSelectedReqDetail(null)}
+              >
+                Fechar
+              </button>
+            </div>
+            <div className="max-h-[calc(90vh-64px)] overflow-auto">
               <table className="w-full text-sm">
-                <thead className="text-gray-700 bg-gray-50">
+                <thead className="bg-gray-50 text-gray-700">
                   <tr>
-                    <th className="text-left px-4 py-3">REF.</th>
-                    <th className="text-left px-4 py-3">Descrição</th>
-                    <th className="text-right px-4 py-3">Abastecido</th>
-                    <th className="text-right px-4 py-3">Devolvido</th>
-                    <th className="text-right px-4 py-3">Saldo</th>
+                    <th className="text-center px-4 py-3">REF.</th>
+                    <th className="text-center px-4 py-3">Descrição</th>
+                    <th className="text-center px-4 py-3">Qtd</th>
+                    <th className="text-center px-4 py-3">Lote</th>
+                    <th className="text-center px-4 py-3">S/N</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {detalhesViatura.map((item) => (
-                    <tr key={`${item.ref}__${item.description}`} className="border-t">
-                      <td className="px-4 py-3 font-medium">{item.ref || '—'}</td>
-                      <td className="px-4 py-3">{item.description || '—'}</td>
-                      <td className="px-4 py-3 text-right text-emerald-700 font-semibold">{item.abastecido}</td>
-                      <td className="px-4 py-3 text-right text-amber-700 font-semibold">{item.devolvido}</td>
-                      <td className="px-4 py-3 text-right font-semibold">{item.saldo}</td>
+                  {itensRequisicaoSelecionada.map((it) => (
+                    <tr key={it.key} className="border-t">
+                      <td className="text-center px-4 py-3 font-medium">{it.ref}</td>
+                      <td className="text-center px-4 py-3">{it.descricao}</td>
+                      <td className="text-center px-4 py-3">{it.qtd}</td>
+                      <td className="text-center px-4 py-3">{it.lote}</td>
+                      <td className="text-center px-4 py-3">
+                        {it.seriais.length <= 1 ? (
+                          it.seriais[0] || '—'
+                        ) : (
+                          <button
+                            type="button"
+                            className="rounded border border-blue-300 px-2 py-1 text-xs text-blue-700 hover:bg-blue-50"
+                            onClick={() => setSelectedReqSeriais({ title: it.ref, items: it.seriais })}
+                          >
+                            Ver {it.seriais.length} seriais
+                          </button>
+                        )}
+                      </td>
                     </tr>
                   ))}
-                  {!loading && detalhesViatura.length === 0 && (
+                  {!itensRequisicaoSelecionada.length && (
                     <tr>
-                      <td colSpan={5} className="px-4 py-6 text-center text-gray-500">
-                        Sem materiais para esta viatura nos filtros atuais.
+                      <td colSpan={5} className="px-4 py-8 text-center text-gray-500">
+                        Sem itens atrelados a esta requisição.
                       </td>
                     </tr>
                   )}
@@ -469,8 +1002,37 @@ const DashboardViaturas = () => {
               </table>
             </div>
           </div>
-        )}
-      </div>
+        </div>
+      )}
+
+      {selectedReqSeriais && (
+        <div
+          className="fixed inset-0 z-[10080] flex items-center justify-center bg-black/50 p-4"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setSelectedReqSeriais(null);
+          }}
+        >
+          <div className="w-full max-w-lg max-h-[85vh] overflow-hidden rounded-xl bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-gray-200 px-4 py-3">
+              <h3 className="text-base font-semibold text-gray-900">Seriais · {selectedReqSeriais.title || 'Item'}</h3>
+              <button
+                type="button"
+                className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm hover:bg-gray-50"
+                onClick={() => setSelectedReqSeriais(null)}
+              >
+                Fechar
+              </button>
+            </div>
+            <div className="max-h-[calc(85vh-64px)] overflow-auto px-4 py-3">
+              <ol className="list-decimal list-inside space-y-1 text-sm text-gray-800">
+                {selectedReqSeriais.items.map((sn, idx) => (
+                  <li key={`${idx}-${sn}`} className="break-all">{sn}</li>
+                ))}
+              </ol>
+            </div>
+          </div>
+        </div>
+      )}
 
       {toast && <Toast type={toast.type} message={toast.message} onClose={() => setToast(null)} />}
     </div>
