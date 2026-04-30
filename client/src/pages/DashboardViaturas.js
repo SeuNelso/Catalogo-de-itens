@@ -111,8 +111,11 @@ const DashboardViaturas = () => {
   const [filtroViaturaBusca, setFiltroViaturaBusca] = useState('');
   const [filtroViaturaOpen, setFiltroViaturaOpen] = useState(false);
   const [viaturasPage, setViaturasPage] = useState(1);
+  const [cardFiltroAtivo, setCardFiltroAtivo] = useState('viaturas');
   const [selectedReqDetail, setSelectedReqDetail] = useState(null);
   const [selectedReqSeriais, setSelectedReqSeriais] = useState(null);
+  const [reporteReqRows, setReporteReqRows] = useState([]);
+  const [reporteReqLoading, setReporteReqLoading] = useState(false);
   const [expandReqPend, setExpandReqPend] = useState(false);
   const [expandReqConc, setExpandReqConc] = useState(false);
   const [expandDevPend, setExpandDevPend] = useState(false);
@@ -276,6 +279,30 @@ const DashboardViaturas = () => {
       setLoading(false);
     }
   }, [fetchAllRows, fetchRequisicoesPendentes, filtros]);
+
+  const abrirDetalheRequisicao = useCallback(async (reqRow) => {
+    const reqId = Number(reqRow?.id || 0);
+    if (!reqId) return;
+    try {
+      setReporteReqLoading(true);
+      const token = localStorage.getItem('token');
+      const response = await fetch(`/api/requisicoes/${reqId}/reporte-dados`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await response.json().catch(() => ({}));
+      if (response.ok) {
+        setReporteReqRows(Array.isArray(data?.rows) ? data.rows : []);
+      } else {
+        setReporteReqRows([]);
+      }
+      setSelectedReqDetail(reqRow);
+    } catch (_) {
+      setReporteReqRows([]);
+      setSelectedReqDetail(reqRow);
+    } finally {
+      setReporteReqLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     carregarArmazens();
@@ -457,19 +484,48 @@ const DashboardViaturas = () => {
   );
 
   const itensRequisicaoSelecionada = useMemo(() => {
-    const itens = Array.isArray(selectedReqDetail?.itens) ? selectedReqDetail.itens : [];
-    return itens.map((it, idx) => {
+    const itensReq = Array.isArray(selectedReqDetail?.itens) ? selectedReqDetail.itens : [];
+    const descricaoByRef = new Map();
+    for (const it of itensReq) {
+      const ref = String(it?.item_codigo || it?.codigo || '').trim();
+      const desc = String(it?.item_descricao || it?.descricao || '').trim();
+      if (ref && desc && !descricaoByRef.has(ref)) descricaoByRef.set(ref, desc);
+    }
+
+    if (Array.isArray(reporteReqRows) && reporteReqRows.length > 0) {
+      return reporteReqRows.map((row, idx) => {
+        const ref = String(row?.Artigo || row?.Article || row?.['REF.'] || row?.REF || '').trim() || '—';
+        const descricao =
+          descricaoByRef.get(ref) ||
+          String(row?.['Descrição'] || row?.Description || row?.DESCRIPTION || '').trim() ||
+          '—';
+        const qtd = Number(row?.Quantidade ?? row?.Quatity ?? row?.QTY ?? 0);
+        const serialsRaw = [row?.['S/N'], row?.SerialNumber1, row?.SerialNumber2].filter(Boolean).join('\n');
+        const seriais = parseSeriais(serialsRaw);
+        return {
+          key: `${selectedReqDetail?.id || 'req'}-rep-${idx}`,
+          ref,
+          descricao,
+          qtd: Number.isFinite(qtd) ? qtd : 0,
+          lote: String(row?.LOTE || row?.Batch || '').trim() || '—',
+          seriais,
+        };
+      });
+    }
+
+    return itensReq.map((it, idx) => {
       const seriais = extrairSeriaisDoItem(it);
+      const ref = String(it?.item_codigo || it?.codigo || '').trim() || '—';
       return {
         key: `${selectedReqDetail?.id || 'req'}-${Number(it?.id || 0) || idx}`,
-        ref: String(it?.item_codigo || it?.codigo || '').trim() || '—',
+        ref,
         descricao: String(it?.item_descricao || it?.descricao || '').trim() || '—',
         qtd: Number(it?.quantidade_preparada ?? it?.quantidade ?? 0) || 0,
         lote: String(it?.lote || it?.batch || '').trim() || '—',
         seriais,
       };
     });
-  }, [selectedReqDetail]);
+  }, [selectedReqDetail, reporteReqRows]);
 
   const viaturasSelectOptions = useMemo(() => {
     const byId = new Map();
@@ -502,9 +558,18 @@ const DashboardViaturas = () => {
     if (selected) setFiltroViaturaBusca(String(selected.nome || ''));
   }, [filtros.armazem_id, viaturasSelectOptions]);
 
+  const viaturasFiltradasPorCard = useMemo(() => {
+    const base = Array.isArray(agregados.lista) ? agregados.lista : [];
+    if (cardFiltroAtivo === 'abastecido') return base.filter((x) => Number(x?.abastecido || 0) > 0);
+    if (cardFiltroAtivo === 'devolvido') return base.filter((x) => Number(x?.devolvido || 0) > 0);
+    if (cardFiltroAtivo === 'pendentes_entrega') return base.filter((x) => Number(x?.pendentes_entrega || 0) > 0);
+    if (cardFiltroAtivo === 'devolucoes_pendentes') return base.filter((x) => Number(x?.devolucoes_pendentes || 0) > 0);
+    return base;
+  }, [agregados.lista, cardFiltroAtivo]);
+
   const totalPaginasViaturas = useMemo(
-    () => Math.max(1, Math.ceil((agregados.lista || []).length / VIATURAS_PAGE_SIZE)),
-    [agregados.lista]
+    () => Math.max(1, Math.ceil((viaturasFiltradasPorCard || []).length / VIATURAS_PAGE_SIZE)),
+    [viaturasFiltradasPorCard]
   );
 
   const viaturasPaginaAtual = useMemo(
@@ -514,12 +579,12 @@ const DashboardViaturas = () => {
 
   const viaturasPaginadas = useMemo(() => {
     const start = (viaturasPaginaAtual - 1) * VIATURAS_PAGE_SIZE;
-    return (agregados.lista || []).slice(start, start + VIATURAS_PAGE_SIZE);
-  }, [agregados.lista, viaturasPaginaAtual]);
+    return (viaturasFiltradasPorCard || []).slice(start, start + VIATURAS_PAGE_SIZE);
+  }, [viaturasFiltradasPorCard, viaturasPaginaAtual]);
 
   useEffect(() => {
     setViaturasPage(1);
-  }, [filtros.data_inicio, filtros.data_fim, filtros.armazem_id]);
+  }, [filtros.data_inicio, filtros.data_fim, filtros.armazem_id, cardFiltroAtivo]);
 
   useEffect(() => {
     if (viaturasPage > totalPaginasViaturas) setViaturasPage(totalPaginasViaturas);
@@ -617,23 +682,69 @@ const DashboardViaturas = () => {
           </div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-          <div className="bg-white border border-blue-100 rounded-xl p-4">
+        <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
+          <button
+            type="button"
+            onClick={() => setCardFiltroAtivo('viaturas')}
+            className={`text-left rounded-xl p-4 border ${
+              cardFiltroAtivo === 'viaturas'
+                ? 'bg-blue-50 border-blue-300 ring-1 ring-blue-200'
+                : 'bg-white border-blue-100'
+            }`}
+          >
             <div className="text-xs text-gray-500">Viaturas com movimentos</div>
             <div className="text-2xl font-bold text-gray-900">{agregados.totalViaturas}</div>
-          </div>
-          <div className="bg-white border border-emerald-100 rounded-xl p-4">
+          </button>
+          <button
+            type="button"
+            onClick={() => setCardFiltroAtivo((v) => (v === 'abastecido' ? 'viaturas' : 'abastecido'))}
+            className={`text-left rounded-xl p-4 border ${
+              cardFiltroAtivo === 'abastecido'
+                ? 'bg-emerald-50 border-emerald-300 ring-1 ring-emerald-200'
+                : 'bg-white border-emerald-100'
+            }`}
+          >
             <div className="text-xs text-gray-500">Req. atendidas</div>
             <div className="text-2xl font-bold text-emerald-700">{agregados.totalAbastecido}</div>
-          </div>
-          <div className="bg-white border border-amber-100 rounded-xl p-4">
-            <div className="text-xs text-gray-500">Devoluções (req.)</div>
+          </button>
+          <button
+            type="button"
+            onClick={() => setCardFiltroAtivo((v) => (v === 'devolvido' ? 'viaturas' : 'devolvido'))}
+            className={`text-left rounded-xl p-4 border ${
+              cardFiltroAtivo === 'devolvido'
+                ? 'bg-amber-50 border-amber-300 ring-1 ring-amber-200'
+                : 'bg-white border-amber-100'
+            }`}
+          >
+            <div className="text-xs text-gray-500">Devoluções</div>
             <div className="text-2xl font-bold text-amber-700">{agregados.totalDevolvido}</div>
-          </div>
-          <div className="bg-white border border-violet-100 rounded-xl p-4">
-            <div className="text-xs text-gray-500">Devoluções pendentes (req.)</div>
+          </button>
+          <button
+            type="button"
+            onClick={() => setCardFiltroAtivo((v) => (v === 'pendentes_entrega' ? 'viaturas' : 'pendentes_entrega'))}
+            className={`text-left rounded-xl p-4 border ${
+              cardFiltroAtivo === 'pendentes_entrega'
+                ? 'bg-indigo-50 border-indigo-300 ring-1 ring-indigo-200'
+                : 'bg-white border-indigo-100'
+            }`}
+          >
+            <div className="text-xs text-gray-500">Requisições pendentes</div>
+            <div className="text-2xl font-bold text-indigo-700">{agregados.totalPendentesEntrega}</div>
+          </button>
+          <button
+            type="button"
+            onClick={() =>
+              setCardFiltroAtivo((v) => (v === 'devolucoes_pendentes' ? 'viaturas' : 'devolucoes_pendentes'))
+            }
+            className={`text-left rounded-xl p-4 border ${
+              cardFiltroAtivo === 'devolucoes_pendentes'
+                ? 'bg-violet-50 border-violet-300 ring-1 ring-violet-200'
+                : 'bg-white border-violet-100'
+            }`}
+          >
+            <div className="text-xs text-gray-500">Devoluções pendentes</div>
             <div className="text-2xl font-bold text-violet-700">{agregados.totalDevolucoesPendentes}</div>
-          </div>
+          </button>
         </div>
 
         <div className="bg-white border border-blue-100 rounded-2xl shadow-sm overflow-hidden">
@@ -644,7 +755,7 @@ const DashboardViaturas = () => {
                   <th className="text-center px-4 py-3">Viatura</th>
                   <th className="text-center px-4 py-3">Abastecido</th>
                   <th className="text-center px-4 py-3">Devolvido</th>
-                  <th className="text-center px-4 py-3">Pendentes entrega</th>
+                  <th className="text-center px-4 py-3">Requisições pendentes</th>
                   <th className="text-center px-4 py-3">Devoluções pendentes</th>
                   <th className="text-center px-4 py-3">Movimentos</th>
                   <th className="text-center px-4 py-3">Último movimento</th>
@@ -669,17 +780,17 @@ const DashboardViaturas = () => {
                     </tr>
                   );
                 })}
-                {!loading && agregados.lista.length === 0 && (
+                {!loading && viaturasFiltradasPorCard.length === 0 && (
                   <tr>
                     <td colSpan={7} className="px-4 py-8 text-center text-gray-500">
-                      Sem dados para o período/filtros selecionados.
+                      Sem viaturas para o card/filtros selecionados.
                     </td>
                   </tr>
                 )}
               </tbody>
             </table>
           </div>
-          {agregados.lista.length > 0 && (
+          {viaturasFiltradasPorCard.length > 0 && (
             <div className="flex items-center justify-end gap-2 border-t border-gray-200 px-4 py-3 bg-white">
               <button
                 type="button"
@@ -737,7 +848,7 @@ const DashboardViaturas = () => {
                         <tr
                           key={`rp-${r.id}`}
                           className="border-t cursor-pointer hover:bg-blue-50"
-                          onClick={() => setSelectedReqDetail(r)}
+                          onClick={() => abrirDetalheRequisicao(r)}
                         >
                           <td className="text-center px-3 py-2 font-medium">{r.id}</td>
                           <td className="text-center px-3 py-2">{r.status}</td>
@@ -790,7 +901,7 @@ const DashboardViaturas = () => {
                         <tr
                           key={`rc-${r.id}`}
                           className="border-t cursor-pointer hover:bg-blue-50"
-                          onClick={() => setSelectedReqDetail(r)}
+                          onClick={() => abrirDetalheRequisicao(r)}
                         >
                           <td className="text-center px-3 py-2 font-medium">{r.id}</td>
                           <td className="text-center px-3 py-2">{r.status}</td>
@@ -846,7 +957,7 @@ const DashboardViaturas = () => {
                         <tr
                           key={`dp-${r.id}`}
                           className="border-t cursor-pointer hover:bg-blue-50"
-                          onClick={() => setSelectedReqDetail(r)}
+                          onClick={() => abrirDetalheRequisicao(r)}
                         >
                           <td className="text-center px-3 py-2 font-medium">{r.id}</td>
                           <td className="text-center px-3 py-2">{r.status}</td>
@@ -902,7 +1013,7 @@ const DashboardViaturas = () => {
                         <tr
                           key={`dc-${r.id}`}
                           className="border-t cursor-pointer hover:bg-blue-50"
-                          onClick={() => setSelectedReqDetail(r)}
+                          onClick={() => abrirDetalheRequisicao(r)}
                         >
                           <td className="text-center px-3 py-2 font-medium">{r.id}</td>
                           <td className="text-center px-3 py-2">{r.status}</td>
@@ -937,7 +1048,10 @@ const DashboardViaturas = () => {
         <div
           className="fixed inset-0 z-[10070] flex items-center justify-center bg-black/50 p-4"
           onClick={(e) => {
-            if (e.target === e.currentTarget) setSelectedReqDetail(null);
+            if (e.target === e.currentTarget) {
+              setSelectedReqDetail(null);
+              setReporteReqRows([]);
+            }
           }}
         >
           <div className="w-full max-w-5xl max-h-[90vh] overflow-hidden rounded-xl bg-white shadow-2xl">
@@ -949,11 +1063,17 @@ const DashboardViaturas = () => {
                 <p className="text-xs text-gray-500 mt-1">
                   Status: {selectedReqDetail.status} · Data: {selectedReqDetail.data} · TRA/DEV: {selectedReqDetail.tra_dev}
                 </p>
+                {reporteReqLoading ? (
+                  <p className="text-xs text-gray-500 mt-1">A carregar lotes/metragens do reporte...</p>
+                ) : null}
               </div>
               <button
                 type="button"
                 className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm hover:bg-gray-50"
-                onClick={() => setSelectedReqDetail(null)}
+                onClick={() => {
+                  setSelectedReqDetail(null);
+                  setReporteReqRows([]);
+                }}
               >
                 Fechar
               </button>
