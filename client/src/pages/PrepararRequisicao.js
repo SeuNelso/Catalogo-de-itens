@@ -1221,11 +1221,14 @@ const PrepararRequisicao = () => {
       const seriais = [];
       for (const b of formItem.bobinas) {
         const sn = (b.serialnumber || '').trim();
-        if (!sn) {
-          setToast({ type: 'error', message: 'Cada linha de S/N deve ter um serial number.' });
-          return;
-        }
+        // Permite apagar um serial deixando a linha vazia sem bloquear a preparação:
+        // só os seriais efetivamente preenchidos entram no payload.
+        if (!sn) continue;
         seriais.push(sn);
+      }
+      if (seriais.length === 0) {
+        setToast({ type: 'error', message: 'Adicione pelo menos um serial number.' });
+        return;
       }
       const duplicados = seriais.filter((sn, i) => seriais.indexOf(sn) !== i);
       if (duplicados.length > 0) {
@@ -1294,13 +1297,23 @@ const PrepararRequisicao = () => {
         throw new Error(data.error || 'Erro ao consultar caixa');
       }
       const data = await response.json();
-      const seriais = Array.isArray(data.seriais)
-        ? data.seriais
-            .map((row) => String(row?.serialnumber || '').trim())
-            .filter(Boolean)
-        : [];
-      if (seriais.length === 0) {
-        throw new Error(`A caixa ${codigoCaixa} não possui seriais associados.`);
+      const seriaisRows = Array.isArray(data.seriais) ? data.seriais : [];
+      const seriaisDisponiveis = seriaisRows
+        .filter((row) => String(row?.status || '').trim().toLowerCase() === 'disponivel')
+        .map((row) => String(row?.serialnumber || '').trim())
+        .filter(Boolean);
+      const seriaisIndisponiveis = seriaisRows
+        .filter((row) => String(row?.status || '').trim().toLowerCase() !== 'disponivel')
+        .map((row) => ({
+          serialnumber: String(row?.serialnumber || '').trim(),
+          status: String(row?.status || '').trim().toLowerCase() || 'desconhecido',
+        }))
+        .filter((row) => row.serialnumber);
+      if (seriaisDisponiveis.length === 0) {
+        const resumo = seriaisIndisponiveis.length > 0
+          ? ` (todos indisponíveis: ${seriaisIndisponiveis.length})`
+          : '';
+        throw new Error(`A caixa ${codigoCaixa} não possui seriais disponíveis para separação${resumo}.`);
       }
       let toastMessage = '';
       setFormItem((prev) => {
@@ -1308,7 +1321,7 @@ const PrepararRequisicao = () => {
           0,
           Math.min(MAX_BOBINAS_LOTE, Math.floor(Number(prev.quantidade_preparada)) || 0)
         );
-        const nAlvo = nDigitado > 0 ? nDigitado : seriais.length;
+        const nAlvo = nDigitado > 0 ? nDigitado : seriaisDisponiveis.length;
 
         const existentes = Array.isArray(prev.bobinas) ? prev.bobinas : [];
         const existentesPreenchidos = existentes.filter((b) => String(b?.serialnumber || '').trim());
@@ -1316,7 +1329,7 @@ const PrepararRequisicao = () => {
           existentesPreenchidos.map((b) => String(b.serialnumber || '').trim().toUpperCase())
         );
         const novos = [];
-        for (const sn of seriais) {
+        for (const sn of seriaisDisponiveis) {
           const norm = String(sn || '').trim().toUpperCase();
           if (!norm || seen.has(norm)) continue;
           seen.add(norm);
@@ -1352,9 +1365,12 @@ const PrepararRequisicao = () => {
         const msgExtra = faltantes > 0
           ? ` (${adicionadosAgora} novo(s); ${preenchidos}/${nAlvo} preenchidos, faltam ${faltantes})`
           : ` (${adicionadosAgora} novo(s); ${preenchidos}/${nAlvo} preenchidos)`;
+        const msgIgnorados = seriaisIndisponiveis.length > 0
+          ? ` Ignorados por status (reservado/consumido): ${seriaisIndisponiveis.length}.`
+          : '';
         toastMessage =
           `Caixa ${codigoCaixa}: seriais adicionados sem sobrescrever os anteriores${msgExtra}. ` +
-          'A reserva será feita ao preparar.';
+          `A reserva será feita ao preparar.${msgIgnorados}`;
 
         return {
           ...prev,
@@ -2567,17 +2583,19 @@ const PrepararRequisicao = () => {
                                       type="button"
                                       onClick={() =>
                                         setFormItem((prev) => {
-                                          const bobinas = (prev.bobinas || []).filter((_, i) => i !== idxBob);
                                           return {
                                             ...prev,
-                                            bobinas,
-                                            quantidade_preparada: String(bobinas.length),
+                                            bobinas: (prev.bobinas || []).map((bb, i) =>
+                                              i === idxBob
+                                                ? { ...bb, serialnumber: '', _ordemColeta: undefined }
+                                                : bb
+                                            ),
                                           };
                                         })
                                       }
                                       className="px-2 py-1 text-xs border border-red-300 text-red-600 rounded hover:bg-red-50"
                                     >
-                                      Remover linha
+                                      Limpar serial
                                     </button>
                                   </div>
                                 </div>
@@ -2641,17 +2659,19 @@ const PrepararRequisicao = () => {
                                         type="button"
                                         onClick={() =>
                                           setFormItem((prev) => {
-                                            const bobinas = (prev.bobinas || []).filter((_, i) => i !== idxBob);
                                             return {
                                               ...prev,
-                                              bobinas,
-                                              quantidade_preparada: String(bobinas.length),
+                                              bobinas: (prev.bobinas || []).map((bb, i) =>
+                                                i === idxBob
+                                                  ? { ...bb, serialnumber: '', _ordemColeta: undefined }
+                                                  : bb
+                                              ),
                                             };
                                           })
                                         }
                                         className="px-2 py-1 text-xs border border-red-300 text-red-600 rounded hover:bg-red-50"
                                       >
-                                        Remover
+                                        Limpar serial
                                       </button>
                                     </div>
                                   </div>

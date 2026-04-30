@@ -9615,10 +9615,99 @@ router.patch('/:id/finalizar', ...requisicaoAuth, denyOperador, async (req, res)
         cFin.release();
       }
     } else {
-      await pool.query(
-        'UPDATE requisicoes SET status = $1, finalizado_em = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
-        ['FINALIZADO', id]
-      );
+      const cFinNormal = await pool.connect();
+      try {
+        await cFinNormal.query('BEGIN');
+        await cFinNormal.query(
+          'UPDATE requisicoes SET status = $1, finalizado_em = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+          ['FINALIZADO', id]
+        );
+        // Fluxo normal: garantir consumo definitivo dos seriais reservados
+        // mesmo quando a requisição foi finalizada sem exportar TRA.
+        const consumed = await cFinNormal.query(
+          `UPDATE stock_serial
+           SET status = 'consumido',
+               consumido_em = COALESCE(consumido_em, CURRENT_TIMESTAMP),
+               atualizado_em = CURRENT_TIMESTAMP
+           WHERE requisicao_id = $1
+             AND status = 'reservado'
+           RETURNING item_id, armazem_id, localizacao, lote, serialnumber, requisicao_item_id`,
+          [id]
+        );
+        for (const row of consumed.rows || []) {
+          // eslint-disable-next-line no-await-in-loop
+          await logStockMovimento({
+            db: cFinNormal,
+            tipo: 'consumo_finalizar',
+            itemId: row.item_id,
+            armazemId: row.armazem_id,
+            localizacao: row.localizacao,
+            lote: row.lote,
+            serialnumber: row.serialnumber,
+            quantidade: 1,
+            requisicaoId: parseInt(id, 10),
+            requisicaoItemId: row.requisicao_item_id,
+            usuarioId: req.user?.id || null,
+            payload: { origem: 'finalizar' },
+          });
+        }
+        // Fallback: consumir também seriais explicitamente associados aos itens da requisição,
+        // mesmo que não estejam com status "reservado" no momento do fechamento.
+        // Isto cobre cenários em que a seleção de seriais foi gravada em
+        // requisicoes_itens_seriais, mas o vínculo de reserva em stock_serial não persistiu.
+        try {
+          const consumedAssociados = await cFinNormal.query(
+            `WITH seriais_req AS (
+               SELECT
+                 ri.id AS requisicao_item_id,
+                 ri.item_id,
+                 UPPER(TRIM(ris.serialnumber)) AS sn_key
+               FROM requisicoes_itens ri
+               INNER JOIN requisicoes_itens_seriais ris ON ris.requisicao_item_id = ri.id
+               WHERE ri.requisicao_id = $1
+                 AND TRIM(COALESCE(ris.serialnumber, '')) <> ''
+             )
+             UPDATE stock_serial s
+             SET status = 'consumido',
+                 consumido_em = COALESCE(s.consumido_em, CURRENT_TIMESTAMP),
+                 requisicao_id = COALESCE(s.requisicao_id, $1),
+                 requisicao_item_id = COALESCE(s.requisicao_item_id, sr.requisicao_item_id),
+                 atualizado_em = CURRENT_TIMESTAMP
+             FROM seriais_req sr
+             WHERE s.item_id = sr.item_id
+               AND s.armazem_id = $2
+               AND UPPER(TRIM(s.serialnumber)) = sr.sn_key
+               AND s.status IN ('disponivel', 'reservado')
+             RETURNING s.item_id, s.armazem_id, s.localizacao, s.lote, s.serialnumber, s.requisicao_item_id`,
+            [id, row.armazem_origem_id]
+          );
+          for (const rowAssoc of consumedAssociados.rows || []) {
+            // eslint-disable-next-line no-await-in-loop
+            await logStockMovimento({
+              db: cFinNormal,
+              tipo: 'consumo_finalizar_assoc',
+              itemId: rowAssoc.item_id,
+              armazemId: rowAssoc.armazem_id,
+              localizacao: rowAssoc.localizacao,
+              lote: rowAssoc.lote,
+              serialnumber: rowAssoc.serialnumber,
+              quantidade: 1,
+              requisicaoId: parseInt(id, 10),
+              requisicaoItemId: rowAssoc.requisicao_item_id,
+              usuarioId: req.user?.id || null,
+              payload: { origem: 'finalizar-associado' },
+            });
+          }
+        } catch (eAssoc) {
+          if (eAssoc.code !== '42P01') throw eAssoc;
+        }
+        await cFinNormal.query('COMMIT');
+      } catch (eFinNormal) {
+        await cFinNormal.query('ROLLBACK').catch(() => {});
+        throw eFinNormal;
+      } finally {
+        cFinNormal.release();
+      }
     }
     try {
       await persistMovimentosHistoricoForRequisicoes([id]);
