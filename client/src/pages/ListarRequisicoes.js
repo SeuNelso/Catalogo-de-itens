@@ -948,6 +948,40 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
     }
   };
 
+  const handleReporteRecebimentoDetalhadoModal = async (req) => {
+    const reqId = req?.id;
+    if (!reqId) {
+      setToast({ type: 'error', message: 'Requisição inválida' });
+      return;
+    }
+    try {
+      setReporteLoading(true);
+      const token = localStorage.getItem('token');
+      const response = await fetch(`/api/requisicoes/transferencias/recebimento/${reqId}/reporte-dados-detalhado`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || 'Erro ao obter dados do reporte detalhado');
+      }
+      const data = await response.json();
+      setReporteModal({
+        open: true,
+        title: `Reporte recebimento detalhado (#${reqId})`,
+        kind: 'reporte-recebimento-detalhado',
+        mode: 'single',
+        reqId,
+        ids: [reqId],
+        columns: data.columns || [],
+        rows: data.rows || []
+      });
+    } catch (error) {
+      setToast({ type: 'error', message: error.message || 'Erro ao preparar reporte detalhado' });
+    } finally {
+      setReporteLoading(false);
+    }
+  };
+
   const handleFinalizarRecebimento = async (reqId) => {
     try {
       const ok = await confirm({
@@ -1608,7 +1642,7 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
         message:
           reporteModal.kind === 'clog'
             ? 'Tabela do Clog copiada (para colar no Outlook).'
-            : reporteModal.kind === 'reporte-recebimento'
+            : (reporteModal.kind === 'reporte-recebimento' || reporteModal.kind === 'reporte-recebimento-detalhado')
               ? 'Tabela do reporte de recebimento copiada (para colar no Outlook).'
               : 'Tabela do reporte copiada (para colar no Outlook).'
       });
@@ -1623,12 +1657,17 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
       const dateStr = new Date().toISOString().slice(0, 10);
       const isClog = reporteModal.kind === 'clog';
       const isReceb = reporteModal.kind === 'reporte-recebimento';
+      const isRecebDetalhado = reporteModal.kind === 'reporte-recebimento-detalhado';
       if (reporteModal.mode === 'single') {
         const reqId = reporteModal.reqId;
-        if (isReceb) {
+        if (isReceb || isRecebDetalhado) {
           await downloadExport(
-            `/api/requisicoes/transferencias/recebimento/${reqId}/export-reporte`,
-            `MATERIAL_RECEBIDO_requisicao_${reqId}_${dateStr}.xlsx`,
+            isRecebDetalhado
+              ? `/api/requisicoes/transferencias/recebimento/${reqId}/export-reporte-detalhado`
+              : `/api/requisicoes/transferencias/recebimento/${reqId}/export-reporte`,
+            isRecebDetalhado
+              ? `MATERIAL_RECEBIDO_detalhado_requisicao_${reqId}_${dateStr}.xlsx`
+              : `MATERIAL_RECEBIDO_requisicao_${reqId}_${dateStr}.xlsx`,
             'Ficheiro de reporte gerado com sucesso.'
           );
           await fetchRequisicoes();
@@ -1642,7 +1681,7 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
       } else {
         const ids = Array.isArray(reporteModal.ids) ? reporteModal.ids : [];
         const token = localStorage.getItem('token');
-        if (isReceb) {
+        if (isReceb || isRecebDetalhado) {
           throw new Error('Exportação combinada não disponível para reporte de recebimento.');
         }
         const res = await fetch(isClog ? '/api/requisicoes/export-clog-multi' : '/api/requisicoes/export-reporte-multi', {
@@ -2988,24 +3027,44 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
                 }
                 const ctxRecebReporteBloqueado = preparacaoReservadaOutroUtilizador(r, user);
                 return (
-                  <button
-                    type="button"
-                    disabled={ctxRecebReporteBloqueado}
-                    className={`block w-full text-left px-4 py-2 hover:bg-gray-100 ${
-                      ctxRecebReporteBloqueado ? 'opacity-50 cursor-not-allowed' : ''
-                    }`}
-                    title={
-                      ctxRecebReporteBloqueado
-                        ? 'Reservada para separação a outro operador'
-                        : 'Reporte: COD, DESCRIÇÃO, QTD, S/N, LOTE, localização destino'
-                    }
-                    onClick={() => {
-                      handleReporteRecebimentoModal(r);
-                      setContextMenu(prev => ({ ...prev, visible: false }));
-                    }}
-                  >
-                    Reporte
-                  </button>
+                  <>
+                    <button
+                      type="button"
+                      disabled={ctxRecebReporteBloqueado}
+                      className={`block w-full text-left px-4 py-2 hover:bg-gray-100 ${
+                        ctxRecebReporteBloqueado ? 'opacity-50 cursor-not-allowed' : ''
+                      }`}
+                      title={
+                        ctxRecebReporteBloqueado
+                          ? 'Reservada para separação a outro operador'
+                          : 'Reporte: COD, DESCRIÇÃO, QTD, S/N, LOTE, localização destino'
+                      }
+                      onClick={() => {
+                        handleReporteRecebimentoModal(r);
+                        setContextMenu(prev => ({ ...prev, visible: false }));
+                      }}
+                    >
+                      Reporte
+                    </button>
+                    <button
+                      type="button"
+                      disabled={ctxRecebReporteBloqueado}
+                      className={`block w-full text-left px-4 py-2 hover:bg-gray-100 ${
+                        ctxRecebReporteBloqueado ? 'opacity-50 cursor-not-allowed' : ''
+                      }`}
+                      title={
+                        ctxRecebReporteBloqueado
+                          ? 'Reservada para separação a outro operador'
+                          : 'Reporte detalhado: uma linha por serial/lote recebido'
+                      }
+                      onClick={() => {
+                        handleReporteRecebimentoDetalhadoModal(r);
+                        setContextMenu(prev => ({ ...prev, visible: false }));
+                      }}
+                    >
+                      Reporte detalhado
+                    </button>
+                  </>
                 );
               })()}
             {(() => {

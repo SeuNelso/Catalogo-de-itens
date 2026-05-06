@@ -1904,6 +1904,93 @@ async function buildRecebimentoMercadoriaReporteRows(poolConn, requisicao) {
   return { columns, rows };
 }
 
+async function buildRecebimentoMercadoriaReporteRowsDetalhado(poolConn, requisicao) {
+  const locRecebimentoDestino =
+    (await localizacaoArmazemPorTipoConn(poolConn, requisicao.armazem_origem_id, 'recebimento')) ||
+    LOCALIZACAO_RECEBIMENTO_FALLBACK;
+  const columns = ['COD', 'DESCRIÇÃO', 'QTD', 'S/N', 'LOTE', 'Localização destino'];
+  const itens = Array.isArray(requisicao?.itens) ? requisicao.itens : [];
+  if (!itens.length) return { columns, rows: [] };
+
+  const reqItemIds = itens.map((it) => Number(it.id)).filter((id) => Number.isFinite(id));
+  const bobinasByReqItemId = new Map();
+  if (reqItemIds.length > 0) {
+    try {
+      const qb = await poolConn.query(
+        `SELECT requisicao_item_id, lote, serialnumber, metros
+         FROM requisicoes_itens_bobinas
+         WHERE requisicao_item_id = ANY($1::int[])`,
+        [reqItemIds]
+      );
+      for (const b of qb.rows || []) {
+        const rid = Number(b.requisicao_item_id);
+        if (!Number.isFinite(rid)) continue;
+        if (!bobinasByReqItemId.has(rid)) bobinasByReqItemId.set(rid, []);
+        bobinasByReqItemId.get(rid).push(b);
+      }
+    } catch (e) {
+      if (e.code !== '42P01') throw e;
+    }
+  }
+
+  const rows = [];
+  for (const it of itens) {
+    const cod = String(it.item_codigo || '').trim();
+    const desc = String(it.item_descricao || '').trim();
+    const tipoControlo = String(it.tipocontrolo || '').trim().toUpperCase();
+    const reqItemId = Number(it.id);
+    const bobinas = Number.isFinite(reqItemId) ? (bobinasByReqItemId.get(reqItemId) || []) : [];
+
+    if (tipoControlo === 'S/N') {
+      let serials = [];
+      if (Number.isFinite(reqItemId)) {
+        // eslint-disable-next-line no-await-in-loop
+        serials = await serialsRecolhidosRequisicaoItem(poolConn, reqItemId, it);
+      }
+      if (!serials.length) serials = serialsNormalizadosList(it.serialnumber);
+      if (serials.length) {
+        for (const sn of serials) {
+          rows.push({
+            COD: cod,
+            'DESCRIÇÃO': desc,
+            QTD: 1,
+            'S/N': String(sn || '').trim(),
+            LOTE: String(it.lote || '').trim(),
+            'Localização destino': String(locRecebimentoDestino || '').trim(),
+          });
+        }
+        continue;
+      }
+    }
+
+    if (tipoControlo === 'LOTE' && bobinas.length) {
+      for (const b of bobinas) {
+        const metros = Number(b.metros) || 0;
+        if (metros <= 0) continue;
+        rows.push({
+          COD: cod,
+          'DESCRIÇÃO': desc,
+          QTD: metros,
+          'S/N': String(b.serialnumber || '').trim(),
+          LOTE: String(b.lote || it.lote || '').trim(),
+          'Localização destino': String(locRecebimentoDestino || '').trim(),
+        });
+      }
+      continue;
+    }
+
+    rows.push({
+      COD: cod,
+      'DESCRIÇÃO': desc,
+      QTD: Number(it.quantidade_preparada ?? it.quantidade ?? 0) || 0,
+      'S/N': String(it.serialnumber || '').trim(),
+      LOTE: String(it.lote || '').trim(),
+      'Localização destino': String(locRecebimentoDestino || '').trim(),
+    });
+  }
+  return { columns, rows };
+}
+
 // Helper: gera ficheiro de reporte formatado no template
 // (Artigo, Descrição, Quantidade, ORIGEM, S/N, LOTE, DESTINO[, Observações])
 // ou, com opts.recebimentoMercadoria: COD, DESCRIÇÃO, QTD, S/N, LOTE, Localização destino
@@ -10617,6 +10704,33 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
     }
   );
 
+  router.get(
+    '/transferencias/recebimento/:id/reporte-dados-detalhado',
+    ...requisicaoAuth,
+    async (req, res) => {
+      try {
+        const { id } = req.params;
+        const reqId = parseInt(String(id || ''), 10);
+        if (!Number.isFinite(reqId)) return res.status(400).json({ error: 'ID inválido.' });
+
+        const requisicao = await getRequisicaoComItens(reqId);
+        if (!requisicao) return res.status(404).json({ error: 'Requisição não encontrada.' });
+        if (!hasRecebimentoMarker(requisicao)) {
+          return res.status(400).json({ error: 'Requisição não é um recebimento de transferência.' });
+        }
+        if (String(requisicao.status || '') !== 'EM EXPEDICAO') {
+          return res.status(400).json({ error: 'Reporte só está disponível quando o recebimento está em processo.' });
+        }
+
+        const { columns, rows } = await buildRecebimentoMercadoriaReporteRowsDetalhado(pool, requisicao);
+        return res.json({ columns, rows });
+      } catch (e) {
+        console.error('Erro ao obter dados do reporte detalhado de recebimento:', e);
+        return res.status(500).json({ error: 'Erro ao obter reporte detalhado', details: e.message });
+      }
+    }
+  );
+
   // Exportar report de material recebido
   router.get(
     '/transferencias/recebimento/:id/export-reporte',
@@ -10651,6 +10765,43 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
       } catch (e) {
         console.error('Erro ao exportar report material recebido:', e);
         return res.status(500).json({ error: 'Erro ao exportar report', details: e.message });
+      }
+    }
+  );
+
+  router.get(
+    '/transferencias/recebimento/:id/export-reporte-detalhado',
+    ...requisicaoAuth,
+    async (req, res) => {
+      try {
+        const { id } = req.params;
+        const reqId = parseInt(String(id || ''), 10);
+        if (!Number.isFinite(reqId)) return res.status(400).json({ error: 'ID inválido.' });
+
+        const requisicao = await getRequisicaoComItens(reqId);
+        if (!requisicao) return res.status(404).json({ error: 'Requisição não encontrada.' });
+        if (!hasRecebimentoMarker(requisicao)) {
+          return res.status(400).json({ error: 'Requisição não é um recebimento de transferência.' });
+        }
+        if (String(requisicao.status || '') !== 'EM EXPEDICAO') {
+          return res.status(400).json({ error: 'Reporte só está disponível quando o recebimento está em processo.' });
+        }
+
+        const { rows } = await buildRecebimentoMercadoriaReporteRowsDetalhado(pool, requisicao);
+
+        await pool.query(
+          `UPDATE requisicoes
+           SET tra_gerada_em = COALESCE(tra_gerada_em, CURRENT_TIMESTAMP),
+               updated_at = CURRENT_TIMESTAMP
+           WHERE id = $1`,
+          [reqId]
+        );
+
+        const filename = `MATERIAL_RECEBIDO_detalhado_requisicao_${reqId}_${new Date().toISOString().slice(0, 10)}.xlsx`;
+        await buildExcelReporte(rows, res, filename, { recebimentoMercadoria: true });
+      } catch (e) {
+        console.error('Erro ao exportar report detalhado de recebimento:', e);
+        return res.status(500).json({ error: 'Erro ao exportar report detalhado', details: e.message });
       }
     }
   );
