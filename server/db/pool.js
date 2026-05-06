@@ -43,6 +43,14 @@ const pool = new Pool({
   max: pgPoolMax,
   idleTimeoutMillis: parseInt(process.env.PGPOOL_IDLE_MS || '30000', 10),
   connectionTimeoutMillis: parseInt(process.env.PGPOOL_CONN_TIMEOUT_MS || '10000', 10),
+  keepAlive: true,
+  keepAliveInitialDelayMillis: parseInt(process.env.PGPOOL_KEEPALIVE_INITIAL_DELAY_MS || '10000', 10),
+});
+
+// Evita crash do processo quando uma ligação idle do pg-pool é terminada pelo servidor/rede.
+// Sem este handler, o Node emite "Unhandled 'error' event" e derruba a API.
+pool.on('error', (err) => {
+  console.error('[pg] erro em ligação idle do pool:', err?.message || err);
 });
 
 /** Host e nome da base (sem password) — útil para scripts e migrações. */

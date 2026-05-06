@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { useAuth } from '../contexts/AuthContext';
 
@@ -19,6 +19,25 @@ const formatUpperView = (value) => {
   const text = String(value || '').trim();
   return text ? text.toUpperCase() : '—';
 };
+
+/** Cabeçalho fixo ao fazer scroll dentro de contentores `overflow-auto` */
+const TH_STICKY_SCROLL =
+  'text-left px-2 py-1 border-b sticky top-0 z-10 bg-slate-100 shadow-[inset_0_-1px_0_0_rgb(226_232_240)]';
+
+const SERIAIS_FILTROS_COL_VAZIOS = {
+  tipo: '',
+  artigo: '',
+  descricao: '',
+  serial: '',
+  lote: '',
+  quantidade: '',
+  localizacao: '',
+  caixa: '',
+  status: '',
+  req: '',
+};
+
+const SERIAIS_PAGE_SIZE = 200;
 
 const StockRastreavel = ({ mode = 'all' }) => {
   const { user } = useAuth();
@@ -43,6 +62,16 @@ const StockRastreavel = ({ mode = 'all' }) => {
   const [fLocalizacao, setFLocalizacao] = useState('');
   const [fStatus, setFStatus] = useState('');
   const [seriaisData, setSeriaisData] = useState(null);
+  const [seriaisColFiltros, setSeriaisColFiltros] = useState(() => ({ ...SERIAIS_FILTROS_COL_VAZIOS }));
+  const [seriaisHeaderEditKey, setSeriaisHeaderEditKey] = useState(null);
+  const seriaisFilterInputRef = useRef(null);
+  const seriaisColFiltrosRef = useRef({ ...SERIAIS_FILTROS_COL_VAZIOS });
+  const seriaisColDebounceRef = useRef(null);
+  const seriaisReqSeq = useRef(0);
+  const [seriaisPage, setSeriaisPage] = useState(0);
+  const seriaisPageRef = useRef(0);
+  const seriaisTotalCacheRef = useRef(null);
+  const [seriaisLoading, setSeriaisLoading] = useState(false);
   const [meusArmazens, setMeusArmazens] = useState([]);
   const [armazemSelecionadoId, setArmazemSelecionadoId] = useState('');
   const [importArmazemId, setImportArmazemId] = useState('');
@@ -103,6 +132,144 @@ const StockRastreavel = ({ mode = 'all' }) => {
     setFArmazemId(armazemSelecionadoId);
     setArmazemId(armazemSelecionadoId);
   }, [armazemSelecionadoId]);
+
+  useEffect(() => {
+    if (!seriaisHeaderEditKey) return;
+    const t = requestAnimationFrame(() => {
+      const el = seriaisFilterInputRef.current;
+      if (el && typeof el.focus === 'function') {
+        el.focus();
+        if (typeof el.select === 'function') el.select();
+      }
+    });
+    return () => cancelAnimationFrame(t);
+  }, [seriaisHeaderEditKey]);
+
+  const appendColFiltrosQuery = (p, colMap) => {
+    const m = colMap || SERIAIS_FILTROS_COL_VAZIOS;
+    if (String(m.tipo || '').trim()) p.set('col_tipo', String(m.tipo).trim());
+    if (String(m.artigo || '').trim()) p.set('col_artigo', String(m.artigo).trim());
+    if (String(m.descricao || '').trim()) p.set('col_descricao', String(m.descricao).trim());
+    if (String(m.serial || '').trim()) p.set('col_serial', String(m.serial).trim());
+    if (String(m.lote || '').trim()) p.set('col_lote', String(m.lote).trim());
+    if (String(m.quantidade || '').trim()) p.set('col_quantidade', String(m.quantidade).trim());
+    if (String(m.localizacao || '').trim()) p.set('col_localizacao', String(m.localizacao).trim());
+    if (String(m.caixa || '').trim()) p.set('col_caixa', String(m.caixa).trim());
+    if (String(m.status || '').trim()) p.set('col_status', String(m.status).trim());
+    if (String(m.req || '').trim()) p.set('col_req', String(m.req).trim());
+  };
+
+  const loadSeriaisConsultaArmazem = async (pageIndex, colFiltrosMap) => {
+    if (!(armazemSelecionadoId || fArmazemId)) return null;
+    const reqId = ++seriaisReqSeq.current;
+    setSeriaisLoading(true);
+    setErro('');
+    try {
+      const token = localStorage.getItem('token');
+      const p = new URLSearchParams();
+      p.set('armazem_id', armazemSelecionadoId || fArmazemId);
+      const filtroArtigo = String(fItemId || '').trim();
+      if (filtroArtigo) {
+        p.set('item_codigo', filtroArtigo);
+        if (/^\d+$/.test(filtroArtigo)) p.set('item_id', filtroArtigo);
+      }
+      if (fLocalizacao) p.set('localizacao', fLocalizacao);
+      if (fStatus) p.set('status', fStatus);
+      p.set('limit', String(SERIAIS_PAGE_SIZE));
+      p.set('offset', String(Math.max(0, pageIndex) * SERIAIS_PAGE_SIZE));
+      appendColFiltrosQuery(p, colFiltrosMap);
+
+      const response = await fetch(`/api/requisicoes/stock/seriais-por-armazem?${p.toString()}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await response.json().catch(() => ({}));
+      if (reqId !== seriaisReqSeq.current) return null;
+      if (!response.ok) throw new Error(data.error || 'Erro ao consultar seriais por armazém');
+
+      if (data.total !== null && data.total !== undefined) {
+        seriaisTotalCacheRef.current = Number(data.total);
+      }
+      const total =
+        seriaisTotalCacheRef.current !== null && seriaisTotalCacheRef.current !== undefined
+          ? Number(seriaisTotalCacheRef.current)
+          : Number(data.total ?? 0);
+      const maxPage = Math.max(0, Math.ceil(total / SERIAIS_PAGE_SIZE) - 1);
+      let finalPage = Math.max(0, pageIndex);
+      if (total > 0 && finalPage > maxPage) {
+        finalPage = maxPage;
+        return loadSeriaisConsultaArmazem(finalPage, colFiltrosMap);
+      }
+
+      setSeriaisData({ ...data, total });
+      seriaisPageRef.current = finalPage;
+      setSeriaisPage(finalPage);
+      return data;
+    } catch (e) {
+      if (reqId === seriaisReqSeq.current) {
+        setErro(e.message || 'Erro ao consultar seriais por armazém');
+      }
+      return null;
+    } finally {
+      if (reqId === seriaisReqSeq.current) setSeriaisLoading(false);
+    }
+  };
+
+  const scheduleSeriaisColRefetch = () => {
+    clearTimeout(seriaisColDebounceRef.current);
+    seriaisColDebounceRef.current = setTimeout(() => {
+      seriaisTotalCacheRef.current = null;
+      loadSeriaisConsultaArmazem(0, seriaisColFiltrosRef.current);
+    }, 400);
+  };
+
+  const renderSeriaisThFiltro = (colKey, label) => {
+    const temFiltro = Boolean(String(seriaisColFiltros[colKey] || '').trim());
+    const editando = seriaisHeaderEditKey === colKey;
+    return (
+      <th key={colKey} className={`${TH_STICKY_SCROLL} align-top min-w-[4.5rem] max-w-[10rem]`}>
+        {editando ? (
+          <input
+            ref={seriaisFilterInputRef}
+            type="text"
+            value={seriaisColFiltros[colKey]}
+            onChange={(e) => {
+              const v = e.target.value;
+              setSeriaisColFiltros((prev) => {
+                const next = { ...prev, [colKey]: v };
+                seriaisColFiltrosRef.current = next;
+                return next;
+              });
+              scheduleSeriaisColRefetch();
+            }}
+            onBlur={() => setSeriaisHeaderEditKey(null)}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') {
+                e.stopPropagation();
+                setSeriaisHeaderEditKey(null);
+              }
+            }}
+            className="w-full min-w-0 px-1 py-0.5 text-[11px] border border-indigo-400 rounded bg-white text-gray-900"
+            placeholder={label}
+            aria-label={`Filtrar ${label}`}
+          />
+        ) : (
+          <button
+            type="button"
+            className="w-full text-left font-semibold text-slate-800 hover:text-indigo-700 leading-snug flex items-start gap-1"
+            onClick={() => setSeriaisHeaderEditKey(colKey)}
+            title={`Clicar para filtrar por ${label} (pesquisa no servidor)`}
+          >
+            <span className="min-w-0 break-words">{label}</span>
+            {temFiltro ? (
+              <span className="shrink-0 text-indigo-600" aria-hidden>
+                ●
+              </span>
+            ) : null}
+          </button>
+        )}
+      </th>
+    );
+  };
 
   const handleManualChange = (field, value) => {
     if (field === 'artigo_codigo') {
@@ -413,29 +580,17 @@ const StockRastreavel = ({ mode = 'all' }) => {
       setErro('Selecione um armazém para consultar seriais.');
       return;
     }
+    clearTimeout(seriaisColDebounceRef.current);
     setErro('');
+    seriaisTotalCacheRef.current = null;
     setSeriaisData(null);
-    try {
-      const token = localStorage.getItem('token');
-      const p = new URLSearchParams();
-      p.set('armazem_id', armazemSelecionadoId || fArmazemId);
-      const filtroArtigo = String(fItemId || '').trim();
-      if (filtroArtigo) {
-        p.set('item_codigo', filtroArtigo);
-        if (/^\d+$/.test(filtroArtigo)) p.set('item_id', filtroArtigo);
-      }
-      if (fLocalizacao) p.set('localizacao', fLocalizacao);
-      if (fStatus) p.set('status', fStatus);
-      p.set('limit', '500');
-      const response = await fetch(`/api/requisicoes/stock/seriais-por-armazem?${p.toString()}`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(data.error || 'Erro ao consultar seriais por armazém');
-      setSeriaisData(data);
-    } catch (e) {
-      setErro(e.message || 'Erro ao consultar seriais por armazém');
-    }
+    seriaisPageRef.current = 0;
+    setSeriaisPage(0);
+    const limpos = { ...SERIAIS_FILTROS_COL_VAZIOS };
+    seriaisColFiltrosRef.current = limpos;
+    setSeriaisColFiltros(limpos);
+    setSeriaisHeaderEditKey(null);
+    await loadSeriaisConsultaArmazem(0, limpos);
   };
 
   const apagarRegistroConsulta = async (row) => {
@@ -466,7 +621,7 @@ const StockRastreavel = ({ mode = 'all' }) => {
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.error || 'Erro ao apagar registo');
-      await consultarSeriaisPorArmazem();
+      await loadSeriaisConsultaArmazem(seriaisPageRef.current, seriaisColFiltrosRef.current);
     } catch (e) {
       setErro(e.message || 'Erro ao apagar registo');
     } finally {
@@ -588,8 +743,8 @@ const StockRastreavel = ({ mode = 'all' }) => {
                     <table className="min-w-full text-xs">
                       <thead className="bg-slate-100">
                         <tr>
-                          <th className="text-left px-2 py-1 border-b">Linha</th>
-                          <th className="text-left px-2 py-1 border-b">Erro</th>
+                          <th className={TH_STICKY_SCROLL}>Linha</th>
+                          <th className={TH_STICKY_SCROLL}>Erro</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -798,13 +953,13 @@ const StockRastreavel = ({ mode = 'all' }) => {
                 <table className="min-w-full text-xs">
                   <thead className="bg-slate-100">
                     <tr>
-                      <th className="text-left px-2 py-1 border-b">Artigo</th>
-                      <th className="text-left px-2 py-1 border-b">Tipo</th>
-                      <th className="text-left px-2 py-1 border-b">Serial / Lote</th>
-                      <th className="text-left px-2 py-1 border-b">Quantidade</th>
-                      <th className="text-left px-2 py-1 border-b">Localização</th>
-                      <th className="text-left px-2 py-1 border-b">Caixa</th>
-                      <th className="text-left px-2 py-1 border-b">Status</th>
+                      <th className={TH_STICKY_SCROLL}>Artigo</th>
+                      <th className={TH_STICKY_SCROLL}>Tipo</th>
+                      <th className={TH_STICKY_SCROLL}>Serial / Lote</th>
+                      <th className={TH_STICKY_SCROLL}>Quantidade</th>
+                      <th className={TH_STICKY_SCROLL}>Localização</th>
+                      <th className={TH_STICKY_SCROLL}>Caixa</th>
+                      <th className={TH_STICKY_SCROLL}>Status</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -868,28 +1023,96 @@ const StockRastreavel = ({ mode = 'all' }) => {
           </div>
           {seriaisData && (
             <div className="border border-slate-200 rounded overflow-hidden">
-              <div className="p-2 bg-slate-50 text-xs text-slate-700">
-                Total de seriais: <strong>{seriaisData.total || 0}</strong>
+              <div className="p-2 bg-slate-50 text-xs text-slate-700 flex flex-wrap items-center gap-x-3 gap-y-1">
+                <span>
+                  Resultados (filtro geral + colunas): <strong>{seriaisData.total || 0}</strong>
+                </span>
+                <span>
+                  Nesta página: <strong>{(seriaisData.rows || []).length}</strong> ·{' '}
+                  <strong>{SERIAIS_PAGE_SIZE}</strong> por página
+                </span>
+                {seriaisData.total > 0 && (
+                  <span>
+                    Página <strong>{seriaisPage + 1}</strong> de{' '}
+                    <strong>{Math.max(1, Math.ceil((seriaisData.total || 0) / SERIAIS_PAGE_SIZE))}</strong>
+                  </span>
+                )}
+                {seriaisLoading ? <span className="text-indigo-700">A carregar…</span> : null}
+                <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto sm:ml-auto">
+                  <button
+                    type="button"
+                    disabled={seriaisLoading || seriaisPage <= 0}
+                    onClick={() =>
+                      loadSeriaisConsultaArmazem(seriaisPageRef.current - 1, seriaisColFiltrosRef.current)
+                    }
+                    className="px-2 py-1 border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50 text-[11px] font-medium"
+                  >
+                    ← Anterior
+                  </button>
+                  <button
+                    type="button"
+                    disabled={
+                      seriaisLoading ||
+                      seriaisPage + 1 >= Math.max(1, Math.ceil((seriaisData.total || 0) / SERIAIS_PAGE_SIZE))
+                    }
+                    onClick={() =>
+                      loadSeriaisConsultaArmazem(seriaisPageRef.current + 1, seriaisColFiltrosRef.current)
+                    }
+                    className="px-2 py-1 border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50 text-[11px] font-medium"
+                  >
+                    Seguinte →
+                  </button>
+                </div>
+                {(Object.values(seriaisColFiltros).some((v) => String(v || '').trim()) ||
+                  seriaisHeaderEditKey) && (
+                  <button
+                    type="button"
+                    className="text-indigo-700 hover:underline font-medium"
+                    onClick={() => {
+                      clearTimeout(seriaisColDebounceRef.current);
+                      seriaisTotalCacheRef.current = null;
+                      const limpos = { ...SERIAIS_FILTROS_COL_VAZIOS };
+                      seriaisColFiltrosRef.current = limpos;
+                      setSeriaisColFiltros(limpos);
+                      setSeriaisHeaderEditKey(null);
+                      loadSeriaisConsultaArmazem(0, limpos);
+                    }}
+                  >
+                    Limpar filtros de coluna
+                  </button>
+                )}
               </div>
               <div className="max-h-80 overflow-auto">
                 <table className="min-w-full text-xs">
                   <thead className="bg-slate-100">
                     <tr>
-                      <th className="text-left px-2 py-1 border-b">Tipo</th>
-                      <th className="text-left px-2 py-1 border-b">Artigo</th>
-                      <th className="text-left px-2 py-1 border-b">Descrição</th>
-                      <th className="text-left px-2 py-1 border-b">Serial</th>
-                      <th className="text-left px-2 py-1 border-b">Lote</th>
-                      <th className="text-left px-2 py-1 border-b">Quantidade</th>
-                      <th className="text-left px-2 py-1 border-b">Localização</th>
-                      <th className="text-left px-2 py-1 border-b">Nº Caixa</th>
-                      <th className="text-left px-2 py-1 border-b">Status</th>
-                      <th className="text-left px-2 py-1 border-b">Req</th>
-                      {isAdminUser && <th className="text-left px-2 py-1 border-b">Ações</th>}
+                      {renderSeriaisThFiltro('tipo', 'Tipo')}
+                      {renderSeriaisThFiltro('artigo', 'Artigo')}
+                      {renderSeriaisThFiltro('descricao', 'Descrição')}
+                      {renderSeriaisThFiltro('serial', 'Serial')}
+                      {renderSeriaisThFiltro('lote', 'Lote')}
+                      {renderSeriaisThFiltro('quantidade', 'Quantidade')}
+                      {renderSeriaisThFiltro('localizacao', 'Localização')}
+                      {renderSeriaisThFiltro('caixa', 'Nº Caixa')}
+                      {renderSeriaisThFiltro('status', 'Status')}
+                      {renderSeriaisThFiltro('req', 'Req')}
+                      {isAdminUser && (
+                        <th className={`${TH_STICKY_SCROLL} align-top`}>Ações</th>
+                      )}
                     </tr>
                   </thead>
                   <tbody>
-                    {(seriaisData.rows || []).map((r) => {
+                    {(seriaisData.rows || []).length === 0 && (seriaisData.total || 0) === 0 ? (
+                      <tr>
+                        <td
+                          colSpan={10 + (isAdminUser ? 1 : 0)}
+                          className="px-3 py-6 text-center text-slate-600"
+                        >
+                          Nenhum registo com os filtros atuais. Ajuste a pesquisa ou os filtros de coluna.
+                        </td>
+                      </tr>
+                    ) : (
+                      (seriaisData.rows || []).map((r) => {
                       const statusNorm = String(r.status || '').trim().toLowerCase();
                       const statusBgClass =
                         statusNorm === 'consumido'
@@ -922,7 +1145,9 @@ const StockRastreavel = ({ mode = 'all' }) => {
                           </td>
                         )}
                       </tr>
-                    )})}
+                    );
+                    })
+                    )}
                   </tbody>
                 </table>
               </div>
@@ -988,9 +1213,9 @@ const StockRastreavel = ({ mode = 'all' }) => {
                 <table className="min-w-full text-xs">
                   <thead className="bg-slate-100">
                     <tr>
-                      <th className="text-left px-2 py-1 border-b">Serial</th>
-                      <th className="text-left px-2 py-1 border-b">Lote</th>
-                      <th className="text-left px-2 py-1 border-b">Status</th>
+                      <th className={TH_STICKY_SCROLL}>Serial</th>
+                      <th className={TH_STICKY_SCROLL}>Lote</th>
+                      <th className={TH_STICKY_SCROLL}>Status</th>
                     </tr>
                   </thead>
                   <tbody>

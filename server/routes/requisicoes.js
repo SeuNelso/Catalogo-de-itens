@@ -837,6 +837,41 @@ async function moverStockEntreArmazensPorLabels(client, origArmId, origLabel, de
   await adicionarQtyArmazemLocalizacaoItem(client, destId, itemId, q);
 }
 
+async function logStockMovimentoHelper(db, {
+  tipo,
+  itemId,
+  armazemId,
+  localizacao,
+  lote,
+  serialnumber,
+  quantidade,
+  requisicaoId,
+  requisicaoItemId,
+  caixaId,
+  usuarioId,
+  payload,
+}) {
+  await db.query(
+    `INSERT INTO stock_movimentos_auditoria
+     (tipo, item_id, armazem_id, localizacao, lote, serialnumber, quantidade, requisicao_id, requisicao_item_id, caixa_id, usuario_id, payload)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+    [
+      tipo,
+      itemId || null,
+      armazemId || null,
+      localizacao || null,
+      lote || null,
+      serialnumber || null,
+      quantidade ?? null,
+      requisicaoId || null,
+      requisicaoItemId || null,
+      caixaId || null,
+      usuarioId || null,
+      payload ? JSON.stringify(payload) : null,
+    ]
+  );
+}
+
 /** DEV (devolução): crédito na localização de recebimento do central. */
 async function aplicarStockDevolucaoEntradaRecebimento(client, { centralId, locRec, itensComFerramenta, bobinas }) {
   if (!centralId || !locRec) return;
@@ -846,14 +881,39 @@ async function aplicarStockDevolucaoEntradaRecebimento(client, { centralId, locR
     const metros = Number(b.metros) || 0;
     if (metros <= 0) continue;
     const ri = list.find((it) => it.item_id === b.item_id) || {};
+    const localizacaoCadastro = locRec;
     await creditarStockNaLocalizacaoArmazem(
       client,
       centralId,
       b.item_id,
       ri.item_codigo || b.item_codigo,
-      locRec,
+      localizacaoCadastro,
       metros
     );
+    const loteBobina = String(b.lote || '').trim();
+    if (loteBobina) {
+      await client.query(
+        `INSERT INTO stock_lote (item_id, armazem_id, localizacao, lote, quantidade_disponivel)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (item_id, armazem_id, localizacao, lote)
+         DO UPDATE SET
+           quantidade_disponivel = stock_lote.quantidade_disponivel + EXCLUDED.quantidade_disponivel,
+           atualizado_em = CURRENT_TIMESTAMP`,
+        [b.item_id, centralId, localizacaoCadastro, loteBobina, metros]
+      );
+      await logStockMovimentoHelper(client, {
+        tipo: 'entrada_devolucao_lote',
+        itemId: b.item_id,
+        armazemId: centralId,
+        localizacao: localizacaoCadastro,
+        lote: loteBobina,
+        quantidade: metros,
+        requisicaoId: Number(ri.requisicao_id) || null,
+        requisicaoItemId: Number(b.requisicao_item_id || ri.id) || null,
+        usuarioId: null,
+        payload: { origem: 'aplicarStockDevolucaoEntradaRecebimento' },
+      });
+    }
   }
   for (const ri of list) {
     const tipoControlo = (ri.tipocontrolo || '').toUpperCase();
@@ -869,8 +929,15 @@ async function aplicarStockDevolucaoEntradaRecebimento(client, { centralId, locR
   for (const ri of list) {
     const tipoControlo = String(ri.tipocontrolo || '').toUpperCase();
     if (tipoControlo !== 'S/N') continue;
-    const serials = serialsNormalizadosList(ri.serialnumber);
+    let serials = serialsNormalizadosList(ri.serialnumber);
+    if ((!serials || serials.length === 0) && Number.isFinite(Number(ri.id))) {
+      // Em devoluções S/N, os seriais podem estar persistidos em requisicoes_itens_seriais
+      // enquanto requisicoes_itens.serialnumber fica vazio.
+      // eslint-disable-next-line no-await-in-loop
+      serials = await serialsRecolhidosRequisicaoItem(client, Number(ri.id), ri);
+    }
     if (!serials.length) continue;
+    const localizacaoCadastro = locRec;
     const seen = new Set();
     for (const sn of serials) {
       const key = `${ri.item_id}::${sn}`.toUpperCase();
@@ -891,15 +958,14 @@ async function aplicarStockDevolucaoEntradaRecebimento(client, { centralId, locR
            reservado_em = NULL,
            consumido_em = NULL,
            atualizado_em = CURRENT_TIMESTAMP`,
-        [ri.item_id, centralId, locRec, sn, ri.lote || null, STOCK_STATUS.DISPONIVEL]
+        [ri.item_id, centralId, localizacaoCadastro, sn, ri.lote || null, STOCK_STATUS.DISPONIVEL]
       );
       // eslint-disable-next-line no-await-in-loop
-      await logStockMovimento({
-        db: client,
+      await logStockMovimentoHelper(client, {
         tipo: 'entrada_devolucao_serial',
         itemId: ri.item_id,
         armazemId: centralId,
-        localizacao: locRec,
+        localizacao: localizacaoCadastro,
         lote: ri.lote || null,
         serialnumber: sn,
         quantidade: 1,
@@ -1390,7 +1456,14 @@ router.get('/', ...requisicaoAuth, async (req, res) => {
     try {
       requisicoesResult = await pool.query(query, params);
     } catch (qErr) {
-      if (qErr.code === '42703') {
+      const transientDbConnErr =
+        qErr?.code === 'ECONNRESET'
+        || qErr?.code === '57P01'
+        || /Connection terminated unexpectedly/i.test(String(qErr?.message || ''));
+      if (transientDbConnErr) {
+        console.warn('[requisicoes/list] falha transitória de conexão ao DB; retry 1x');
+        requisicoesResult = await pool.query(query, params);
+      } else if (qErr.code === '42703') {
         let fallbackQuery = `
           SELECT r.*,
             (COALESCE(a.codigo, '') || CASE WHEN a.codigo IS NOT NULL AND a.codigo <> '' THEN ' - ' ELSE '' END || a.descricao) as armazem_descricao,
@@ -8127,6 +8200,10 @@ router.patch('/:id/atender-item', ...requisicaoAuth, denyBackofficeOperations, a
       return res.status(404).json({ error: 'Item não encontrado nesta requisição' });
     }
     const item = itemCheck.rows[0];
+    const ehDevolucaoViaturaCentral = isFluxoDevolucaoViaturaCentral(
+      check.rows[0].armazem_origem_tipo,
+      check.rows[0].armazem_destino_tipo
+    );
 
     if (!ehRecebimentoTransfer && !isZero && check.rows[0].armazem_origem_id && check.rows[0].armazem_id) {
       const tiposR = await client.query(
@@ -8137,7 +8214,7 @@ router.patch('/:id/atender-item', ...requisicaoAuth, denyBackofficeOperations, a
         [check.rows[0].armazem_origem_id, check.rows[0].armazem_id]
       );
       const tr = tiposR.rows[0];
-      if (tr && isFluxoDevolucaoViaturaCentral(tr.origem_tipo, tr.dest_tipo)) {
+      if (tr && ehDevolucaoViaturaCentral) {
         const codV = String(tr.origem_codigo || '').trim().toUpperCase();
         const isFerr = item.is_ferramenta === true;
         const expected = isFerr ? `${codV}.FERR` : codV;
@@ -8280,6 +8357,12 @@ router.patch('/:id/atender-item', ...requisicaoAuth, denyBackofficeOperations, a
         });
       }
 
+      const origemControlaRastreavel = await obterCompartilhaStockSerialArmazem(
+        client,
+        check.rows[0].armazem_origem_id,
+        check.rows[0].armazem_origem_tipo
+      );
+
       if (tipoControlo === 'LOTE') {
         // Libera reservas anteriores desta linha antes de recalcular a preparação atual.
         await liberarReservasLotePorRequisicaoItem(client, {
@@ -8288,7 +8371,13 @@ router.patch('/:id/atender-item', ...requisicaoAuth, denyBackofficeOperations, a
           origem: 'atender-item-recalculo',
         });
 
-        if (!isZero && Array.isArray(bobinas) && bobinas.length > 0) {
+        if (
+          !isZero
+          && Array.isArray(bobinas)
+          && bobinas.length > 0
+          && !ehDevolucaoViaturaCentral
+          && origemControlaRastreavel
+        ) {
           for (const b of bobinas) {
             const loteB = String(b.lote || '').trim();
             const metros = Number(b.metros) || 0;
@@ -8332,11 +8421,6 @@ router.patch('/:id/atender-item', ...requisicaoAuth, denyBackofficeOperations, a
       }
 
       if (tipoControlo === 'S/N') {
-        const origemControlaSeriais = await obterCompartilhaStockSerialArmazem(
-          client,
-          check.rows[0].armazem_origem_id,
-          check.rows[0].armazem_origem_tipo
-        );
         await client.query(
           `UPDATE stock_serial
            SET status = 'disponivel',
@@ -8349,7 +8433,13 @@ router.patch('/:id/atender-item', ...requisicaoAuth, denyBackofficeOperations, a
           [requisicao_item_id]
         );
 
-        if (origemControlaSeriais && !isZero && Array.isArray(serialsNormalizados) && serialsNormalizados.length > 0) {
+        if (
+          origemControlaRastreavel
+          && !ehDevolucaoViaturaCentral
+          && !isZero
+          && Array.isArray(serialsNormalizados)
+          && serialsNormalizados.length > 0
+        ) {
           const serialRows = await client.query(
             `SELECT id, serialnumber, status
              FROM stock_serial
@@ -11698,6 +11788,47 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
       const serialWhere = serialFilters.join(' AND ');
       const loteWhere = loteFilters.join(' AND ');
 
+      const sliceCol = (v) => String(v || '').trim().slice(0, 200);
+      const colTipo = sliceCol(req.query.col_tipo);
+      const colArtigo = sliceCol(req.query.col_artigo);
+      const colDescricao = sliceCol(req.query.col_descricao);
+      const colSerial = sliceCol(req.query.col_serial);
+      const colLote = sliceCol(req.query.col_lote);
+      const colQuantidade = sliceCol(req.query.col_quantidade);
+      const colLocalizacao = sliceCol(req.query.col_localizacao);
+      const colCaixa = sliceCol(req.query.col_caixa);
+      const colStatusCol = sliceCol(req.query.col_status);
+      const colReq = sliceCol(req.query.col_req);
+
+      const extraColFilters = [];
+      const extraColParams = [];
+      let ecp = serialParams.length + loteParams.length + 1;
+      const pushColStr = (sqlExpr, val) => {
+        if (!val) return;
+        extraColParams.push(val);
+        extraColFilters.push(`strpos(lower(${sqlExpr}), lower($${ecp}::text)) > 0`);
+        ecp += 1;
+      };
+      pushColStr(`COALESCE(u.tipo::text, '')`, colTipo);
+      pushColStr(`COALESCE(u.item_codigo::text, '')`, colArtigo);
+      pushColStr(`COALESCE(u.item_descricao::text, '')`, colDescricao);
+      pushColStr(`COALESCE(u.serialnumber::text, '')`, colSerial);
+      pushColStr(`COALESCE(u.lote::text, '')`, colLote);
+      pushColStr(`trim(both ' ' from u.quantidade::text)`, colQuantidade);
+      pushColStr(`COALESCE(u.localizacao::text, '')`, colLocalizacao);
+      pushColStr(
+        `COALESCE(NULLIF(TRIM(u.codigo_caixa::text), ''), '—')`,
+        colCaixa
+      );
+      pushColStr(`COALESCE(u.status::text, '')`, colStatusCol);
+      pushColStr(
+        `CASE WHEN u.requisicao_id IS NULL THEN '—' ELSE u.requisicao_id::text END`,
+        colReq
+      );
+
+      const outerWhere =
+        extraColFilters.length > 0 ? extraColFilters.join(' AND ') : 'TRUE';
+
       const unionSql = `
         SELECT
           s.id::bigint AS id,
@@ -11746,20 +11877,40 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
         WHERE ${loteWhere}
       `;
 
-      const totalQ = await pool.query(
-        `SELECT COUNT(*)::int AS c FROM (${unionSql}) u`,
-        [...serialParams, ...loteParams]
-      );
-      const rowsQ = await pool.query(
-        `SELECT * FROM (${unionSql}) u
-         ORDER BY u.atualizado_em DESC, u.id DESC
-         LIMIT $${serialParams.length + loteParams.length + 1}
-         OFFSET $${serialParams.length + loteParams.length + 2}`,
-        [...serialParams, ...loteParams, limit, offset]
-      );
+      const baseUnionParams = [...serialParams, ...loteParams];
+      const allButLimit = [...baseUnionParams, ...extraColParams];
+      const limIdx = allButLimit.length + 1;
+      const offIdx = allButLimit.length + 2;
+
+      const rowsSql = `SELECT * FROM (${unionSql}) u
+         WHERE ${outerWhere}
+         ORDER BY (
+           CASE LOWER(TRIM(COALESCE(u.status::text, '')))
+             WHEN 'reservado' THEN 0
+             WHEN 'disponivel' THEN 1
+             WHEN 'consumido' THEN 2
+             ELSE 3
+           END
+         ), u.atualizado_em DESC, u.id DESC
+         LIMIT $${limIdx}
+         OFFSET $${offIdx}`;
+
+      let totalVal = null;
+      let rowsQ;
+      if (offset === 0) {
+        const countSql = `SELECT COUNT(*)::int AS c FROM (${unionSql}) u WHERE ${outerWhere}`;
+        const [totalQ, rq] = await Promise.all([
+          pool.query(countSql, allButLimit),
+          pool.query(rowsSql, [...allButLimit, limit, offset]),
+        ]);
+        totalVal = totalQ.rows[0]?.c ?? 0;
+        rowsQ = rq;
+      } else {
+        rowsQ = await pool.query(rowsSql, [...allButLimit, limit, offset]);
+      }
 
       return res.json({
-        total: totalQ.rows[0]?.c || 0,
+        total: totalVal,
         limit,
         offset,
         rows: rowsQ.rows || [],
@@ -11881,7 +12032,14 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
          FROM stock_caixa_seriais cs
          INNER JOIN stock_serial s ON s.id = cs.stock_serial_id
          WHERE cs.caixa_id = $1
-         ORDER BY s.serialnumber`,
+         ORDER BY (
+           CASE LOWER(TRIM(COALESCE(s.status::text, '')))
+             WHEN 'reservado' THEN 0
+             WHEN 'disponivel' THEN 1
+             WHEN 'consumido' THEN 2
+             ELSE 3
+           END
+         ), s.serialnumber`,
         [caixa.rows[0].id]
       );
       return res.json({

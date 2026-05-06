@@ -67,7 +67,12 @@ const isDevolucaoDevConfirmadaNoArmazem = (reqRow, armazemId) => {
 };
 
 const getQtdPendenteRececaoDevolucao = (reqRow, itemRow) => {
-  const base = Number(itemRow?.quantidade ?? itemRow?.quantidade_confirmada ?? 0) || 0;
+  const base = Number(
+    itemRow?.quantidade_preparada
+      ?? itemRow?.quantidade
+      ?? itemRow?.quantidade_confirmada
+      ?? 0
+  ) || 0;
   if (base <= 0) return 0;
   // Após gerar TRA APEADOS, apenas o remanescente deve continuar na zona de receção.
   if (reqRow?.devolucao_tra_apeados_gerada_em) {
@@ -227,11 +232,13 @@ function ReceptionMonitorCard() {
           codigo: row.codigo,
           descricao: row.descricao,
           qtd: 0,
+          qtdMovimentos: 0,
           armazem: row.armazem,
           tra: row.tra,
           data: row.data,
         };
         prev.qtd += row.qtd;
+        prev.qtdMovimentos = Number(prev.qtdMovimentos || 0) + row.qtd;
         if (!prev.descricao && row.descricao) prev.descricao = row.descricao;
         if (!prev.armazem && row.armazem) prev.armazem = row.armazem;
         if (!prev.tra && row.tra) prev.tra = row.tra;
@@ -280,6 +287,7 @@ function ReceptionMonitorCard() {
                     codigo,
                     descricao: String(it?.item_descricao || '').trim(),
                     qtd: 0,
+                    qtdMovimentos: 0,
                     armazem: resolveArmazemLabelFromReq(r),
                     tra: String(r?.tra_numero || 'TRA confirmado').trim(),
                     data: String(r?.created_at || '').trim(),
@@ -304,6 +312,7 @@ function ReceptionMonitorCard() {
                     codigo,
                     descricao: String(it?.item_descricao || '').trim(),
                     qtd: 0,
+                    qtdMovimentos: 0,
                     armazem: resolveArmazemLabelFromReq(r),
                     tra: String(r?.tra_numero || 'DEV devolução').trim(),
                     data: String(r?.devolucao_tra_gerada_em || r?.created_at || '').trim(),
@@ -324,7 +333,10 @@ function ReceptionMonitorCard() {
       const merged = [...pendenteByCodigo.values()]
         .map((row) => {
           const deltaTicket = Number(deltaTicketsPorCodigo.get(row.codigo) || 0);
-          return { ...row, qtd: Number(row.qtd || 0) + deltaTicket };
+          const qtdMovimentos = Math.max(0, Number(row.qtdMovimentos || 0));
+          // Não deixar tickets antigos “apagar” quantidades oriundas de DEV/TRA atuais.
+          const deltaAplicado = deltaTicket < 0 ? Math.max(deltaTicket, -qtdMovimentos) : deltaTicket;
+          return { ...row, qtd: Number(row.qtd || 0) + deltaAplicado };
         })
         .filter((row) => row.qtd > 0);
 
