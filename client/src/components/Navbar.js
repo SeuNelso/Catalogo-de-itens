@@ -388,16 +388,6 @@ const Navbar = () => {
                               Movimentos
                             </Link>
                           )}
-                          {podeMovimentosMenu && (
-                            <Link
-                              to="/movimentos/viaturas"
-                              onClick={(e) => { e.preventDefault(); e.stopPropagation(); setClogOpen(false); setTimeout(() => navigate('/movimentos/viaturas'), 100); }}
-                              className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded"
-                            >
-                              <Truck size={14} className="lg:w-4 lg:h-4" />
-                              Dashboard viaturas
-                            </Link>
-                          )}
                           {podeTicketsMovInterna && (
                             <Link
                               to="/transferencias/localizacao"
@@ -411,6 +401,21 @@ const Navbar = () => {
                             >
                               <Share2 size={14} className="lg:w-4 lg:h-4" />
                               Transf. localização
+                            </Link>
+                          )}
+                          {podeMovimentosMenu && (
+                            <Link
+                              to="/transferencias/localizacao?modo=apeado"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                setClogOpen(false);
+                                setTimeout(() => navigate('/transferencias/localizacao?modo=apeado'), 100);
+                              }}
+                              className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded"
+                            >
+                              <Share2 size={14} className="lg:w-4 lg:h-4" />
+                              transf. APEADO
                             </Link>
                           )}
                         </div>
@@ -955,12 +960,6 @@ const Navbar = () => {
                               Movimentos
                             </Link>
                           )}
-                          {podeMovimentosMenu && (
-                            <Link to="/movimentos/viaturas" onClick={(e) => handleMobileNavigation('/movimentos/viaturas', e)} className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10">
-                              <Truck size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" />
-                              Dashboard viaturas
-                            </Link>
-                          )}
                           {podeTicketsMovInterna && (
                             <Link
                               to="/transferencias/localizacao"
@@ -969,6 +968,16 @@ const Navbar = () => {
                             >
                               <Share2 size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" />
                               Transf. localização
+                            </Link>
+                          )}
+                          {podeMovimentosMenu && (
+                            <Link
+                              to="/transferencias/localizacao?modo=apeado"
+                              onClick={(e) => handleMobileNavigation('/transferencias/localizacao?modo=apeado', e)}
+                              className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10"
+                            >
+                              <Share2 size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" />
+                              transf. APEADO
                             </Link>
                           )}
                         </div>

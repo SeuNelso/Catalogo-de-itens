@@ -34,6 +34,13 @@ const normalize = (v) =>
     .toLowerCase();
 const RECEBIMENTO_REFRESH_EVENT = 'recebimento-card-refresh';
 
+const isTipoControloSerial = (tipoControlo) => {
+  const raw = String(tipoControlo || '').trim().toUpperCase();
+  if (!raw) return false;
+  const norm = raw.replace(/\s+/g, '');
+  return norm === 'S/N' || norm === 'SN' || norm === 'SERIAL';
+};
+
 const ListarDevolucoes = () => {
   const { user } = useAuth();
   const confirm = useConfirm();
@@ -69,7 +76,7 @@ const ListarDevolucoes = () => {
   const statusParam = params.get('status') || '';
 
   const showStatusBoard = !statusParam;
-  // statusFilter pode ser: 'esperando' | 'EM EXPEDICAO' | 'APEADOS' | 'FINALIZADO' | 'cancelada'
+  // statusFilter pode ser: 'esperando' | 'EM EXPEDICAO' | 'FINALIZADO' | 'cancelada'
   const statusFilter = statusParam;
 
   const canEntregar =
@@ -90,7 +97,7 @@ const ListarDevolucoes = () => {
 
   const canEditDevolucao = (reqObj) => {
     if (!podeCriarOuImportarRequisicao) return false;
-    if (String(reqObj?.status || '') !== 'pendente') return false;
+    if (user?.role !== 'admin' && String(reqObj?.status || '') !== 'pendente') return false;
     if (user?.role === 'backoffice_operations' && !isRequisicaoDoUtilizadorAtual(reqObj, user)) return false;
     return true;
   };
@@ -342,7 +349,6 @@ const ListarDevolucoes = () => {
   const statusCards = [
     { key: 'esperando', label: 'Esperando entrega', color: 'bg-yellow-50 border-yellow-200 text-yellow-800' },
     { key: 'EM EXPEDICAO', label: 'Em processo', color: 'bg-blue-50 border-blue-200 text-blue-800' },
-    { key: 'APEADOS', label: 'Transferências pendentes', color: 'bg-purple-50 border-purple-200 text-purple-800' },
     { key: 'FINALIZADO', label: 'Finalizado', color: 'bg-slate-50 border-slate-300 text-slate-800' },
     { key: 'cancelada', label: 'Canceladas', color: 'bg-red-50 border-red-200 text-red-800' }
   ];
@@ -871,6 +877,7 @@ const ListarDevolucoes = () => {
 
       setToast({ type: 'success', message: 'Devolução finalizada.' });
       await fetchDevolucoes();
+      window.dispatchEvent(new CustomEvent(RECEBIMENTO_REFRESH_EVENT));
     } catch (error) {
       console.error(error);
       setToast({ type: 'error', message: error.message || 'Erro ao finalizar devolução' });
@@ -885,7 +892,7 @@ const ListarDevolucoes = () => {
         const posicao = String(it?.localizacao_origem || '').trim();
         const lote = String(it?.lote || '').trim();
         const serial = String(it?.serialnumber || '').trim();
-        const isLoteOuSerial = tipo === 'LOTE' || tipo === 'S/N';
+        const isLoteOuSerial = tipo === 'LOTE' || isTipoControloSerial(tipo);
         if (!isLoteOuSerial && !lote && !serial) return null;
         return {
           id: it?.id,
@@ -1522,9 +1529,7 @@ const ListarDevolucoes = () => {
       const r = byId.get(id);
       if (!r) return false;
       const docsOk = devolucaoPodeFinalizarTransferenciasPendentes(r);
-      const traApeadosNumeroOk =
-        !r.devolucao_tra_apeados_gerada_em || Boolean(String(r.devolucao_tra_apeados_numero || '').trim());
-      if (r.status === 'APEADOS' && docsOk && traApeadosNumeroOk) return true;
+      if (['EM EXPEDICAO', 'APEADOS'].includes(String(r.status || '')) && docsOk) return true;
       if (r.status === 'Entregue' && (Boolean(r.devolucao_tra_gerada_em) || Boolean(r.tra_gerada_em))) {
         return true;
       }
@@ -1553,6 +1558,7 @@ const ListarDevolucoes = () => {
         else failCount++;
       }
       await fetchDevolucoes();
+      window.dispatchEvent(new CustomEvent(RECEBIMENTO_REFRESH_EVENT));
       const parts = [];
       if (okCount) parts.push(`${okCount} finalizada(s)`);
       if (failCount) parts.push(`${failCount} falhou(aram)`);
@@ -1739,14 +1745,8 @@ const ListarDevolucoes = () => {
                   const {
                     itensCount,
                     rastreioItens,
-                    apeadosItens,
-                    pendenteArmazenagemItens,
                     reqIdNum,
-                    selectedApeadoId,
                     podeFinalizarTransferenciasPendentes,
-                    locsCentralDestino,
-                    pendenteItemLocMap,
-                    todosPendentesComLoc
                   } = d;
                   const createdBr = r.created_at ? new Date(r.created_at).toLocaleDateString('pt-BR') : '';
                   const statusLabel = getStatusLabel(r.status);
@@ -2031,7 +2031,9 @@ const ListarDevolucoes = () => {
                               </button>
                             )}
 
-                            {r.status === 'APEADOS' && canEntregar && !!r.devolucao_tra_gerada_em && (
+                            {['EM EXPEDICAO', 'APEADOS'].includes(String(r.status || '')) &&
+                              canEntregar &&
+                              (Boolean(r.devolucao_tra_gerada_em) || Boolean(String(r.tra_numero || '').trim())) && (
                               <button
                                 type="button"
                                 onClick={() => handleFinalizarDevolucao(r.id)}
@@ -2077,171 +2079,14 @@ const ListarDevolucoes = () => {
                               </button>
                             )}
 
-                            {r.status === 'APEADOS' &&
+                            {['EM EXPEDICAO', 'APEADOS'].includes(String(r.status || '')) &&
                               canEntregar &&
-                              !!r.devolucao_tra_gerada_em &&
-                              apeadosItens.length > 0 && (
-                                <div className="w-full mt-3 rounded-lg border border-purple-200 bg-purple-50 p-3">
-                                  <div className="text-[11px] font-semibold uppercase tracking-wide text-purple-800 mb-2">
-                                    Tarefa APEADOS (gerar TRA)
-                                  </div>
-
-                                  <div className="flex flex-col sm:flex-row sm:items-end gap-2">
-                                    <div className="w-full sm:max-w-[560px]">
-                                      <label className="block text-[11px] font-medium text-purple-900 mb-1">
-                                        Destino APEADO
-                                      </label>
-                                      <select
-                                        value={selectedApeadoId}
-                                        onChange={() => {}}
-                                        disabled
-                                        className="w-full px-3 py-2 border border-purple-300 rounded-lg bg-gray-100 text-sm text-gray-700 cursor-not-allowed"
-                                      >
-                                        <option value="">
-                                          Selecione um armazém APEADO
-                                        </option>
-                                        {apeadoArmazens.map((a) => (
-                                          <option key={a.id} value={a.id}>
-                                            {a.codigo || a.id}
-                                          </option>
-                                        ))}
-                                      </select>
-                                    </div>
-
-                                    <button
-                                      type="button"
-                                      onClick={() => handleExportTRADevolucaoApeados(r.id, selectedApeadoId)}
-                                      disabled={prepBloqueio || apeadosItens.length === 0 || !selectedApeadoId}
-                                      className={`px-3 py-2 text-purple-800 hover:bg-purple-100 rounded-lg border border-purple-300 transition-colors flex items-center gap-2 whitespace-nowrap ${
-                                        prepBloqueio || apeadosItens.length === 0 || !selectedApeadoId
-                                          ? 'opacity-50 cursor-not-allowed hover:bg-purple-50'
-                                          : ''
-                                      }`}
-                                      title={apeadosItens.length === 0 ? 'Nenhum item marcado como APEADOS' : 'Gerar TRA APEADOS'}
-                                    >
-                                      GERAR TRA APEADOS
-                                    </button>
-                                  </div>
-
-                                  {apeadosItens.length > 0 ? (
-                                    <div className="mt-4">
-                                      {Boolean(r.devolucao_tra_apeados_gerada_em) && (
-                                        <div className="mb-3 flex items-end gap-2 flex-wrap">
-                                          <div className="flex flex-col">
-                                            <label className="block text-[11px] font-medium text-purple-900 mb-1.5">
-                                              Nº TRA APEADOS
-                                            </label>
-                                            <input
-                                              type="text"
-                                              value={String(traApeadosNumeroByReqId[r.id] ?? r.devolucao_tra_apeados_numero ?? '')}
-                                              onChange={(e) => handleTraApeadosNumeroChange(r.id, e.target.value)}
-                                              placeholder="Digite o número da TRA APEADOS"
-                                              disabled={savingTraApeadosReqId === r.id || Boolean(String(r.devolucao_tra_apeados_numero || '').trim())}
-                                              className="w-full sm:w-[280px] px-3 py-2 border border-purple-300 rounded-lg bg-white text-sm focus:ring-2 focus:ring-[#0915FF] disabled:bg-gray-100 disabled:text-gray-500"
-                                            />
-                                          </div>
-                                          {!String(r.devolucao_tra_apeados_numero || '').trim() && (
-                                            <button
-                                              type="button"
-                                              onClick={() => handleGuardarTraApeadosNumero(r)}
-                                              disabled={savingTraApeadosReqId === r.id}
-                                              className="px-3 py-2 rounded-lg border border-purple-300 text-purple-800 text-sm hover:bg-purple-100 disabled:opacity-50"
-                                            >
-                                              {savingTraApeadosReqId === r.id ? 'A guardar...' : 'Guardar TRA APEADOS'}
-                                            </button>
-                                          )}
-                                        </div>
-                                      )}
-                                      <div className="text-[11px] font-semibold text-purple-900 mb-2">
-                                        Itens APEADOS na separação
-                                      </div>
-                                      <div className="space-y-1.5">
-                                        {apeadosItens.map((it) => (
-                                          <div
-                                            key={it.id}
-                                            className="flex items-center justify-between gap-3 text-sm text-purple-900 leading-5"
-                                          >
-                                            <span className="truncate">
-                                              {it.item_codigo}
-                                              {it.item_descricao ? ` - ${it.item_descricao}` : ''}
-                                            </span>
-                                            <span className="font-semibold tabular-nums">
-                                              {Number(it.quantidade_apeados) || 0}
-                                            </span>
-                                          </div>
-                                        ))}
-                                      </div>
-                                    </div>
-                                  ) : (
-                                    <div className="mt-4 text-xs text-purple-900/80">
-                                      Nenhum item está marcado como APEADOS nesta devolução.
-                                    </div>
-                                  )}
-                                </div>
-                              )}
-
-                            {r.status === 'APEADOS' &&
-                              canEntregar &&
-                              !!r.devolucao_tra_gerada_em && (
-                                <div className="w-full mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3">
-                                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-2">
-                                    <div className="text-[11px] font-semibold uppercase tracking-wide text-amber-800">
-                                      Pendente de armazenagem (gerar TRFL)
-                                    </div>
-
-                                    <button
-                                      type="button"
-                                      onClick={() => handleExportTRFLPendenteArmazenagem(r.id, pendenteItemLocMap)}
-                                      disabled={prepBloqueio || pendenteArmazenagemItens.length === 0 || !todosPendentesComLoc}
-                                      className={`px-3 py-2 text-amber-800 hover:bg-amber-100 rounded-lg border border-amber-300 transition-colors flex items-center gap-2 whitespace-nowrap self-start ${
-                                        prepBloqueio || pendenteArmazenagemItens.length === 0 || !todosPendentesComLoc
-                                          ? 'opacity-50 cursor-not-allowed hover:bg-amber-50'
-                                          : ''
-                                      }`}
-                                      title={pendenteArmazenagemItens.length === 0 ? 'Nenhum item pendente de armazenagem' : 'Gerar TRFL pendente de armazenagem'}
-                                    >
-                                      GERAR TRFL PENDENTE
-                                    </button>
-                                  </div>
-
-                                  {pendenteArmazenagemItens.length > 0 ? (
-                                    <div className="space-y-1.5">
-                                      {pendenteArmazenagemItens.map((it) => (
-                                        <div key={it.id} className="rounded-md border border-amber-200 bg-white px-3 py-2.5">
-                                          <div className="text-sm text-amber-900 font-medium break-words">
-                                            {it.item_codigo}
-                                            {it.item_descricao ? ` - ${it.item_descricao}` : ''}
-                                          </div>
-                                          <div className="mt-2 grid grid-cols-1 sm:grid-cols-[90px_minmax(0,1fr)] gap-2 items-center">
-                                            <div className="text-xs font-semibold text-amber-800">
-                                              Qtd: {Number(it.quantidade_pendente_armazenagem) || 0}
-                                            </div>
-                                            <select
-                                              value={pendenteItemLocMap[String(it.id)] || ''}
-                                              onChange={(e) => {
-                                                const mapKey = `${reqIdNum}:${it.id}`;
-                                                setPendenteLocByReqItemId((prev) => ({ ...prev, [mapKey]: e.target.value || '' }));
-                                              }}
-                                              className="w-full px-2.5 py-2 border border-amber-300 rounded bg-white text-xs focus:ring-2 focus:ring-[#0915FF]"
-                                            >
-                                              <option value="">Selecionar localização destino</option>
-                                              {locsCentralDestino.map((loc) => (
-                                                <option key={loc} value={loc}>
-                                                  {loc}
-                                                </option>
-                                              ))}
-                                            </select>
-                                          </div>
-                                        </div>
-                                      ))}
-                                    </div>
-                                  ) : (
-                                    <div className="mt-4 text-xs text-amber-900/80">
-                                      Nenhum item está pendente de armazenagem nesta devolução.
-                                    </div>
-                                  )}
-                                </div>
-                              )}
+                              (Boolean(r.devolucao_tra_gerada_em) || Boolean(String(r.tra_numero || '').trim())) && (
+                              <div className="w-full mt-3 rounded-lg border border-indigo-200 bg-indigo-50 p-3 text-xs text-indigo-900">
+                                A organização da devolução (incluindo APEADOS) agora é feita por tickets na card
+                                da zona de receção.
+                              </div>
+                            )}
 
                             {r.status === 'Entregue' &&
                               canEntregar &&
@@ -2387,44 +2232,6 @@ const ListarDevolucoes = () => {
                   complete &&
                   reqs.every((x) => Boolean(x.devolucao_tra_gerada_em));
 
-                const canGerarTraApe =
-                  Boolean(canDocsELogisticaPosSeparacao) &&
-                  !isMulti &&
-                  complete &&
-                  r0 &&
-                  dxSingle &&
-                  r0.status === 'APEADOS' &&
-                  r0.devolucao_tra_gerada_em &&
-                  !r0.devolucao_tra_apeados_gerada_em &&
-                  dxSingle.apeadosItens.length > 0 &&
-                  Boolean(dxSingle.selectedApeadoId);
-                const canBaixarTraApe =
-                  Boolean(canDocsELogisticaPosSeparacao) &&
-                  !isMulti &&
-                  complete &&
-                  r0 &&
-                  dxSingle &&
-                  dxSingle.apeadosItens.length > 0 &&
-                  Boolean(r0.devolucao_tra_apeados_gerada_em);
-
-                const canGerarTrflPend =
-                  Boolean(canDocsELogisticaPosSeparacao) &&
-                  !isMulti &&
-                  complete &&
-                  r0 &&
-                  dxSingle &&
-                  r0.status === 'APEADOS' &&
-                  r0.devolucao_tra_gerada_em &&
-                  !r0.devolucao_trfl_pendente_gerada_em &&
-                  dxSingle.pendenteArmazenagemItens.length > 0 &&
-                  dxSingle.todosPendentesComLoc;
-                const canBaixarTrflPend =
-                  Boolean(canDocsELogisticaPosSeparacao) &&
-                  !isMulti &&
-                  complete &&
-                  r0 &&
-                  Boolean(r0.devolucao_trfl_pendente_gerada_em);
-
                 const canEntregarDevCtx = all(
                   (x) => x.status === 'APEADOS' && Boolean(x.devolucao_trfl_gerada_em)
                 );
@@ -2434,10 +2241,8 @@ const ListarDevolucoes = () => {
                   Boolean(canDocsELogisticaPosSeparacao) &&
                   complete &&
                   all((x) => {
-                    if (x.status === 'APEADOS') {
-                      const numeroTraApeadosOk =
-                        !x.devolucao_tra_apeados_gerada_em || Boolean(String(x.devolucao_tra_apeados_numero || '').trim());
-                      return podeFin(x) && numeroTraApeadosOk;
+                    if (['EM EXPEDICAO', 'APEADOS'].includes(String(x.status || ''))) {
+                      return podeFin(x);
                     }
                     if (x.status === 'Entregue') {
                       return Boolean(x.devolucao_tra_gerada_em || x.tra_gerada_em);
@@ -2497,57 +2302,6 @@ const ListarDevolucoes = () => {
                         {isMulti
                           ? (canGerarDEVMulti ? 'GERAR DEV (MULTI)' : 'Baixar DEV (MULTI)')
                           : (canGerarDEV ? 'GERAR DEV' : 'Baixar DEV')}
-                      </button>
-                    )}
-
-                    {canDocsELogisticaPosSeparacao && (canGerarTraApe || canBaixarTraApe) && (
-                      <button
-                        type="button"
-                        disabled={ctxDocBloqueado && canGerarTraApe}
-                        className={`block w-full text-left px-4 py-2 hover:bg-gray-100 ${
-                          ctxDocBloqueado && canGerarTraApe ? 'opacity-50 cursor-not-allowed' : ''
-                        }`}
-                        title={ctxDocBloqueado && canGerarTraApe ? 'Reservada para preparação a outro operador' : undefined}
-                        onClick={() => {
-                          if (isMulti || !r0 || !dxSingle) {
-                            setToast({ type: 'error', message: 'Gere a TRA APEADOS a partir de uma única devolução.' });
-                            setContextMenu((prev) => ({ ...prev, visible: false }));
-                            return;
-                          }
-                          handleExportTRADevolucaoApeados(r0.id, dxSingle.selectedApeadoId, {
-                            redownload: canBaixarTraApe && !canGerarTraApe
-                          });
-                          setContextMenu((prev) => ({ ...prev, visible: false }));
-                        }}
-                      >
-                        {canGerarTraApe ? 'GERAR TRA APEADOS' : 'Baixar TRA APEADOS'}
-                      </button>
-                    )}
-
-                    {canDocsELogisticaPosSeparacao && (canGerarTrflPend || canBaixarTrflPend) && (
-                      <button
-                        type="button"
-                        disabled={ctxDocBloqueado && canGerarTrflPend}
-                        className={`block w-full text-left px-4 py-2 hover:bg-gray-100 ${
-                          ctxDocBloqueado && canGerarTrflPend ? 'opacity-50 cursor-not-allowed' : ''
-                        }`}
-                        title={ctxDocBloqueado && canGerarTrflPend ? 'Reservada para preparação a outro operador' : undefined}
-                        onClick={() => {
-                          if (isMulti || !r0 || !dxSingle) {
-                            setToast({
-                              type: 'error',
-                              message: 'Gere a TRFL pendente a partir de uma única devolução.'
-                            });
-                            setContextMenu((prev) => ({ ...prev, visible: false }));
-                            return;
-                          }
-                          handleExportTRFLPendenteArmazenagem(r0.id, dxSingle.pendenteItemLocMap, {
-                            redownload: canBaixarTrflPend && !canGerarTrflPend
-                          });
-                          setContextMenu((prev) => ({ ...prev, visible: false }));
-                        }}
-                      >
-                        {canGerarTrflPend ? 'GERAR TRFL PENDENTE' : 'Baixar TRFL PENDENTE'}
                       </button>
                     )}
 

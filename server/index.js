@@ -5669,7 +5669,7 @@ app.get('/api/armazens/:armazemId/localizacoes/:locId/estoque', authenticateToke
       return res.status(404).json({ error: 'Localização não encontrada neste armazém' });
     }
     const r = await pool.query(
-      `SELECT ali.item_id, i.codigo, i.descricao, ali.quantidade::float AS quantidade
+      `SELECT ali.item_id, i.codigo, i.descricao, i.tipocontrolo, ali.quantidade::float AS quantidade
        FROM armazens_localizacao_item ali
        INNER JOIN itens i ON i.id = ali.item_id
        WHERE ali.localizacao_id = $1
@@ -5686,6 +5686,59 @@ app.get('/api/armazens/:armazemId/localizacoes/:locId/estoque', authenticateToke
     }
     console.error('Erro GET estoque localização:', e);
     return res.status(500).json({ error: 'Erro ao listar estoque', details: e.message });
+  }
+});
+
+app.get('/api/armazens/:armazemId/localizacoes/:locId/itens/:itemId/seriais-disponiveis', authenticateToken, async (req, res) => {
+  if (!usuarioTemPermissaoControloStock(req)) {
+    return res.status(403).json({
+      error:
+        'O seu perfil não tem permissão para controlo de stock. Um administrador pode ativar esta opção no utilizador.',
+      code: 'CONTROLO_STOCK_NEGADO',
+    });
+  }
+  try {
+    const armazemId = parseInt(req.params.armazemId, 10);
+    const locId = parseInt(req.params.locId, 10);
+    const itemId = parseInt(req.params.itemId, 10);
+    if (!Number.isFinite(armazemId) || !Number.isFinite(locId) || !Number.isFinite(itemId)) {
+      return res.status(400).json({ error: 'IDs inválidos' });
+    }
+    const podeArm = await usuarioPodeConsultarEstoqueLocalizacaoArmazem(req, armazemId);
+    if (!podeArm) {
+      return res.status(403).json({
+        error: 'Só pode consultar stock dos armazéns centrais associados ao seu utilizador.',
+        code: 'CONSULTA_ESTOQUE_ARMAZEM_NEGADA',
+      });
+    }
+    const chk = await pool.query(
+      'SELECT id FROM armazens_localizacoes WHERE id = $1 AND armazem_id = $2',
+      [locId, armazemId]
+    );
+    if (chk.rows.length === 0) {
+      return res.status(404).json({ error: 'Localização não encontrada neste armazém' });
+    }
+    const r = await pool.query(
+      `SELECT ss.id, ss.serialnumber
+       FROM stock_serial ss
+       WHERE ss.item_id = $1
+         AND ss.armazem_id = $2
+         AND UPPER(TRIM(ss.localizacao)) = UPPER(TRIM((SELECT localizacao FROM armazens_localizacoes WHERE id = $3)::text))
+         AND ss.status IN ('disponivel', 'reservado')
+         AND TRIM(COALESCE(ss.serialnumber, '')) <> ''
+       ORDER BY ss.atualizado_em ASC NULLS LAST, ss.id ASC`,
+      [itemId, armazemId, locId]
+    );
+    return res.json(r.rows.map((x) => ({ id: Number(x.id), serialnumber: String(x.serialnumber || '').trim() })).filter((x) => x.serialnumber));
+  } catch (e) {
+    if (e.code === '42P01') {
+      return res.status(503).json({
+        error: 'Módulo de stock rastreável não está instalado.',
+        hint: 'Execute: npm run db:migrate:stock-rastreavel',
+      });
+    }
+    console.error('Erro GET seriais disponíveis:', e);
+    return res.status(500).json({ error: 'Erro ao listar seriais disponíveis', details: e.message });
   }
 });
 
@@ -6140,6 +6193,11 @@ app.post('/api/armazens/:armazemId/transferencia-localizacao', authenticateToken
     });
   }
   try {
+    const isTipoControloSerial = (tipoControlo) => {
+      const raw = String(tipoControlo || '').trim().toUpperCase();
+      const norm = raw.replace(/\s+/g, '');
+      return norm === 'S/N' || norm === 'SN' || norm === 'SERIAL';
+    };
     const armazemId = parseInt(req.params.armazemId, 10);
     const origemLocId = parseInt(req.body?.origem_localizacao_id, 10);
     const destinoLocId = parseInt(req.body?.destino_localizacao_id, 10);
@@ -6168,14 +6226,44 @@ app.post('/api/armazens/:armazemId/transferencia-localizacao', authenticateToken
         code: 'TRANSFERENCIA_LOCALIZACAO_ARMAZEM_NEGADA',
       });
     }
+    const modoApeado = Boolean(req.body?.modo_apeado);
+    const apeadoArmazemIdRaw = parseInt(req.body?.apeado_armazem_id, 10);
+    const apeadoArmazemId = Number.isFinite(apeadoArmazemIdRaw) ? apeadoArmazemIdRaw : null;
     const chkOrig = await pool.query(
       'SELECT id FROM armazens_localizacoes WHERE id = $1 AND armazem_id = $2',
       [origemLocId, armazemId]
     );
-    const chkDst = await pool.query(
-      'SELECT id FROM armazens_localizacoes WHERE id = $1 AND armazem_id = $2',
-      [destinoLocId, armazemId]
-    );
+    let chkDst;
+    if (modoApeado) {
+      if (!Number.isFinite(apeadoArmazemId) || apeadoArmazemId <= 0) {
+        return res.status(400).json({ error: 'No modo APEADO, informe apeado_armazem_id válido.' });
+      }
+      const apeadoQ = await pool.query(
+        `SELECT id, LOWER(TRIM(COALESCE(tipo, ''))) AS tipo, armazem_central_vinculado_id
+         FROM armazens
+         WHERE id = $1`,
+        [apeadoArmazemId]
+      );
+      if (!apeadoQ.rows.length) {
+        return res.status(404).json({ error: 'Armazém APEADO não encontrado.' });
+      }
+      const apeado = apeadoQ.rows[0];
+      if (String(apeado.tipo || '').trim().toLowerCase() !== 'apeado') {
+        return res.status(400).json({ error: 'apeado_armazem_id deve ser um armazém do tipo APEADO.' });
+      }
+      if (Number(apeado.armazem_central_vinculado_id || 0) !== Number(armazemId)) {
+        return res.status(400).json({ error: 'Armazém APEADO não está vinculado ao armazém central selecionado.' });
+      }
+      chkDst = await pool.query(
+        'SELECT id FROM armazens_localizacoes WHERE id = $1 AND armazem_id = $2',
+        [destinoLocId, apeadoArmazemId]
+      );
+    } else {
+      chkDst = await pool.query(
+        'SELECT id FROM armazens_localizacoes WHERE id = $1 AND armazem_id = $2',
+        [destinoLocId, armazemId]
+      );
+    }
     if (chkOrig.rows.length === 0 || chkDst.rows.length === 0) {
       return res.status(404).json({ error: 'Uma ou ambas as localizações não pertencem a este armazém' });
     }
@@ -6200,6 +6288,9 @@ app.post('/api/armazens/:armazemId/transferencia-localizacao', authenticateToken
         item_id: Number.isFinite(itemIdRaw) ? itemIdRaw : null,
         item_codigo: itemCodigoRaw,
         quantidade: q,
+        serials: Array.isArray(row?.serials)
+          ? row.serials.map((s) => String(s || '').trim()).filter(Boolean)
+          : [],
       });
     }
     if (normalized.length === 0) {
@@ -6212,16 +6303,43 @@ app.post('/api/armazens/:armazemId/transferencia-localizacao', authenticateToken
       await client.query('BEGIN');
       let moved = 0;
       const ticketIds = [];
-      for (const { item_id: itemIdRaw, item_codigo: itemCodigoRaw, quantidade: q } of normalized) {
+      for (const { item_id: itemIdRaw, item_codigo: itemCodigoRaw, quantidade: q, serials: serialsLinhaRaw } of normalized) {
         let itemId = Number(itemIdRaw);
         if (!Number.isFinite(itemId) || itemId <= 0) {
           const byCode = await client.query('SELECT id FROM itens WHERE UPPER(TRIM(codigo)) = UPPER(TRIM($1::text)) LIMIT 1', [itemCodigoRaw]);
           itemId = Number(byCode.rows?.[0]?.id || 0);
         }
-        const ir = await client.query('SELECT 1 FROM itens WHERE id = $1', [itemId]);
+        const ir = await client.query('SELECT id, tipocontrolo FROM itens WHERE id = $1', [itemId]);
         if (ir.rows.length === 0) {
           await client.query('ROLLBACK');
           return res.status(400).json({ error: `Item inválido: "${itemCodigoRaw || itemIdRaw || ''}"` });
+        }
+        const tipoControlo = String(ir.rows[0]?.tipocontrolo || '').trim().toUpperCase();
+        const serialsLinha = Array.isArray(serialsLinhaRaw) ? [...new Set(serialsLinhaRaw)] : [];
+        if (isTipoControloSerial(tipoControlo)) {
+          const qtdInt = Math.floor(Number(q) || 0);
+          if (!serialsLinha.length) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({ error: `Selecione os serial numbers do artigo ${itemCodigoRaw || itemId}.` });
+          }
+          if (serialsLinha.length !== qtdInt) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({ error: `Quantidade de serials inválida para ${itemCodigoRaw || itemId}: esperado ${qtdInt}, recebido ${serialsLinha.length}.` });
+          }
+          const seriaisQ = await client.query(
+            `SELECT id, serialnumber
+             FROM stock_serial
+             WHERE item_id = $1
+               AND armazem_id = $2
+               AND UPPER(TRIM(localizacao)) = UPPER(TRIM((SELECT localizacao FROM armazens_localizacoes WHERE id = $3)::text))
+               AND UPPER(TRIM(serialnumber)) = ANY($4::text[])
+               AND status IN ('disponivel', 'reservado')`,
+            [itemId, armazemId, origemLocId, serialsLinha.map((s) => String(s).trim().toUpperCase())]
+          );
+          if ((seriaisQ.rows || []).length !== serialsLinha.length) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({ error: `Um ou mais serial numbers selecionados para ${itemCodigoRaw || itemId} não estão disponíveis na localização de origem.` });
+          }
         }
         if (podeControlarStock) {
           const sub = await client.query(
@@ -6266,10 +6384,33 @@ app.post('/api/armazens/:armazemId/transferencia-localizacao', authenticateToken
             [armazemId, req.user.id, origemLocId, destinoLocId, itemId, q]
           );
           ticketIds.push(ti.rows[0].id);
+          const hasTicketSerialTableQ = await client.query(
+            `SELECT to_regclass('public.armazem_movimentacao_interna_seriais') IS NOT NULL AS ok`
+          );
+          const hasTicketSerialTable = Boolean(hasTicketSerialTableQ.rows?.[0]?.ok);
+          if (hasTicketSerialTable && isTipoControloSerial(tipoControlo) && serialsLinha.length > 0) {
+            const seriaisForTicket = await client.query(
+              `SELECT id, serialnumber
+               FROM stock_serial
+               WHERE item_id = $1
+                 AND armazem_id = $2
+                 AND UPPER(TRIM(serialnumber)) = ANY($3::text[])`,
+              [itemId, armazemId, serialsLinha.map((s) => String(s).trim().toUpperCase())]
+            );
+            for (const s of seriaisForTicket.rows || []) {
+              await client.query(
+                `INSERT INTO armazem_movimentacao_interna_seriais
+                  (ticket_id, stock_serial_id, serialnumber)
+                 VALUES ($1, $2, $3)
+                 ON CONFLICT (ticket_id, serialnumber) DO NOTHING`,
+                [ti.rows[0].id, s.id, String(s.serialnumber || '').trim()]
+              );
+            }
+          }
         }
       }
       await client.query('COMMIT');
-      return res.json({ ok: true, movimentos: moved, ticket_ids: ticketIds });
+      return res.json({ ok: true, movimentos: moved, ticket_ids: ticketIds, modo_apeado: modoApeado });
     } catch (inner) {
       await client.query('ROLLBACK');
       throw inner;
@@ -6318,12 +6459,16 @@ app.get('/api/armazens/:armazemId/movimentacoes-internas', authenticateToken, as
       SELECT ami.id, ami.armazem_id, ami.usuario_id, ami.origem_localizacao_id, ami.destino_localizacao_id,
         ami.item_id, ami.quantidade::float AS quantidade, ami.trfl_gerada_em, ami.created_at,
         a.codigo AS armazem_codigo, i.codigo AS item_codigo, i.descricao AS item_descricao,
-        lo.localizacao AS origem_localizacao_label, ld.localizacao AS destino_localizacao_label
+        lo.localizacao AS origem_localizacao_label, ld.localizacao AS destino_localizacao_label,
+        al_o.id AS origem_armazem_id, al_o.codigo AS origem_armazem_codigo, LOWER(TRIM(COALESCE(al_o.tipo, ''))) AS origem_armazem_tipo,
+        al_d.id AS destino_armazem_id, al_d.codigo AS destino_armazem_codigo, LOWER(TRIM(COALESCE(al_d.tipo, ''))) AS destino_armazem_tipo
       FROM armazem_movimentacao_interna ami
       INNER JOIN armazens a ON a.id = ami.armazem_id
       INNER JOIN itens i ON i.id = ami.item_id
       INNER JOIN armazens_localizacoes lo ON lo.id = ami.origem_localizacao_id
       INNER JOIN armazens_localizacoes ld ON ld.id = ami.destino_localizacao_id
+      INNER JOIN armazens al_o ON al_o.id = lo.armazem_id
+      INNER JOIN armazens al_d ON al_d.id = ld.armazem_id
       WHERE ami.armazem_id = $1`;
     const params = [armazemId];
     if (apenasPendente) {
@@ -6428,13 +6573,15 @@ app.post('/api/armazens/:armazemId/movimentacoes-internas/export-trfl', authenti
     const r = await pool.query(
       `SELECT ami.id, ami.created_at, ami.quantidade::float AS quantidade,
         a.codigo AS armazem_codigo,
-        i.codigo AS item_codigo,
-        lo.localizacao AS origem_loc, ld.localizacao AS destino_loc
+        i.codigo AS item_codigo, i.tipocontrolo, i.id AS item_id,
+        lo.localizacao AS origem_loc, ld.localizacao AS destino_loc,
+        LOWER(TRIM(COALESCE(ad.tipo, ''))) AS destino_tipo
        FROM armazem_movimentacao_interna ami
        INNER JOIN armazens a ON a.id = ami.armazem_id
        INNER JOIN itens i ON i.id = ami.item_id
        INNER JOIN armazens_localizacoes lo ON lo.id = ami.origem_localizacao_id
        INNER JOIN armazens_localizacoes ld ON ld.id = ami.destino_localizacao_id
+       INNER JOIN armazens ad ON ad.id = ld.armazem_id
        WHERE ami.id = ANY($1::int[]) AND ami.armazem_id = $2
        ORDER BY ami.created_at ASC, ami.id ASC`,
       [idNums, armazemId]
@@ -6445,37 +6592,286 @@ app.post('/api/armazens/:armazemId/movimentacoes-internas/export-trfl', authenti
     if (r.rows.length !== idNums.length) {
       return res.status(400).json({ error: 'Alguns IDs não pertencem a este armazém ou não existem.' });
     }
-    const rows = r.rows.map((row) => {
-      const d = row.created_at ? new Date(row.created_at) : new Date();
-      const dateStr = `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
-      const wh = String(row.armazem_codigo || 'E');
-      return {
-        Date: dateStr,
-        OriginWarehouse: wh,
-        OriginLocation: String(row.origem_loc || ''),
-        Article: String(row.item_codigo || ''),
-        Quatity: Number(row.quantidade) || 0,
-        SerialNumber1: '',
-        SerialNumber2: '',
-        MacAddress: '',
-        CentroCusto: '',
-        DestinationWarehouse: wh,
-        DestinationLocation: String(row.destino_loc || ''),
-        ProjectCode: '',
-        Batch: '',
-      };
-    });
-    await pool.query(
-      `UPDATE armazem_movimentacao_interna
-       SET trfl_gerada_em = COALESCE(trfl_gerada_em, CURRENT_TIMESTAMP)
-       WHERE id = ANY($1::int[]) AND armazem_id = $2`,
-      [idNums, armazemId]
+    const possuiApeado = (r.rows || []).some((x) => String(x?.destino_tipo || '') === 'apeado');
+    if (possuiApeado) {
+      return res.status(400).json({ error: 'Tickets para APEADO devem ser exportados em "Gerar TRA APEADO".' });
+    }
+    const hasTicketSerialTableQ = await pool.query(
+      `SELECT to_regclass('public.armazem_movimentacao_interna_seriais') IS NOT NULL AS ok`
     );
+    const hasTicketSerialTable = Boolean(hasTicketSerialTableQ.rows?.[0]?.ok);
+    const client = await pool.connect();
+    const rows = [];
+    try {
+      await client.query('BEGIN');
+      for (const row of r.rows) {
+        const d = row.created_at ? new Date(row.created_at) : new Date();
+        const dateStr = `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
+        const wh = String(row.armazem_codigo || 'E');
+        const tipoControlo = String(row.tipocontrolo || '').trim().toUpperCase().replace(/\s+/g, '');
+        const isSerial = tipoControlo === 'S/N' || tipoControlo === 'SN' || tipoControlo === 'SERIAL';
+        const qtd = Number(row.quantidade) || 0;
+        if (isSerial && qtd > 0) {
+          const qtdInt = Math.floor(qtd);
+          const serialQ = await client.query(
+            `SELECT id, serialnumber
+             FROM stock_serial
+             WHERE item_id = $1
+               AND armazem_id = $2
+               AND UPPER(TRIM(localizacao)) = UPPER(TRIM($3::text))
+               AND status IN ('disponivel', 'reservado')
+             ORDER BY atualizado_em ASC NULLS LAST, id ASC
+             LIMIT $4`,
+            [row.item_id, armazemId, String(row.origem_loc || ''), qtdInt]
+          );
+          if (serialQ.rows.length < qtdInt) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({
+              error: `Seriais insuficientes na origem para o artigo ${String(row.item_codigo || '')}.`,
+              code: 'SERIAIS_ORIGEM_INSUFICIENTE',
+            });
+          }
+          for (const s of serialQ.rows) {
+            await client.query(
+              `UPDATE stock_serial
+               SET localizacao = $1,
+                   armazem_id = $2,
+                   status = 'disponivel',
+                   requisicao_id = NULL,
+                   requisicao_item_id = NULL,
+                   reservado_em = NULL,
+                   atualizado_em = CURRENT_TIMESTAMP
+               WHERE id = $3`,
+              [String(row.destino_loc || ''), armazemId, s.id]
+            );
+            if (hasTicketSerialTable) {
+              await client.query(
+                `INSERT INTO armazem_movimentacao_interna_seriais
+                  (ticket_id, stock_serial_id, serialnumber)
+                 VALUES ($1, $2, $3)
+                 ON CONFLICT (ticket_id, serialnumber) DO NOTHING`,
+                [row.id, s.id, String(s.serialnumber || '').trim()]
+              );
+            }
+            rows.push({
+              Date: dateStr,
+              OriginWarehouse: wh,
+              OriginLocation: String(row.origem_loc || ''),
+              Article: String(row.item_codigo || ''),
+              Quatity: 1,
+              SerialNumber1: String(s.serialnumber || ''),
+              SerialNumber2: '',
+              MacAddress: '',
+              CentroCusto: '',
+              DestinationWarehouse: wh,
+              DestinationLocation: String(row.destino_loc || ''),
+              ProjectCode: '',
+              Batch: '',
+            });
+          }
+          continue;
+        }
+        rows.push({
+          Date: dateStr,
+          OriginWarehouse: wh,
+          OriginLocation: String(row.origem_loc || ''),
+          Article: String(row.item_codigo || ''),
+          Quatity: qtd,
+          SerialNumber1: '',
+          SerialNumber2: '',
+          MacAddress: '',
+          CentroCusto: '',
+          DestinationWarehouse: wh,
+          DestinationLocation: String(row.destino_loc || ''),
+          ProjectCode: '',
+          Batch: '',
+        });
+      }
+      await client.query(
+        `UPDATE armazem_movimentacao_interna
+         SET trfl_gerada_em = COALESCE(trfl_gerada_em, CURRENT_TIMESTAMP)
+         WHERE id = ANY($1::int[]) AND armazem_id = $2`,
+        [idNums, armazemId]
+      );
+      await client.query('COMMIT');
+    } catch (trxErr) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw trxErr;
+    } finally {
+      client.release();
+    }
     const fnDate = new Date().toISOString().slice(0, 10);
     buildExcelTransferencia(rows, res, `TRFL_mov_interna_arm${armazemId}_${fnDate}.xlsx`);
   } catch (e) {
     console.error('Erro export-trfl movimentacoes-internas:', e);
     return res.status(500).json({ error: 'Erro ao gerar TRFL', details: e.message });
+  }
+});
+
+app.post('/api/armazens/:armazemId/movimentacoes-internas/export-tra-apeado', authenticateToken, async (req, res) => {
+  if (!usuarioTemPermissaoControloStock(req) && !usuarioPodeOperarTicketsMovInterna(req)) {
+    return res.status(403).json({
+      error: 'Sem permissão para gerar TRA APEADO desta fila.',
+      code: 'MOVIMENTACAO_INTERNA_NEGADA',
+    });
+  }
+  try {
+    const armazemId = parseInt(req.params.armazemId, 10);
+    if (!Number.isFinite(armazemId)) {
+      return res.status(400).json({ error: 'armazemId inválido' });
+    }
+    const podeArm = await usuarioPodeConsultarEstoqueLocalizacaoArmazem(req, armazemId);
+    if (!podeArm) {
+      return res.status(403).json({ error: 'Sem acesso a este armazém.' });
+    }
+    if (!(await armazemMovimentacaoInternaTableExists())) {
+      return res.status(503).json({
+        error: 'Tabela de movimentações internas não existe.',
+        hint: 'Execute: npm run db:migrate:movimentacao-interna',
+      });
+    }
+    const rawIds = req.body?.ids;
+    if (!Array.isArray(rawIds) || rawIds.length === 0) {
+      return res.status(400).json({ error: 'Envie "ids": array de IDs de tickets.' });
+    }
+    const idNums = [...new Set(rawIds.map((x) => parseInt(x, 10)).filter((n) => Number.isFinite(n) && n > 0))];
+    if (idNums.length === 0) {
+      return res.status(400).json({ error: 'Nenhum id válido.' });
+    }
+    const r = await pool.query(
+      `SELECT ami.id, ami.created_at, ami.quantidade::float AS quantidade,
+        ao.codigo AS origem_armazem_codigo, ad.codigo AS destino_armazem_codigo, ad.id AS destino_armazem_id,
+        i.codigo AS item_codigo, i.tipocontrolo, i.id AS item_id,
+        lo.localizacao AS origem_loc, ld.localizacao AS destino_loc,
+        LOWER(TRIM(COALESCE(ad.tipo, ''))) AS destino_tipo
+       FROM armazem_movimentacao_interna ami
+       INNER JOIN itens i ON i.id = ami.item_id
+       INNER JOIN armazens_localizacoes lo ON lo.id = ami.origem_localizacao_id
+       INNER JOIN armazens_localizacoes ld ON ld.id = ami.destino_localizacao_id
+       INNER JOIN armazens ao ON ao.id = lo.armazem_id
+       INNER JOIN armazens ad ON ad.id = ld.armazem_id
+       WHERE ami.id = ANY($1::int[]) AND ami.armazem_id = $2
+       ORDER BY ami.created_at ASC, ami.id ASC`,
+      [idNums, armazemId]
+    );
+    if (r.rows.length === 0) {
+      return res.status(404).json({ error: 'Nenhum ticket encontrado para estes IDs neste armazém.' });
+    }
+    if (r.rows.length !== idNums.length) {
+      return res.status(400).json({ error: 'Alguns IDs não pertencem a este armazém ou não existem.' });
+    }
+    const possuiNaoApeado = (r.rows || []).some((x) => String(x?.destino_tipo || '') !== 'apeado');
+    if (possuiNaoApeado) {
+      return res.status(400).json({ error: 'Selecione apenas tickets com destino em armazém APEADO.' });
+    }
+    const hasTicketSerialTableQ = await pool.query(
+      `SELECT to_regclass('public.armazem_movimentacao_interna_seriais') IS NOT NULL AS ok`
+    );
+    const hasTicketSerialTable = Boolean(hasTicketSerialTableQ.rows?.[0]?.ok);
+    const client = await pool.connect();
+    const rows = [];
+    try {
+      await client.query('BEGIN');
+      for (const row of r.rows) {
+        const d = row.created_at ? new Date(row.created_at) : new Date();
+        const dateStr = `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
+        const tipoControlo = String(row.tipocontrolo || '').trim().toUpperCase().replace(/\s+/g, '');
+        const isSerial = tipoControlo === 'S/N' || tipoControlo === 'SN' || tipoControlo === 'SERIAL';
+        const qtd = Number(row.quantidade) || 0;
+        if (isSerial && qtd > 0) {
+          const qtdInt = Math.floor(qtd);
+          const serialQ = await client.query(
+            `SELECT id, serialnumber
+             FROM stock_serial
+             WHERE item_id = $1
+               AND armazem_id = $2
+               AND UPPER(TRIM(localizacao)) = UPPER(TRIM($3::text))
+               AND status IN ('disponivel', 'reservado')
+             ORDER BY atualizado_em ASC NULLS LAST, id ASC
+             LIMIT $4`,
+            [row.item_id, armazemId, String(row.origem_loc || ''), qtdInt]
+          );
+          if (serialQ.rows.length < qtdInt) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({
+              error: `Seriais insuficientes na origem para o artigo ${String(row.item_codigo || '')}.`,
+              code: 'SERIAIS_ORIGEM_INSUFICIENTE',
+            });
+          }
+          for (const s of serialQ.rows) {
+            await client.query(
+              `UPDATE stock_serial
+               SET localizacao = $1,
+                   armazem_id = $2,
+                   status = 'disponivel',
+                   requisicao_id = NULL,
+                   requisicao_item_id = NULL,
+                   reservado_em = NULL,
+                   atualizado_em = CURRENT_TIMESTAMP
+               WHERE id = $3`,
+              [String(row.destino_loc || ''), row.destino_armazem_id || armazemId, s.id]
+            );
+            if (hasTicketSerialTable) {
+              await client.query(
+                `INSERT INTO armazem_movimentacao_interna_seriais
+                  (ticket_id, stock_serial_id, serialnumber)
+                 VALUES ($1, $2, $3)
+                 ON CONFLICT (ticket_id, serialnumber) DO NOTHING`,
+                [row.id, s.id, String(s.serialnumber || '').trim()]
+              );
+            }
+            rows.push({
+              Date: dateStr,
+              OriginWarehouse: String(row.origem_armazem_codigo || ''),
+              OriginLocation: String(row.origem_loc || ''),
+              Article: String(row.item_codigo || ''),
+              Quatity: 1,
+              SerialNumber1: String(s.serialnumber || ''),
+              SerialNumber2: '',
+              MacAddress: '',
+              CentroCusto: '',
+              DestinationWarehouse: String(row.destino_armazem_codigo || ''),
+              DestinationLocation: String(row.destino_loc || ''),
+              ProjectCode: '',
+              Batch: '',
+            });
+          }
+          continue;
+        }
+        rows.push({
+          Date: dateStr,
+          OriginWarehouse: String(row.origem_armazem_codigo || ''),
+          OriginLocation: String(row.origem_loc || ''),
+          Article: String(row.item_codigo || ''),
+          Quatity: qtd,
+          SerialNumber1: '',
+          SerialNumber2: '',
+          MacAddress: '',
+          CentroCusto: '',
+          DestinationWarehouse: String(row.destino_armazem_codigo || ''),
+          DestinationLocation: String(row.destino_loc || ''),
+          ProjectCode: '',
+          Batch: '',
+        });
+      }
+      await client.query(
+        `UPDATE armazem_movimentacao_interna
+         SET trfl_gerada_em = COALESCE(trfl_gerada_em, CURRENT_TIMESTAMP)
+         WHERE id = ANY($1::int[]) AND armazem_id = $2`,
+        [idNums, armazemId]
+      );
+      await client.query('COMMIT');
+    } catch (trxErr) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw trxErr;
+    } finally {
+      client.release();
+    }
+    const fnDate = new Date().toISOString().slice(0, 10);
+    buildExcelTransferencia(rows, res, `TRA_apeado_mov_interna_arm${armazemId}_${fnDate}.xlsx`);
+  } catch (e) {
+    console.error('Erro export-tra-apeado movimentacoes-internas:', e);
+    return res.status(500).json({ error: 'Erro ao gerar TRA APEADO', details: e.message });
   }
 });
 

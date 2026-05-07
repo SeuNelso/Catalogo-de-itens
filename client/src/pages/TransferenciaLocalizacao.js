@@ -30,10 +30,128 @@ const normBusca = (s) =>
     .toLowerCase()
     .trim();
 
+const pickDestinoPadraoApeado = (locs = []) => {
+  if (!Array.isArray(locs) || locs.length === 0) return null;
+  const prioridade = ['reception', 'rececao', 'recepcao', 'receção', 'entrada', 'guarda'];
+  for (const termo of prioridade) {
+    const hit = locs.find((l) => normBusca(l?.localizacao || '').includes(termo));
+    if (hit) return hit;
+  }
+  return locs[0];
+};
+
+const isTipoControloSerial = (tipoControlo) => {
+  const raw = String(tipoControlo || '').trim().toUpperCase();
+  const norm = raw.replace(/\s+/g, '');
+  return norm === 'S/N' || norm === 'SN' || norm === 'SERIAL';
+};
+
 const extrairCodigoArtigo = (valor) => {
   const s = String(valor || '').trim();
   if (!s) return '';
   return s.split(' - ')[0].trim();
+};
+
+const resolveRowStockPrefill = (linhas, prefillItem) => {
+  const itemId = Number(prefillItem?.item_id || 0);
+  if (Number.isFinite(itemId) && itemId > 0) {
+    const byId = (linhas || []).find((r) => Number(r?.item_id || 0) === itemId);
+    if (byId) return byId;
+  }
+  const codigo = String(prefillItem?.codigo || '').trim().toUpperCase();
+  if (!codigo) return null;
+  return (linhas || []).find((r) => String(r?.codigo || '').trim().toUpperCase() === codigo) || null;
+};
+
+const normalizarParticaoPrefill = (raw, modoFallback = 'normal') => {
+  const v = String(raw || '').trim().toLowerCase();
+  if (v === 'apeado' || v === 'apeados') return 'apeado';
+  if (v === 'normal') return 'normal';
+  return String(modoFallback || '').trim().toLowerCase() === 'apeado' ? 'apeado' : 'normal';
+};
+
+const mapPrefillPayloadToRows = (payload) => {
+  const modoFallback = normalizarParticaoPrefill(payload?.modo, 'normal');
+  const rows = [];
+  if (Array.isArray(payload?.items_v2) && payload.items_v2.length > 0) {
+    payload.items_v2.forEach((it, idxItem) => {
+      const codigo = String(it?.codigo || '').trim();
+      if (!codigo) return;
+      const itemId = Number(it?.item_id || 0);
+      const basePart = normalizarParticaoPrefill(it?.particao, modoFallback);
+      const allocations = Array.isArray(it?.allocations) && it.allocations.length > 0
+        ? it.allocations
+        : [{ id: `auto-${idxItem}`, particao: basePart, quantidade: Number(it?.quantidade_total || 0) || 0, destinoId: '', seriais: it?.seriais || [] }];
+      const totalFromAlloc = allocations.reduce((s, a) => s + (Number(a?.quantidade || 0) || 0), 0);
+      const quantidadeTotal = Number(it?.quantidade_total || totalFromAlloc || 0) || 0;
+      allocations.forEach((al, idxAl) => {
+        const qtd = Number(al?.quantidade || 0) || 0;
+        if (qtd <= 0) return;
+        const particao = normalizarParticaoPrefill(al?.particao, basePart);
+        rows.push({
+          item_id: Number.isFinite(itemId) && itemId > 0 ? itemId : null,
+          codigo,
+          descricao: String(it?.descricao || '').trim(),
+          tipocontrolo: String(it?.tipocontrolo || '').trim(),
+          seriais_sugeridos: Array.isArray(al?.seriais)
+            ? [...new Set(al.seriais.map((s) => String(s || '').trim()).filter(Boolean))]
+            : (Array.isArray(it?.seriais) ? [...new Set(it.seriais.map((s) => String(s || '').trim()).filter(Boolean))] : []),
+          lotes_sugeridos: Array.isArray(al?.lotes)
+            ? [...new Set(al.lotes.map((s) => String(s || '').trim()).filter(Boolean))]
+            : [],
+          quantidade: qtd,
+          quantidade_total_item: quantidadeTotal,
+          particao,
+          grupo_key: `${Number(itemId || 0) || 0}::${codigo.toUpperCase()}::${particao}`,
+          allocation_id: String(al?.id || `alloc-${idxItem}-${idxAl}`),
+          destinoId: String(al?.destinoId || ''),
+          serials: Array.isArray(al?.seriais)
+            ? [...new Set(al.seriais.map((s) => String(s || '').trim()).filter(Boolean))]
+            : [],
+          lotes: Array.isArray(al?.lotes)
+            ? [...new Set(al.lotes.map((s) => String(s || '').trim()).filter(Boolean))]
+            : [],
+        });
+      });
+    });
+    return rows;
+  }
+
+  const byCodigo = new Map();
+  (Array.isArray(payload?.items) ? payload.items : []).forEach((it) => {
+    const codigo = String(it?.codigo || '').trim();
+    const qtd = Number(it?.quantidade || 0) || 0;
+    if (!codigo || qtd <= 0) return;
+    const itemId = Number(it?.item_id || 0);
+    const key = Number.isFinite(itemId) && itemId > 0 ? `ID:${itemId}` : `COD:${codigo.toUpperCase()}`;
+    const prev = byCodigo.get(key) || {
+      item_id: Number.isFinite(itemId) && itemId > 0 ? itemId : null,
+      codigo,
+      descricao: String(it?.descricao || '').trim(),
+      tipocontrolo: String(it?.tipocontrolo || '').trim(),
+      seriais_sugeridos: Array.isArray(it?.seriais)
+        ? [...new Set(it.seriais.map((s) => String(s || '').trim()).filter(Boolean))]
+        : [],
+      quantidade: 0,
+      destinoId: '',
+      serials: [],
+      quantidade_total_item: 0,
+      particao: modoFallback,
+      grupo_key: `${Number(itemId || 0) || 0}::${codigo.toUpperCase()}::${modoFallback}`,
+      allocation_id: `legacy-${key}`,
+    };
+    prev.quantidade += qtd;
+    prev.quantidade_total_item += qtd;
+    if (!prev.descricao) prev.descricao = String(it?.descricao || '').trim();
+    if (!prev.tipocontrolo) prev.tipocontrolo = String(it?.tipocontrolo || '').trim();
+    if (Array.isArray(it?.seriais) && it.seriais.length > 0) {
+      prev.seriais_sugeridos = [
+        ...new Set([...(prev.seriais_sugeridos || []), ...it.seriais.map((s) => String(s || '').trim()).filter(Boolean)]),
+      ];
+    }
+    byCodigo.set(key, prev);
+  });
+  return [...byCodigo.values()];
 };
 
 /**
@@ -169,7 +287,9 @@ const TransferenciaLocalizacao = () => {
   const { user } = useAuth();
   const [armazens, setArmazens] = useState([]);
   const [loadingArmazens, setLoadingArmazens] = useState(true);
+  const [modoTransferencia, setModoTransferencia] = useState('localizacao');
   const [armazemId, setArmazemId] = useState('');
+  const [apeadoArmazemId, setApeadoArmazemId] = useState('');
   const [origemId, setOrigemId] = useState('');
   const [destinoId, setDestinoId] = useState('');
   const [linhasOrigem, setLinhasOrigem] = useState([]);
@@ -199,6 +319,8 @@ const TransferenciaLocalizacao = () => {
   const [selectedCodigoIndex, setSelectedCodigoIndex] = useState(-1);
   const [pesquisaArtigo, setPesquisaArtigo] = useState('');
   const [loteRecebimento, setLoteRecebimento] = useState([]);
+  const [serialOptionsByItemId, setSerialOptionsByItemId] = useState({});
+  const [serialPickerIdx, setSerialPickerIdx] = useState(null);
   const [loteOrigemLabel, setLoteOrigemLabel] = useState('');
   const [submittingLote, setSubmittingLote] = useState(false);
   const prefillConsumidoRef = useRef(false);
@@ -209,6 +331,13 @@ const TransferenciaLocalizacao = () => {
   const refCodigoArtigoWrap = useRef(null);
   const refCodigoArtigoInput = useRef(null);
   const refListaCodigoArtigo = useRef(null);
+
+  useEffect(() => {
+    const p = new URLSearchParams(location.search || '');
+    const modo = String(p.get('modo') || '').trim().toLowerCase();
+    if (modo === 'apeado') setModoTransferencia('apeado');
+    else if (modo === 'localizacao') setModoTransferencia('localizacao');
+  }, [location.search]);
 
   const pode = user && podeUsarControloStock(user);
   const podeCriarTickets =
@@ -229,8 +358,13 @@ const TransferenciaLocalizacao = () => {
   useEffect(() => {
     if (prefillConsumidoRef.current) return;
     const payload = location.state?.recebimentoPrefill;
-    if (!payload || !Array.isArray(payload.items) || payload.items.length === 0) return;
+    const hasV2 = Array.isArray(payload?.items_v2) && payload.items_v2.length > 0;
+    const hasV1 = Array.isArray(payload?.items) && payload.items.length > 0;
+    if (!payload || (!hasV2 && !hasV1)) return;
     prefillConsumidoRef.current = true;
+
+    const modoPrefill = String(payload.modo || '').trim().toLowerCase();
+    if (modoPrefill === 'apeado') setModoTransferencia('apeado');
 
     const armazemPrefill = String(payload.armazemId || '').trim();
     if (armazemPrefill) setArmazemId(armazemPrefill);
@@ -239,24 +373,41 @@ const TransferenciaLocalizacao = () => {
     setLoteOrigemLabel(origemLabel);
     if (origemLabel) setFiltroOrigemLoc(origemLabel);
 
-    const byCodigo = new Map();
-    payload.items.forEach((it) => {
-      const codigo = String(it?.codigo || '').trim();
-      const qtd = Number(it?.quantidade || 0) || 0;
-      if (!codigo || qtd <= 0) return;
-      const key = codigo.toUpperCase();
-      const prev = byCodigo.get(key) || {
-        codigo,
-        descricao: String(it?.descricao || '').trim(),
-        quantidade: 0,
-        destinoId: '',
-      };
-      prev.quantidade += qtd;
-      if (!prev.descricao) prev.descricao = String(it?.descricao || '').trim();
-      byCodigo.set(key, prev);
-    });
-    setLoteRecebimento([...byCodigo.values()]);
+    setLoteRecebimento(mapPrefillPayloadToRows(payload));
   }, [location.state]);
+
+  useEffect(() => {
+    if (!loteRecebimento.length || !armazemId || !origemId) {
+      setSerialOptionsByItemId({});
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const token = localStorage.getItem('token');
+        const serialRows = [];
+        for (const it of loteRecebimento) {
+          const rowStock = resolveRowStockPrefill(linhasOrigem, it);
+          const tipocontroloItem = String(rowStock?.tipocontrolo || it?.tipocontrolo || '').trim();
+          if (!isTipoControloSerial(tipocontroloItem)) continue;
+          const itemId = Number(rowStock?.item_id || it?.item_id || 0);
+          if (!Number.isFinite(itemId) || itemId <= 0) continue;
+          const { data } = await axios.get(
+            `/api/armazens/${armazemId}/localizacoes/${origemId}/itens/${itemId}/seriais-disponiveis`,
+            { headers: { Authorization: `Bearer ${token}` } }
+          );
+          serialRows.push([String(itemId), Array.isArray(data) ? data : []]);
+        }
+        if (cancelled) return;
+        setSerialOptionsByItemId(Object.fromEntries(serialRows));
+      } catch {
+        if (!cancelled) setSerialOptionsByItemId({});
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [loteRecebimento, linhasOrigem, armazemId, origemId]);
 
   const limparPrefillRecebimento = useCallback(() => {
     setLoteRecebimento([]);
@@ -303,6 +454,19 @@ const TransferenciaLocalizacao = () => {
     () => centrais.find((a) => String(a.id) === String(armazemId)),
     [centrais, armazemId]
   );
+  const apeadosVinculados = useMemo(
+    () =>
+      (armazens || []).filter(
+        (a) =>
+          String(a?.tipo || '').trim().toLowerCase() === 'apeado' &&
+          Number(a?.armazem_central_vinculado_id || 0) === Number(armazemId || 0)
+      ),
+    [armazens, armazemId]
+  );
+  const apeadoSel = useMemo(
+    () => apeadosVinculados.find((a) => String(a.id) === String(apeadoArmazemId)),
+    [apeadosVinculados, apeadoArmazemId]
+  );
 
   const armazemExibicao = armazemSel || (armazemUnico ? centrais[0] : null);
 
@@ -310,6 +474,10 @@ const TransferenciaLocalizacao = () => {
     const locs = armazemSel?.localizacoes || [];
     return locs.filter((l) => l && l.id != null);
   }, [armazemSel]);
+  const locsApeadoComId = useMemo(() => {
+    const locs = apeadoSel?.localizacoes || [];
+    return locs.filter((l) => l && l.id != null);
+  }, [apeadoSel]);
 
   const locsComIdFiltradasOrigem = useMemo(() => {
     const q = normBusca(filtroOrigemLoc);
@@ -318,8 +486,11 @@ const TransferenciaLocalizacao = () => {
   }, [locsComId, filtroOrigemLoc]);
 
   const locsDestinoCandidatas = useMemo(
-    () => locsComId.filter((l) => String(l.id) !== String(origemId)),
-    [locsComId, origemId]
+    () =>
+      modoTransferencia === 'apeado'
+        ? locsApeadoComId
+        : locsComId.filter((l) => String(l.id) !== String(origemId)),
+    [modoTransferencia, locsApeadoComId, locsComId, origemId]
   );
 
   const locsComIdFiltradasDestino = useMemo(() => {
@@ -413,7 +584,21 @@ const TransferenciaLocalizacao = () => {
     setArtigoCorrente(null);
     setFiltroOrigemLoc('');
     setFiltroDestinoLoc('');
-  }, [armazemId]);
+  }, [armazemId, modoTransferencia, apeadoArmazemId]);
+
+  useEffect(() => {
+    if (modoTransferencia !== 'apeado') {
+      setApeadoArmazemId('');
+      return;
+    }
+    if (apeadosVinculados.length === 0) {
+      setApeadoArmazemId('');
+      return;
+    }
+    if (!apeadoArmazemId || !apeadosVinculados.some((a) => String(a.id) === String(apeadoArmazemId))) {
+      setApeadoArmazemId(String(apeadosVinculados[0].id));
+    }
+  }, [modoTransferencia, apeadosVinculados, apeadoArmazemId]);
 
   useEffect(() => {
     if (!loteRecebimento.length || origemId || !loteOrigemLabel || !locsComId.length) return;
@@ -424,6 +609,19 @@ const TransferenciaLocalizacao = () => {
       setFiltroOrigemLoc(exact.localizacao || loteOrigemLabel);
     }
   }, [loteRecebimento, origemId, loteOrigemLabel, locsComId]);
+
+  useEffect(() => {
+    if (modoTransferencia !== 'apeado' || !loteRecebimento.length || !origemId) return;
+    const destinoPadrao = pickDestinoPadraoApeado(locsApeadoComId);
+    if (!destinoPadrao?.id) return;
+    const destinoPadraoId = String(destinoPadrao.id);
+    setLoteRecebimento((prev) =>
+      prev.map((it) => {
+        const atual = String(it?.destinoId || '').trim();
+        return atual && atual !== String(origemId) ? it : { ...it, destinoId: destinoPadraoId };
+      })
+    );
+  }, [modoTransferencia, loteRecebimento.length, origemId, locsApeadoComId]);
 
   useEffect(() => {
     setLinhasOrigem([]);
@@ -478,14 +676,19 @@ const TransferenciaLocalizacao = () => {
       const { data } = await axios.get(`/api/armazens/${armazemId}/movimentacoes-internas${q}`, {
         headers: { Authorization: `Bearer ${token}` }
       });
-      setTickets(Array.isArray(data) ? data : []);
+      const all = Array.isArray(data) ? data : [];
+      const filtrados =
+        modoTransferencia === 'apeado'
+          ? all.filter((t) => String(t?.destino_armazem_tipo || '').trim().toLowerCase() === 'apeado')
+          : all.filter((t) => String(t?.destino_armazem_tipo || '').trim().toLowerCase() !== 'apeado');
+      setTickets(filtrados);
     } catch (e) {
       console.error(e);
       setTickets([]);
     } finally {
       setLoadingTickets(false);
     }
-  }, [armazemId, ticketsSoPendentesTrfl]);
+  }, [armazemId, ticketsSoPendentesTrfl, modoTransferencia]);
 
   useEffect(() => {
     loadTickets();
@@ -499,6 +702,11 @@ const TransferenciaLocalizacao = () => {
     const l = locsComId.find((x) => String(x.id) === String(id));
     return l ? l.localizacao : '';
   };
+  const labelDestino = (id) => {
+    const l = locsDestinoCandidatas.find((x) => String(x.id) === String(id));
+    return l ? l.localizacao : '';
+  };
+  const nomeDocumentoFila = modoTransferencia === 'apeado' ? 'TRA APEADO' : 'TRFL';
 
   const handleOrigemComboboxInput = useCallback(
     (val) => {
@@ -559,6 +767,54 @@ const TransferenciaLocalizacao = () => {
       pesquisaResultadosTruncados: all.length > MAX_SUGESTOES
     };
   }, [linhasOrigem, pesquisaArtigo]);
+
+  const opcoesArtigoLoteManual = useMemo(() => {
+    const byKey = new Map();
+    for (const r of linhasOrigem || []) {
+      const itemId = Number(r?.item_id || 0);
+      const codigo = String(r?.codigo || '').trim();
+      if (!codigo) continue;
+      const key = itemId > 0 ? `ID:${itemId}` : `COD:${codigo.toUpperCase()}`;
+      byKey.set(key, {
+        value: key,
+        item_id: itemId > 0 ? itemId : null,
+        codigo,
+        descricao: String(r?.descricao || '').trim(),
+        tipocontrolo: String(r?.tipocontrolo || '').trim(),
+      });
+    }
+    if (byKey.size === 0) {
+      for (const it of loteRecebimento || []) {
+        const itemId = Number(it?.item_id || 0);
+        const codigo = String(it?.codigo || '').trim();
+        if (!codigo) continue;
+        const key = itemId > 0 ? `ID:${itemId}` : `COD:${codigo.toUpperCase()}`;
+        if (byKey.has(key)) continue;
+        byKey.set(key, {
+          value: key,
+          item_id: itemId > 0 ? itemId : null,
+          codigo,
+          descricao: String(it?.descricao || '').trim(),
+          tipocontrolo: String(it?.tipocontrolo || '').trim(),
+        });
+      }
+    }
+    return [...byKey.values()];
+  }, [linhasOrigem, loteRecebimento]);
+
+  const resumoGrupoAlloc = useMemo(() => {
+    const map = new Map();
+    for (const row of loteRecebimento || []) {
+      const key = String(row?.grupo_key || `${Number(row?.item_id || 0) || 0}::${String(row?.codigo || '').trim().toUpperCase()}::${normalizarParticaoPrefill(row?.particao, modoTransferencia)}`);
+      const qtd = Number(row?.quantidade || 0) || 0;
+      const total = Number(row?.quantidade_total_item || 0) || 0;
+      const prev = map.get(key) || { alocado: 0, total: 0 };
+      prev.alocado += Math.max(0, qtd);
+      if (total > prev.total) prev.total = total;
+      map.set(key, prev);
+    }
+    return map;
+  }, [loteRecebimento, modoTransferencia]);
 
   const sugestoesCodigoArtigo = useMemo(() => {
     const byCodigo = new Map();
@@ -882,6 +1138,10 @@ const TransferenciaLocalizacao = () => {
       setToast({ type: 'error', message: 'Selecione origem e destino diferentes.' });
       return;
     }
+    if (modoTransferencia === 'apeado' && !apeadoArmazemId) {
+      setToast({ type: 'error', message: 'Selecione o armazém APEADO de destino.' });
+      return;
+    }
     if (!linhaPendente) {
       setToast({ type: 'error', message: 'Defina o artigo e a quantidade antes de confirmar.' });
       return;
@@ -895,6 +1155,8 @@ const TransferenciaLocalizacao = () => {
         {
           origem_localizacao_id: parseInt(origemId, 10),
           destino_localizacao_id: parseInt(destinoId, 10),
+          modo_apeado: modoTransferencia === 'apeado',
+          apeado_armazem_id: modoTransferencia === 'apeado' ? parseInt(apeadoArmazemId, 10) : undefined,
           linhas: [
             pode
               ? { item_id: linhaPendente.item_id, quantidade: linhaPendente.quantidade }
@@ -903,7 +1165,13 @@ const TransferenciaLocalizacao = () => {
         },
         { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } }
       );
-      setToast({ type: 'success', message: 'Transferência concluída. Os tickets aparecem na fila abaixo.' });
+      setToast({
+        type: 'success',
+        message:
+          modoTransferencia === 'apeado'
+            ? 'Transferência para APEADOS concluída. Os tickets aparecem na fila abaixo.'
+            : 'Transferência concluída. Os tickets aparecem na fila abaixo.',
+      });
       setLinhaPendente(null);
       setDestinoId('');
       setCodigoArtigo('');
@@ -919,6 +1187,7 @@ const TransferenciaLocalizacao = () => {
         setLinhasOrigem(Array.isArray(data) ? data : []);
       }
       loadTickets();
+      window.dispatchEvent(new CustomEvent(RECEBIMENTO_REFRESH_EVENT));
     } catch (e) {
       const d = e.response?.data;
       setToast({
@@ -948,11 +1217,17 @@ const TransferenciaLocalizacao = () => {
 
   const gerarTrfl = async () => {
     if (!podeExportarTrfl) {
-      setToast({ type: 'error', message: 'O seu perfil não pode gerar TRFL desta fila.' });
+      setToast({ type: 'error', message: `O seu perfil não pode gerar ${nomeDocumentoFila} desta fila.` });
       return;
     }
     if (!armazemId || selectedTicketIds.length === 0) {
-      setToast({ type: 'error', message: 'Selecione pelo menos um ticket para gerar/retransferir a TRFL.' });
+      setToast({
+        type: 'error',
+        message:
+          modoTransferencia === 'apeado'
+            ? 'Selecione pelo menos um ticket para gerar/retransferir a TRA APEADO.'
+            : 'Selecione pelo menos um ticket para gerar/retransferir a TRFL.',
+      });
       return;
     }
     const selectedSet = new Set(selectedTicketIds.map((x) => Number(x)));
@@ -963,7 +1238,11 @@ const TransferenciaLocalizacao = () => {
     setToast(null);
     try {
       const token = localStorage.getItem('token');
-      const res = await fetch(`/api/armazens/${armazemId}/movimentacoes-internas/export-trfl`, {
+      const endpoint =
+        modoTransferencia === 'apeado'
+          ? `/api/armazens/${armazemId}/movimentacoes-internas/export-tra-apeado`
+          : `/api/armazens/${armazemId}/movimentacoes-internas/export-trfl`;
+      const res = await fetch(endpoint, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${token}`,
@@ -972,7 +1251,7 @@ const TransferenciaLocalizacao = () => {
         body: JSON.stringify({ ids: selectedTicketIds })
       });
       if (!res.ok) {
-        let msg = 'Erro ao gerar TRFL.';
+        let msg = modoTransferencia === 'apeado' ? 'Erro ao gerar TRA APEADO.' : 'Erro ao gerar TRFL.';
         try {
           const j = await res.json();
           msg = j.error || j.message || msg;
@@ -983,7 +1262,10 @@ const TransferenciaLocalizacao = () => {
       }
       const blob = await res.blob();
       const disp = res.headers.get('content-disposition') || '';
-      let fn = `TRFL_mov_interna_arm${armazemId}.xlsx`;
+      let fn =
+        modoTransferencia === 'apeado'
+          ? `TRA_apeado_mov_interna_arm${armazemId}.xlsx`
+          : `TRFL_mov_interna_arm${armazemId}.xlsx`;
       const m = /filename\*?=(?:UTF-8'')?["']?([^";\n]+)/i.exec(disp);
       if (m) fn = decodeURIComponent(m[1].replace(/["']/g, '').trim());
       const url = window.URL.createObjectURL(blob);
@@ -992,7 +1274,10 @@ const TransferenciaLocalizacao = () => {
       a.download = fn;
       a.click();
       window.URL.revokeObjectURL(url);
-      setToast({ type: 'success', message: 'Ficheiro TRFL transferido.' });
+      setToast({
+        type: 'success',
+        message: modoTransferencia === 'apeado' ? 'Ficheiro TRA APEADO transferido.' : 'Ficheiro TRFL transferido.',
+      });
       if (haviaPendenteSelecionado) {
         window.dispatchEvent(new CustomEvent(RECEBIMENTO_REFRESH_EVENT));
       }
@@ -1013,7 +1298,7 @@ const TransferenciaLocalizacao = () => {
     }
     const ok = window.confirm(
       `Confirma excluir ${selectedTicketIds.length} ticket(s) selecionado(s)?\n\n` +
-      'Apenas tickets sem TRFL gerada podem ser removidos.'
+      `Apenas tickets sem ${nomeDocumentoFila} gerada podem ser removidos.`
     );
     if (!ok) return;
 
@@ -1045,13 +1330,14 @@ const TransferenciaLocalizacao = () => {
       if (skipped > 0) {
         setToast({
           type: 'warning',
-          message: `${deleted} ticket(s) excluído(s). ${skipped} não foram removidos (TRFL já gerada).`,
+          message: `${deleted} ticket(s) excluído(s). ${skipped} não foram removidos (${nomeDocumentoFila} já gerada).`,
         });
       } else {
         setToast({ type: 'success', message: `${deleted} ticket(s) excluído(s) com sucesso.` });
       }
       setSelectedTicketIds([]);
       loadTickets();
+      window.dispatchEvent(new CustomEvent(RECEBIMENTO_REFRESH_EVENT));
     } catch (e) {
       setToast({ type: 'error', message: e.message || 'Erro ao excluir tickets.' });
     } finally {
@@ -1065,8 +1351,22 @@ const TransferenciaLocalizacao = () => {
       setToast({ type: 'error', message: 'Defina armazém e localização de origem para continuar.' });
       return;
     }
+    if (modoTransferencia === 'apeado' && !apeadoArmazemId) {
+      setToast({ type: 'error', message: 'Selecione o armazém APEADO de destino.' });
+      return;
+    }
 
-    const semDestino = loteRecebimento.find((it) => !it.destinoId || String(it.destinoId) === String(origemId));
+    const linhasAtivas = (loteRecebimento || []).filter((it) => {
+      const codigo = String(it?.codigo || '').trim();
+      const qtd = Number(it?.quantidade || 0) || 0;
+      return Boolean(codigo) && qtd > 0;
+    });
+    if (!linhasAtivas.length) {
+      setToast({ type: 'error', message: 'Não existem linhas válidas para gerar tickets.' });
+      return;
+    }
+
+    const semDestino = linhasAtivas.find((it) => !it.destinoId || String(it.destinoId) === String(origemId));
     if (semDestino) {
       setToast({
         type: 'error',
@@ -1075,19 +1375,44 @@ const TransferenciaLocalizacao = () => {
       return;
     }
 
+    const resumoGrupo = new Map();
+    for (const it of linhasAtivas) {
+      const particao = normalizarParticaoPrefill(it?.particao, modoTransferencia);
+      const key = String(it?.grupo_key || `${Number(it?.item_id || 0) || 0}::${String(it?.codigo || '').trim().toUpperCase()}::${particao}`);
+      const prev = resumoGrupo.get(key) || {
+        codigo: String(it?.codigo || '').trim(),
+        particao,
+        total: Number(it?.quantidade_total_item || 0) || 0,
+        soma: 0,
+      };
+      prev.soma += Number(it?.quantidade || 0) || 0;
+      if ((Number(it?.quantidade_total_item || 0) || 0) > prev.total) prev.total = Number(it?.quantidade_total_item || 0) || 0;
+      resumoGrupo.set(key, prev);
+    }
+    const grupoInvalido = [...resumoGrupo.values()].find((g) => g.total > 0 && g.soma !== g.total);
+    if (grupoInvalido) {
+      setToast({
+        type: 'error',
+        message: `Alocação incompleta para ${grupoInvalido.codigo} (${grupoInvalido.particao}): ${grupoInvalido.soma}/${grupoInvalido.total}.`,
+      });
+      return;
+    }
+
     setSubmittingLote(true);
     try {
       const token = localStorage.getItem('token');
       let criados = 0;
-      for (const it of loteRecebimento) {
+      const serialSeenByGrupo = new Map();
+      const loteSeenByGrupo = new Map();
+      for (const it of linhasAtivas) {
         const quantidade = Number(it.quantidade || 0) || 0;
         if (quantidade <= 0) continue;
         const codigo = String(it.codigo || '').trim();
         if (!codigo) continue;
+        const particao = normalizarParticaoPrefill(it?.particao, modoTransferencia);
+        const keyGrupo = String(it?.grupo_key || `${Number(it?.item_id || 0) || 0}::${codigo.toUpperCase()}::${particao}`);
 
-        const rowStock = (linhasOrigem || []).find(
-          (r) => String(r?.codigo || '').trim().toUpperCase() === codigo.toUpperCase()
-        );
+        const rowStock = resolveRowStockPrefill(linhasOrigem, it);
         if (pode && !rowStock) {
           throw new Error(`Artigo ${codigo} não encontrado no stock da origem.`);
         }
@@ -1099,14 +1424,56 @@ const TransferenciaLocalizacao = () => {
         }
 
         const linhaPayload = pode
-          ? { item_id: rowStock.item_id, quantidade }
+          ? {
+              item_id: rowStock.item_id,
+              quantidade,
+              serials: isTipoControloSerial(rowStock?.tipocontrolo)
+                ? (Array.isArray(it?.serials) ? it.serials : [])
+                : undefined,
+            }
           : { item_codigo: codigo, quantidade };
+        if (isTipoControloSerial(String(rowStock?.tipocontrolo || it?.tipocontrolo || '').trim())) {
+          const qtdInt = Math.floor(quantidade);
+          const serialsSel = Array.isArray(it?.serials) ? [...new Set(it.serials.map((s) => String(s || '').trim()).filter(Boolean))] : [];
+          if (serialsSel.length !== qtdInt) {
+            throw new Error(`Selecione ${qtdInt} serial(s) para ${codigo}.`);
+          }
+          const seen = serialSeenByGrupo.get(keyGrupo) || new Set();
+          for (const sn of serialsSel) {
+            const snKey = String(sn || '').trim().toUpperCase();
+            if (!snKey) continue;
+            if (seen.has(snKey)) {
+              throw new Error(`Serial ${sn} duplicado em múltiplas alocações de ${codigo} (${particao}).`);
+            }
+            seen.add(snKey);
+          }
+          serialSeenByGrupo.set(keyGrupo, seen);
+        }
+        if (String(rowStock?.tipocontrolo || it?.tipocontrolo || '').trim().toUpperCase() === 'LOTE') {
+          const lotesSel = Array.isArray(it?.lotes)
+            ? [...new Set(it.lotes.map((s) => String(s || '').trim()).filter(Boolean))]
+            : [];
+          const seenL = loteSeenByGrupo.get(keyGrupo) || new Set();
+          for (const lote of lotesSel) {
+            const k = String(lote || '').trim().toUpperCase();
+            if (!k) continue;
+            if (seenL.has(k)) {
+              throw new Error(`Lote ${lote} duplicado em múltiplas alocações de ${codigo} (${particao}).`);
+            }
+            seenL.add(k);
+          }
+          loteSeenByGrupo.set(keyGrupo, seenL);
+        }
 
         await axios.post(
           `/api/armazens/${armazemId}/transferencia-localizacao`,
           {
             origem_localizacao_id: parseInt(origemId, 10),
             destino_localizacao_id: parseInt(it.destinoId, 10),
+            modo_apeado: modoTransferencia === 'apeado' || particao === 'apeado',
+            apeado_armazem_id: (modoTransferencia === 'apeado' || particao === 'apeado')
+              ? parseInt(apeadoArmazemId, 10)
+              : undefined,
             linhas: [linhaPayload],
           },
           { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } }
@@ -1116,16 +1483,131 @@ const TransferenciaLocalizacao = () => {
 
       setToast({
         type: 'success',
-        message: `${criados} ticket(s) criado(s) com sucesso para armazenagem.`,
+        message:
+          modoTransferencia === 'apeado'
+            ? `${criados} ticket(s) criado(s) com sucesso para APEADOS.`
+            : `${criados} ticket(s) criado(s) com sucesso para armazenagem.`,
       });
       limparPrefillRecebimento();
       loadTickets();
+      window.dispatchEvent(new CustomEvent(RECEBIMENTO_REFRESH_EVENT));
     } catch (e) {
       const msg = e?.response?.data?.error || e?.message || 'Erro ao gerar tickets em lote.';
       setToast({ type: 'error', message: msg });
     } finally {
       setSubmittingLote(false);
     }
+  };
+
+  const removerLinhaLoteRecebimento = (idx) => {
+    setLoteRecebimento((prev) => prev.filter((_, i) => i !== idx));
+  };
+
+  const adicionarLinhaLoteRecebimento = () => {
+    const particao = modoTransferencia === 'apeado' ? 'apeado' : 'normal';
+    setLoteRecebimento((prev) => ([
+      ...prev,
+      {
+        manual: true,
+        item_id: null,
+        codigo: '',
+        descricao: '',
+        tipocontrolo: '',
+        seriais_sugeridos: [],
+        lotes_sugeridos: [],
+        quantidade: 1,
+        quantidade_total_item: 0,
+        particao,
+        grupo_key: `manual::${Date.now()}::${particao}`,
+        allocation_id: `manual-${Date.now()}`,
+        destinoId: '',
+        serials: [],
+        lotes: [],
+      },
+    ]));
+  };
+
+  const atualizarArtigoLinhaLote = (idx, optionValue) => {
+    const key = String(optionValue || '').trim();
+    if (!key) return;
+    let selecionado = null;
+    if (key.startsWith('ID:')) {
+      const itemId = Number(key.slice(3) || 0);
+      const rowStock = (linhasOrigem || []).find((r) => Number(r?.item_id || 0) === itemId);
+      if (rowStock) {
+        selecionado = {
+          item_id: Number(rowStock?.item_id || 0) || null,
+          codigo: String(rowStock?.codigo || '').trim(),
+          descricao: String(rowStock?.descricao || '').trim(),
+          tipocontrolo: String(rowStock?.tipocontrolo || '').trim(),
+        };
+      }
+    }
+    if (!selecionado) {
+      const fallback = opcoesArtigoLoteManual.find((o) => String(o?.value || '') === key);
+      if (fallback) {
+        selecionado = {
+          item_id: Number(fallback?.item_id || 0) || null,
+          codigo: String(fallback?.codigo || '').trim(),
+          descricao: String(fallback?.descricao || '').trim(),
+          tipocontrolo: String(fallback?.tipocontrolo || '').trim(),
+        };
+      }
+    }
+    if (!selecionado || !selecionado.codigo) return;
+    setLoteRecebimento((prev) =>
+      prev.map((row, i) => (
+        i === idx
+          ? (() => {
+            const particao = normalizarParticaoPrefill(row?.particao, modoTransferencia);
+            return {
+              ...row,
+              manual: true,
+              item_id: selecionado.item_id,
+              codigo: selecionado.codigo,
+              descricao: selecionado.descricao,
+              tipocontrolo: selecionado.tipocontrolo,
+              seriais_sugeridos: [],
+              lotes_sugeridos: [],
+              serials: [],
+              lotes: [],
+              particao,
+              grupo_key: `${Number(selecionado?.item_id || 0) || 0}::${String(selecionado?.codigo || '').trim().toUpperCase()}::${particao}`,
+              quantidade_total_item: Number(row?.quantidade_total_item || 0) || 0,
+            };
+          })()
+          : row
+      ))
+    );
+  };
+
+  const atualizarQuantidadeLinhaLote = (idx, valor) => {
+    const qtd = Math.max(0, Math.floor(Number(valor) || 0));
+    setLoteRecebimento((prev) =>
+      prev.map((row, i) => {
+        if (i !== idx) return row;
+        const serials = Array.isArray(row?.serials) ? row.serials.slice(0, qtd) : [];
+        return { ...row, quantidade: qtd, serials };
+      })
+    );
+  };
+
+  const toggleSerialLinhaLote = (idx, serial, maxQtd) => {
+    const sn = String(serial || '').trim();
+    if (!sn) return;
+    const limite = Math.max(0, Math.floor(Number(maxQtd) || 0));
+    setLoteRecebimento((prev) =>
+      prev.map((row, i) => {
+        if (i !== idx) return row;
+        const atual = Array.isArray(row?.serials) ? [...new Set(row.serials.map((s) => String(s || '').trim()).filter(Boolean))] : [];
+        const existe = atual.includes(sn);
+        if (existe) {
+          return { ...row, serials: atual.filter((s) => s !== sn) };
+        }
+        if (atual.length >= limite) return row;
+        return { ...row, serials: [...atual, sn] };
+      })
+    );
   };
 
   const disponivelArtigoCorrente = useMemo(() => {
@@ -1173,7 +1655,7 @@ const TransferenciaLocalizacao = () => {
           <div>
             <h1 className="text-xl sm:text-2xl font-bold text-gray-800 flex items-center gap-2">
               <FaExchangeAlt className="text-[#0915FF]" />
-              Transferência de localização
+              {modoTransferencia === 'apeado' ? 'Transferência para APEADOS' : 'Transferência de localização'}
             </h1>
             <p className="text-xs text-gray-500 mt-1">
               Um artigo por movimentação: origem → artigo → quantidade → destino → confirmar.
@@ -1197,6 +1679,17 @@ const TransferenciaLocalizacao = () => {
           </div>
         ) : (
           <div className="space-y-6 max-w-3xl mx-auto">
+            <div className="ui-card p-4">
+              <label className="block text-xs text-gray-600 mb-1">Tipo de transferência</label>
+              <select
+                value={modoTransferencia}
+                onChange={(e) => setModoTransferencia(String(e.target.value || 'localizacao'))}
+                className="ui-select"
+              >
+                <option value="localizacao">Transferência de localização</option>
+                <option value="apeado">Transferência para APEADOS</option>
+              </select>
+            </div>
             {loteRecebimento.length > 0 && (
               <div className="ui-card overflow-hidden">
                 <div className="px-4 py-3 border-b border-gray-100 bg-indigo-50/60">
@@ -1223,6 +1716,23 @@ const TransferenciaLocalizacao = () => {
                         ))}
                       </select>
                     </div>
+                    {modoTransferencia === 'apeado' && (
+                      <div>
+                        <label className="block text-xs text-gray-600 mb-1">Armazém APEADO</label>
+                        <select
+                          value={apeadoArmazemId}
+                          onChange={(e) => setApeadoArmazemId(e.target.value)}
+                          className="ui-select"
+                        >
+                          <option value="">Selecione…</option>
+                          {apeadosVinculados.map((a) => (
+                            <option key={a.id} value={String(a.id)}>
+                              {a.codigo} — {a.descricao}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
                     <div>
                       <label className="block text-xs text-gray-600 mb-1">Origem (recebimento)</label>
                       <input
@@ -1234,25 +1744,77 @@ const TransferenciaLocalizacao = () => {
                   </div>
 
                   <div className="ui-table-wrap overflow-x-auto">
-                    <table className="ui-table w-full text-xs">
+                    <table className="ui-table w-full text-xs table-auto">
                       <thead>
                         <tr>
                           <th className="px-2 py-2 text-left">Artigo</th>
                           <th className="px-2 py-2 text-right">Qtd</th>
                           <th className="px-2 py-2 text-left">Destino</th>
+                          <th className="px-2 py-2 text-left">Seriais</th>
+                          <th className="px-2 py-2 text-right">Ação</th>
                         </tr>
                       </thead>
                       <tbody>
                         {loteRecebimento.map((it, idx) => (
                           <tr key={`${it.codigo}-${idx}`}>
-                            <td className="px-2 py-2">
-                              <span className="font-mono font-medium">{it.codigo}</span>
-                              {it.descricao ? (
-                                <span className="block text-[11px] text-gray-500 truncate">{it.descricao}</span>
-                              ) : null}
+                            <td className="px-2 py-2 align-top">
+                              {(() => {
+                                const particao = normalizarParticaoPrefill(it?.particao, modoTransferencia);
+                                const keyGrupo = String(it?.grupo_key || `${Number(it?.item_id || 0) || 0}::${String(it?.codigo || '').trim().toUpperCase()}::${particao}`);
+                                const resumo = resumoGrupoAlloc.get(keyGrupo) || { alocado: Number(it?.quantidade || 0) || 0, total: Number(it?.quantidade_total_item || 0) || 0 };
+                                const particaoLabel = particao === 'apeado' ? 'APEADO' : 'NORMAL';
+                                return (
+                                  <div className="mb-1 flex items-center gap-2 text-[10px]">
+                                    <span className={`px-1.5 py-0.5 rounded border ${particao === 'apeado' ? 'border-purple-300 text-purple-800 bg-purple-50' : 'border-indigo-300 text-indigo-800 bg-indigo-50'}`}>
+                                      {particaoLabel}
+                                    </span>
+                                    {resumo.total > 0 && (
+                                      <span className="text-gray-500">
+                                        Alocado {resumo.alocado}/{resumo.total}
+                                      </span>
+                                    )}
+                                  </div>
+                                );
+                              })()}
+                              {Boolean(it?.manual) ? (
+                                <select
+                                  value={
+                                    Number(it?.item_id || 0) > 0
+                                      ? `ID:${Number(it.item_id)}`
+                                      : ''
+                                  }
+                                  onChange={(e) => atualizarArtigoLinhaLote(idx, e.target.value)}
+                                  className="ui-select"
+                                >
+                                  <option value="">Selecione artigo…</option>
+                                  {opcoesArtigoLoteManual.map((r) => (
+                                    <option key={String(r.value)} value={String(r.value)}>
+                                      {String(r.codigo || '').trim()} — {String(r.descricao || '').trim()}
+                                    </option>
+                                  ))}
+                                </select>
+                              ) : (
+                                <div className="min-w-0">
+                                  <span className="font-mono font-medium block break-all">{it.codigo}</span>
+                                  {it.descricao ? (
+                                    <span className="block text-[11px] text-gray-500 whitespace-normal break-words leading-snug">
+                                      {it.descricao}
+                                    </span>
+                                  ) : null}
+                                </div>
+                              )}
                             </td>
-                            <td className="px-2 py-2 text-right tabular-nums">{it.quantidade}</td>
-                            <td className="px-2 py-2">
+                            <td className="px-2 py-2 text-right tabular-nums align-top">
+                              <input
+                                type="number"
+                                min="0"
+                                step="1"
+                                value={it.quantidade}
+                                onChange={(e) => atualizarQuantidadeLinhaLote(idx, e.target.value)}
+                                className="w-24 px-2 py-1 border border-gray-300 rounded text-right"
+                              />
+                            </td>
+                            <td className="px-2 py-2 align-top">
                               <select
                                 value={it.destinoId}
                                 onChange={(e) => {
@@ -1261,7 +1823,7 @@ const TransferenciaLocalizacao = () => {
                                     prev.map((row, i) => (i === idx ? { ...row, destinoId: next } : row))
                                   );
                                 }}
-                                className="ui-select"
+                                className="ui-select min-w-[130px]"
                               >
                                 <option value="">Selecione destino…</option>
                                 {locsDestinoCandidatas.map((l) => (
@@ -1271,6 +1833,50 @@ const TransferenciaLocalizacao = () => {
                                 ))}
                               </select>
                             </td>
+                            <td className="px-2 py-2 align-top min-w-[170px]">
+                              {(() => {
+                                const rowStock = resolveRowStockPrefill(linhasOrigem, it);
+                                const tipocontroloItem = String(rowStock?.tipocontrolo || it?.tipocontrolo || '').trim();
+                                if (!isTipoControloSerial(tipocontroloItem)) {
+                                  return <span className="text-[11px] text-gray-400">—</span>;
+                                }
+                                const itemId = String(Number(rowStock?.item_id || it?.item_id || 0));
+                                const optionsStock = Array.isArray(serialOptionsByItemId[itemId]) ? serialOptionsByItemId[itemId] : [];
+                                const optionsFallback = (it?.seriais_sugeridos || []).map((sn, pos) => ({
+                                  id: `fallback-${itemId}-${pos}`,
+                                  serialnumber: String(sn || '').trim(),
+                                }));
+                                const options = optionsStock.length > 0 ? optionsStock : optionsFallback;
+                                const qtdInt = Math.floor(Number(it?.quantidade || 0) || 0);
+                                const selected = Array.isArray(it?.serials) ? it.serials : [];
+                                return (
+                                  <div className="space-y-1 min-w-0">
+                                    <button
+                                      type="button"
+                                      className="px-2 py-1 text-[11px] border border-gray-300 rounded hover:bg-gray-50"
+                                      onClick={() => setSerialPickerIdx(idx)}
+                                      disabled={qtdInt <= 0}
+                                    >
+                                      Selecionar seriais
+                                    </button>
+                                    <div className="text-[11px] text-gray-500 whitespace-normal break-words">
+                                      {selected.length}/{qtdInt} selecionados · {options.length} disponíveis
+                                    </div>
+                                  </div>
+                                );
+                              })()}
+                            </td>
+                            <td className="px-2 py-2 text-right whitespace-nowrap align-top w-[1%]">
+                              <button
+                                type="button"
+                                className="px-2 py-1 text-xs border border-red-300 text-red-700 rounded hover:bg-red-50"
+                                onClick={() => removerLinhaLoteRecebimento(idx)}
+                                disabled={submittingLote}
+                                title="Excluir esta linha do pré-preenchimento automático"
+                              >
+                                Excluir
+                              </button>
+                            </td>
                           </tr>
                         ))}
                       </tbody>
@@ -1278,6 +1884,14 @@ const TransferenciaLocalizacao = () => {
                   </div>
 
                   <div className="flex flex-wrap items-center gap-2 justify-end">
+                    <button
+                      type="button"
+                      className="ui-btn ui-btn-secondary"
+                      onClick={adicionarLinhaLoteRecebimento}
+                      disabled={submittingLote}
+                    >
+                      Adicionar item
+                    </button>
                     <button
                       type="button"
                       className="ui-btn ui-btn-secondary"
@@ -1290,17 +1904,89 @@ const TransferenciaLocalizacao = () => {
                       type="button"
                       className="ui-btn ui-btn-primary disabled:opacity-50"
                       onClick={gerarTicketsLoteRecebimento}
-                      disabled={submittingLote || !armazemId || !origemId || locsDestinoCandidatas.length === 0}
+                      disabled={
+                        submittingLote ||
+                        !armazemId ||
+                        !origemId ||
+                        locsDestinoCandidatas.length === 0 ||
+                        (modoTransferencia === 'apeado' && !apeadoArmazemId)
+                      }
                     >
-                      {submittingLote ? 'A criar tickets…' : 'Gerar tickets de armazenagem'}
+                      {submittingLote
+                        ? 'A criar tickets…'
+                        : modoTransferencia === 'apeado'
+                          ? 'Gerar tickets para APEADOS'
+                          : 'Gerar tickets de armazenagem'}
                     </button>
                   </div>
                 </div>
               </div>
             )}
 
-            <div className={`ui-card overflow-visible ${loteRecebimento.length > 0 ? 'hidden' : ''}`}>
+            {serialPickerIdx != null && loteRecebimento[serialPickerIdx] && (() => {
+              const it = loteRecebimento[serialPickerIdx];
+              const rowStock = resolveRowStockPrefill(linhasOrigem, it);
+              const itemId = String(Number(rowStock?.item_id || it?.item_id || 0));
+              const optionsStock = Array.isArray(serialOptionsByItemId[itemId]) ? serialOptionsByItemId[itemId] : [];
+              const optionsFallback = (it?.seriais_sugeridos || []).map((sn, pos) => ({
+                id: `fallback-${itemId}-${pos}`,
+                serialnumber: String(sn || '').trim(),
+              }));
+              const options = optionsStock.length > 0 ? optionsStock : optionsFallback;
+              const qtdInt = Math.floor(Number(it?.quantidade || 0) || 0);
+              const selected = Array.isArray(it?.serials) ? it.serials : [];
+              return (
+                <div className="fixed inset-0 z-[1200] bg-black/25 flex items-center justify-center p-4">
+                  <div className="w-full max-w-md rounded-xl border border-gray-200 bg-white shadow-2xl">
+                    <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
+                      <div>
+                        <p className="text-sm font-semibold text-gray-800">Selecionar seriais</p>
+                        <p className="text-[11px] text-gray-500 font-mono">{String(it?.codigo || '')}</p>
+                      </div>
+                      <button
+                        type="button"
+                        className="px-2 py-1 text-xs border border-gray-300 rounded hover:bg-gray-50"
+                        onClick={() => setSerialPickerIdx(null)}
+                      >
+                        Fechar
+                      </button>
+                    </div>
+                    <div className="px-4 py-3">
+                      <p className="text-xs text-gray-600 mb-2">{selected.length}/{qtdInt} selecionados</p>
+                      <div className="max-h-72 overflow-y-auto border border-gray-200 rounded p-2 space-y-1">
+                        {options.map((o) => {
+                          const sn = String(o.serialnumber || '').trim();
+                          const checked = selected.includes(sn);
+                          const disableUnchecked = !checked && selected.length >= qtdInt;
+                          return (
+                            <label key={String(o.id)} className="flex items-center gap-2 text-xs text-gray-700">
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                disabled={disableUnchecked}
+                                onChange={() => toggleSerialLinhaLote(serialPickerIdx, sn, qtdInt)}
+                              />
+                              <span className="font-mono">{sn}</span>
+                            </label>
+                          );
+                        })}
+                        {options.length === 0 && (
+                          <p className="text-xs text-gray-400">Sem seriais disponíveis para este item.</p>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+
+            <div className="ui-card overflow-visible">
               <div className="px-3 sm:px-4 py-3 border-b border-gray-100 bg-gray-50/90">
+                {loteRecebimento.length > 0 && (
+                  <div className="mb-2 rounded border border-indigo-200 bg-indigo-50 px-2 py-1.5 text-[11px] text-indigo-800">
+                    Pre-preenchimento ativo. Pode adicionar artigos manualmente abaixo.
+                  </div>
+                )}
                 <div className="flex items-center justify-between gap-2 overflow-x-auto pb-1">
                   {WIZARD_STEPS.map((st, idx) => {
                     const ativo = wizardStep === st.n;
@@ -1346,6 +2032,23 @@ const TransferenciaLocalizacao = () => {
                         >
                           <option value="">Selecione…</option>
                           {centrais.map((a) => (
+                            <option key={a.id} value={String(a.id)}>
+                              {a.codigo} — {a.descricao}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+                    {modoTransferencia === 'apeado' && (
+                      <div>
+                        <label className="block text-xs text-gray-600 mb-1">Armazém APEADO</label>
+                        <select
+                          value={apeadoArmazemId}
+                          onChange={(e) => setApeadoArmazemId(e.target.value)}
+                          className="ui-select"
+                        >
+                          <option value="">Selecione…</option>
+                          {apeadosVinculados.map((a) => (
                             <option key={a.id} value={String(a.id)}>
                               {a.codigo} — {a.descricao}
                             </option>
@@ -1409,6 +2112,7 @@ const TransferenciaLocalizacao = () => {
                       disabled={
                         !armazemId ||
                         !origemId ||
+                        (modoTransferencia === 'apeado' && !apeadoArmazemId) ||
                         (pode && (loadingEstoque || linhasOrigem.length === 0))
                       }
                       onClick={() => setWizardStep(2)}
@@ -1643,7 +2347,7 @@ const TransferenciaLocalizacao = () => {
                         </div>
                         <label className="block text-xs text-gray-600 mb-1" htmlFor="transf-loc-destino-input">
                           <FaMapMarkerAlt className="inline mr-1 text-emerald-600" />
-                          Localização de destino
+                          {modoTransferencia === 'apeado' ? 'Localização de destino (APEADO)' : 'Localização de destino'}
                         </label>
                         <LocalizacaoCombobox
                           instanceId="transf-loc-destino"
@@ -1657,8 +2361,8 @@ const TransferenciaLocalizacao = () => {
                             setFiltroDestinoLoc(l.localizacao || '');
                           }}
                           onBlurCommitExact={commitDestinoSeCorrespondenciaExata}
-                          disabled={locsDestinoCandidatas.length === 0}
-                          lerDisabled={locsDestinoCandidatas.length === 0}
+                          disabled={locsDestinoCandidatas.length === 0 || (modoTransferencia === 'apeado' && !apeadoArmazemId)}
+                          lerDisabled={locsDestinoCandidatas.length === 0 || (modoTransferencia === 'apeado' && !apeadoArmazemId)}
                           onLerClick={() => abrirLeitorQr('destino')}
                           placeholder="Pesquisar ou escolher localização de destino…"
                           lerTitle="Ler QR ou código de barras da localização"
@@ -1672,7 +2376,7 @@ const TransferenciaLocalizacao = () => {
                         />
                         <button
                           type="button"
-                          disabled={!destinoId || destinoId === origemId}
+                          disabled={!destinoId || destinoId === origemId || (modoTransferencia === 'apeado' && !apeadoArmazemId)}
                           onClick={() => setWizardStep(5)}
                           className="ui-btn ui-btn-primary w-full disabled:opacity-50"
                         >
@@ -1698,7 +2402,7 @@ const TransferenciaLocalizacao = () => {
                       </p>
                       <p>
                         <span className="text-gray-500">Destino:</span>{' '}
-                        <span className="font-mono">{labelLoc(destinoId) || '—'}</span>
+                        <span className="font-mono">{labelDestino(destinoId) || '—'}</span>
                       </p>
                     </div>
                     {linhaPendente && (
@@ -1732,10 +2436,12 @@ const TransferenciaLocalizacao = () => {
               <div className="px-4 py-3 bg-slate-800 text-white flex flex-wrap items-center gap-3 justify-between">
                 <h2 className="text-sm font-semibold flex items-center gap-2">
                   <FaList className="text-emerald-400" />
-                  Fila de tickets (movimentação interna)
+                  {modoTransferencia === 'apeado'
+                    ? 'Fila de tickets (transferência para APEADOS)'
+                    : 'Fila de tickets (movimentação interna)'}
                 </h2>
                 <p className="text-xs text-slate-300">
-                  Registos após confirmar transferências · TRFL só para perfis autorizados
+                  Registos após confirmar transferências · {nomeDocumentoFila} só para perfis autorizados
                 </p>
               </div>
               <div className="p-4 sm:p-5">
@@ -1749,7 +2455,7 @@ const TransferenciaLocalizacao = () => {
                         setSelectedTicketIds([]);
                       }}
                     />
-                    Só pendentes de TRFL
+                    Só pendentes de {nomeDocumentoFila}
                   </label>
                   <button
                     type="button"
@@ -1790,7 +2496,7 @@ const TransferenciaLocalizacao = () => {
                         disabled={exportingTrfl || deletingTickets || selectedTicketIds.length === 0}
                         className="px-3 py-1.5 rounded-lg bg-emerald-600 text-white font-semibold hover:bg-emerald-700 disabled:opacity-50"
                       >
-                        {exportingTrfl ? 'A gerar…' : 'Gerar / Re-download TRFL (Excel)'}
+                        {exportingTrfl ? 'A gerar…' : `Gerar / Re-download ${nomeDocumentoFila} (Excel)`}
                       </button>
                       <span className="text-gray-500 self-center tabular-nums">{selectedTicketIds.length} selec.</span>
                     </>
@@ -1823,7 +2529,7 @@ const TransferenciaLocalizacao = () => {
                 )}
                 {!podeExportarTrfl && (
                   <p className="text-xs text-gray-600 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-4">
-                    A geração do ficheiro <strong>TRFL</strong> está reservada a <strong>administrador</strong>,{' '}
+                    A geração do ficheiro <strong>{nomeDocumentoFila}</strong> está reservada a <strong>administrador</strong>,{' '}
                     <strong>backoffice de armazém</strong> e <strong>supervisor de armazém</strong>. Pode consultar a
                     fila abaixo.
                   </p>
@@ -1835,7 +2541,7 @@ const TransferenciaLocalizacao = () => {
                 ) : tickets.length === 0 ? (
                   <p className="text-sm text-gray-500">
                     {ticketsSoPendentesTrfl
-                      ? 'Nenhum ticket pendente de TRFL.'
+                      ? `Nenhum ticket pendente de ${nomeDocumentoFila}.`
                       : 'Nenhum registo recente.'}
                   </p>
                 ) : (
@@ -1849,7 +2555,7 @@ const TransferenciaLocalizacao = () => {
                           <th className="px-2 py-2 w-[14%]">Destino</th>
                           <th className="px-2 py-2 w-[31%]">Artigo</th>
                           <th className="px-2 py-2 w-[8%] text-right">Qtd</th>
-                          <th className="px-2 py-2 w-[8%]">TRFL</th>
+                          <th className="px-2 py-2 w-[8%]">{nomeDocumentoFila}</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-gray-100 bg-white">
@@ -1864,7 +2570,7 @@ const TransferenciaLocalizacao = () => {
                                     type="checkbox"
                                     checked={checked}
                                     onChange={() => toggleTicket(t.id)}
-                                    title={pendente ? '' : 'TRFL já gerada: pode selecionar para re-download'}
+                                    title={pendente ? '' : `${nomeDocumentoFila} já gerada: pode selecionar para re-download`}
                                   />
                                 </td>
                               )}

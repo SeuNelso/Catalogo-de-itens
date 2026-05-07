@@ -11,33 +11,28 @@ const PAGE_SIZE = 40;
 const REFRESH_MS = 180000;
 const MAX_ITEMS = 8;
 const RECEBIMENTO_REFRESH_EVENT = 'recebimento-card-refresh';
-const RECEBIMENTO_TRANSFERENCIA_MARKER = 'RECEBIMENTO_TRANSFERENCIA_V1';
-
-const normalizeText = (value) => String(value || '').trim().toUpperCase();
 
 const formatDate = (value) => {
   const s = String(value || '').trim();
   if (!s) return '-';
-  return s;
+  const dt = new Date(s);
+  if (!Number.isFinite(dt.getTime())) return s;
+  return dt.toLocaleString('pt-PT', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
 };
 
-const isRecebimentoTraOuDevRow = (row, normalizedTarget) => {
-  const destination = normalizeText(row?.['New Localização'] || row?.Loc_Inicial);
-  if (!destination || destination !== normalizedTarget) return false;
-  const doc = String(row?.['TRA / DEV'] || '').trim();
-  if (!doc) return false;
-  const docNorm = normalizeText(doc);
-  return docNorm.startsWith('TRA') || docNorm.startsWith('DEV');
-};
 
 const formatQtyDecimal = (value) => {
   const n = Number(value || 0);
   if (!Number.isFinite(n)) return '0';
   return n.toLocaleString('pt-PT', { maximumFractionDigits: 4 });
 };
-
-const markerFlagAtivo = (obsRaw, markerKey) =>
-  new RegExp(`${markerKey}:\\s*1`, 'i').test(String(obsRaw || ''));
 
 const firstNonEmpty = (...values) => {
   for (const v of values) {
@@ -47,45 +42,11 @@ const firstNonEmpty = (...values) => {
   return '';
 };
 
-const resolveArmazemLabelFromReq = (reqRow) =>
-  firstNonEmpty(
-    reqRow?.armazem_destino_codigo,
-    reqRow?.armazem_origem_codigo,
-    reqRow?.armazem_codigo,
-    reqRow?.armazem_destino_descricao,
-    reqRow?.armazem_origem_descricao,
-    reqRow?.armazem_descricao
-  );
-
-const isDevolucaoDevConfirmadaNoArmazem = (reqRow, armazemId) => {
-  if (!Number(armazemId)) return false;
-  if (!reqRow?.devolucao_tra_gerada_em) return false;
-  const candidates = [reqRow?.armazem_id, reqRow?.armazem_destino_id, reqRow?.armazem_origem_id]
-    .map((v) => Number(v))
-    .filter((v) => Number.isFinite(v) && v > 0);
-  return candidates.includes(Number(armazemId));
-};
-
-const getQtdPendenteRececaoDevolucao = (reqRow, itemRow) => {
-  const base = Number(
-    itemRow?.quantidade_preparada
-      ?? itemRow?.quantidade
-      ?? itemRow?.quantidade_confirmada
-      ?? 0
-  ) || 0;
-  if (base <= 0) return 0;
-  // Após gerar TRA APEADOS, apenas o remanescente deve continuar na zona de receção.
-  if (reqRow?.devolucao_tra_apeados_gerada_em) {
-    const qApeados = Math.max(0, Number(itemRow?.quantidade_apeados ?? 0) || 0);
-    return Math.max(0, base - qApeados);
-  }
-  return base;
-};
-
 function ReceptionMonitorCard() {
   const navigate = useNavigate();
   const { isAuthenticated, loading, user } = useAuth();
   const [rows, setRows] = useState([]);
+  const [prefillItems, setPrefillItems] = useState([]);
   const [error, setError] = useState('');
   const [loadingRows, setLoadingRows] = useState(false);
   const [targetLocation, setTargetLocation] = useState(FALLBACK_LOCATION);
@@ -96,7 +57,11 @@ function ReceptionMonitorCard() {
   const [collapsed, setCollapsed] = useState(true);
   const [totalArtigosRececao, setTotalArtigosRececao] = useState(0);
   const [showAtualizado, setShowAtualizado] = useState(false);
+  const [totaisPorCategoria, setTotaisPorCategoria] = useState({});
+  const [clearingTest, setClearingTest] = useState(false);
   const hideAtualizadoTimerRef = useRef(null);
+  const requestSeqRef = useRef(0);
+  const activeAbortRef = useRef(null);
 
   const canView = useMemo(
     () => isAuthenticated && !loading && podeUsarConsultaMovimentos(user),
@@ -105,6 +70,7 @@ function ReceptionMonitorCard() {
   const canArmazenar = ['admin', 'backoffice_armazem', 'supervisor_armazem', 'operador'].includes(
     String(user?.role || '').trim().toLowerCase()
   );
+  const isAdminUser = String(user?.role || '').trim().toLowerCase() === 'admin';
 
   const resolveTargetLocation = useCallback(async (token) => {
     try {
@@ -149,30 +115,55 @@ function ReceptionMonitorCard() {
 
   const fetchRows = useCallback(async () => {
     if (!canView) return;
+    const requestSeq = requestSeqRef.current + 1;
+    requestSeqRef.current = requestSeq;
+    if (activeAbortRef.current) {
+      activeAbortRef.current.abort();
+    }
+    const ac = new AbortController();
+    activeAbortRef.current = ac;
     setLoadingRows(true);
     try {
       const token = localStorage.getItem('token');
       if (!token) {
+        if (requestSeq !== requestSeqRef.current) return;
         setRows([]);
         return;
       }
       const resolved = await resolveTargetLocation(token);
+      if (requestSeq !== requestSeqRef.current) return;
       const resolvedLocation = String(resolved?.location || FALLBACK_LOCATION).trim() || FALLBACK_LOCATION;
+      const resolvedArmazemId = Number(resolved?.armazemId || 0) || null;
       setTargetLocation(resolvedLocation);
-      setTargetArmazemId(Number(resolved?.armazemId || 0) || null);
+      setTargetArmazemId(resolvedArmazemId);
       setTargetArmazemLabel(String(resolved?.armazemLabel || '').trim());
-      const params = new URLSearchParams();
-      params.set('localizacao', resolvedLocation);
-      params.set('page_size', String(PAGE_SIZE));
-      params.set('offset', '0');
 
-      const response = await fetch(apiUrl(`/api/requisicoes/movimentos-clog/consulta?${params.toString()}`), {
+      if (!resolvedArmazemId) {
+        setRows([]);
+        setPrefillItems([]);
+        setTotalArtigosRececao(0);
+        setTotaisPorCategoria({});
+        setError('');
+        return;
+      }
+
+      const params = new URLSearchParams({
+        armazem_id: String(resolvedArmazemId),
+        localizacao: resolvedLocation,
+        limit: String(PAGE_SIZE),
+        offset: '0',
+      });
+      const response = await fetch(apiUrl(`/api/requisicoes/transferencias/recebimento/monitor?${params.toString()}`), {
         headers: { Authorization: `Bearer ${token}` },
         cache: 'no-store',
+        signal: ac.signal,
       });
 
       if (response.status === 403) {
+        if (requestSeq !== requestSeqRef.current) return;
         setRows([]);
+        setTotalArtigosRececao(0);
+        setTotaisPorCategoria({});
         return;
       }
       if (!response.ok) {
@@ -181,186 +172,67 @@ function ReceptionMonitorCard() {
       }
 
       const data = await response.json().catch(() => ({}));
+      if (requestSeq !== requestSeqRef.current) return;
       const apiRows = Array.isArray(data?.rows) ? data.rows : [];
-      const normalizedTarget = normalizeText(resolvedLocation);
-      const entradas = apiRows
-        .filter((row) => isRecebimentoTraOuDevRow(row, normalizedTarget))
-        .map((row) => ({
-          codigo: String(row['REF.'] || '').trim(),
-          descricao: String(row.DESCRIPTION || '').trim(),
-          qtd: Math.abs(Number(row.QTY || 0)) || 0,
-          armazem: firstNonEmpty(row['Novo Armazém'], row['New Armazém'], row['Armazém'], row['Armazem']),
-          tra: String(row['TRA / DEV'] || '').trim(),
-          data: String(row['Dt_Recepção'] || '').trim(),
-        }))
-        .filter((x) => x.codigo && x.qtd > 0);
-
-      const deltaTicketsPorCodigo = new Map();
-      if (resolved?.armazemId) {
-        try {
-          const tkRes = await fetch(
-            apiUrl(`/api/armazens/${resolved.armazemId}/movimentacoes-internas?limit=500`),
-            {
-              headers: { Authorization: `Bearer ${token}` },
-              cache: 'no-store',
-            }
-          );
-          if (tkRes.ok) {
-            const tkRows = await tkRes.json().catch(() => []);
-            const tickets = Array.isArray(tkRows) ? tkRows : [];
-            tickets.forEach((t) => {
-                const cod = String(t?.item_codigo || '').trim();
-                const qtd = Number(t?.quantidade || 0) || 0;
-                if (!cod || qtd <= 0) return;
-                const origemNorm = normalizeText(t?.origem_localizacao_label);
-                const destinoNorm = normalizeText(t?.destino_localizacao_label);
-                let delta = 0;
-                if (origemNorm === normalizedTarget) delta -= qtd;
-                if (destinoNorm === normalizedTarget) delta += qtd;
-                if (delta === 0) return;
-                deltaTicketsPorCodigo.set(cod, Number(deltaTicketsPorCodigo.get(cod) || 0) + delta);
-              });
-          }
-        } catch (_) {
-          // Se não conseguir carregar tickets, mantém apenas entradas.
-        }
-      }
-
-      const pendenteByCodigo = new Map();
-      entradas.forEach((row) => {
-        const prev = pendenteByCodigo.get(row.codigo) || {
-          codigo: row.codigo,
-          descricao: row.descricao,
-          qtd: 0,
-          qtdMovimentos: 0,
-          armazem: row.armazem,
-          tra: row.tra,
-          data: row.data,
-        };
-        prev.qtd += row.qtd;
-        prev.qtdMovimentos = Number(prev.qtdMovimentos || 0) + row.qtd;
-        if (!prev.descricao && row.descricao) prev.descricao = row.descricao;
-        if (!prev.armazem && row.armazem) prev.armazem = row.armazem;
-        if (!prev.tra && row.tra) prev.tra = row.tra;
-        if (!prev.data && row.data) prev.data = row.data;
-        pendenteByCodigo.set(row.codigo, prev);
-      });
-
-      if (resolved?.armazemId) {
-        try {
-          const [reqRes, reqDevRes] = await Promise.all([
-            fetch(apiUrl('/api/requisicoes'), {
-              headers: { Authorization: `Bearer ${token}` },
-              cache: 'no-store',
-            }),
-            fetch(apiUrl('/api/requisicoes?devolucoes=1'), {
-              headers: { Authorization: `Bearer ${token}` },
-              cache: 'no-store',
-            }),
-          ]);
-          if (reqRes.ok || reqDevRes.ok) {
-            const reqRows = reqRes.ok ? await reqRes.json().catch(() => []) : [];
-            const reqDevRows = reqDevRes.ok ? await reqDevRes.json().catch(() => []) : [];
-            const reqMapById = new Map();
-            [...(Array.isArray(reqRows) ? reqRows : []), ...(Array.isArray(reqDevRows) ? reqDevRows : [])].forEach(
-              (r) => {
-                const id = Number(r?.id);
-                if (Number.isFinite(id) && id > 0) reqMapById.set(id, r);
-              }
-            );
-            const reqs = [...reqMapById.values()];
-            reqs
-              .filter((r) => {
-                const obs = String(r?.observacoes || '');
-                if (!obs.toUpperCase().startsWith(RECEBIMENTO_TRANSFERENCIA_MARKER)) return false;
-                if (!markerFlagAtivo(obs, 'TRA_CONFIRMED')) return false;
-                return Number(r?.armazem_origem_id) === Number(resolved.armazemId);
-              })
-              .forEach((r) => {
-                const itens = Array.isArray(r?.itens) ? r.itens : [];
-                itens.forEach((it) => {
-                  const codigo = String(it?.item_codigo || '').trim();
-                  if (!codigo) return;
-                  const qtd = Number(it?.quantidade ?? it?.quantidade_confirmada ?? 0) || 0;
-                  if (qtd <= 0) return;
-                  const prev = pendenteByCodigo.get(codigo) || {
-                    codigo,
-                    descricao: String(it?.item_descricao || '').trim(),
-                    qtd: 0,
-                    qtdMovimentos: 0,
-                    armazem: resolveArmazemLabelFromReq(r),
-                    tra: String(r?.tra_numero || 'TRA confirmado').trim(),
-                    data: String(r?.created_at || '').trim(),
-                  };
-                  prev.qtd += qtd;
-                  if (!prev.descricao && it?.item_descricao) prev.descricao = String(it.item_descricao).trim();
-                  if (!prev.armazem) prev.armazem = resolveArmazemLabelFromReq(r);
-                  pendenteByCodigo.set(codigo, prev);
-                });
-              });
-
-            reqs
-              .filter((r) => isDevolucaoDevConfirmadaNoArmazem(r, resolved.armazemId))
-              .forEach((r) => {
-                const itens = Array.isArray(r?.itens) ? r.itens : [];
-                itens.forEach((it) => {
-                  const codigo = String(it?.item_codigo || '').trim();
-                  if (!codigo) return;
-                  const qtd = getQtdPendenteRececaoDevolucao(r, it);
-                  if (qtd <= 0) return;
-                  const prev = pendenteByCodigo.get(codigo) || {
-                    codigo,
-                    descricao: String(it?.item_descricao || '').trim(),
-                    qtd: 0,
-                    qtdMovimentos: 0,
-                    armazem: resolveArmazemLabelFromReq(r),
-                    tra: String(r?.tra_numero || 'DEV devolução').trim(),
-                    data: String(r?.devolucao_tra_gerada_em || r?.created_at || '').trim(),
-                  };
-                  prev.qtd += qtd;
-                  if (!prev.descricao && it?.item_descricao) prev.descricao = String(it.item_descricao).trim();
-                  if (!prev.armazem) prev.armazem = resolveArmazemLabelFromReq(r);
-                  if (!prev.tra) prev.tra = 'DEV devolução';
-                  pendenteByCodigo.set(codigo, prev);
-                });
-              });
-          }
-        } catch (_) {
-          // Se não conseguir carregar requisições, mantém apenas movimentos/tickets.
-        }
-      }
-
-      const merged = [...pendenteByCodigo.values()]
-        .map((row) => {
-          const deltaTicket = Number(deltaTicketsPorCodigo.get(row.codigo) || 0);
-          const qtdMovimentos = Math.max(0, Number(row.qtdMovimentos || 0));
-          // Não deixar tickets antigos “apagar” quantidades oriundas de DEV/TRA atuais.
-          const deltaAplicado = deltaTicket < 0 ? Math.max(deltaTicket, -qtdMovimentos) : deltaTicket;
-          return { ...row, qtd: Number(row.qtd || 0) + deltaAplicado };
-        })
-        .filter((row) => row.qtd > 0);
-
-      setTotalArtigosRececao(merged.length);
-
-      const topRows = merged
-        .sort((a, b) => Number(b.qtd || 0) - Number(a.qtd || 0))
-        .slice(0, MAX_ITEMS);
-
-      setRows(topRows);
+      const apiPrefillItems = Array.isArray(data?.prefill_items) ? data.prefill_items : [];
+      setTotaisPorCategoria(data?.totais_por_categoria && typeof data.totais_por_categoria === 'object' ? data.totais_por_categoria : {});
+      setTotalArtigosRececao(Number(data?.total ?? apiRows.length) || 0);
+      setRows(
+        apiRows
+          .map((r) => ({
+            item_id: Number(r?.item_id || 0) || null,
+            codigo: String(r?.codigo || '').trim(),
+            descricao: String(r?.descricao || '').trim(),
+            tipocontrolo: String(r?.tipocontrolo || '').trim(),
+            seriais: Array.isArray(r?.seriais)
+              ? r.seriais.map((s) => String(s || '').trim()).filter(Boolean)
+              : [],
+            qtd: Number(r?.qtd || 0) || 0,
+            armazem: String(r?.armazem || '').trim(),
+            tra: String(r?.referencia || r?.tra || '').trim(),
+            data: String(r?.data || '').trim(),
+            categoria: String(r?.categoria || 'devolucao').trim().toLowerCase() || 'devolucao',
+          }))
+          .filter((r) => r.codigo && r.qtd > 0)
+          .slice(0, MAX_ITEMS)
+      );
+      setPrefillItems(
+        apiPrefillItems
+          .map((r) => ({
+            item_id: Number(r?.item_id || 0) || null,
+            codigo: String(r?.codigo || '').trim(),
+            descricao: String(r?.descricao || '').trim(),
+            tipocontrolo: String(r?.tipocontrolo || '').trim(),
+            particao: String(r?.particao || 'normal').trim().toLowerCase() === 'apeado' ? 'apeado' : 'normal',
+            quantidade: Number(r?.quantidade || 0) || 0,
+            seriais: Array.isArray(r?.seriais)
+              ? r.seriais.map((s) => String(s || '').trim()).filter(Boolean)
+              : [],
+            referencias: Array.isArray(r?.referencias)
+              ? r.referencias.map((s) => String(s || '').trim()).filter(Boolean)
+              : [],
+          }))
+          .filter((r) => r.codigo && r.quantidade > 0)
+      );
       setError('');
       setShowAtualizado(true);
       if (hideAtualizadoTimerRef.current) window.clearTimeout(hideAtualizadoTimerRef.current);
       hideAtualizadoTimerRef.current = window.setTimeout(() => setShowAtualizado(false), 1800);
     } catch (e) {
+      if (e?.name === 'AbortError') return;
+      if (requestSeq !== requestSeqRef.current) return;
       setError(e.message || 'Erro ao carregar monitor de recebimento.');
       setShowAtualizado(false);
     } finally {
+      if (requestSeq !== requestSeqRef.current) return;
+      if (activeAbortRef.current === ac) activeAbortRef.current = null;
       setLoadingRows(false);
     }
   }, [canView, resolveTargetLocation]);
 
   useEffect(() => () => {
     if (hideAtualizadoTimerRef.current) window.clearTimeout(hideAtualizadoTimerRef.current);
+    if (activeAbortRef.current) activeAbortRef.current.abort();
   }, []);
 
   useEffect(() => {
@@ -378,6 +250,65 @@ function ReceptionMonitorCard() {
     window.addEventListener(RECEBIMENTO_REFRESH_EVENT, onRefresh);
     return () => window.removeEventListener(RECEBIMENTO_REFRESH_EVENT, onRefresh);
   }, [canView, fetchRows]);
+
+  const rowsApeados = useMemo(() => rows.filter((r) => r.categoria === 'apeados'), [rows]);
+  const rowsOutros = useMemo(() => rows.filter((r) => r.categoria !== 'apeados'), [rows]);
+  const prefillByItemPart = useMemo(() => {
+    const map = new Map();
+    for (const it of prefillItems) {
+      const part = String(it?.particao || 'normal').toLowerCase() === 'apeado' ? 'apeado' : 'normal';
+      const key = `${Number(it?.item_id || 0) || 0}::${String(it?.codigo || '').trim().toUpperCase()}::${part}`;
+      if (!it?.codigo || Number(it?.quantidade || 0) <= 0) continue;
+      map.set(key, it);
+    }
+    return map;
+  }, [prefillItems]);
+
+  const buildPrefillPayload = useCallback((targetParticao) => {
+    const part = targetParticao === 'apeado' ? 'apeado' : 'normal';
+    const sourceRows = part === 'apeado' ? rowsApeados : rowsOutros;
+    const legacyItems = sourceRows.map((r) => ({
+      item_id: Number(r?.item_id || 0) || null,
+      codigo: String(r?.codigo || '').trim(),
+      descricao: String(r?.descricao || '').trim(),
+      tipocontrolo: String(r?.tipocontrolo || '').trim(),
+      seriais: Array.isArray(r?.seriais) ? r.seriais.map((s) => String(s || '').trim()).filter(Boolean) : [],
+      quantidade: Number(r?.qtd || 0) || 0,
+    }));
+    const itemsV2 = legacyItems.map((r) => {
+      const key = `${Number(r?.item_id || 0) || 0}::${String(r?.codigo || '').trim().toUpperCase()}::${part}`;
+      const det = prefillByItemPart.get(key);
+      const quantidade = Number(det?.quantidade || r?.quantidade || 0) || 0;
+      const seriais = Array.isArray(det?.seriais) ? det.seriais : r.seriais;
+      return {
+        item_id: r.item_id,
+        codigo: r.codigo,
+        descricao: r.descricao,
+        tipocontrolo: r.tipocontrolo,
+        quantidade_total: quantidade,
+        allocations: [
+          {
+            id: `auto-${Date.now()}-${r.codigo || 'item'}`,
+            particao: part,
+            quantidade,
+            destinoId: '',
+            seriais,
+            lotes: [],
+          },
+        ],
+      };
+    }).filter((x) => Number(x?.quantidade_total || 0) > 0 && x?.codigo);
+    return {
+      armazemId: targetArmazemId,
+      origemLocalizacao: targetLocation,
+      modo: part === 'apeado' ? 'apeado' : undefined,
+      prefill_version: 2,
+      items: legacyItems,
+      items_v2: itemsV2,
+    };
+  }, [rowsApeados, rowsOutros, prefillByItemPart, targetArmazemId, targetLocation]);
+  const totalApeados = Number(totaisPorCategoria?.apeados || rowsApeados.length) || 0;
+  const totalOutros = Number((totaisPorCategoria?.devolucao || 0) + (totaisPorCategoria?.recebimento || 0) || rowsOutros.length) || 0;
 
   if (!canView) return null;
 
@@ -435,28 +366,70 @@ function ReceptionMonitorCard() {
             </button>
           </div>
         </div>
-        {!collapsed && canArmazenar && rows.length > 0 && targetArmazemId ? (
-          <button
-            type="button"
-            className="mt-2 w-full rounded-md border border-[#0915FF] bg-white px-2 py-1.5 text-xs font-semibold text-[#0915FF] hover:bg-[#0915FF]/5"
-            onClick={() =>
-              navigate('/transferencias/localizacao', {
-                state: {
-                  recebimentoPrefill: {
-                    armazemId: targetArmazemId,
-                    origemLocalizacao: targetLocation,
-                    items: rows.map((r) => ({
-                      codigo: String(r?.codigo || '').trim(),
-                      descricao: String(r?.descricao || '').trim(),
-                      quantidade: Number(r?.qtd || 0) || 0,
-                    })),
-                  },
-                },
-              })
-            }
-          >
-            Armazenar
-          </button>
+        {!collapsed && canArmazenar && targetArmazemId ? (
+          <div className="mt-2 space-y-1.5">
+            {isAdminUser && (
+              <button
+                type="button"
+                className="w-full rounded-md border border-amber-300 bg-amber-50 px-2 py-1.5 text-xs font-semibold text-amber-800 hover:bg-amber-100 disabled:opacity-60"
+                disabled={clearingTest}
+                onClick={async () => {
+                  if (!window.confirm('Limpar artigos da Zona de receção para testes? (somente ocultação no monitor)')) return;
+                  try {
+                    setClearingTest(true);
+                    const token = localStorage.getItem('token');
+                    const response = await fetch(apiUrl('/api/requisicoes/transferencias/recebimento/monitor/limpar-teste'), {
+                      method: 'POST',
+                      headers: {
+                        Authorization: `Bearer ${token}`,
+                        'Content-Type': 'application/json',
+                      },
+                      body: JSON.stringify({ armazem_id: targetArmazemId }),
+                    });
+                    const data = await response.json().catch(() => ({}));
+                    if (!response.ok) throw new Error(data?.error || 'Erro ao limpar zona de receção para teste.');
+                    await fetchRows();
+                  } catch (e) {
+                    setError(e?.message || 'Erro ao limpar zona de receção para teste.');
+                  } finally {
+                    setClearingTest(false);
+                  }
+                }}
+              >
+                {clearingTest ? 'A limpar zona (teste)…' : 'Limpar zona de receção (teste, admin)'}
+              </button>
+            )}
+            {rowsOutros.length > 0 && (
+              <button
+                type="button"
+                className="w-full rounded-md border border-[#0915FF] bg-white px-2 py-1.5 text-xs font-semibold text-[#0915FF] hover:bg-[#0915FF]/5"
+                onClick={() =>
+                  navigate('/transferencias/localizacao', {
+                    state: {
+                      recebimentoPrefill: buildPrefillPayload('normal'),
+                    },
+                  })
+                }
+              >
+                Armazenar recebimento/devolução
+              </button>
+            )}
+            {rowsApeados.length > 0 && (
+              <button
+                type="button"
+                className="w-full rounded-md border border-purple-300 bg-purple-50 px-2 py-1.5 text-xs font-semibold text-purple-800 hover:bg-purple-100"
+                onClick={() =>
+                  navigate('/transferencias/localizacao', {
+                    state: {
+                      recebimentoPrefill: buildPrefillPayload('apeado'),
+                    },
+                  })
+                }
+              >
+                Armazenar APEADOS
+              </button>
+            )}
+          </div>
         ) : null}
       </div>
 
@@ -477,9 +450,38 @@ function ReceptionMonitorCard() {
           </div>
         )}
 
+        {!!rowsOutros.length && (
+          <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-gray-600">
+            Recebimento/Devolução ({totalOutros})
+          </div>
+        )}
         <div className="space-y-2">
-          {rows.map((row, idx) => (
+          {rowsOutros.map((row, idx) => (
             <div key={`${row.codigo || 'mov'}-${idx}`} className="rounded-lg border border-gray-200 bg-gray-50 px-2.5 py-2">
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="truncate text-xs font-semibold text-gray-900">{String(row.codigo || '-')}</div>
+                  <div className="line-clamp-2 text-[11px] text-gray-600">{String(row.descricao || '-')}</div>
+                </div>
+                <span className="shrink-0 rounded bg-white px-2 py-0.5 text-xs font-semibold text-gray-800">
+                  {formatQtyDecimal(row.qtd)}
+                </span>
+              </div>
+              <div className="mt-1.5 flex items-center justify-between gap-2 text-[11px] text-gray-500">
+                <span className="truncate">{String(row.tra || '-')}</span>
+                <span className="shrink-0">{formatDate(row.data)}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+        {!!rowsApeados.length && (
+          <div className="mt-3 mb-2 text-[11px] font-semibold uppercase tracking-wide text-purple-700">
+            APEADOS ({totalApeados})
+          </div>
+        )}
+        <div className="space-y-2">
+          {rowsApeados.map((row, idx) => (
+            <div key={`ape-${row.codigo || 'mov'}-${idx}`} className="rounded-lg border border-purple-200 bg-purple-50 px-2.5 py-2">
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
                   <div className="truncate text-xs font-semibold text-gray-900">{String(row.codigo || '-')}</div>

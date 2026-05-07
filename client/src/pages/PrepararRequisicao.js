@@ -45,6 +45,13 @@ const SN_INLINE_PREVIEW = 5;
 const RECEBIMENTO_TRANSFERENCIA_MARKER = 'RECEBIMENTO_TRANSFERENCIA_V1';
 const RECEBIMENTO_REFRESH_EVENT = 'recebimento-card-refresh';
 
+const isTipoControloSerial = (tipoControlo) => {
+  const raw = String(tipoControlo || '').trim().toUpperCase();
+  if (!raw) return false;
+  const norm = raw.replace(/\s+/g, '');
+  return norm === 'S/N' || norm === 'SN' || norm === 'SERIAL';
+};
+
 /** Preferir `seriais` da API; senão partir `serialnumber` (legado). */
 function seriaisListFromItem(item) {
   if (Array.isArray(item?.seriais) && item.seriais.length > 0) {
@@ -91,7 +98,7 @@ const formatMetrosSemZeros = (value) => {
 function resizeBobinasArray(prevBobinas, n) {
   const prev = Array.isArray(prevBobinas) ? [...prevBobinas] : [];
   const capped = Math.max(0, Math.min(MAX_BOBINAS_LOTE, Math.floor(Number(n)) || 0));
-  const empty = () => ({ lote: '', serialnumber: '', metros: '' });
+  const empty = () => ({ lote: '', serialnumber: '', metros: '', apeado: false });
   if (capped === 0) return [];
   if (prev.length === capped) return prev;
   if (prev.length > capped) return prev.slice(0, capped);
@@ -236,6 +243,7 @@ const PrepararRequisicao = () => {
             lote: '',
             serialnumber: sn,
             metros: '',
+            apeado: false,
             _ordemColeta: bumpColetaOrdem(),
           });
           seen.add(key);
@@ -592,14 +600,29 @@ const PrepararRequisicao = () => {
         );
     const tipoControlo = (item.tipocontrolo || '').toUpperCase();
     const isLote = tipoControlo === 'LOTE';
-    const isSerial = tipoControlo === 'S/N';
+    const isSerial = isTipoControloSerial(tipoControlo);
+    const serialsApeadosSet = new Set(
+      (item?.serials_apeados || []).map((s) => String(s || '').trim().toUpperCase()).filter(Boolean)
+    );
     const serialsExistentes = seriaisListFromItem(item);
     const nBobinas = Math.max(0, Math.min(MAX_BOBINAS_LOTE, Math.floor(Number(qtdPreparada)) || 0));
     const bobinasInicial = (isLote || isSerial)
       ? resizeBobinasArray(
         (item.bobinas || []).length > 0
           ? item.bobinas
-          : (isSerial ? serialsExistentes.map((s) => ({ lote: '', serialnumber: s, metros: '' })) : []),
+          : (
+            isSerial
+              ? serialsExistentes.map((s) => {
+                const sn = String(s || '').trim();
+                return {
+                  lote: '',
+                  serialnumber: sn,
+                  metros: '',
+                  apeado: serialsApeadosSet.has(sn.toUpperCase()),
+                };
+              })
+              : []
+          ),
         nBobinas
       )
       : (item.bobinas || []);
@@ -611,6 +634,9 @@ const PrepararRequisicao = () => {
     prevSnPreenchidosRef.current = isSerial
       ? bobinasComOrdem.filter((b) => String(b?.serialnumber || '').trim()).length
       : 0;
+    const qtdApeadosInicial = (isLote || isSerial)
+      ? (bobinasComOrdem || []).filter((bb) => Boolean(bb?.apeado)).length
+      : (Number(item?.quantidade_apeados) || 0);
     setFormItem({
       quantidade_preparada: qtdPreparada,
       localizacao_origem: isOrigemCustom ? '_custom_' : locOrigem,
@@ -619,7 +645,7 @@ const PrepararRequisicao = () => {
       localizacao_destino_custom: '',
       lote: item.lote || '',
       serialnumber: item.serialnumber || '',
-      quantidade_apeados: 0,
+      quantidade_apeados: Math.max(0, Math.floor(qtdApeadosInicial || 0)),
       bobinas: bobinasComOrdem
     });
   };
@@ -1027,9 +1053,12 @@ const PrepararRequisicao = () => {
     setFormItem((prev) => {
       const next = { ...prev, quantidade_preparada: val };
       const tipoControlo = (itemPreparando?.tipocontrolo || '').toUpperCase();
-      if (tipoControlo === 'LOTE' || tipoControlo === 'S/N') {
+      if (tipoControlo === 'LOTE' || isTipoControloSerial(tipoControlo)) {
         const n = Math.max(0, Math.min(MAX_BOBINAS_LOTE, Math.floor(Number(val)) || 0));
         next.bobinas = resizeBobinasArray(prev.bobinas, n);
+        if (tipoControlo === 'LOTE') {
+          next.quantidade_apeados = (next.bobinas || []).filter((b) => Boolean(b?.apeado)).length;
+        }
       }
       // Se a checkbox de APEADO estiver ativa, mantemos quantidade_apeados dentro do total.
       const totalQty = Math.floor(Number(next.quantidade_preparada) || 0);
@@ -1199,7 +1228,8 @@ const PrepararRequisicao = () => {
         bobinasValidas.push({
           lote,
           serialnumber: (b.serialnumber || '').trim() || null,
-          metros
+          metros,
+          apeado: Boolean(b?.apeado),
         });
       }
       const lotesNorm = bobinasValidas.map((b) => String(b.lote || '').trim().toUpperCase());
@@ -1213,7 +1243,7 @@ const PrepararRequisicao = () => {
         return;
       }
       bobinasPayload = bobinasValidas;
-    } else if (tipoControlo === 'S/N') {
+    } else if (isTipoControloSerial(tipoControlo)) {
       if (!Array.isArray(formItem.bobinas) || formItem.bobinas.length === 0) {
         setToast({ type: 'error', message: 'Adicione pelo menos um serial number.' });
         return;
@@ -1250,15 +1280,31 @@ const PrepararRequisicao = () => {
         {
           requisicao_item_id: itemPreparando.id,
           quantidade_preparada:
-            (tipoControlo === 'LOTE' || tipoControlo === 'S/N') && bobinasPayload
-              ? bobinasPayload.length
-              : qtdPreparadaParaPayload,
-          quantidade_apeados: Math.max(0, Math.floor(Number(formItem.quantidade_apeados) || 0)),
+            tipoControlo === 'LOTE'
+              ? (Array.isArray(bobinasPayload)
+                  ? bobinasPayload.reduce((sum, b) => sum + (Number(b?.metros) || 0), 0)
+                  : qtdPreparadaParaPayload)
+              : (isTipoControloSerial(tipoControlo) && Array.isArray(bobinasPayload)
+                  ? bobinasPayload.length
+                  : qtdPreparadaParaPayload),
+          quantidade_apeados:
+            tipoControlo === 'LOTE'
+              ? (Array.isArray(bobinasPayload) ? bobinasPayload.filter((b) => Boolean(b?.apeado)).length : 0)
+              : (isTipoControloSerial(tipoControlo)
+                  ? (formItem.bobinas || []).filter(
+                    (b) => Boolean(b?.apeado) && String(b?.serialnumber || '').trim()
+                  ).length
+                  : Math.max(0, Math.floor(Number(formItem.quantidade_apeados) || 0))),
           localizacao_origem: isFluxoRecebimentoMercadoria ? null : locOrigem,
           lote: formItem.lote || null,
           serialnumber: formItem.serialnumber || null,
           bobinas: tipoControlo === 'LOTE' ? bobinasPayload : undefined,
-          serials: tipoControlo === 'S/N' ? bobinasPayload.map((b) => b.serialnumber) : undefined
+          serials: isTipoControloSerial(tipoControlo) ? bobinasPayload.map((b) => b.serialnumber) : undefined,
+          serials_apeados: isTipoControloSerial(tipoControlo)
+            ? (formItem.bobinas || [])
+                .filter((b) => Boolean(b?.apeado) && String(b?.serialnumber || '').trim())
+                .map((b) => String(b.serialnumber).trim())
+            : undefined
           // localizacao_destino = EXPEDICAO é definida automaticamente no servidor
         },
         {
@@ -1338,18 +1384,19 @@ const PrepararRequisicao = () => {
 
         const bobinas = existentesPreenchidos
           .slice(0, nAlvo)
-          .map((b) => ({ ...b, lote: '', metros: '' }));
+          .map((b) => ({ ...b, lote: '', metros: '', apeado: Boolean(b?.apeado) }));
         for (const sn of novos) {
           if (bobinas.length >= nAlvo) break;
           bobinas.push({
             lote: '',
             serialnumber: sn,
             metros: '',
+            apeado: false,
             _ordemColeta: bumpColetaOrdem(),
           });
         }
         while (bobinas.length < nAlvo) {
-          bobinas.push({ lote: '', serialnumber: '', metros: '' });
+          bobinas.push({ lote: '', serialnumber: '', metros: '', apeado: false });
         }
         for (let i = 0; i < bobinas.length; i++) {
           const snRow = String(bobinas[i]?.serialnumber || '').trim();
@@ -1429,7 +1476,7 @@ const PrepararRequisicao = () => {
   }, [seriaisSnOrdenadosLista, snPaginaEfetiva]);
 
   useEffect(() => {
-    if ((itemPreparando?.tipocontrolo || '').toUpperCase() !== 'S/N') return;
+    if (!isTipoControloSerial((itemPreparando?.tipocontrolo || '').toUpperCase())) return;
     const n = (formItem.bobinas || []).filter((b) => String(b?.serialnumber || '').trim()).length;
     if (n > prevSnPreenchidosRef.current) {
       const tp = Math.max(1, Math.ceil(n / SN_LISTA_PAGE_SIZE));
@@ -1965,7 +2012,7 @@ const PrepararRequisicao = () => {
                             )}
                           </div>
                           {(String(item.tipocontrolo || '').toUpperCase() === 'LOTE' ||
-                            String(item.tipocontrolo || '').toUpperCase() === 'S/N' ||
+                            isTipoControloSerial(String(item.tipocontrolo || '').toUpperCase()) ||
                             String(item.lote || '').trim() ||
                             String(item.serialnumber || '').trim()) && (
                             <div className="mt-2 text-xs text-gray-700 flex flex-wrap gap-2">
@@ -2210,16 +2257,34 @@ const PrepararRequisicao = () => {
                                       step="1"
                                       max={Math.floor(Number(formItem.quantidade_preparada) || 0)}
                                       value={formItem.quantidade_apeados}
+                                      disabled={
+                                        (item.tipocontrolo || '').toUpperCase() === 'LOTE'
+                                        || isTipoControloSerial(item.tipocontrolo)
+                                      }
                                       onChange={(e) => {
+                                        if (
+                                          (item.tipocontrolo || '').toUpperCase() === 'LOTE'
+                                          || isTipoControloSerial(item.tipocontrolo)
+                                        ) return;
                                         const totalQty = Math.floor(Number(formItem.quantidade_preparada) || 0);
                                         const nextVal = Math.floor(Number(e.target.value) || 0);
                                         if (totalQty < 1) return;
                                         const clamped = Math.max(1, Math.min(nextVal, totalQty));
                                         setFormItem((prev) => ({ ...prev, quantidade_apeados: clamped }));
                                       }}
-                                      className="w-full sm:w-32 px-3 py-2 border border-violet-200 rounded-lg bg-white text-sm"
+                                      className="w-full sm:w-32 px-3 py-2 border border-violet-200 rounded-lg bg-white text-sm disabled:bg-violet-100 disabled:text-violet-800"
                                       required
                                     />
+                                    {(item.tipocontrolo || '').toUpperCase() === 'LOTE' && (
+                                      <p className="mt-1 text-[11px] text-violet-800">
+                                        Em LOTE, a quantidade APEADOS é definida pelas bobinas marcadas.
+                                      </p>
+                                    )}
+                                    {isTipoControloSerial(item.tipocontrolo) && (
+                                      <p className="mt-1 text-[11px] text-violet-800">
+                                        Em S/N, a quantidade APEADOS e definida pelos seriais marcados.
+                                      </p>
+                                    )}
                                   </div>
                                 )}
                               </div>
@@ -2361,6 +2426,26 @@ const PrepararRequisicao = () => {
                                   />
                                 </div>
                                 <div className="flex items-center gap-2">
+                                  <label className="inline-flex items-center gap-1 text-xs text-violet-800 mr-1">
+                                    <input
+                                      type="checkbox"
+                                      checked={Boolean(b?.apeado)}
+                                      onChange={(e) => {
+                                        const checked = Boolean(e.target.checked);
+                                        setFormItem((prev) => {
+                                          const bobinas = (prev.bobinas || []).map((bb, i) =>
+                                            i === idxBob ? { ...bb, apeado: checked } : bb
+                                          );
+                                          return {
+                                            ...prev,
+                                            bobinas,
+                                            quantidade_apeados: bobinas.filter((x) => Boolean(x?.apeado)).length,
+                                          };
+                                        });
+                                      }}
+                                    />
+                                    <span>APEADO</span>
+                                  </label>
                                   <button
                                     type="button"
                                     onClick={() =>
@@ -2369,7 +2454,8 @@ const PrepararRequisicao = () => {
                                         return {
                                           ...prev,
                                           bobinas,
-                                          quantidade_preparada: String(bobinas.length)
+                                          quantidade_preparada: String(bobinas.length),
+                                          quantidade_apeados: bobinas.filter((x) => Boolean(x?.apeado)).length,
                                         };
                                       })
                                     }
@@ -2383,7 +2469,7 @@ const PrepararRequisicao = () => {
                           </div>
                         </section>
                       )}
-                      {(item.tipocontrolo || '').toUpperCase() === 'S/N' && (
+                      {isTipoControloSerial((item.tipocontrolo || '').toUpperCase()) && (
                         <section className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm space-y-3">
                           <div
                             className="sticky top-0 z-30 -mx-4 px-4 py-2 -mt-1 mb-2 space-y-2 bg-white/95 backdrop-blur-md border-b border-gray-100 shadow-[0_6px_16px_-8px_rgba(0,0,0,0.12)]"
@@ -2579,6 +2665,26 @@ const PrepararRequisicao = () => {
                                     </div>
                                   </div>
                                   <div className="flex items-center gap-2">
+                                    <label className="inline-flex items-center gap-1 text-xs text-violet-800 mr-1">
+                                      <input
+                                        type="checkbox"
+                                        checked={Boolean(b?.apeado)}
+                                        onChange={(e) => {
+                                          const checked = Boolean(e.target.checked);
+                                          setFormItem((prev) => {
+                                            const bobinas = (prev.bobinas || []).map((bb, i) =>
+                                              i === idxBob ? { ...bb, apeado: checked } : bb
+                                            );
+                                            return {
+                                              ...prev,
+                                              bobinas,
+                                              quantidade_apeados: bobinas.filter((x) => Boolean(x?.apeado)).length,
+                                            };
+                                          });
+                                        }}
+                                      />
+                                      <span>APEADO</span>
+                                    </label>
                                     <button
                                       type="button"
                                       onClick={() =>
@@ -2587,9 +2693,14 @@ const PrepararRequisicao = () => {
                                             ...prev,
                                             bobinas: (prev.bobinas || []).map((bb, i) =>
                                               i === idxBob
-                                                ? { ...bb, serialnumber: '', _ordemColeta: undefined }
+                                                ? { ...bb, serialnumber: '', apeado: false, _ordemColeta: undefined }
                                                 : bb
                                             ),
+                                            quantidade_apeados: (prev.bobinas || []).map((bb, i) =>
+                                              i === idxBob
+                                                ? { ...bb, serialnumber: '', apeado: false, _ordemColeta: undefined }
+                                                : bb
+                                            ).filter((x) => Boolean(x?.apeado) && String(x?.serialnumber || '').trim()).length,
                                           };
                                         })
                                       }
@@ -2655,6 +2766,26 @@ const PrepararRequisicao = () => {
                                       </div>
                                     </div>
                                     <div className="flex items-center gap-2">
+                                      <label className="inline-flex items-center gap-1 text-xs text-violet-800 mr-1">
+                                        <input
+                                          type="checkbox"
+                                          checked={Boolean(b?.apeado)}
+                                          onChange={(e) => {
+                                            const checked = Boolean(e.target.checked);
+                                            setFormItem((prev) => {
+                                              const bobinas = (prev.bobinas || []).map((bb, i) =>
+                                                i === idxBob ? { ...bb, apeado: checked } : bb
+                                              );
+                                              return {
+                                                ...prev,
+                                                bobinas,
+                                                quantidade_apeados: bobinas.filter((x) => Boolean(x?.apeado)).length,
+                                              };
+                                            });
+                                          }}
+                                        />
+                                        <span>APEADO</span>
+                                      </label>
                                       <button
                                         type="button"
                                         onClick={() =>
@@ -2663,9 +2794,14 @@ const PrepararRequisicao = () => {
                                               ...prev,
                                               bobinas: (prev.bobinas || []).map((bb, i) =>
                                                 i === idxBob
-                                                  ? { ...bb, serialnumber: '', _ordemColeta: undefined }
+                                                  ? { ...bb, serialnumber: '', apeado: false, _ordemColeta: undefined }
                                                   : bb
                                               ),
+                                              quantidade_apeados: (prev.bobinas || []).map((bb, i) =>
+                                                i === idxBob
+                                                  ? { ...bb, serialnumber: '', apeado: false, _ordemColeta: undefined }
+                                                  : bb
+                                              ).filter((x) => Boolean(x?.apeado) && String(x?.serialnumber || '').trim()).length,
                                             };
                                           })
                                         }

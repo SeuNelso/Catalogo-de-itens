@@ -54,7 +54,7 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
   const isModoTransferencias = modo === 'transferencias';
   const rotaBase = isModoTransferencias ? '/transferencias' : '/requisicoes';
   const flowParam = String(new URLSearchParams(location.search || '').get('fluxo') || '').toLowerCase();
-  const hasFluxoTransferSelecionado = ['centrais', 'apeados', 'recebimento'].includes(flowParam);
+  const hasFluxoTransferSelecionado = ['centrais', 'recebimento'].includes(flowParam);
   const createTransferLink = hasFluxoTransferSelecionado
     ? `/transferencias/criar?transferencias=1&fluxo=${flowParam}`
     : '/transferencias/criar?transferencias=1';
@@ -119,7 +119,7 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
     const params = new URLSearchParams(location.search || '');
     const statusParam = params.get('status') || '';
     const fluxoTransferenciaParam = String(params.get('fluxo') || '').toLowerCase();
-    const fluxoValido = ['centrais', 'apeados', 'recebimento'].includes(fluxoTransferenciaParam);
+    const fluxoValido = ['centrais', 'recebimento'].includes(fluxoTransferenciaParam);
     const temFiltroNaUrl = Boolean(statusParam);
 
     setFiltros(prev => {
@@ -1000,6 +1000,7 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
         throw new Error(data.error || 'Erro ao finalizar recebimento');
       }
       await fetchRequisicoes();
+      window.dispatchEvent(new CustomEvent(RECEBIMENTO_REFRESH_EVENT));
       setToast({ type: 'success', message: 'Recebimento finalizado.' });
     } catch (error) {
       setToast({ type: 'error', message: error.message || 'Erro ao finalizar recebimento' });
@@ -1769,8 +1770,8 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
 
   const canEditRequisicao = (reqObj) => {
     if (!podeCriarOuImportarRequisicao) return false;
-    if (String(reqObj?.status || '') !== 'pendente') return false;
-    if (isFluxoRecebimentoMercadoria(reqObj)) return false;
+    if (user?.role !== 'admin' && String(reqObj?.status || '') !== 'pendente') return false;
+    if (user?.role !== 'admin' && isFluxoRecebimentoMercadoria(reqObj)) return false;
     if (user?.role === 'backoffice_operations' && !isRequisicaoDoUtilizadorAtual(reqObj, user)) return false;
     return true;
   };
@@ -2087,18 +2088,6 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
                 </button>
                 <button
                   type="button"
-                  onClick={() => navigate('/transferencias?fluxo=apeados')}
-                  className={`w-full text-left rounded-lg border px-4 py-3 transition-colors ${
-                    flowParam === 'apeados'
-                      ? 'border-[#0915FF] bg-blue-50'
-                      : 'border-gray-300 bg-white hover:border-[#0915FF] hover:bg-blue-50/40'
-                  }`}
-                >
-                  <div className="text-sm font-semibold text-gray-900">Transferências para APEADOS</div>
-                  <div className="mt-0.5 text-xs text-gray-600">{'Fluxo Central <-> APEADO'}</div>
-                </button>
-                <button
-                  type="button"
                   onClick={() => navigate('/transferencias?fluxo=recebimento')}
                   className={`w-full text-left rounded-lg border px-4 py-3 transition-colors ${
                     flowParam === 'recebimento'
@@ -2178,7 +2167,7 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
               type="button"
               onClick={() => {
                 const flowParam = String(new URLSearchParams(location.search || '').get('fluxo') || '').toLowerCase();
-                if (isModoTransferencias && ['centrais', 'apeados', 'recebimento'].includes(flowParam)) {
+                if (isModoTransferencias && ['centrais', 'recebimento'].includes(flowParam)) {
                   navigate(`${rotaBase}?fluxo=${flowParam}`);
                 } else {
                   navigate(rotaBase);
@@ -2244,7 +2233,7 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
                 type="button"
                 onClick={() => {
                   const flowParam = String(new URLSearchParams(location.search || '').get('fluxo') || '').toLowerCase();
-                  if (isModoTransferencias && ['centrais', 'apeados', 'recebimento'].includes(flowParam)) {
+                  if (isModoTransferencias && ['centrais', 'recebimento'].includes(flowParam)) {
                     navigate(`${rotaBase}?fluxo=${flowParam}`);
                   } else {
                     navigate(rotaBase);

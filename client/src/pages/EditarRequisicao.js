@@ -46,6 +46,8 @@ const EditarRequisicao = () => {
   const navigate = useNavigate();
   const { user } = useAuth();
   const canEdit = user && ['admin', 'backoffice_operations', 'backoffice_armazem', 'supervisor_armazem'].includes(user.role);
+  const adminEditCabecalhoOnly = user?.role === 'admin' && !requisicaoPermiteEdicaoFormulario(formData.status);
+  const canEditItens = requisicaoPermiteEdicaoFormulario(formData.status);
 
   const armazensListaOrigem = useMemo(() => {
     const origem = filtrarArmazensOrigemRequisicao(armazens || []);
@@ -140,7 +142,7 @@ const EditarRequisicao = () => {
 
       if (response.data) {
         const req = response.data;
-        if (!requisicaoPermiteEdicaoFormulario(req.status)) {
+        if (!requisicaoPermiteEdicaoFormulario(req.status) && user?.role !== 'admin') {
           setToast({
             type: 'error',
             message:
@@ -238,7 +240,7 @@ const EditarRequisicao = () => {
       return;
     }
 
-    if (itensRequisicao.length === 0) {
+    if (canEditItens && itensRequisicao.length === 0) {
       setToast({ type: 'error', message: 'A requisição deve ter pelo menos um item' });
       return;
     }
@@ -250,13 +252,15 @@ const EditarRequisicao = () => {
       const payload = {
         armazem_origem_id: formData.armazem_origem_id ? parseInt(formData.armazem_origem_id) : null,
         armazem_id: parseInt(formData.armazem_id),
-        itens: itensRequisicao.map(ri => ({
-          item_id: ri.item_id,
-          quantidade: ri.quantidade
-        })),
         status: formData.status,
         observacoes: formData.observacoes || null
       };
+      if (canEditItens) {
+        payload.itens = itensRequisicao.map(ri => ({
+          item_id: ri.item_id,
+          quantidade: ri.quantidade
+        }));
+      }
 
       const response = await axios.put(`/api/requisicoes/${id}`, payload, {
         headers: {
@@ -322,6 +326,12 @@ const EditarRequisicao = () => {
             )}
           </div>
         )}
+        {adminEditCabecalhoOnly && (
+          <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+            Edição administrativa: nesta fase só é permitido alterar origem/destino e observações.
+            Artigos ficam bloqueados após o início da separação.
+          </div>
+        )}
 
         {/* Form */}
         <div className="bg-white rounded-lg shadow-sm p-6">
@@ -368,7 +378,7 @@ const EditarRequisicao = () => {
             </div>
 
             {/* Status (permite cancelar) */}
-            {canEdit && (
+            {canEdit && !adminEditCabecalhoOnly && (
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
                   Status
@@ -388,7 +398,7 @@ const EditarRequisicao = () => {
             )}
 
             {/* Adicionar/Editar Itens */}
-            <div className="border-t border-gray-200 pt-6">
+            <div className={`border-t border-gray-200 pt-6 ${!canEditItens ? 'opacity-60' : ''}`}>
               <h3 className="text-lg font-semibold text-gray-800 mb-4">Itens da Requisição</h3>
               
               {/* Busca e Seleção de Item */}
@@ -434,6 +444,7 @@ const EditarRequisicao = () => {
                           }
                         }}
                         className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0915FF] focus:border-transparent"
+                        disabled={!canEditItens}
                       />
                       {mostrarListaItens && buscaItem.trim() && (
                         <div
@@ -476,12 +487,14 @@ const EditarRequisicao = () => {
                       min="1"
                       placeholder="Qtd"
                       className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0915FF] focus:border-transparent"
+                      disabled={!canEditItens}
                     />
                   </div>
                 </div>
                 <button
                   type="button"
                   onClick={handleAddItem}
+                  disabled={!canEditItens}
                   className="mt-4 w-full md:w-auto px-4 py-2 bg-[#0915FF] text-white rounded-lg hover:bg-[#070FCC] transition-colors flex items-center justify-center gap-2"
                 >
                   <FaPlus /> Adicionar Item
@@ -509,6 +522,7 @@ const EditarRequisicao = () => {
                           <button
                             type="button"
                             onClick={() => handleRemoveItem(ri.item_id)}
+                            disabled={!canEditItens}
                             className="text-red-600 hover:text-red-800 p-2"
                           >
                             <FaTrash />
@@ -547,7 +561,7 @@ const EditarRequisicao = () => {
               </button>
               <button
                 type="submit"
-                disabled={loading || itensRequisicao.length === 0}
+                disabled={loading || (canEditItens && itensRequisicao.length === 0)}
                 className="flex-1 px-6 py-3 bg-[#0915FF] text-white rounded-lg hover:bg-[#070FCC] transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
               >
                 {loading ? (
