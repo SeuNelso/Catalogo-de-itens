@@ -92,6 +92,14 @@ const StockRastreavel = ({ mode = 'all' }) => {
   });
   const [manualAdded, setManualAdded] = useState([]);
   const [deletingKey, setDeletingKey] = useState('');
+  const [consultaEditRow, setConsultaEditRow] = useState(null);
+  const [consultaEditForm, setConsultaEditForm] = useState({
+    status: 'disponivel',
+    requisicao_id: '',
+    requisicao_item_id: '',
+    quantidade: '',
+  });
+  const [savingEditKey, setSavingEditKey] = useState('');
   const isImportMode = mode === 'import';
   const isConsultaMode = mode === 'consulta';
   const isManualMode = mode === 'manual';
@@ -591,6 +599,78 @@ const StockRastreavel = ({ mode = 'all' }) => {
     setSeriaisColFiltros(limpos);
     setSeriaisHeaderEditKey(null);
     await loadSeriaisConsultaArmazem(0, limpos);
+  };
+
+  const consultaRowTipo = (row) =>
+    String(row?.tipo || (row?.serialnumber ? 'serial' : 'lote')).toLowerCase();
+
+  const consultaRowActionKey = (row) => `${consultaRowTipo(row)}-${row.id}`;
+
+  const abrirEdicaoRegistroConsulta = (row) => {
+    if (!isAdminUser || !row) return;
+    const tipo = consultaRowTipo(row);
+    setConsultaEditRow({ ...row, tipo });
+    setConsultaEditForm({
+      status: String(row.status || 'disponivel').trim().toLowerCase(),
+      requisicao_id: row.requisicao_id != null ? String(row.requisicao_id) : '',
+      requisicao_item_id: row.requisicao_item_id != null ? String(row.requisicao_item_id) : '',
+      quantidade: row.quantidade != null ? String(row.quantidade) : '',
+    });
+  };
+
+  const fecharEdicaoRegistroConsulta = () => {
+    if (savingEditKey) return;
+    setConsultaEditRow(null);
+  };
+
+  const salvarEdicaoRegistroConsulta = async () => {
+    if (!isAdminUser || !consultaEditRow) return;
+    const tipo = consultaEditRow.tipo;
+    const body = {
+      tipo,
+      item_id: consultaEditRow.item_id,
+      armazem_id: armazemSelecionadoId || fArmazemId,
+      localizacao: consultaEditRow.localizacao,
+      serialnumber: consultaEditRow.serialnumber || null,
+      lote: consultaEditRow.lote || null,
+    };
+    if (tipo === 'serial') {
+      body.status = String(consultaEditForm.status || '').trim().toLowerCase();
+      body.requisicao_id =
+        String(consultaEditForm.requisicao_id || '').trim() === ''
+          ? null
+          : Number(consultaEditForm.requisicao_id);
+      body.requisicao_item_id =
+        String(consultaEditForm.requisicao_item_id || '').trim() === ''
+          ? null
+          : Number(consultaEditForm.requisicao_item_id);
+    } else {
+      body.status = String(consultaEditForm.status || '').trim().toLowerCase();
+      body.quantidade = Number(consultaEditForm.quantidade);
+    }
+
+    setErro('');
+    const key = consultaRowActionKey(consultaEditRow);
+    setSavingEditKey(key);
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch('/api/requisicoes/stock/seriais-por-armazem', {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || 'Erro ao guardar alterações');
+      setConsultaEditRow(null);
+      await loadSeriaisConsultaArmazem(seriaisPageRef.current, seriaisColFiltrosRef.current);
+    } catch (e) {
+      setErro(e.message || 'Erro ao guardar alterações');
+    } finally {
+      setSavingEditKey('');
+    }
   };
 
   const apagarRegistroConsulta = async (row) => {
@@ -1134,14 +1214,24 @@ const StockRastreavel = ({ mode = 'all' }) => {
                         <td className="px-2 py-1">{r.requisicao_id || '—'}</td>
                         {isAdminUser && (
                           <td className="px-2 py-1">
-                            <button
-                              type="button"
-                              onClick={() => apagarRegistroConsulta(r)}
-                              disabled={deletingKey === `${String(r.tipo || (r.serialnumber ? 'serial' : 'lote')).toLowerCase()}-${r.id}`}
-                              className="px-2 py-1 text-[11px] border border-red-300 text-red-700 rounded hover:bg-red-50 disabled:opacity-50"
-                            >
-                              Apagar
-                            </button>
+                            <div className="flex flex-wrap gap-1">
+                              <button
+                                type="button"
+                                onClick={() => abrirEdicaoRegistroConsulta(r)}
+                                disabled={Boolean(savingEditKey) || deletingKey === consultaRowActionKey(r)}
+                                className="px-2 py-1 text-[11px] border border-indigo-300 text-indigo-700 rounded hover:bg-indigo-50 disabled:opacity-50"
+                              >
+                                Editar
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => apagarRegistroConsulta(r)}
+                                disabled={deletingKey === consultaRowActionKey(r) || savingEditKey === consultaRowActionKey(r)}
+                                className="px-2 py-1 text-[11px] border border-red-300 text-red-700 rounded hover:bg-red-50 disabled:opacity-50"
+                              >
+                                Apagar
+                              </button>
+                            </div>
                           </td>
                         )}
                       </tr>
@@ -1248,6 +1338,125 @@ const StockRastreavel = ({ mode = 'all' }) => {
             </pre>
           )}
         </section>
+        )}
+
+        {consultaEditRow && (
+          <div
+            className="fixed inset-0 z-[10000] flex items-center justify-center p-4 bg-black/50"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="consulta-editar-serial-titulo"
+            onClick={fecharEdicaoRegistroConsulta}
+          >
+            <div
+              className="w-full max-w-md rounded-lg border border-gray-200 bg-white p-4 shadow-xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <h3 id="consulta-editar-serial-titulo" className="text-base font-semibold text-gray-800">
+                Editar registo
+              </h3>
+              <p className="mt-1 text-xs text-gray-600">
+                {consultaEditRow.tipo === 'serial'
+                  ? `Serial ${formatUpperView(consultaEditRow.serialnumber)} · ${consultaEditRow.item_codigo}`
+                  : `Lote ${formatUpperView(consultaEditRow.lote)} · ${consultaEditRow.item_codigo}`}
+              </p>
+              <div className="mt-4 space-y-3">
+                <div>
+                  <label className="block text-xs font-medium text-gray-700 mb-1" htmlFor="consulta-edit-status">
+                    Status
+                  </label>
+                  <select
+                    id="consulta-edit-status"
+                    value={consultaEditForm.status}
+                    onChange={(e) =>
+                      setConsultaEditForm((prev) => ({ ...prev, status: e.target.value }))
+                    }
+                    className="w-full px-3 py-2 border border-gray-300 rounded text-sm"
+                  >
+                    <option value="disponivel">disponivel</option>
+                    <option value="reservado">reservado</option>
+                    <option value="consumido">consumido</option>
+                  </select>
+                </div>
+                {consultaEditRow.tipo === 'serial' ? (
+                  <>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-700 mb-1" htmlFor="consulta-edit-req">
+                        Requisição (ID)
+                      </label>
+                      <input
+                        id="consulta-edit-req"
+                        type="text"
+                        inputMode="numeric"
+                        value={consultaEditForm.requisicao_id}
+                        onChange={(e) =>
+                          setConsultaEditForm((prev) => ({ ...prev, requisicao_id: e.target.value }))
+                        }
+                        placeholder="vazio = sem requisição"
+                        className="w-full px-3 py-2 border border-gray-300 rounded text-sm"
+                      />
+                    </div>
+                    <div>
+                      <label
+                        className="block text-xs font-medium text-gray-700 mb-1"
+                        htmlFor="consulta-edit-req-item"
+                      >
+                        Linha da requisição (ID)
+                      </label>
+                      <input
+                        id="consulta-edit-req-item"
+                        type="text"
+                        inputMode="numeric"
+                        value={consultaEditForm.requisicao_item_id}
+                        onChange={(e) =>
+                          setConsultaEditForm((prev) => ({ ...prev, requisicao_item_id: e.target.value }))
+                        }
+                        placeholder="opcional"
+                        className="w-full px-3 py-2 border border-gray-300 rounded text-sm"
+                      />
+                    </div>
+                    <p className="text-[11px] text-gray-500">
+                      Ao definir status disponível, a requisição associada é removida automaticamente.
+                    </p>
+                  </>
+                ) : (
+                  <div>
+                    <label className="block text-xs font-medium text-gray-700 mb-1" htmlFor="consulta-edit-qtd">
+                      Quantidade
+                    </label>
+                    <input
+                      id="consulta-edit-qtd"
+                      type="text"
+                      inputMode="decimal"
+                      value={consultaEditForm.quantidade}
+                      onChange={(e) =>
+                        setConsultaEditForm((prev) => ({ ...prev, quantidade: e.target.value }))
+                      }
+                      className="w-full px-3 py-2 border border-gray-300 rounded text-sm"
+                    />
+                  </div>
+                )}
+              </div>
+              <div className="mt-5 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={fecharEdicaoRegistroConsulta}
+                  disabled={Boolean(savingEditKey)}
+                  className="px-3 py-2 border border-gray-300 rounded text-sm hover:bg-gray-50 disabled:opacity-50"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  onClick={salvarEdicaoRegistroConsulta}
+                  disabled={Boolean(savingEditKey)}
+                  className="px-3 py-2 bg-indigo-600 text-white rounded text-sm hover:bg-indigo-700 disabled:opacity-50"
+                >
+                  {savingEditKey ? 'A guardar…' : 'Guardar'}
+                </button>
+              </div>
+            </div>
+          </div>
         )}
 
         {erro && <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded p-3">{erro}</div>}

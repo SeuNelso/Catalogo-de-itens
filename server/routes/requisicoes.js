@@ -13428,6 +13428,269 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
     }
   });
 
+  router.patch('/stock/seriais-por-armazem', ...requisicaoAuth, denyNonAdmin, async (req, res) => {
+    const client = await pool.connect();
+    try {
+      const tipo = String(req.body?.tipo || '').trim().toLowerCase();
+      const itemId = Number(req.body?.item_id || 0) || null;
+      const armazemId = Number(req.body?.armazem_id || 0) || null;
+      const localizacao = String(req.body?.localizacao || '').trim();
+      const serialnumber = String(req.body?.serialnumber || '').trim();
+      const lote = String(req.body?.lote || '').trim();
+      const statusBody = req.body?.status;
+      const requisicaoIdBody = req.body?.requisicao_id;
+      const requisicaoItemIdBody = req.body?.requisicao_item_id;
+      const quantidadeBody = req.body?.quantidade;
+      const statusInformado = statusBody !== undefined && statusBody !== null && String(statusBody).trim() !== '';
+      const requisicaoIdInformado = Object.prototype.hasOwnProperty.call(req.body || {}, 'requisicao_id');
+      const requisicaoItemIdInformado = Object.prototype.hasOwnProperty.call(req.body || {}, 'requisicao_item_id');
+      const quantidadeInformada = quantidadeBody !== undefined && quantidadeBody !== null && String(quantidadeBody).trim() !== '';
+
+      if (!['serial', 'lote'].includes(tipo)) {
+        return res.status(400).json({ error: 'tipo inválido. Use serial ou lote.' });
+      }
+      if (!itemId || !armazemId || !localizacao) {
+        return res.status(400).json({ error: 'item_id, armazem_id e localizacao são obrigatórios.' });
+      }
+      if (tipo === 'serial' && !serialnumber) {
+        return res.status(400).json({ error: 'serialnumber é obrigatório para editar serial.' });
+      }
+      if (tipo === 'lote' && !lote) {
+        return res.status(400).json({ error: 'lote é obrigatório para editar lote.' });
+      }
+      if (tipo === 'serial' && !statusInformado && !requisicaoIdInformado && !requisicaoItemIdInformado) {
+        return res.status(400).json({ error: 'Informe status, requisicao_id ou requisicao_item_id para editar serial.' });
+      }
+      if (tipo === 'lote' && !statusInformado && !quantidadeInformada) {
+        return res.status(400).json({ error: 'Informe status ou quantidade para editar lote.' });
+      }
+
+      const parseOptionalInt = (value) => {
+        if (value === null || value === undefined || String(value).trim() === '') return null;
+        const n = Number(value);
+        return Number.isFinite(n) && n > 0 ? Math.trunc(n) : null;
+      };
+
+      await client.query('BEGIN');
+      if (tipo === 'serial') {
+        const serialQ = await client.query(
+          `SELECT id, item_id, armazem_id, localizacao, lote, serialnumber, status,
+                  requisicao_id, requisicao_item_id, reservado_em, consumido_em
+           FROM stock_serial
+           WHERE item_id = $1
+             AND armazem_id = $2
+             AND UPPER(TRIM(localizacao)) = UPPER(TRIM($3::text))
+             AND UPPER(TRIM(serialnumber)) = UPPER(TRIM($4::text))
+           LIMIT 1
+           FOR UPDATE`,
+          [itemId, armazemId, localizacao, serialnumber]
+        );
+        if (!serialQ.rows.length) {
+          await client.query('ROLLBACK');
+          return res.status(404).json({ error: 'Serial não encontrado para edição.' });
+        }
+        const before = serialQ.rows[0];
+        const nextStatus = statusInformado
+          ? String(statusBody).trim().toLowerCase()
+          : String(before.status || '').trim().toLowerCase();
+        if (![STOCK_STATUS.DISPONIVEL, STOCK_STATUS.RESERVADO, STOCK_STATUS.CONSUMIDO].includes(nextStatus)) {
+          await client.query('ROLLBACK');
+          return res.status(400).json({ error: 'status inválido. Use disponivel, reservado ou consumido.' });
+        }
+
+        let nextReqId = requisicaoIdInformado ? parseOptionalInt(requisicaoIdBody) : before.requisicao_id;
+        let nextReqItemId = requisicaoItemIdInformado
+          ? parseOptionalInt(requisicaoItemIdBody)
+          : before.requisicao_item_id;
+        if (requisicaoIdInformado && requisicaoIdBody !== null && String(requisicaoIdBody).trim() !== '' && !nextReqId) {
+          await client.query('ROLLBACK');
+          return res.status(400).json({ error: 'requisicao_id inválido.' });
+        }
+        if (
+          requisicaoItemIdInformado &&
+          requisicaoItemIdBody !== null &&
+          String(requisicaoItemIdBody).trim() !== '' &&
+          !nextReqItemId
+        ) {
+          await client.query('ROLLBACK');
+          return res.status(400).json({ error: 'requisicao_item_id inválido.' });
+        }
+        if (nextReqId) {
+          const reqCheck = await client.query('SELECT id FROM requisicoes WHERE id = $1 LIMIT 1', [nextReqId]);
+          if (!reqCheck.rows.length) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({ error: 'requisicao_id não encontrado.' });
+          }
+        }
+        if (nextReqItemId) {
+          const reqItemCheck = await client.query(
+            'SELECT id, requisicao_id FROM requisicoes_itens WHERE id = $1 LIMIT 1',
+            [nextReqItemId]
+          );
+          if (!reqItemCheck.rows.length) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({ error: 'requisicao_item_id não encontrado.' });
+          }
+          if (nextReqId && Number(reqItemCheck.rows[0].requisicao_id) !== Number(nextReqId)) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({ error: 'requisicao_item_id não pertence à requisicao_id informada.' });
+          }
+          if (!nextReqId) nextReqId = Number(reqItemCheck.rows[0].requisicao_id) || null;
+        }
+
+        let reservadoEm = before.reservado_em;
+        let consumidoEm = before.consumido_em;
+        if (nextStatus === STOCK_STATUS.DISPONIVEL) {
+          nextReqId = null;
+          nextReqItemId = null;
+          reservadoEm = null;
+          consumidoEm = null;
+        } else if (nextStatus === STOCK_STATUS.RESERVADO) {
+          reservadoEm = reservadoEm || new Date();
+          consumidoEm = null;
+        } else if (nextStatus === STOCK_STATUS.CONSUMIDO) {
+          consumidoEm = consumidoEm || new Date();
+        }
+
+        await client.query(
+          `UPDATE stock_serial
+           SET status = $2,
+               requisicao_id = $3,
+               requisicao_item_id = $4,
+               reservado_em = $5,
+               consumido_em = $6,
+               atualizado_em = CURRENT_TIMESTAMP
+           WHERE id = $1`,
+          [before.id, nextStatus, nextReqId, nextReqItemId, reservadoEm, consumidoEm]
+        );
+        await logStockMovimento({
+          db: client,
+          tipo: 'update_serial_manual',
+          itemId: before.item_id,
+          armazemId: before.armazem_id,
+          localizacao: before.localizacao,
+          lote: before.lote || null,
+          serialnumber: before.serialnumber,
+          quantidade: 1,
+          requisicaoId: nextReqId,
+          requisicaoItemId: nextReqItemId,
+          usuarioId: req.user?.id || null,
+          payload: {
+            origem: 'stock-rastreavel-consulta',
+            antes: {
+              status: before.status,
+              requisicao_id: before.requisicao_id,
+              requisicao_item_id: before.requisicao_item_id,
+            },
+            depois: {
+              status: nextStatus,
+              requisicao_id: nextReqId,
+              requisicao_item_id: nextReqItemId,
+            },
+          },
+        });
+      } else {
+        const loteQ = await client.query(
+          `SELECT id, item_id, armazem_id, localizacao, lote,
+                  quantidade_disponivel, quantidade_reservada, quantidade_consumida
+           FROM stock_lote
+           WHERE item_id = $1
+             AND armazem_id = $2
+             AND UPPER(TRIM(localizacao)) = UPPER(TRIM($3::text))
+             AND UPPER(TRIM(lote)) = UPPER(TRIM($4::text))
+           LIMIT 1
+           FOR UPDATE`,
+          [itemId, armazemId, localizacao, lote]
+        );
+        if (!loteQ.rows.length) {
+          await client.query('ROLLBACK');
+          return res.status(404).json({ error: 'Lote não encontrado para edição.' });
+        }
+        const before = loteQ.rows[0];
+        const statusAtual =
+          Number(before.quantidade_disponivel) > 0
+            ? STOCK_STATUS.DISPONIVEL
+            : Number(before.quantidade_reservada) > 0
+              ? STOCK_STATUS.RESERVADO
+              : STOCK_STATUS.CONSUMIDO;
+        const nextStatus = statusInformado
+          ? String(statusBody).trim().toLowerCase()
+          : statusAtual;
+        if (![STOCK_STATUS.DISPONIVEL, STOCK_STATUS.RESERVADO, STOCK_STATUS.CONSUMIDO].includes(nextStatus)) {
+          await client.query('ROLLBACK');
+          return res.status(400).json({ error: 'status inválido. Use disponivel, reservado ou consumido.' });
+        }
+
+        let qDisp = Number(before.quantidade_disponivel) || 0;
+        let qRes = Number(before.quantidade_reservada) || 0;
+        let qCons = Number(before.quantidade_consumida) || 0;
+        const qtyAtual =
+          statusAtual === STOCK_STATUS.DISPONIVEL
+            ? qDisp
+            : statusAtual === STOCK_STATUS.RESERVADO
+              ? qRes
+              : qCons;
+        const nextQty = quantidadeInformada ? Number(quantidadeBody) : qtyAtual;
+        if (!Number.isFinite(nextQty) || nextQty < 0) {
+          await client.query('ROLLBACK');
+          return res.status(400).json({ error: 'quantidade inválida.' });
+        }
+
+        if (nextStatus !== statusAtual) {
+          if (statusAtual === STOCK_STATUS.DISPONIVEL) qDisp = 0;
+          else if (statusAtual === STOCK_STATUS.RESERVADO) qRes = 0;
+          else qCons = 0;
+        }
+        if (nextStatus === STOCK_STATUS.DISPONIVEL) qDisp = nextQty;
+        else if (nextStatus === STOCK_STATUS.RESERVADO) qRes = nextQty;
+        else qCons = nextQty;
+
+        await client.query(
+          `UPDATE stock_lote
+           SET quantidade_disponivel = $2,
+               quantidade_reservada = $3,
+               quantidade_consumida = $4,
+               atualizado_em = CURRENT_TIMESTAMP
+           WHERE id = $1`,
+          [before.id, qDisp, qRes, qCons]
+        );
+        await logStockMovimento({
+          db: client,
+          tipo: 'update_lote_manual',
+          itemId: before.item_id,
+          armazemId: before.armazem_id,
+          localizacao: before.localizacao,
+          lote: before.lote,
+          quantidade: nextQty,
+          usuarioId: req.user?.id || null,
+          payload: {
+            origem: 'stock-rastreavel-consulta',
+            antes: {
+              status: statusAtual,
+              quantidade_disponivel: Number(before.quantidade_disponivel) || 0,
+              quantidade_reservada: Number(before.quantidade_reservada) || 0,
+              quantidade_consumida: Number(before.quantidade_consumida) || 0,
+            },
+            depois: {
+              status: nextStatus,
+              quantidade_disponivel: qDisp,
+              quantidade_reservada: qRes,
+              quantidade_consumida: qCons,
+            },
+          },
+        });
+      }
+
+      await client.query('COMMIT');
+      return res.json({ ok: true });
+    } catch (e) {
+      await client.query('ROLLBACK').catch(() => {});
+      return res.status(500).json({ error: e.message || 'Erro ao editar registo de stock rastreável' });
+    } finally {
+      client.release();
+    }
+  });
+
   router.get('/stock/caixas/:codigo', ...requisicaoAuth, async (req, res) => {
     try {
       const codigo = String(req.params.codigo || '').trim();
