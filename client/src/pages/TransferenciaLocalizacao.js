@@ -30,6 +30,32 @@ const normBusca = (s) =>
     .toLowerCase()
     .trim();
 
+const normalizarLocStockApi = (v) =>
+  String(v || '')
+    .replace(/\u00A0/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+const formatMetrosLoteWizard = (value) => {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return String(value ?? '');
+  if (Math.abs(num) < 1e-12) return '0';
+  return num.toString();
+};
+
+/** Soma `quantidade_disponivel` em `stock_lote` para os códigos de lote selecionados. */
+function somaMetragemLotesSelecionados(opcoes, codigosSel) {
+  const norm = (s) => String(s || '').trim().toUpperCase();
+  const setSel = new Set((codigosSel || []).map(norm));
+  let sum = 0;
+  for (const l of opcoes || []) {
+    if (setSel.has(norm(l.lote))) {
+      sum += Number(l.quantidade_disponivel) || 0;
+    }
+  }
+  return sum;
+}
+
 const pickDestinoPadraoApeado = (locs = []) => {
   if (!Array.isArray(locs) || locs.length === 0) return null;
   const prioridade = ['reception', 'rececao', 'recepcao', 'receção', 'entrada', 'guarda'];
@@ -152,6 +178,14 @@ const mapPrefillPayloadToRows = (payload) => {
     byCodigo.set(key, prev);
   });
   return [...byCodigo.values()];
+};
+
+const makeGrupoKey = (row, modoFallback = 'normal') => {
+  const particao = normalizarParticaoPrefill(row?.particao, modoFallback);
+  return String(
+    row?.grupo_key
+    || `${Number(row?.item_id || 0) || 0}::${String(row?.codigo || '').trim().toUpperCase()}::${particao}`
+  );
 };
 
 /**
@@ -324,10 +358,26 @@ const TransferenciaLocalizacao = () => {
   const [loteOrigemLabel, setLoteOrigemLabel] = useState('');
   const [submittingLote, setSubmittingLote] = useState(false);
   const prefillConsumidoRef = useRef(false);
+  const wizardCatalogMetaReqIdRef = useRef(0);
   /** 1=origem, 2=artigo, 3=quantidade, 4=destino, 5=confirmar */
   const [wizardStep, setWizardStep] = useState(1);
   /** Linha de stock escolhida no passo 2 → passo 3 */
   const [artigoCorrente, setArtigoCorrente] = useState(null);
+  /** Wizard (passo 3): seriais escolhidos para artigo S/N quando `pode` e há lista na origem */
+  const [wizardSerialsOpcoes, setWizardSerialsOpcoes] = useState([]);
+  const [wizardSerialsLoading, setWizardSerialsLoading] = useState(false);
+  /** Mensagem da API (ex.: 403) para não confundir com “não há seriais na origem”. */
+  const [wizardSerialsErro, setWizardSerialsErro] = useState('');
+  const [wizardSerialsSel, setWizardSerialsSel] = useState([]);
+  /** Passo 3 · artigos LOTE: lotes em `stock_lote` na localização de origem */
+  const [wizardLotesOpcoes, setWizardLotesOpcoes] = useState([]);
+  const [wizardLotesLoading, setWizardLotesLoading] = useState(false);
+  const [wizardLotesErro, setWizardLotesErro] = useState('');
+  /** Passo 3 · LOTE: um ou mais lotes; a quantidade segue a soma das metragens (ajustável depois). */
+  const [wizardLotesSel, setWizardLotesSel] = useState([]);
+  /** Sem controlo de stock: metadados do artigo resolvidos por API (para S/N no assistente) */
+  const [wizardItemMetaNoPode, setWizardItemMetaNoPode] = useState(null);
+  const [wizardItemMetaLoading, setWizardItemMetaLoading] = useState(false);
   const refCodigoArtigoWrap = useRef(null);
   const refCodigoArtigoInput = useRef(null);
   const refListaCodigoArtigo = useRef(null);
@@ -408,6 +458,140 @@ const TransferenciaLocalizacao = () => {
       cancelled = true;
     };
   }, [loteRecebimento, linhasOrigem, armazemId, origemId]);
+
+  useEffect(() => {
+    setWizardSerialsSel([]);
+    setWizardSerialsOpcoes([]);
+    setWizardSerialsErro('');
+    setWizardLotesOpcoes([]);
+    setWizardLotesErro('');
+    setWizardLotesSel([]);
+  }, [artigoCorrente?.item_id, artigoCorrente?.codigo, origemId, wizardItemMetaNoPode?.item_id]);
+
+  useEffect(() => {
+    const lim = Math.max(0, Math.floor(Number(qtdDigitada) || 0));
+    setWizardSerialsSel((prev) => (prev.length > lim ? prev.slice(0, lim) : prev));
+  }, [qtdDigitada]);
+
+  useEffect(() => {
+    if (pode || wizardStep !== 3) {
+      setWizardItemMetaNoPode(null);
+      setWizardItemMetaLoading(false);
+      return;
+    }
+    const cod = String(artigoCorrente?.codigo || extrairCodigoArtigo(codigoArtigo) || '').trim();
+    if (!cod) {
+      setWizardItemMetaNoPode(null);
+      setWizardItemMetaLoading(false);
+      return;
+    }
+    setWizardItemMetaLoading(true);
+    const reqId = ++wizardCatalogMetaReqIdRef.current;
+    let cancelled = false;
+    const timer = window.setTimeout(async () => {
+      try {
+        const token = localStorage.getItem('token');
+        const { data } = await axios.get('/api/itens', {
+          params: { search: cod, limit: 40, page: 1, incluirInativos: true },
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (cancelled || wizardCatalogMetaReqIdRef.current !== reqId) return;
+        const itens = Array.isArray(data?.itens) ? data.itens : [];
+        const up = cod.toUpperCase();
+        const hit = itens.find((it) => String(it?.codigo || '').trim().toUpperCase() === up);
+        if (!hit) {
+          setWizardItemMetaNoPode(null);
+          return;
+        }
+        const itemId = Number(hit.id ?? hit.item_id ?? 0);
+        setWizardItemMetaNoPode({
+          item_id: Number.isFinite(itemId) && itemId > 0 ? itemId : null,
+          codigo: String(hit.codigo || cod).trim(),
+          descricao: String(hit.descricao || hit.nome || '').trim(),
+          tipocontrolo: String(hit.tipocontrolo || '').trim(),
+        });
+      } catch {
+        if (!cancelled && wizardCatalogMetaReqIdRef.current === reqId) setWizardItemMetaNoPode(null);
+      } finally {
+        if (!cancelled && wizardCatalogMetaReqIdRef.current === reqId) {
+          setWizardItemMetaLoading(false);
+        }
+      }
+    }, 220);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [pode, wizardStep, artigoCorrente?.codigo, codigoArtigo]);
+
+  useEffect(() => {
+    if (wizardStep !== 3 || !armazemId || !origemId) {
+      setWizardSerialsOpcoes([]);
+      setWizardSerialsErro('');
+      setWizardSerialsLoading(false);
+      return;
+    }
+    const meta = pode ? artigoCorrente : wizardItemMetaNoPode;
+    if (!meta) {
+      setWizardSerialsOpcoes([]);
+      setWizardSerialsErro('');
+      setWizardSerialsLoading(false);
+      return;
+    }
+    const tipocontroloItem = String(meta.tipocontrolo || '').trim();
+    if (!isTipoControloSerial(tipocontroloItem)) {
+      setWizardSerialsOpcoes([]);
+      setWizardSerialsErro('');
+      setWizardSerialsLoading(false);
+      return;
+    }
+    const itemId = Number(meta.item_id || 0);
+    if (!Number.isFinite(itemId) || itemId <= 0) {
+      setWizardSerialsOpcoes([]);
+      setWizardSerialsErro('');
+      setWizardSerialsLoading(false);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      setWizardSerialsLoading(true);
+      setWizardSerialsErro('');
+      try {
+        const token = localStorage.getItem('token');
+        const { data } = await axios.get(
+          `/api/armazens/${armazemId}/localizacoes/${origemId}/itens/${itemId}/seriais-disponiveis`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        if (cancelled) return;
+        const rows = Array.isArray(data) ? data : [];
+        setWizardSerialsOpcoes(
+          rows.map((r) => ({
+            id: r?.id,
+            serialnumber: String(r?.serialnumber ?? r?.serial ?? '').trim(),
+          })).filter((r) => r.serialnumber)
+        );
+        setWizardSerialsErro('');
+      } catch (e) {
+        if (!cancelled) {
+          setWizardSerialsOpcoes([]);
+          const apiMsg = e?.response?.data?.error;
+          const st = e?.response?.status;
+          setWizardSerialsErro(
+            st === 403 || st === 401
+              ? String(apiMsg || 'Sem permissão para listar seriais nesta localização.')
+              : apiMsg
+                ? String(apiMsg)
+                : 'Não foi possível carregar os seriais. Tente novamente.'
+          );
+        }
+      } finally {
+        if (!cancelled) setWizardSerialsLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [wizardStep, armazemId, origemId, pode, artigoCorrente, wizardItemMetaNoPode]);
 
   const limparPrefillRecebimento = useCallback(() => {
     setLoteRecebimento([]);
@@ -498,6 +682,98 @@ const TransferenciaLocalizacao = () => {
     if (!q) return locsDestinoCandidatas;
     return locsDestinoCandidatas.filter((l) => normBusca(l.localizacao || '').includes(q));
   }, [locsDestinoCandidatas, filtroDestinoLoc]);
+
+  useEffect(() => {
+    if (wizardStep !== 3 || !armazemId || !origemId) {
+      setWizardLotesOpcoes([]);
+      setWizardLotesErro('');
+      setWizardLotesLoading(false);
+      return;
+    }
+    const meta = pode ? artigoCorrente : wizardItemMetaNoPode;
+    if (!meta) {
+      setWizardLotesOpcoes([]);
+      setWizardLotesErro('');
+      setWizardLotesLoading(false);
+      return;
+    }
+    if (String(meta.tipocontrolo || '').trim().toUpperCase() !== 'LOTE') {
+      setWizardLotesOpcoes([]);
+      setWizardLotesErro('');
+      setWizardLotesLoading(false);
+      return;
+    }
+    const itemId = Number(meta.item_id || 0);
+    const locLabel = normalizarLocStockApi(
+      (locsComId || []).find((x) => String(x.id) === String(origemId))?.localizacao || ''
+    );
+    if (!Number.isFinite(itemId) || itemId <= 0 || !locLabel) {
+      setWizardLotesOpcoes([]);
+      setWizardLotesErro('');
+      setWizardLotesLoading(false);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      setWizardLotesLoading(true);
+      setWizardLotesErro('');
+      try {
+        const token = localStorage.getItem('token');
+        const p = new URLSearchParams();
+        p.set('item_id', String(itemId));
+        p.set('armazem_id', String(Number(armazemId)));
+        p.set('localizacao', locLabel);
+        const response = await fetch(`/api/requisicoes/stock/disponibilidade?${p.toString()}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.error || 'Erro ao carregar lotes');
+        if (cancelled) return;
+        const lotes = Array.isArray(data.lotes) ? data.lotes : [];
+        setWizardLotesOpcoes(lotes);
+        setWizardLotesErro('');
+      } catch (e) {
+        if (!cancelled) {
+          setWizardLotesOpcoes([]);
+          setWizardLotesErro(
+            e && e.message ? String(e.message) : 'Não foi possível carregar os lotes nesta origem.'
+          );
+        }
+      } finally {
+        if (!cancelled) setWizardLotesLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [wizardStep, armazemId, origemId, pode, artigoCorrente, wizardItemMetaNoPode, locsComId]);
+
+  /** Marcar/desmarcar lotes recalcula a caixa «Quantidade» = soma das metragens disponíveis (limitada ao stock agregado na origem, se aplicável). */
+  useEffect(() => {
+    if (wizardStep !== 3) return;
+    if (wizardLotesSel.length === 0) {
+      setQtdDigitada('');
+      return;
+    }
+    let sum = somaMetragemLotesSelecionados(wizardLotesOpcoes, wizardLotesSel);
+    if (pode && artigoCorrente) {
+      const maxAgg = Number(artigoCorrente.quantidade) || 0;
+      sum = Math.min(sum, maxAgg);
+    }
+    setQtdDigitada(formatMetrosLoteWizard(Math.max(0, sum)));
+  }, [wizardStep, wizardLotesSel, wizardLotesOpcoes, pode, artigoCorrente]);
+
+  const toggleWizardLoteSel = useCallback((loteCod) => {
+    const key = String(loteCod || '').trim();
+    if (!key) return;
+    setWizardLotesSel((prev) => {
+      const norm = (s) => String(s || '').trim().toUpperCase();
+      const k = norm(key);
+      const has = prev.some((p) => norm(p) === k);
+      if (has) return prev.filter((p) => norm(p) !== k);
+      return [...prev, key];
+    });
+  }, []);
 
   const abrirLeitorQr = (purpose) => {
     qrLeitorPurposeRef.current = purpose;
@@ -1077,6 +1353,25 @@ const TransferenciaLocalizacao = () => {
     if (pode && wizardStep === 3 && !artigoCorrente) setWizardStep(2);
   }, [wizardStep, artigoCorrente, pode]);
 
+  /** Seriais guardados em `linhaPendente` como `serials` e/ou `seriais` (PT). */
+  const serialsListaLinhaPendente = (lp) => {
+    const a = Array.isArray(lp?.serials) ? lp.serials : [];
+    const b = Array.isArray(lp?.seriais) ? lp.seriais : [];
+    return [...new Set([...a, ...b].map((s) => String(s || '').trim()).filter(Boolean))];
+  };
+
+  const toggleWizardSerialSelect = (serial, maxQtd) => {
+    const sn = String(serial || '').trim();
+    if (!sn) return;
+    const limite = Math.max(0, Math.floor(Number(maxQtd) || 0));
+    setWizardSerialsSel((prev) => {
+      const atual = [...new Set(prev.map((s) => String(s || '').trim()).filter(Boolean))];
+      if (atual.includes(sn)) return atual.filter((s) => s !== sn);
+      if (atual.length >= limite || limite <= 0) return atual;
+      return [...atual, sn];
+    });
+  };
+
   const confirmarQuantidadeEIrDestino = () => {
     const q = Number(String(qtdDigitada).replace(',', '.'));
     if (!Number.isFinite(q) || q <= 0) {
@@ -1090,12 +1385,77 @@ const TransferenciaLocalizacao = () => {
         setToast({ type: 'error', message: 'Informe o código do artigo.' });
         return;
       }
-      setLinhaPendente({
-        item_id: null,
-        codigo: cod,
-        descricao: '',
-        quantidade: q
-      });
+      if (wizardItemMetaLoading) {
+        setToast({
+          type: 'error',
+          message: 'Aguarde a carregar os dados do artigo (catálogo) antes de continuar.',
+        });
+        return;
+      }
+      const qIntEarly = Math.floor(q);
+      const meta = wizardItemMetaNoPode;
+      const metaMatch =
+        meta && String(meta.codigo || '').trim().toUpperCase() === cod.toUpperCase();
+      if (metaMatch && isTipoControloSerial(String(meta.tipocontrolo || '').trim())) {
+        if (wizardSerialsSel.length !== qIntEarly) {
+          setToast({
+            type: 'error',
+            message: `Selecione ${qIntEarly} serial(is) para ${cod}.`,
+          });
+          return;
+        }
+        setLinhaPendente({
+          item_id: meta.item_id,
+          codigo: cod,
+          descricao: meta.descricao || '',
+          quantidade: q,
+          tipocontrolo: String(meta.tipocontrolo || ''),
+          serials: [...wizardSerialsSel],
+        });
+      } else if (metaMatch && String(meta.tipocontrolo || '').trim().toUpperCase() === 'LOTE') {
+        if (wizardLotesOpcoes.length > 0 && wizardLotesSel.length === 0) {
+          setToast({ type: 'error', message: 'Selecione pelo menos um lote na localização de origem.' });
+          return;
+        }
+        if (wizardLotesOpcoes.length > 0 && wizardLotesSel.length > 0) {
+          const sumLotes = somaMetragemLotesSelecionados(wizardLotesOpcoes, wizardLotesSel);
+          if (q > sumLotes + 1e-9) {
+            setToast({
+              type: 'error',
+              message: `Quantidade superior à soma disponível nos lotes selecionados (${formatMetrosLoteWizard(sumLotes)} m).`,
+            });
+            return;
+          }
+        }
+        const lotesNorm = [...new Set(wizardLotesSel.map((s) => String(s || '').trim()).filter(Boolean))];
+        setLinhaPendente({
+          item_id: meta.item_id,
+          codigo: cod,
+          descricao: meta.descricao || '',
+          quantidade: q,
+          tipocontrolo: String(meta.tipocontrolo || ''),
+          serials: undefined,
+          ...(lotesNorm.length > 0 ? { lotes: lotesNorm } : {}),
+        });
+      } else if (metaMatch) {
+        setLinhaPendente({
+          item_id: meta.item_id,
+          codigo: cod,
+          descricao: meta.descricao || '',
+          quantidade: q,
+          tipocontrolo: String(meta.tipocontrolo || ''),
+          serials: undefined,
+        });
+      } else {
+        setLinhaPendente({
+          item_id: null,
+          codigo: cod,
+          descricao: '',
+          quantidade: q,
+          tipocontrolo: '',
+          serials: undefined,
+        });
+      }
       setCodigoArtigo('');
       setQtdDigitada('');
       setArtigoCorrente(null);
@@ -1120,11 +1480,82 @@ const TransferenciaLocalizacao = () => {
         return;
       }
     }
+    const qInt = Math.floor(q);
+    const rowIsSerialPode =
+      pode && row && isTipoControloSerial(String(row.tipocontrolo || '').trim());
+    if (rowIsSerialPode && wizardSerialsSel.length !== qInt) {
+      setToast({
+        type: 'error',
+        message: `Selecione ${qInt} serial(is) para ${row.codigo}.`,
+      });
+      return;
+    }
+    const codR = row ? String(row.codigo || '').trim() : '';
+    const metaAlinhado =
+      !pode && row && wizardItemMetaNoPode &&
+      String(wizardItemMetaNoPode.codigo || '').trim().toUpperCase() === codR.toUpperCase()
+        ? wizardItemMetaNoPode
+        : null;
+    if (!pode && row && !String(row.tipocontrolo || '').trim() && wizardItemMetaLoading) {
+      setToast({
+        type: 'error',
+        message: 'Aguarde a carregar os dados do artigo (catálogo) antes de continuar.',
+      });
+      return;
+    }
+    if (!pode && row && !String(row.tipocontrolo || '').trim() && !metaAlinhado && !wizardItemMetaLoading) {
+      setToast({
+        type: 'error',
+        message: 'Artigo não encontrado no catálogo com este código exato.',
+      });
+      return;
+    }
+    const noPodeSerial =
+      !pode &&
+      row &&
+      metaAlinhado &&
+      isTipoControloSerial(String(metaAlinhado.tipocontrolo || '').trim());
+    if (noPodeSerial && wizardSerialsSel.length !== qInt) {
+      setToast({
+        type: 'error',
+        message: `Selecione ${qInt} serial(is) para ${row.codigo}.`,
+      });
+      return;
+    }
+    const tipoLinhaFinal = noPodeSerial
+      ? String(metaAlinhado?.tipocontrolo || '')
+      : String(row?.tipocontrolo || metaAlinhado?.tipocontrolo || '').trim();
+    const isLoteLinha = String(tipoLinhaFinal || '').toUpperCase() === 'LOTE';
+    if (isLoteLinha && wizardLotesOpcoes.length > 0) {
+      if (wizardLotesSel.length === 0) {
+        setToast({ type: 'error', message: 'Selecione pelo menos um lote na localização de origem.' });
+        return;
+      }
+      const sumLotes = somaMetragemLotesSelecionados(wizardLotesOpcoes, wizardLotesSel);
+      if (q > sumLotes + 1e-9) {
+        setToast({
+          type: 'error',
+          message: `Quantidade superior à soma disponível nos lotes selecionados (${formatMetrosLoteWizard(sumLotes)} m).`,
+        });
+        return;
+      }
+    }
+    const lotesPendenteNorm = isLoteLinha
+      ? [...new Set(wizardLotesSel.map((s) => String(s || '').trim()).filter(Boolean))]
+      : [];
     setLinhaPendente({
-      item_id: row.item_id,
+      item_id: noPodeSerial ? metaAlinhado.item_id : row.item_id,
       codigo: row.codigo,
-      descricao: row.descricao,
-      quantidade: q
+      descricao:
+        noPodeSerial && metaAlinhado.descricao
+          ? metaAlinhado.descricao
+          : row.descricao,
+      quantidade: q,
+      tipocontrolo: noPodeSerial
+        ? String(metaAlinhado.tipocontrolo || '')
+        : String(row.tipocontrolo || '').trim(),
+      serials: noPodeSerial || rowIsSerialPode ? [...wizardSerialsSel] : undefined,
+      ...(isLoteLinha && lotesPendenteNorm.length > 0 ? { lotes: lotesPendenteNorm } : {}),
     });
     setCodigoArtigo('');
     setQtdDigitada('');
@@ -1146,6 +1577,38 @@ const TransferenciaLocalizacao = () => {
       setToast({ type: 'error', message: 'Defina o artigo e a quantidade antes de confirmar.' });
       return;
     }
+    const lp = linhaPendente;
+    const qtdIntW = Math.floor(Number(lp.quantidade) || 0);
+    const tipLp = String(lp.tipocontrolo || '').trim();
+    const serialsLp = serialsListaLinhaPendente(lp);
+    /** S/N: pelo tipo OU por já existirem seriais na linha (evita omitir payload se `tipocontrolo` vier vazio). */
+    const isSnLp = isTipoControloSerial(tipLp) || serialsLp.length > 0;
+    if (isSnLp && serialsLp.length !== qtdIntW) {
+      setToast({
+        type: 'error',
+        message: `Selecione ${qtdIntW} serial(is) para ${lp.codigo} antes de finalizar.`,
+      });
+      return;
+    }
+    const lotesLp = Array.isArray(lp.lotes)
+      ? [...new Set(lp.lotes.map((s) => String(s || '').trim()).filter(Boolean))]
+      : [];
+    const linhaEnvio = pode
+      ? {
+          item_id: lp.item_id,
+          quantidade: lp.quantidade,
+          ...(serialsLp.length > 0 ? { serials: serialsLp } : {}),
+          ...(lotesLp.length > 0 ? { lotes: lotesLp } : {}),
+        }
+      : {
+          item_codigo: lp.codigo,
+          quantidade: lp.quantidade,
+          ...(Number.isFinite(Number(lp.item_id)) && Number(lp.item_id) > 0
+            ? { item_id: Number(lp.item_id) }
+            : {}),
+          ...(serialsLp.length > 0 ? { serials: serialsLp } : {}),
+          ...(lotesLp.length > 0 ? { lotes: lotesLp } : {}),
+        };
     setSubmitting(true);
     setToast(null);
     try {
@@ -1157,11 +1620,7 @@ const TransferenciaLocalizacao = () => {
           destino_localizacao_id: parseInt(destinoId, 10),
           modo_apeado: modoTransferencia === 'apeado',
           apeado_armazem_id: modoTransferencia === 'apeado' ? parseInt(apeadoArmazemId, 10) : undefined,
-          linhas: [
-            pode
-              ? { item_id: linhaPendente.item_id, quantidade: linhaPendente.quantidade }
-              : { item_codigo: linhaPendente.codigo, quantidade: linhaPendente.quantidade }
-          ]
+          linhas: [linhaEnvio],
         },
         { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } }
       );
@@ -1423,18 +1882,41 @@ const TransferenciaLocalizacao = () => {
           }
         }
 
+        const tipocontroloItem = String(rowStock?.tipocontrolo || it?.tipocontrolo || '').trim();
+        const serialsSelecionadosLinha = Array.isArray(it?.serials)
+          ? [...new Set(it.serials.map((s) => String(s || '').trim()).filter(Boolean))]
+          : [];
+        const seriaisSugeridosLinha = Array.isArray(it?.seriais_sugeridos)
+          ? [...new Set(it.seriais_sugeridos.map((s) => String(s || '').trim()).filter(Boolean))]
+          : [];
+        const lotesSelecionadosLinha = Array.isArray(it?.lotes)
+          ? [...new Set(it.lotes.map((s) => String(s || '').trim()).filter(Boolean))]
+          : [];
+        const isSerialItem = isTipoControloSerial(tipocontroloItem)
+          || serialsSelecionadosLinha.length > 0
+          || seriaisSugeridosLinha.length > 0;
+        const isLoteItem = String(tipocontroloItem || '').trim().toUpperCase() === 'LOTE';
+
+        const itemIdPref = Number(it?.item_id || 0);
         const linhaPayload = pode
           ? {
               item_id: rowStock.item_id,
               quantidade,
-              serials: isTipoControloSerial(rowStock?.tipocontrolo)
-                ? (Array.isArray(it?.serials) ? it.serials : [])
+              serials: isSerialItem
+                ? serialsSelecionadosLinha
                 : undefined,
+              lotes: isLoteItem ? lotesSelecionadosLinha : undefined,
             }
-          : { item_codigo: codigo, quantidade };
-        if (isTipoControloSerial(String(rowStock?.tipocontrolo || it?.tipocontrolo || '').trim())) {
+          : {
+              item_codigo: codigo,
+              quantidade,
+              ...(Number.isFinite(itemIdPref) && itemIdPref > 0 ? { item_id: itemIdPref } : {}),
+              ...(isSerialItem ? { serials: serialsSelecionadosLinha } : {}),
+              ...(isLoteItem ? { lotes: lotesSelecionadosLinha } : {}),
+            };
+        if (isSerialItem) {
           const qtdInt = Math.floor(quantidade);
-          const serialsSel = Array.isArray(it?.serials) ? [...new Set(it.serials.map((s) => String(s || '').trim()).filter(Boolean))] : [];
+          const serialsSel = serialsSelecionadosLinha;
           if (serialsSel.length !== qtdInt) {
             throw new Error(`Selecione ${qtdInt} serial(s) para ${codigo}.`);
           }
@@ -1560,6 +2042,12 @@ const TransferenciaLocalizacao = () => {
         i === idx
           ? (() => {
             const particao = normalizarParticaoPrefill(row?.particao, modoTransferencia);
+            const grupoKey = `${Number(selecionado?.item_id || 0) || 0}::${String(selecionado?.codigo || '').trim().toUpperCase()}::${particao}`;
+            const seriaisGrupo = prev
+              .filter((x, j) => j !== idx && makeGrupoKey({ ...x, grupo_key: grupoKey }, modoTransferencia) === grupoKey)
+              .flatMap((x) => Array.isArray(x?.seriais_sugeridos) ? x.seriais_sugeridos : [])
+              .map((s) => String(s || '').trim())
+              .filter(Boolean);
             return {
               ...row,
               manual: true,
@@ -1567,12 +2055,12 @@ const TransferenciaLocalizacao = () => {
               codigo: selecionado.codigo,
               descricao: selecionado.descricao,
               tipocontrolo: selecionado.tipocontrolo,
-              seriais_sugeridos: [],
+              seriais_sugeridos: [...new Set(seriaisGrupo)],
               lotes_sugeridos: [],
               serials: [],
               lotes: [],
               particao,
-              grupo_key: `${Number(selecionado?.item_id || 0) || 0}::${String(selecionado?.codigo || '').trim().toUpperCase()}::${particao}`,
+              grupo_key: grupoKey,
               quantidade_total_item: Number(row?.quantidade_total_item || 0) || 0,
             };
           })()
@@ -1628,6 +2116,7 @@ const TransferenciaLocalizacao = () => {
     } else if (wizardStep === 3) {
       setArtigoCorrente(null);
       setQtdDigitada('');
+      setWizardLotesSel([]);
       setLinhaPendente(null);
       setWizardStep(2);
     } else if (wizardStep === 2) setWizardStep(1);
@@ -1846,9 +2335,32 @@ const TransferenciaLocalizacao = () => {
                                   id: `fallback-${itemId}-${pos}`,
                                   serialnumber: String(sn || '').trim(),
                                 }));
-                                const options = optionsStock.length > 0 ? optionsStock : optionsFallback;
+                                const grupoKey = makeGrupoKey(it, modoTransferencia);
+                                const seriaisGrupo = (loteRecebimento || [])
+                                  .filter((x) => makeGrupoKey(x, modoTransferencia) === grupoKey)
+                                  .flatMap((x) => Array.isArray(x?.seriais_sugeridos) ? x.seriais_sugeridos : [])
+                                  .map((s) => String(s || '').trim())
+                                  .filter(Boolean);
+                                const optionsGrupo = [...new Set(seriaisGrupo)].map((sn, pos) => ({
+                                  id: `group-${itemId}-${pos}`,
+                                  serialnumber: sn,
+                                }));
+                                const optionsBase = optionsStock.length > 0 ? optionsStock : (optionsGrupo.length > 0 ? optionsGrupo : optionsFallback);
                                 const qtdInt = Math.floor(Number(it?.quantidade || 0) || 0);
                                 const selected = Array.isArray(it?.serials) ? it.serials : [];
+                                const selectedEmOutrasLinhas = new Set(
+                                  (loteRecebimento || [])
+                                    .filter((x, i) => i !== idx && makeGrupoKey(x, modoTransferencia) === grupoKey)
+                                    .flatMap((x) => Array.isArray(x?.serials) ? x.serials : [])
+                                    .map((s) => String(s || '').trim().toUpperCase())
+                                    .filter(Boolean)
+                                );
+                                const options = optionsBase.filter((o) => {
+                                  const sn = String(o?.serialnumber || '').trim();
+                                  if (!sn) return false;
+                                  if (selected.includes(sn)) return true;
+                                  return !selectedEmOutrasLinhas.has(sn.toUpperCase());
+                                });
                                 return (
                                   <div className="space-y-1 min-w-0">
                                     <button
@@ -1932,9 +2444,32 @@ const TransferenciaLocalizacao = () => {
                 id: `fallback-${itemId}-${pos}`,
                 serialnumber: String(sn || '').trim(),
               }));
-              const options = optionsStock.length > 0 ? optionsStock : optionsFallback;
+              const grupoKey = makeGrupoKey(it, modoTransferencia);
+              const seriaisGrupo = (loteRecebimento || [])
+                .filter((x) => makeGrupoKey(x, modoTransferencia) === grupoKey)
+                .flatMap((x) => Array.isArray(x?.seriais_sugeridos) ? x.seriais_sugeridos : [])
+                .map((s) => String(s || '').trim())
+                .filter(Boolean);
+              const optionsGrupo = [...new Set(seriaisGrupo)].map((sn, pos) => ({
+                id: `group-${itemId}-${pos}`,
+                serialnumber: sn,
+              }));
+              const optionsBase = optionsStock.length > 0 ? optionsStock : (optionsGrupo.length > 0 ? optionsGrupo : optionsFallback);
               const qtdInt = Math.floor(Number(it?.quantidade || 0) || 0);
               const selected = Array.isArray(it?.serials) ? it.serials : [];
+              const selectedEmOutrasLinhas = new Set(
+                (loteRecebimento || [])
+                  .filter((x, i) => i !== serialPickerIdx && makeGrupoKey(x, modoTransferencia) === grupoKey)
+                  .flatMap((x) => Array.isArray(x?.serials) ? x.serials : [])
+                  .map((s) => String(s || '').trim().toUpperCase())
+                  .filter(Boolean)
+              );
+              const options = optionsBase.filter((o) => {
+                const sn = String(o?.serialnumber || '').trim();
+                if (!sn) return false;
+                if (selected.includes(sn)) return true;
+                return !selectedEmOutrasLinhas.has(sn.toUpperCase());
+              });
               return (
                 <div className="fixed inset-0 z-[1200] bg-black/25 flex items-center justify-center p-4">
                   <div className="w-full max-w-md rounded-xl border border-gray-200 bg-white shadow-2xl">
@@ -2305,7 +2840,7 @@ const TransferenciaLocalizacao = () => {
                       </div>
                     )}
                     <div>
-                      <label className="block text-xs text-gray-600 mb-1">Quantidade</label>
+                      <label className="block text-xs text-gray-600 mb-1">Quantidade (metragem a mover)</label>
                       <input
                         type="text"
                         inputMode="decimal"
@@ -2316,6 +2851,136 @@ const TransferenciaLocalizacao = () => {
                         autoFocus
                       />
                     </div>
+                    {((pode &&
+                      artigoCorrente &&
+                      String(artigoCorrente.tipocontrolo || '').trim().toUpperCase() === 'LOTE') ||
+                      (!pode &&
+                        wizardItemMetaNoPode &&
+                        String(wizardItemMetaNoPode.tipocontrolo || '').trim().toUpperCase() === 'LOTE') ||
+                      (!pode &&
+                        artigoCorrente &&
+                        String(artigoCorrente.tipocontrolo || '').trim().toUpperCase() === 'LOTE')) && (
+                        <div className="rounded-lg border border-amber-200 bg-amber-50/60 p-3 space-y-2">
+                          <p className="text-xs font-medium text-amber-950">Lotes na localização de origem</p>
+                          {wizardLotesLoading ? (
+                            <p className="text-xs text-gray-600">A carregar lotes…</p>
+                          ) : wizardLotesErro ? (
+                            <p className="text-xs text-amber-900">{wizardLotesErro}</p>
+                          ) : wizardLotesOpcoes.length === 0 ? (
+                            <p className="text-xs text-gray-700">
+                              Não foi encontrado stock por lote nesta origem. Indique a metragem manualmente; o servidor
+                              tentará alocar pelos lotes disponíveis.
+                            </p>
+                          ) : (
+                            <>
+                              <p className="text-[11px] text-gray-700">
+                                Selecione um ou mais lotes: a quantidade acima atualiza com a{' '}
+                                <strong>soma</strong> das metragens disponíveis; ao desmarcar, subtrai. Pode ajustar o
+                                valor manualmente antes de continuar.
+                              </p>
+                              {wizardLotesSel.length > 0 ? (
+                                <p className="text-[11px] text-amber-900 tabular-nums">
+                                  Soma nos lotes marcados:{' '}
+                                  <strong>
+                                    {formatMetrosLoteWizard(
+                                      somaMetragemLotesSelecionados(wizardLotesOpcoes, wizardLotesSel)
+                                    )}{' '}
+                                    m
+                                  </strong>
+                                  {pode && artigoCorrente
+                                    ? ` · teto origem: ${formatMetrosLoteWizard(Number(artigoCorrente.quantidade) || 0)} m`
+                                    : null}
+                                </p>
+                              ) : null}
+                              <div className="max-h-48 overflow-y-auto border border-amber-100 rounded-md bg-white p-2 space-y-1">
+                                {wizardLotesOpcoes.map((l) => {
+                                  const loteCod = String(l.lote || '').trim();
+                                  const disp = Number(l.quantidade_disponivel) || 0;
+                                  const sel = wizardLotesSel.some(
+                                    (s) => String(s || '').trim().toUpperCase() === loteCod.toUpperCase()
+                                  );
+                                  return (
+                                    <label
+                                      key={`${l.id}-${loteCod}`}
+                                      className={`flex items-start gap-2 text-xs cursor-pointer rounded px-2 py-1.5 ${
+                                        sel ? 'bg-[#0915FF]/10 ring-1 ring-[#0915FF]/30' : 'hover:bg-gray-50'
+                                      }`}
+                                    >
+                                      <input
+                                        type="checkbox"
+                                        className="mt-0.5"
+                                        checked={sel}
+                                        onChange={() => toggleWizardLoteSel(loteCod)}
+                                      />
+                                      <span className="font-mono font-medium text-gray-900">{loteCod}</span>
+                                      <span className="text-gray-600 tabular-nums">
+                                        (+{formatMetrosLoteWizard(disp)} m)
+                                      </span>
+                                    </label>
+                                  );
+                                })}
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      )}
+                    {((pode &&
+                      artigoCorrente &&
+                      isTipoControloSerial(String(artigoCorrente.tipocontrolo || '').trim())) ||
+                      (!pode &&
+                        wizardItemMetaNoPode &&
+                        isTipoControloSerial(
+                          String(wizardItemMetaNoPode.tipocontrolo || '').trim()
+                        ))) && (
+                        <div className="rounded-lg border border-gray-200 bg-white p-3 space-y-2">
+                          <p className="text-xs font-medium text-gray-800">Seriais a mover</p>
+                          {wizardSerialsLoading ? (
+                            <p className="text-xs text-gray-500">A carregar seriais…</p>
+                          ) : wizardSerialsErro ? (
+                            <p className="text-xs text-amber-800">{wizardSerialsErro}</p>
+                          ) : wizardSerialsOpcoes.length === 0 ? (
+                            <p className="text-xs text-amber-800">
+                              Sem seriais disponíveis nesta localização para este artigo.
+                            </p>
+                          ) : (
+                            <>
+                              {(() => {
+                                const qLim = Math.max(0, Math.floor(Number(qtdDigitada) || 0));
+                                return (
+                                  <p className="text-[11px] text-gray-600">
+                                    {qLim <= 0
+                                      ? 'Indique a quantidade acima para poder escolher os seriais.'
+                                      : `${wizardSerialsSel.length}/${qLim} selecionado(s)`}
+                                  </p>
+                                );
+                              })()}
+                              <div className="max-h-44 overflow-y-auto border border-gray-100 rounded p-2 space-y-1">
+                                {wizardSerialsOpcoes.map((o) => {
+                                  const sn = o.serialnumber;
+                                  const qLim = Math.max(0, Math.floor(Number(qtdDigitada) || 0));
+                                  const checked = wizardSerialsSel.includes(sn);
+                                  const disableUnchecked =
+                                    !checked && wizardSerialsSel.length >= qLim && qLim > 0;
+                                  return (
+                                    <label
+                                      key={String(o.id ?? sn)}
+                                      className="flex items-center gap-2 text-xs text-gray-800"
+                                    >
+                                      <input
+                                        type="checkbox"
+                                        checked={checked}
+                                        disabled={disableUnchecked || qLim <= 0}
+                                        onChange={() => toggleWizardSerialSelect(sn, qLim)}
+                                      />
+                                      <span className="font-mono break-all">{sn}</span>
+                                    </label>
+                                  );
+                                })}
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      )}
                     <button
                       type="button"
                       onClick={confirmarQuantidadeEIrDestino}
@@ -2344,6 +3009,12 @@ const TransferenciaLocalizacao = () => {
                           <span className="text-gray-800 mt-1 block">
                             Quantidade: <strong className="tabular-nums">{linhaPendente.quantidade}</strong>
                           </span>
+                          {Array.isArray(linhaPendente.lotes) && linhaPendente.lotes.length > 0 ? (
+                            <span className="text-gray-800 mt-1 block">
+                              Lote:{' '}
+                              <strong className="font-mono">{linhaPendente.lotes.join(', ')}</strong>
+                            </span>
+                          ) : null}
                         </div>
                         <label className="block text-xs text-gray-600 mb-1" htmlFor="transf-loc-destino-input">
                           <FaMapMarkerAlt className="inline mr-1 text-emerald-600" />
@@ -2410,6 +3081,11 @@ const TransferenciaLocalizacao = () => {
                         <span>
                           <span className="font-mono font-medium">{linhaPendente.codigo}</span>
                           <span className="text-gray-600 text-xs block line-clamp-2 mt-0.5">{linhaPendente.descricao}</span>
+                          {Array.isArray(linhaPendente.lotes) && linhaPendente.lotes.length > 0 ? (
+                            <span className="text-gray-700 text-xs block mt-1 font-mono">
+                              Lote: {linhaPendente.lotes.join(', ')}
+                            </span>
+                          ) : null}
                         </span>
                         <span className="tabular-nums font-medium shrink-0 self-center">× {linhaPendente.quantidade}</span>
                       </div>

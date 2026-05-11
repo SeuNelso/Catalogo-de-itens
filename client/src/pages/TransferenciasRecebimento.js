@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import axios from 'axios';
 import { useNavigate } from 'react-router-dom';
-import { FaArrowLeft, FaPlus, FaTrash } from 'react-icons/fa';
+import { FaArrowLeft, FaPlus, FaTrash, FaUpload } from 'react-icons/fa';
 import Toast from '../components/Toast';
 import { useAuth } from '../contexts/AuthContext';
 import { podeUsarControloStock } from '../utils/controloStock';
@@ -30,9 +30,339 @@ const parseNumberPt = (v) => {
   return Number(cleaned);
 };
 
+/** Remove BOM e espaços (cabeçalhos Excel às vezes trazem \uFEFF). */
+const normSheetHeader = (h) => String(h ?? '').replace(/^\uFEFF/, '').trim();
+
 const findHeaderKey = (headers, predicate) => {
-  const idx = headers.findIndex((h) => predicate(h));
+  const idx = headers.findIndex((h) => predicate(normSheetHeader(h)));
   return idx >= 0 ? headers[idx] : null;
+};
+
+/**
+ * Lê célula da linha mesmo quando a chave real do XLSX difere (espaços, BOM, "S/N" vs "S / N").
+ */
+const sheetRowGet = (row, key) => {
+  if (row == null || key == null) return '';
+  const want = normSheetHeader(key).toLowerCase();
+  for (const k of Object.keys(row)) {
+    if (normSheetHeader(k).toLowerCase() === want) {
+      const v = row[k];
+      return v === undefined || v === null ? '' : v;
+    }
+  }
+  const v = row[key];
+  return v === undefined || v === null ? '' : v;
+};
+
+const serialHeaderMatches = (hNorm) => {
+  const s = String(hNorm || '');
+  const compact = s
+    .replace(/\u2044|\u2215|\uFF0F/g, '/')
+    .replace(/\s+/g, '');
+  return (
+    /\bserial\b|seriais?|s\/?n\b|\bsn\b|n[º°]?\s*serie|numero\s*serie|n[º°]?\s*série/i.test(s) ||
+    /^s\/n$/i.test(compact) ||
+    /^sn$/i.test(compact)
+  );
+};
+
+/** Preserva ordem; ignora vazios; dedupe case-insensitive. */
+const dedupeSerialsInsensitive = (arr) => {
+  const seen = new Set();
+  const out = [];
+  for (const s of arr) {
+    const t = String(s ?? '').trim();
+    if (!t) continue;
+    const k = t.toUpperCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(t);
+  }
+  return out;
+};
+
+const parseSeriaisFromCell = (raw) => {
+  const s = String(raw ?? '').trim();
+  if (!s) return [];
+  const parts = s
+    .split(/\r?\n|;|\||\t/)
+    .flatMap((p) => p.split(','))
+    .map((x) => String(x || '').trim())
+    .filter(Boolean);
+  return dedupeSerialsInsensitive(parts);
+};
+
+const parseSeriaisMultiline = (text) => {
+  return dedupeSerialsInsensitive(
+    String(text || '')
+      .split(/\r?\n|;|\|/)
+      .map((x) => x.trim())
+      .filter(Boolean)
+  );
+};
+
+/** { sn, caixa } únicos por S/N (case-insensitive). */
+const dedupeSeriaisLinhas = (arr) => {
+  const seen = new Set();
+  const out = [];
+  for (const r of arr || []) {
+    const sn = String(r?.sn ?? r?.serial ?? r?.serialnumber ?? '').trim();
+    if (!sn) continue;
+    const k = sn.toUpperCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    const cxSrc = r?.caixa ?? r?.codigo_caixa;
+    const caixa = cxSrc != null ? String(cxSrc).trim() : '';
+    out.push({ sn, caixa: caixa || null });
+  }
+  return out;
+};
+
+const parseSeriaisLinhasMultiline = (text) => {
+  const lines = String(text || '')
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const out = [];
+  for (const line of lines) {
+    if (line.includes('\t')) {
+      const parts = line.split('\t');
+      const sn = String(parts[0] || '').trim();
+      const caixa = parts.slice(1).join('\t').trim();
+      if (sn) out.push({ sn, caixa: caixa || null });
+      continue;
+    }
+    const pipe = line.indexOf('|');
+    if (pipe > 0) {
+      const sn = line.slice(0, pipe).trim();
+      const caixa = line.slice(pipe + 1).trim();
+      if (sn) out.push({ sn, caixa: caixa || null });
+      continue;
+    }
+    const spaceParts = line.split(/\s+/).filter(Boolean);
+    if (spaceParts.length >= 2) {
+      out.push({ sn: spaceParts[0], caixa: spaceParts.slice(1).join(' ') || null });
+      continue;
+    }
+    out.push({ sn: line, caixa: null });
+  }
+  return dedupeSeriaisLinhas(out);
+};
+
+const seriaisToLinhas = (seriaisArr) => {
+  if (!Array.isArray(seriaisArr)) return [];
+  return dedupeSeriaisLinhas(
+    seriaisArr.map((s) => ({ sn: String(s || '').trim(), caixa: null })).filter((r) => r.sn)
+  );
+};
+
+const linhasToSeriaisStrings = (linhas) => (linhas || []).map((r) => r.sn);
+
+const formatLinhasForTextarea = (linhas) =>
+  (linhas || [])
+    .map((r) => (r.caixa ? `${r.sn}\t${r.caixa}` : r.sn))
+    .join('\n');
+
+/**
+ * Folha com coluna "Quantidade" mas dados no formato 1 linha = 1 S/N (+ caixa).
+ * Sem isto, o parser escolhia o ramo por quantidade e a caixa por linha deixava de alinhar.
+ */
+const preferLongSerialRows = (rows, codigoKey, serialKey) => {
+  if (!Array.isArray(rows) || rows.length < 2) return false;
+  let sample = 0;
+  let singleSn = 0;
+  for (const r of rows) {
+    const codigo = String(sheetRowGet(r, codigoKey) ?? '').trim();
+    const rawSn = String(sheetRowGet(r, serialKey) ?? '').trim();
+    if (!codigo || !rawSn) continue;
+    sample++;
+    const sns = parseSeriaisFromCell(rawSn);
+    if (sns.length === 1) singleSn++;
+    if (sample >= 100) break;
+  }
+  return sample >= 5 && singleSn / sample >= 0.85;
+};
+
+/** Cabeçalho sem nome explícito "caixa": escolher coluna curta e bem preenchida (ex.: "Ref.", "Código externo"). */
+const headerLooksLikeMetaNotCaixa = (key) => {
+  const h = normSheetHeader(key).toLowerCase();
+  return (
+    /descri|material|^nome$|observa|coment|nota|localiza|zona|armaz|fornec|pre[cç]o|valor|total|iva|taxa|unid|data|hora|^tipo$|^estado$|^status$/i.test(
+      h
+    ) && !/caixa|embal|\bcx\b|box|pack/i.test(h)
+  );
+};
+
+const guessCaixaColumnKey = (rows, header, { codigoKey, descKey, qtyKey, serialKey }) => {
+  const excluded = new Set([codigoKey, descKey, qtyKey, serialKey].filter(Boolean));
+  const candidates = header.filter((k) => k != null && !excluded.has(k));
+  const dataRows = rows.filter(
+    (r) => String(sheetRowGet(r, codigoKey) ?? '').trim() && String(sheetRowGet(r, serialKey) ?? '').trim()
+  );
+  if (dataRows.length < 3 || candidates.length === 0) return null;
+
+  const scored = [];
+  for (const key of candidates) {
+    if (headerLooksLikeMetaNotCaixa(key)) continue;
+    const vals = dataRows.map((r) => String(sheetRowGet(r, key) ?? '').trim()).filter(Boolean);
+    const ratio = vals.length / dataRows.length;
+    if (ratio < 0.6) continue;
+    const lens = vals.map((v) => v.length).sort((a, b) => a - b);
+    const med = lens[Math.floor(lens.length / 2)];
+    if (med > 48) continue;
+    const h = normSheetHeader(key).toLowerCase();
+    const nameBonus = /caixa|embal|\bcx\b|box|pack|carton|ref\s*cx|cx\s*ref/i.test(h) ? 0.2 : 0;
+    scored.push({ key, score: ratio + nameBonus });
+  }
+  scored.sort((a, b) => b.score - a.score);
+  return scored[0]?.key || null;
+};
+
+/**
+ * @param {Array<object>} rows - resultado de XLSX.utils.sheet_to_json
+ * @param {{ seriaisOnly?: boolean }} opts - seriaisOnly: exige coluna S/N (import dedicado)
+ * @returns {{ ok: true, parsed: Array } | { ok: false, message: string }}
+ */
+const parseImportadosFromSheetRows = (rows, opts = {}) => {
+  const seriaisOnly = opts.seriaisOnly === true;
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return { ok: false, message: 'Ficheiro vazio ou sem linhas.' };
+  }
+  const header = Object.keys(rows[0] || {});
+  const codigoKey = findHeaderKey(header, (h) => {
+    const t = String(h || '').trim();
+    if (/^cod$/i.test(t)) return true;
+    return /codigo|artigo|item.*codigo|item_codigo/i.test(t);
+  });
+  const descKey = findHeaderKey(header, (h) => /descricao|descri[cç][aã]o|nome/i.test(String(h)));
+  const qtyKey = findHeaderKey(header, (h) => /quantidade|qtd|quant|qty/i.test(String(h)));
+  const serialKey = findHeaderKey(header, (h) => serialHeaderMatches(h));
+  const caixaKey = findHeaderKey(header, (h) => {
+    const s = normSheetHeader(h);
+    return (
+      /caixa/i.test(s) ||
+      /embalagem|embal/i.test(s) ||
+      /\bbox\b|pack(ing)?|carton/i.test(s) ||
+      /cod(igo)?\s*da\s*caixa|c[aá]d(\.|igo)?\s*caixa/i.test(s) ||
+      /n[ºo°.]?\s*caixa|caixa\s*n[ºo°.]/i.test(s) ||
+      /^ref\.?\s*cx$/i.test(s) ||
+      /(?:^|\s)cx(?:\s|$|\.)/i.test(s)
+    );
+  });
+
+  if (!codigoKey) {
+    return { ok: false, message: 'Não consegui identificar a coluna de Código (COD / Código / Artigo).' };
+  }
+  if (seriaisOnly && !serialKey) {
+    return {
+      ok: false,
+      message: 'Coluna de número de série em falta (ex.: S/N, Serial, SN). Verifique o cabeçalho do ficheiro.'
+    };
+  }
+
+  const useLongSerialFormat =
+    Boolean(serialKey) &&
+    (!qtyKey || seriaisOnly || (qtyKey && preferLongSerialRows(rows, codigoKey, serialKey)));
+
+  let parsed = [];
+  if (useLongSerialFormat) {
+    const effectiveCaixaKey =
+      caixaKey ||
+      guessCaixaColumnKey(rows, header, { codigoKey, descKey, qtyKey, serialKey });
+    const groups = new Map();
+    for (const r of rows) {
+      const codigo = String(sheetRowGet(r, codigoKey) ?? '').trim();
+      if (!codigo) continue;
+      const k = codigo.toUpperCase();
+      const descricao = descKey ? String(sheetRowGet(r, descKey) ?? '').trim() : '';
+      const rawSn = String(sheetRowGet(r, serialKey) ?? '').trim();
+      const sns = rawSn ? parseSeriaisFromCell(rawSn) : [];
+      const caixaVal = effectiveCaixaKey ? String(sheetRowGet(r, effectiveCaixaKey) ?? '').trim() : '';
+      if (!groups.has(k)) {
+        groups.set(k, { codigo, descricao: descricao || '', linhas: [] });
+      } else if (descricao && !groups.get(k).descricao) {
+        groups.get(k).descricao = descricao;
+      }
+      for (const sn of sns) {
+        groups.get(k).linhas.push({ sn, caixa: caixaVal || null });
+      }
+    }
+    parsed = [...groups.values()]
+      .map((g) => {
+        const seriais_linhas = dedupeSeriaisLinhas(g.linhas);
+        return {
+          codigo: g.codigo,
+          descricao: g.descricao,
+          quantidade: seriais_linhas.length,
+          seriais_linhas,
+          seriais: linhasToSeriaisStrings(seriais_linhas)
+        };
+      })
+      .filter((x) => x.codigo && x.quantidade > 0);
+  } else if (qtyKey) {
+    const effectiveCaixaKeyQty =
+      caixaKey || guessCaixaColumnKey(rows, header, { codigoKey, descKey, qtyKey, serialKey });
+    parsed = rows
+      .map((r) => {
+        const codigo = String(sheetRowGet(r, codigoKey) ?? '').trim();
+        const descricao = descKey ? String(sheetRowGet(r, descKey) ?? '').trim() : '';
+        const quantidade = parseNumberPt(sheetRowGet(r, qtyKey));
+        const seriaisFromCell = serialKey ? parseSeriaisFromCell(sheetRowGet(r, serialKey)) : [];
+        const caixaVal = effectiveCaixaKeyQty ? String(sheetRowGet(r, effectiveCaixaKeyQty) ?? '').trim() : '';
+        const seriais_linhas = seriaisFromCell.map((sn) => ({
+          sn,
+          caixa: caixaVal || null
+        }));
+        return {
+          codigo,
+          descricao,
+          quantidade: Number.isFinite(quantidade) ? quantidade : NaN,
+          seriais_linhas,
+          seriais: linhasToSeriaisStrings(seriais_linhas)
+        };
+      })
+      .filter((x) => x.codigo && Number.isFinite(x.quantidade) && x.quantidade > 0);
+  } else {
+    return {
+      ok: false,
+      message:
+        'Indique coluna Quantidade, ou coluna S/N sem quantidade (uma linha por serial: COD + S/N + opcional Caixa).'
+    };
+  }
+
+  parsed = parsed.filter((x) => x.codigo && Number.isFinite(Number(x.quantidade)) && Number(x.quantidade) > 0);
+  if (parsed.length === 0) {
+    return { ok: false, message: 'Nenhuma linha válida (código e quantidade > 0, ou COD + S/N).' };
+  }
+  return { ok: true, parsed };
+};
+
+/** Funde linhas importadas de seriais com a lista atual (mesmo código de artigo). */
+const mergeImportadosComSeriais = (prev, extraParsed) => {
+  const next = Array.isArray(prev) ? [...prev] : [];
+  for (const novo of extraParsed || []) {
+    const k = String(novo.codigo || '').trim().toUpperCase();
+    if (!k) continue;
+    const idx = next.findIndex((x) => String(x.codigo || '').trim().toUpperCase() === k);
+    if (idx >= 0) {
+      const cur = next[idx];
+      const base =
+        cur.seriais_linhas?.length > 0 ? cur.seriais_linhas : seriaisToLinhas(cur.seriais || []);
+      const novos = novo.seriais_linhas?.length ? novo.seriais_linhas : seriaisToLinhas(novo.seriais || []);
+      const merged = dedupeSeriaisLinhas([...base, ...novos]);
+      const qBase = Number(cur.quantidade) || 0;
+      next[idx] = {
+        ...cur,
+        descricao: String(novo.descricao || '').trim() || cur.descricao,
+        seriais_linhas: merged,
+        seriais: linhasToSeriaisStrings(merged),
+        quantidade: merged.length > 0 ? merged.length : qBase
+      };
+    } else {
+      next.push(novo);
+    }
+  }
+  return next;
 };
 
 const isCentralWarehouse = (a) => {
@@ -52,6 +382,7 @@ const extrairCodigoManual = (valor) => {
 const TransferenciasRecebimento = () => {
   const navigate = useNavigate();
   const { user } = useAuth();
+  const refSeriaisFile = useRef(null);
   const [toast, setToast] = useState(null);
 
   const [loadingArmazens, setLoadingArmazens] = useState(false);
@@ -80,6 +411,7 @@ const TransferenciasRecebimento = () => {
   const [manualCodigo, setManualCodigo] = useState('');
   const [manualQtd, setManualQtd] = useState('');
   const [manualDescricao, setManualDescricao] = useState('');
+  const [manualSeriais, setManualSeriais] = useState('');
   const [observacoesVisual, setObservacoesVisual] = useState('');
   const [itensFiltradosManual, setItensFiltradosManual] = useState([]);
   const [itensBuscaManualLoading, setItensBuscaManualLoading] = useState(false);
@@ -138,6 +470,7 @@ const TransferenciasRecebimento = () => {
     setManualCodigo('');
     setManualQtd('');
     setManualDescricao('');
+    setManualSeriais('');
     setObservacoesVisual('');
     setStage('setup');
   }, [receivingId]);
@@ -242,28 +575,60 @@ const TransferenciasRecebimento = () => {
       setToast({ type: 'error', message: 'Indique uma quantidade numérica maior que zero.' });
       return;
     }
+    const novosLinhas = parseSeriaisLinhasMultiline(manualSeriais);
     const k = codigo.toUpperCase();
     setImportados((prev) => {
       const idx = prev.findIndex((x) => String(x.codigo || '').trim().toUpperCase() === k);
       if (idx >= 0) {
         const next = [...prev];
         const cur = next[idx];
+        const baseLinhas =
+          cur.seriais_linhas?.length > 0 ? cur.seriais_linhas : seriaisToLinhas(cur.seriais || []);
+        const mergedLinhas = dedupeSeriaisLinhas([...baseLinhas, ...novosLinhas]);
         next[idx] = {
           ...cur,
           quantidade: Number(cur.quantidade) + q,
-          descricao: descricao || cur.descricao || ''
+          descricao: descricao || cur.descricao || '',
+          seriais_linhas: mergedLinhas,
+          seriais: linhasToSeriaisStrings(mergedLinhas)
         };
         return next;
       }
-      return [...prev, { codigo, quantidade: q, descricao }];
+      const linhas = novosLinhas;
+      return [
+        ...prev,
+        {
+          codigo,
+          quantidade: q,
+          descricao,
+          seriais_linhas: linhas,
+          seriais: linhasToSeriaisStrings(linhas)
+        }
+      ];
     });
     setManualCodigo('');
     setManualQtd('');
     setManualDescricao('');
-  }, [manualCodigo, manualDescricao, manualQtd, origemId, receivingId, itensFiltradosManual]);
+    setManualSeriais('');
+  }, [manualCodigo, manualDescricao, manualQtd, manualSeriais, origemId, receivingId, itensFiltradosManual]);
 
   const removerLinhaImportada = useCallback((idx) => {
     setImportados((prev) => prev.filter((_, i) => i !== idx));
+  }, []);
+
+  const atualizarSeriaisLinha = useCallback((idx, text) => {
+    setImportados((prev) => {
+      const next = [...prev];
+      const cur = next[idx];
+      if (!cur) return prev;
+      const seriais_linhas = parseSeriaisLinhasMultiline(text);
+      next[idx] = {
+        ...cur,
+        seriais_linhas,
+        seriais: linhasToSeriaisStrings(seriais_linhas)
+      };
+      return next;
+    });
   }, []);
 
   const handleFile = useCallback(
@@ -305,7 +670,8 @@ const TransferenciasRecebimento = () => {
           parsed = (data?.itens || []).map((it) => ({
             codigo: String(it?.codigo || '').trim(),
             descricao: String(it?.descricao || '').trim(),
-            quantidade: Number(it?.quantidade)
+            quantidade: Number(it?.quantidade),
+            seriais: []
           }));
         } else {
           const XLSX = await import('xlsx');
@@ -316,52 +682,68 @@ const TransferenciasRecebimento = () => {
 
           const ws = wb.Sheets[sheetName];
           const rows = XLSX.utils.sheet_to_json(ws, { defval: '' });
-          if (!Array.isArray(rows) || rows.length === 0) {
-            setToast({ type: 'error', message: 'Ficheiro vazio ou sem linhas.' });
+          const parsedResult = parseImportadosFromSheetRows(rows, { seriaisOnly: false });
+          if (!parsedResult.ok) {
+            setToast({ type: 'error', message: parsedResult.message });
             return;
           }
-
-          // inferir cabeçalhos
-          const header = Object.keys(rows[0] || {});
-          const codigoKey = findHeaderKey(header, (h) => /codigo|artigo|item.*codigo|item_codigo|cod/i.test(String(h)));
-          const descKey = findHeaderKey(header, (h) => /descricao|descri[cç][aã]o|nome/i.test(String(h)));
-          const qtyKey = findHeaderKey(header, (h) => /quantidade|qtd|quant|qty/i.test(String(h)));
-
-          if (!codigoKey || !qtyKey) {
-            setToast({
-              type: 'error',
-              message: 'Não consegui identificar as colunas de Código (e Quantidade). Verifique o template.'
-            });
-            return;
-          }
-
-          parsed = rows
-            .map((r) => {
-              const codigo = String(r[codigoKey] ?? '').trim();
-              const descricao = descKey ? String(r[descKey] ?? '').trim() : '';
-              const quantidade = parseNumberPt(r[qtyKey]);
-              return {
-                codigo,
-                descricao,
-                quantidade: Number.isFinite(quantidade) ? quantidade : NaN
-              };
-            })
-            .filter((x) => x.codigo && Number.isFinite(x.quantidade) && x.quantidade > 0);
-        }
-
-        parsed = parsed.filter((x) => x.codigo && Number.isFinite(Number(x.quantidade)) && Number(x.quantidade) > 0);
-
-        if (parsed.length === 0) {
-          setToast({ type: 'error', message: 'Nenhuma linha válida (código e quantidade > 0).' });
-          return;
+          parsed = parsedResult.parsed;
         }
 
         setImportados(parsed);
-        setToast({ type: 'success', message: `Importado: ${parsed.length} material(is). A criar transferência…` });
+        setToast({ type: 'success', message: `Importado: ${parsed.length} material(is).` });
       } catch (e) {
         setToast({ type: 'error', message: e.message || 'Erro ao importar ficheiro.' });
       } finally {
         setImporting(false);
+      }
+    },
+    [origemId, receivingId]
+  );
+
+  const handleImportSeriaisFile = useCallback(
+    async (file) => {
+      if (!file) return;
+      setImporting(true);
+      try {
+        const name = String(file.name || '');
+        const ext = name.split('.').pop()?.toLowerCase();
+        if (!['xlsx', 'xls', 'csv'].includes(ext)) {
+          setToast({ type: 'error', message: 'Importar seriais: use Excel ou CSV (.xlsx, .xls, .csv).' });
+          return;
+        }
+        if (!receivingId) {
+          setToast({ type: 'error', message: 'Selecione o armazém de recebimento.' });
+          return;
+        }
+        if (!origemId) {
+          setToast({ type: 'error', message: 'Selecione o armazém de origem.' });
+          return;
+        }
+
+        const XLSX = await import('xlsx');
+        const buf = await file.arrayBuffer();
+        const wb = XLSX.read(buf, { type: 'array' });
+        const sheetName = wb.SheetNames?.[0];
+        if (!sheetName) throw new Error('Sem folha no ficheiro.');
+        const ws = wb.Sheets[sheetName];
+        const rows = XLSX.utils.sheet_to_json(ws, { defval: '' });
+        const parsedResult = parseImportadosFromSheetRows(rows, { seriaisOnly: true });
+        if (!parsedResult.ok) {
+          setToast({ type: 'error', message: parsedResult.message });
+          return;
+        }
+
+        setImportados((prev) => mergeImportadosComSeriais(prev, parsedResult.parsed));
+        setToast({
+          type: 'success',
+          message: `Seriais importados: ${parsedResult.parsed.length} artigo(s) atualizado(s) ou adicionado(s).`
+        });
+      } catch (e) {
+        setToast({ type: 'error', message: e.message || 'Erro ao importar seriais.' });
+      } finally {
+        setImporting(false);
+        if (refSeriaisFile.current) refSeriaisFile.current.value = '';
       }
     },
     [origemId, receivingId]
@@ -390,16 +772,6 @@ const TransferenciasRecebimento = () => {
     a.click();
     window.URL.revokeObjectURL(url);
     setToast({ type: 'success', message: successMsg });
-  };
-
-  const fetchRequisicaoDetalhe = async (reqId) => {
-    const token = localStorage.getItem('token');
-    const response = await fetch(`/api/requisicoes/${reqId}`, {
-      headers: { Authorization: `Bearer ${token}` }
-    });
-    if (!response.ok) return null;
-    const data = await response.json();
-    return data;
   };
 
   const criarTransferenciaRecebimento = useCallback(async () => {
@@ -433,38 +805,67 @@ const TransferenciasRecebimento = () => {
           origem_armazem_id: origemId === 'FORNECEDOR' ? null : Number(origemId),
           origem_fornecedor: origemId === 'FORNECEDOR',
           recebimento_armazem_id: Number(receivingId),
-          itens: importados.map((m) => ({ codigo: m.codigo, quantidade: Number(m.quantidade), descricao: m.descricao })),
-          observacoes: 'Recebimento via UI'
+          itens: importados.map((m) => {
+            const linhas =
+              Array.isArray(m.seriais_linhas) && m.seriais_linhas.length > 0
+                ? dedupeSeriaisLinhas(m.seriais_linhas)
+                : seriaisToLinhas(Array.isArray(m.seriais) ? m.seriais : []);
+            const qRaw = Number(m.quantidade);
+            const q =
+              linhas.length > 0 && (!Number.isFinite(qRaw) || qRaw < 1) ? linhas.length : qRaw;
+            const row = {
+              codigo: m.codigo,
+              quantidade: q,
+              descricao: m.descricao
+            };
+            if (linhas.length) {
+              row.seriais_linhas = linhas.map(({ sn, caixa }) => {
+                const cx =
+                  caixa != null && String(caixa).trim() !== '' ? String(caixa).trim() : null;
+                if (!cx) return { serial: sn };
+                return { serial: sn, caixa: cx, codigo_caixa: cx };
+              });
+            }
+            return row;
+          }),
+          observacoes: String(observacoesVisual || '').trim() || 'Recebimento via UI'
         })
       });
 
       if (!res.ok) {
         const d = await res.json().catch(() => ({}));
-        throw new Error(d.error || d.message || 'Erro ao criar transferência a receber.');
+        const msg = [d.error || d.message, d.details].filter(Boolean).join(' — ');
+        throw new Error(msg || 'Erro ao criar transferência a receber.');
       }
 
       const data = await res.json();
       const id = data?.id ? Number(data.id) : null;
       if (!id) throw new Error('Recebimento criado mas sem id.');
 
-      const detalh = await fetchRequisicaoDetalhe(id);
+      // O POST já devolve a requisição completa; evitar 2.º GET (lento com muitos S/N) que deixava "A criar…" preso.
       setRecebimentoReqId(id);
-      setRecebimentoReq(detalh);
+      setRecebimentoReq(data);
 
-      // Inicial: quantidade original importada.
       const map = {};
-      for (const it of (detalh?.itens || [])) {
+      for (const it of (data?.itens || [])) {
         map[it.id] = Number(it.quantidade_preparada ?? it.quantidade ?? 0) || 0;
       }
       setConfirmQuantByItemId(map);
-      setToast({ type: 'success', message: 'Transferência criada. Aceda ao card de recebimento para preparar.' });
+      if (data?.aviso_codigo_caixa) {
+        setToast({
+          type: 'warning',
+          message: `${data.aviso_codigo_caixa} Depois de migrar a BD, crie outra transferência para gravar as caixas.`
+        });
+      } else {
+        setToast({ type: 'success', message: 'Transferência criada. Aceda ao card de recebimento para preparar.' });
+      }
       navigate('/transferencias?fluxo=recebimento');
     } catch (e) {
       setToast({ type: 'error', message: e.message || 'Erro ao criar transferência a receber.' });
     } finally {
       setCreating(false);
     }
-  }, [importados, navigate, origemId, receivingId]);
+  }, [importados, navigate, observacoesVisual, origemId, receivingId]);
 
   const confirmarMateriaisRecebimento = useCallback(async () => {
     if (!recebimentoReqId || !recebimentoReq) return;
@@ -678,7 +1079,42 @@ const TransferenciasRecebimento = () => {
                 className="w-full text-sm disabled:opacity-50"
               />
               <div className="mt-1 text-xs text-gray-500">
-                Excel/CSV: colunas <span className="font-mono">Código</span> e <span className="font-mono">Quantidade</span>. PDF: usa a cópia ORIGINAL da guia.
+                Materiais: <span className="font-mono">Código</span> + <span className="font-mono">Quantidade</span> (opcional S/N na
+                mesma folha), ou PDF da guia. Para só seriais use o botão abaixo.
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-4 rounded-lg border-2 border-[#0915FF]/25 bg-indigo-50/70 p-4 shadow-sm">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-sm font-semibold text-gray-900">Números de série (ficheiro)</div>
+                <p className="text-xs text-gray-600 mt-1">
+                  Excel ou CSV com <span className="font-mono">COD</span> + <span className="font-mono">S/N</span> (e opcional{' '}
+                  <span className="font-mono">Caixa</span>). Funde com a lista já adicionada — mesmos códigos acumulam S/N; códigos
+                  novos criam linha.
+                </p>
+              </div>
+              <div className="shrink-0">
+                <input
+                  ref={refSeriaisFile}
+                  type="file"
+                  accept=".xlsx,.xls,.csv"
+                  className="hidden"
+                  disabled={!receivingId || !origemId || importing}
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) handleImportSeriaisFile(f);
+                  }}
+                />
+                <button
+                  type="button"
+                  disabled={!receivingId || !origemId || importing}
+                  onClick={() => refSeriaisFile.current?.click()}
+                  className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-[#0915FF] text-white text-sm font-semibold hover:bg-[#070FCC] disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm"
+                >
+                  <FaUpload /> Importar seriais
+                </button>
               </div>
             </div>
           </div>
@@ -783,9 +1219,23 @@ const TransferenciasRecebimento = () => {
                   <FaPlus /> Adicionar Item
                 </button>
               </div>
+              <div className="sm:col-span-12">
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Números de série esperados (opcional)
+                </label>
+                <textarea
+                  value={manualSeriais}
+                  onChange={(e) => setManualSeriais(e.target.value)}
+                  disabled={!receivingId || !origemId}
+                  rows={2}
+                  placeholder="Um S/N por linha; ou S/N [tab] Caixa; ou S/N | Caixa"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0915FF] focus:border-transparent text-xs font-mono disabled:opacity-50"
+                />
+              </div>
             </div>
               <p className="mt-2 text-xs text-gray-500">
-                O código tem de existir no catálogo. Se repetir o mesmo código, as quantidades são somadas.
+                O código tem de existir no catálogo. Se repetir o mesmo código, quantidades e linhas S/N/caixa são fundidas.
+                Para artigos S/N, a quantidade tem de coincidir com o número de seriais ao criar a tarefa.
               </p>
             </div>
           </div>
@@ -799,25 +1249,46 @@ const TransferenciasRecebimento = () => {
                     {importados.map((it, idx) => (
                       <div
                         key={`${it.codigo}-${idx}`}
-                        className="flex items-center justify-between p-3 bg-gray-50 rounded-lg border border-gray-200"
+                        className="p-3 bg-gray-50 rounded-lg border border-gray-200 space-y-2"
                       >
-                        <div className="flex-1">
-                          <div className="font-medium text-gray-900">{it.codigo}</div>
-                          <div className="text-sm text-gray-500">{it.descricao || '—'}</div>
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="flex-1 min-w-0">
+                            <div className="font-medium text-gray-900">{it.codigo}</div>
+                            <div className="text-sm text-gray-500">{it.descricao || '—'}</div>
+                          </div>
+                          <div className="flex items-center gap-3 shrink-0">
+                            <span className="text-sm font-medium text-gray-700 whitespace-nowrap">
+                              Qtd: <span className="text-[#0915FF]">{Number(it.quantidade) || 0}</span>
+                              {((it.seriais_linhas && it.seriais_linhas.length) || (it.seriais || []).length) > 0 && (
+                                <span className="ml-2 text-xs font-normal text-gray-500">
+                                  · {(it.seriais_linhas || it.seriais || []).length} S/N
+                                </span>
+                              )}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => removerLinhaImportada(idx)}
+                              className="text-red-600 hover:text-red-800 p-2"
+                              aria-label={`Remover item ${it.codigo}`}
+                              title="Remover item"
+                            >
+                              <FaTrash />
+                            </button>
+                          </div>
                         </div>
-                        <div className="flex items-center gap-4">
-                          <span className="text-sm font-medium text-gray-700">
-                            Qtd: <span className="text-[#0915FF]">{Number(it.quantidade) || 0}</span>
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => removerLinhaImportada(idx)}
-                            className="text-red-600 hover:text-red-800 p-2"
-                            aria-label={`Remover item ${it.codigo}`}
-                            title="Remover item"
-                          >
-                            <FaTrash />
-                          </button>
+                        <div>
+                          <label className="block text-xs font-medium text-gray-600 mb-1">
+                            Seriais esperados (opcional)
+                          </label>
+                          <textarea
+                            value={formatLinhasForTextarea(
+                              it.seriais_linhas?.length ? it.seriais_linhas : seriaisToLinhas(it.seriais || [])
+                            )}
+                            onChange={(e) => atualizarSeriaisLinha(idx, e.target.value)}
+                            rows={3}
+                            placeholder={'Um S/N por linha, ou S/N [tab] Caixa'}
+                            className="w-full px-2 py-1.5 border border-gray-200 rounded-md text-xs font-mono focus:ring-2 focus:ring-[#0915FF] focus:border-transparent bg-white"
+                          />
                         </div>
                       </div>
                     ))}

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useConfirm } from '../contexts/ConfirmContext';
@@ -52,7 +52,7 @@ const isTipoControloSerial = (tipoControlo) => {
   return norm === 'S/N' || norm === 'SN' || norm === 'SERIAL';
 };
 
-/** Preferir `seriais` da API; senão partir `serialnumber` (legado). */
+/** Preferir `seriais` da API; senão partir `serialnumber` (legado). Ignora sufixo \\tcaixa na mesma linha. */
 function seriaisListFromItem(item) {
   if (Array.isArray(item?.seriais) && item.seriais.length > 0) {
     return item.seriais.map((s) => String(s || '').trim()).filter(Boolean);
@@ -60,7 +60,166 @@ function seriaisListFromItem(item) {
   return String(item?.serialnumber || '')
     .split(/\r?\n|;|\|/)
     .map((s) => String(s || '').trim())
-    .filter(Boolean);
+    .filter(Boolean)
+    .map((line) => {
+      const t = line.indexOf('\t');
+      if (t > 0) return line.slice(0, t).trim();
+      const p = line.indexOf('|');
+      if (p > 0) return line.slice(0, p).trim();
+      return line;
+    });
+}
+
+/** S/N esperados com caixa opcional (`seriais_detalhe` da API ou lista plana). */
+function seriaisDetalheFromItem(item) {
+  if (Array.isArray(item?.seriais_detalhe) && item.seriais_detalhe.length > 0) {
+    const rows = item.seriais_detalhe
+      .map((r) => ({
+        serialnumber: String(r.serialnumber || r.sn || '').trim(),
+        codigo_caixa: (() => {
+          const a = r.codigo_caixa != null ? String(r.codigo_caixa).trim() : '';
+          const b = r.caixa != null ? String(r.caixa).trim() : '';
+          const c = r.box != null ? String(r.box).trim() : '';
+          return a || b || c || '';
+        })()
+      }))
+      .filter((r) => r.serialnumber);
+    const temCaixa = rows.some((r) => r.codigo_caixa);
+    if (temCaixa) return rows;
+    if (Array.isArray(item?.seriais) && item.seriais.length > 0 && typeof item.seriais[0] === 'object') {
+      const porSn = new Map();
+      for (const s of item.seriais) {
+        const sn = String(s?.serialnumber || s?.serial || s?.sn || '').trim();
+        const cx = String(s?.codigo_caixa || s?.caixa || s?.box || '').trim();
+        if (sn && cx) porSn.set(sn.toUpperCase(), cx);
+      }
+      if (porSn.size > 0) {
+        return rows.map((r) => ({
+          ...r,
+          codigo_caixa: r.codigo_caixa || porSn.get(r.serialnumber.toUpperCase()) || ''
+        }));
+      }
+    }
+    return rows;
+  }
+  if (Array.isArray(item?.seriais) && item.seriais.length > 0 && typeof item.seriais[0] === 'object') {
+    return item.seriais
+      .map((s) => ({
+        serialnumber: String(s?.serialnumber || s?.serial || s?.sn || '').trim(),
+        codigo_caixa: String(s?.codigo_caixa || s?.caixa || s?.box || '').trim()
+      }))
+      .filter((r) => r.serialnumber);
+  }
+  const list = seriaisListFromItem(item);
+  return list.map((sn) => ({ serialnumber: sn, codigo_caixa: '' }));
+}
+
+/** Normaliza texto na conferência (trim, maiúsculas, acentos). */
+function conferenciaNorm(s) {
+  return String(s || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+}
+
+/** Compara S/N na conferência (trim, ignora maiúsculas e acentos). */
+function serialConferenciaMatch(digitado, esperado) {
+  return conferenciaNorm(digitado) === conferenciaNorm(esperado);
+}
+
+/** S/N esperados com a mesma referência de caixa (vários artigos podem partilhar caixa no import). */
+function seriaisAceitesParaCaixa(det, codigoCaixaRef) {
+  const k = conferenciaNorm(codigoCaixaRef);
+  if (!k) return null;
+  const set = new Set();
+  for (const r of det || []) {
+    if (conferenciaNorm(r.codigo_caixa) !== k) continue;
+    const sn = String(r.serialnumber || '').trim();
+    if (sn) set.add(sn);
+  }
+  return set.size ? [...set] : null;
+}
+
+/** Inteiro aleatório em [0, maxExclusive) (crypto). */
+function randomIntBelow(maxExclusive) {
+  if (maxExclusive <= 0) return 0;
+  const buf = new Uint32Array(1);
+  crypto.getRandomValues(buf);
+  return buf[0] % maxExclusive;
+}
+
+/** Escolhe `count` índices distintos em [0..n-1] pseudo-aleatórios (crypto). */
+function pickRandomDistinctIndices(n, count) {
+  if (n <= 0) return [];
+  const idx = Array.from({ length: n }, (_, i) => i);
+  for (let i = n - 1; i > 0; i--) {
+    const j = randomIntBelow(i + 1);
+    const t = idx[i];
+    idx[i] = idx[j];
+    idx[j] = t;
+  }
+  const k = Math.min(Math.max(1, count), n);
+  return idx.slice(0, k);
+}
+
+/**
+ * Amostra para conferência: pelo menos 1 S/N aleatório por caixa distinta (com código),
+ * depois preenche até ~10% do total (mínimo o já escolhido).
+ */
+function pickIndicesAmostraRecebimento(det) {
+  const n = det.length;
+  if (n <= 0) return [];
+
+  const porCaixa = new Map();
+  for (let i = 0; i < n; i++) {
+    const key = conferenciaNorm(det[i]?.codigo_caixa);
+    if (!porCaixa.has(key)) porCaixa.set(key, []);
+    porCaixa.get(key).push(i);
+  }
+
+  const chosen = new Set();
+  let nCaixasComCodigo = 0;
+
+  for (const [key, idxList] of porCaixa) {
+    if (!key) continue;
+    nCaixasComCodigo += 1;
+    const pick = idxList[randomIntBelow(idxList.length)];
+    chosen.add(pick);
+  }
+
+  if (chosen.size === 0 && porCaixa.has('')) {
+    const idxList = porCaixa.get('');
+    chosen.add(idxList[randomIntBelow(idxList.length)]);
+  }
+
+  const pct = Math.max(1, Math.ceil(n * 0.1));
+  const nTarget = Math.min(n, Math.max(chosen.size, pct));
+
+  const restantes = [];
+  for (let i = 0; i < n; i++) {
+    if (!chosen.has(i)) restantes.push(i);
+  }
+  for (let i = restantes.length - 1; i > 0; i--) {
+    const j = randomIntBelow(i + 1);
+    const t = restantes[i];
+    restantes[i] = restantes[j];
+    restantes[j] = t;
+  }
+  let r = 0;
+  while (chosen.size < nTarget && r < restantes.length) {
+    chosen.add(restantes[r]);
+    r += 1;
+  }
+
+  const out = [...chosen];
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = randomIntBelow(i + 1);
+    const t = out[i];
+    out[i] = out[j];
+    out[j] = t;
+  }
+  return { indices: out, nCaixasComCodigo };
 }
 
 /** Garante _ordemColeta 1..n por índice da grelha para dados já existentes (S/N). */
@@ -94,6 +253,13 @@ const formatMetrosSemZeros = (value) => {
   return num.toString();
 };
 
+/** Alinha texto de localização ao que costuma estar em `stock_lote` / `stock_serial` (espaços, NBSP). */
+const normalizarLocStockApi = (v) =>
+  String(v || '')
+    .replace(/\u00A0/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
 /** Itens LOTE/SN: uma linha por unidade; alinha ao nº em «quantidade preparada». */
 function resizeBobinasArray(prevBobinas, n) {
   const prev = Array.isArray(prevBobinas) ? [...prevBobinas] : [];
@@ -110,7 +276,12 @@ const PrepararRequisicao = () => {
   const location = useLocation();
   const paramsOrigem = new URLSearchParams(location.search || '');
   const origemPagina = String(paramsOrigem.get('origem') || '').toLowerCase();
-  const rotaRetorno = origemPagina === 'transferencias' ? '/transferencias' : '/requisicoes';
+  const rotaRetorno =
+    origemPagina === 'transferencias'
+      ? '/transferencias'
+      : origemPagina === 'devolucoes'
+        ? '/devolucoes'
+        : '/requisicoes';
   const [requisicao, setRequisicao] = useState(null);
   const [armazemOrigem, setArmazemOrigem] = useState(null);
   const [armazemDestino, setArmazemDestino] = useState(null);
@@ -131,6 +302,11 @@ const PrepararRequisicao = () => {
     page: 1
   });
   const [itemPreparando, setItemPreparando] = useState(null);
+  const [filtroEsperadoRecebimento, setFiltroEsperadoRecebimento] = useState('');
+  /** Amostra: ≥1 S/N por caixa + até ~10% (recebimento mercadoria). */
+  const [amostraConferencia, setAmostraConferencia] = useState(null);
+  /** Após ✓ em todas as linhas, o utilizador confirma a amostragem; só então pode guardar a preparação. */
+  const [amostragemConfirmada, setAmostragemConfirmada] = useState(false);
   const [formItem, setFormItem] = useState({
     quantidade_preparada: '',
     localizacao_origem: '',
@@ -153,11 +329,16 @@ const PrepararRequisicao = () => {
   const [seriaisLoteInput, setSeriaisLoteInput] = useState('');
   const [serialRapidoInput, setSerialRapidoInput] = useState('');
   const [serialRapidoCameraOpen, setSerialRapidoCameraOpen] = useState(false);
+  /** Linha da amostra de conferência (recebimento) para a qual abrir o leitor QR/barcode. */
+  const [amostraScannerUid, setAmostraScannerUid] = useState(null);
   const [snPagina, setSnPagina] = useState(1);
   const [reservandoCaixa, setReservandoCaixa] = useState(false);
   const [lotesDisponiveisPrep, setLotesDisponiveisPrep] = useState([]);
   const [loadingLotesPrep, setLoadingLotesPrep] = useState(false);
   const [loteDropdownAbertoIdx, setLoteDropdownAbertoIdx] = useState(null);
+  const [seriaisDisponiveisPrep, setSeriaisDisponiveisPrep] = useState([]);
+  const [loadingSeriaisPrep, setLoadingSeriaisPrep] = useState(false);
+  const [serialDropdownAbertoIdx, setSerialDropdownAbertoIdx] = useState(null);
   const [stockNacionalPrep, setStockNacionalPrep] = useState({ loading: false, valor: null });
   const [addItemSearch, setAddItemSearch] = useState('');
   const [addItemResults, setAddItemResults] = useState([]);
@@ -175,6 +356,7 @@ const PrepararRequisicao = () => {
   });
   // No ciclo de devolução (EM EXPEDICAO = "Em processo"): ao clicar "Receber" mostramos o botão de gerar TRA.
   const [receberAtivo, setReceberAtivo] = useState(false);
+  const [avancandoCicloDevolucao, setAvancandoCicloDevolucao] = useState(false);
   const RECEBER_ATIVO_IDS_KEY = 'devolucao_receber_ativo_ids_v1';
   const EDITAR_ARTIGOS_FOCO_KEY = 'devolucao_editar_artigos_foco_v1';
   const reqReceber = useMemo(() => {
@@ -281,6 +463,65 @@ const PrepararRequisicao = () => {
 
     return resumo;
   };
+
+  useEffect(() => {
+    setFiltroEsperadoRecebimento('');
+    setAmostraConferencia(null);
+    setAmostragemConfirmada(false);
+    setAmostraScannerUid(null);
+  }, [itemPreparando?.id]);
+
+  const gerarAmostra10Recebimento = useCallback((item) => {
+    const det = seriaisDetalheFromItem(item);
+    if (!det.length) {
+      setToast({ type: 'error', message: 'Sem seriais esperados para gerar amostra.' });
+      return;
+    }
+    const { indices, nCaixasComCodigo } = pickIndicesAmostraRecebimento(det);
+    const linhas = indices.map((i) => {
+      const esperadoSn = det[i].serialnumber;
+      const esperadoCaixa = det[i].codigo_caixa || '';
+      const porCaixa = seriaisAceitesParaCaixa(det, esperadoCaixa);
+      const seriaisAceites =
+        porCaixa && porCaixa.length > 0 ? porCaixa : [esperadoSn];
+      return {
+        uid: `${item.id}-${i}-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+        esperadoSn,
+        esperadoCaixa,
+        seriaisAceites,
+        input: '',
+        ok: false
+      };
+    });
+    setAmostragemConfirmada(false);
+    setAmostraConferencia({ itemId: item.id, linhas });
+    const msgCaixa =
+      nCaixasComCodigo > 0
+        ? ` ≥1 por ${nCaixasComCodigo} caixa(s)`
+        : '';
+    setToast({
+      type: 'success',
+      message: `Amostra: ${linhas.length} de ${det.length} serial(is)${msgCaixa} (até ~10% no total).`
+    });
+  }, []);
+
+  const atualizarAmostraInput = useCallback((uid, value) => {
+    setAmostragemConfirmada(false);
+    setAmostraConferencia((prev) => {
+      if (!prev || !Array.isArray(prev.linhas)) return prev;
+      return {
+        ...prev,
+        linhas: prev.linhas.map((L) => {
+          if (L.uid !== uid) return L;
+          const aceites = Array.isArray(L.seriaisAceites) && L.seriaisAceites.length > 0
+            ? L.seriaisAceites
+            : [L.esperadoSn];
+          const ok = aceites.some((s) => serialConferenciaMatch(value, s));
+          return { ...L, input: value, ok };
+        })
+      };
+    });
+  }, []);
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
@@ -428,7 +669,7 @@ const PrepararRequisicao = () => {
     );
   }, [preparacaoStockLoc.filtroAtivo]);
 
-  const fetchRequisicao = async (silent = false) => {
+  const fetchRequisicao = async (silent = false, { navigateOnError = true } = {}) => {
     try {
       if (!silent) setLoading(true);
       const token = localStorage.getItem('token');
@@ -453,10 +694,45 @@ const PrepararRequisicao = () => {
     } catch (error) {
       console.error('Erro ao buscar requisição:', error);
       setToast({ type: 'error', message: 'Erro ao carregar requisição' });
-      navigate(rotaRetorno);
+      if (navigateOnError) navigate(rotaRetorno);
       return null;
     } finally {
       setLoading(false);
+    }
+  };
+
+  /** Confirma separação + passa a EM EXPEDICAO (ciclo devolução viatura→central). */
+  const avancarCicloDevolucaoPosSeparacao = async ({
+    softFailOnAdvanceError = false,
+    navigateToDevolucoesMs = null,
+  } = {}) => {
+    try {
+      const token = localStorage.getItem('token');
+      await axios.patch(`/api/requisicoes/${id}/confirmar-separacao`, {}, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      await axios.patch(`/api/requisicoes/${id}/marcar-em-expedicao`, {}, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      await fetchRequisicao(true, { navigateOnError: false });
+      setToast({ type: 'success', message: 'Devolução em processo.' });
+      if (navigateToDevolucoesMs != null) {
+        setTimeout(() => navigate('/devolucoes'), navigateToDevolucoesMs);
+      }
+    } catch (e) {
+      console.error('Erro ao avançar ciclo da devolução:', e);
+      if (softFailOnAdvanceError) {
+        setToast({
+          type: 'success',
+          message: 'Separação da devolução concluída. Pode avançar o ciclo pelos botões.',
+        });
+        if (navigateToDevolucoesMs != null) {
+          setTimeout(() => navigate('/devolucoes'), navigateToDevolucoesMs);
+        }
+      } else {
+        const msg = e.response?.data?.error || 'Erro ao avançar ciclo da devolução';
+        setToast({ type: 'error', message: msg });
+      }
     }
   };
 
@@ -743,14 +1019,14 @@ const PrepararRequisicao = () => {
           headers: { 'Authorization': `Bearer ${token}` }
         });
         if (!resp.ok) {
-          const updated = await fetchRequisicao(true);
+          const updated = await fetchRequisicao(true, { navigateOnError: false });
           if ((updated?.status || '') !== 'EM EXPEDICAO') {
             const data = await resp.json().catch(() => ({}));
             throw new Error(data.error || 'Erro ao marcar em expedição');
           }
         }
       }
-      await fetchRequisicao(true);
+      await fetchRequisicao(true, { navigateOnError: false });
     } catch (error) {
       console.error('Erro ao exportar TRFL:', error);
       setToast({ type: 'error', message: error.message || 'Erro ao exportar TRFL' });
@@ -790,7 +1066,7 @@ const PrepararRequisicao = () => {
         window.dispatchEvent(new CustomEvent(RECEBIMENTO_REFRESH_EVENT));
       }
 
-      await fetchRequisicao(true);
+      await fetchRequisicao(true, { navigateOnError: false });
     } catch (error) {
       console.error('Erro ao exportar TRA:', error);
       setToast({ type: 'error', message: error.message || 'Erro ao exportar TRA' });
@@ -989,7 +1265,7 @@ const PrepararRequisicao = () => {
         throw new Error(data.error || 'Erro ao entregar');
       }
       setToast({ type: 'success', message: 'Requisição marcada como Entregue.' });
-      await fetchRequisicao(true);
+      await fetchRequisicao(true, { navigateOnError: false });
     } catch (error) {
       setToast({ type: 'error', message: error.message || 'Erro ao entregar' });
     }
@@ -1015,7 +1291,7 @@ const PrepararRequisicao = () => {
         throw new Error(data.error || 'Erro ao finalizar');
       }
       setToast({ type: 'success', message: 'Devolução finalizada.' });
-      await fetchRequisicao(true);
+      await fetchRequisicao(true, { navigateOnError: false });
     } catch (error) {
       setToast({ type: 'error', message: error.message || 'Erro ao finalizar' });
     }
@@ -1093,23 +1369,10 @@ const PrepararRequisicao = () => {
       });
       setRequisicao(response.data);
       if (isFluxoDevolucao) {
-        // Para devoluções (viatura → central), após preparar a separação queremos avançar o ciclo
-        // para "Em processo" (status EM EXPEDICAO) automaticamente.
-        try {
-          await axios.patch(`/api/requisicoes/${id}/confirmar-separacao`, {}, {
-            headers: { 'Authorization': `Bearer ${token}` }
-          });
-          await axios.patch(`/api/requisicoes/${id}/marcar-em-expedicao`, {}, {
-            headers: { 'Authorization': `Bearer ${token}` }
-          });
-          await fetchRequisicao(true);
-          setToast({ type: 'success', message: 'Devolução em processo.' });
-        } catch (e) {
-          // Se a operação falhar (ex.: permissões), não interrompemos o fluxo principal.
-          console.error('Erro ao avançar ciclo da devolução:', e);
-          setToast({ type: 'success', message: 'Separação da devolução concluída. Pode avançar o ciclo pelos botões.' });
-        }
-        setTimeout(() => navigate('/devolucoes'), 1500);
+        await avancarCicloDevolucaoPosSeparacao({
+          softFailOnAdvanceError: true,
+          navigateToDevolucoesMs: 1500,
+        });
       } else {
         setToast({ type: 'success', message: 'Separação da requisição concluída!' });
         setTimeout(() => navigate(rotaRetorno), 1500);
@@ -1123,6 +1386,28 @@ const PrepararRequisicao = () => {
   const handlePrepararItem = async (e) => {
     e.preventDefault();
     if (!canPrepare || !itemPreparando) return;
+
+    const obsRec = String(requisicao?.observacoes || '').toUpperCase().startsWith(RECEBIMENTO_TRANSFERENCIA_MARKER);
+    if (obsRec && isTipoControloSerial(itemPreparando.tipocontrolo)) {
+      const linhasAm =
+        amostraConferencia?.itemId === itemPreparando.id ? (amostraConferencia.linhas || []) : [];
+      if (linhasAm.length > 0) {
+        if (!linhasAm.every((L) => L.ok)) {
+          setToast({
+            type: 'error',
+            message: 'Confirme todos os S/N da amostra de conferência (✓ verde em cada linha) antes de guardar.',
+          });
+          return;
+        }
+        if (!amostragemConfirmada) {
+          setToast({
+            type: 'error',
+            message: 'Clique em «Confirmar amostragem» antes de confirmar a preparação.',
+          });
+          return;
+        }
+      }
+    }
 
     const tipoControlo = (itemPreparando.tipocontrolo || '').toUpperCase();
     const isLote = tipoControlo === 'LOTE';
@@ -1229,7 +1514,7 @@ const PrepararRequisicao = () => {
           lote,
           serialnumber: (b.serialnumber || '').trim() || null,
           metros,
-          apeado: Boolean(b?.apeado),
+          apeado: isFluxoDevolucao && Boolean(b?.apeado),
         });
       }
       const lotesNorm = bobinasValidas.map((b) => String(b.lote || '').trim().toUpperCase());
@@ -1288,7 +1573,9 @@ const PrepararRequisicao = () => {
                   ? bobinasPayload.length
                   : qtdPreparadaParaPayload),
           quantidade_apeados:
-            tipoControlo === 'LOTE'
+            !isFluxoDevolucao
+              ? 0
+              : tipoControlo === 'LOTE'
               ? (Array.isArray(bobinasPayload) ? bobinasPayload.filter((b) => Boolean(b?.apeado)).length : 0)
               : (isTipoControloSerial(tipoControlo)
                   ? (formItem.bobinas || []).filter(
@@ -1301,6 +1588,7 @@ const PrepararRequisicao = () => {
           bobinas: tipoControlo === 'LOTE' ? bobinasPayload : undefined,
           serials: isTipoControloSerial(tipoControlo) ? bobinasPayload.map((b) => b.serialnumber) : undefined,
           serials_apeados: isTipoControloSerial(tipoControlo)
+            && isFluxoDevolucao
             ? (formItem.bobinas || [])
                 .filter((b) => Boolean(b?.apeado) && String(b?.serialnumber || '').trim())
                 .map((b) => String(b.serialnumber).trim())
@@ -1316,7 +1604,7 @@ const PrepararRequisicao = () => {
       );
       setToast({ type: 'success', message: 'Item preparado com sucesso!' });
       fecharPrepararItem();
-      await fetchRequisicao(true);
+      await fetchRequisicao(true, { navigateOnError: false });
     } catch (error) {
       const data = error.response?.data;
       let msg = data?.error || 'Erro ao preparar item';
@@ -1532,9 +1820,15 @@ const PrepararRequisicao = () => {
     [locsOrigemParaPreparacao, locOrigemPreparacaoAtual]
   );
 
+  /** Texto enviado à API de lotes/seriais: canónica ou digitado, normalizado (NBSP/espaços). */
+  const locParaLotesDisponibilidade = useMemo(
+    () => normalizarLocStockApi(locOrigemPreparacaoCanonica || locOrigemPreparacaoAtual || ''),
+    [locOrigemPreparacaoCanonica, locOrigemPreparacaoAtual]
+  );
+
   useEffect(() => {
     const tipoControlo = String(itemPreparando?.tipocontrolo || '').toUpperCase();
-    if (tipoControlo !== 'LOTE' || !itemPreparando?.item_id || !armazemOrigem?.id || !locOrigemPreparacaoCanonica) {
+    if (tipoControlo !== 'LOTE' || !itemPreparando?.item_id || !armazemOrigem?.id || !locParaLotesDisponibilidade) {
       setLotesDisponiveisPrep([]);
       setLoadingLotesPrep(false);
       return;
@@ -1546,9 +1840,9 @@ const PrepararRequisicao = () => {
       try {
         const token = localStorage.getItem('token');
         const p = new URLSearchParams();
-        p.set('item_id', itemPreparando.item_id);
-        p.set('armazem_id', armazemOrigem.id);
-        p.set('localizacao', locOrigemPreparacaoCanonica);
+        p.set('item_id', String(Number(itemPreparando.item_id)));
+        p.set('armazem_id', String(Number(armazemOrigem.id)));
+        p.set('localizacao', locParaLotesDisponibilidade);
         const response = await fetch(`/api/requisicoes/stock/disponibilidade?${p.toString()}`, {
           headers: { Authorization: `Bearer ${token}` },
         });
@@ -1556,11 +1850,12 @@ const PrepararRequisicao = () => {
         if (!response.ok) throw new Error(data.error || 'Erro ao carregar lotes disponíveis');
         if (!active) return;
         const lotes = Array.isArray(data.lotes) ? data.lotes : [];
-        const somenteDisponiveis = lotes.filter((l) => Number(l?.quantidade_disponivel) > 0);
-        setLotesDisponiveisPrep(somenteDisponiveis);
-      } catch (_e) {
+        setLotesDisponiveisPrep(lotes);
+      } catch (e) {
         if (!active) return;
         setLotesDisponiveisPrep([]);
+        const msg = e && e.message ? String(e.message) : 'Erro ao carregar lotes';
+        setToast({ type: 'error', message: msg });
       } finally {
         if (active) setLoadingLotesPrep(false);
       }
@@ -1570,7 +1865,53 @@ const PrepararRequisicao = () => {
     return () => {
       active = false;
     };
-  }, [itemPreparando?.item_id, itemPreparando?.tipocontrolo, armazemOrigem?.id, locOrigemPreparacaoCanonica]);
+  }, [itemPreparando?.item_id, itemPreparando?.tipocontrolo, armazemOrigem?.id, locParaLotesDisponibilidade]);
+
+  useEffect(() => {
+    const tipoControlo = String(itemPreparando?.tipocontrolo || '').toUpperCase();
+    if (
+      !isTipoControloSerial(tipoControlo)
+      || !itemPreparando?.item_id
+      || !armazemOrigem?.id
+      || !locParaLotesDisponibilidade
+    ) {
+      setSeriaisDisponiveisPrep([]);
+      setLoadingSeriaisPrep(false);
+      return;
+    }
+
+    let active = true;
+    const loadSeriais = async () => {
+      setLoadingSeriaisPrep(true);
+      try {
+        const token = localStorage.getItem('token');
+        const p = new URLSearchParams();
+        p.set('item_id', String(Number(itemPreparando.item_id)));
+        p.set('armazem_id', String(Number(armazemOrigem.id)));
+        p.set('localizacao', locParaLotesDisponibilidade);
+        const response = await fetch(`/api/requisicoes/stock/disponibilidade?${p.toString()}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.error || 'Erro ao carregar seriais disponíveis');
+        if (!active) return;
+        const seriais = Array.isArray(data.seriais) ? data.seriais : [];
+        setSeriaisDisponiveisPrep(seriais);
+      } catch (e) {
+        if (!active) return;
+        setSeriaisDisponiveisPrep([]);
+        const msg = e && e.message ? String(e.message) : 'Erro ao carregar seriais';
+        setToast({ type: 'error', message: msg });
+      } finally {
+        if (active) setLoadingSeriaisPrep(false);
+      }
+    };
+
+    loadSeriais();
+    return () => {
+      active = false;
+    };
+  }, [itemPreparando?.item_id, itemPreparando?.tipocontrolo, armazemOrigem?.id, locParaLotesDisponibilidade]);
 
   const aplicarLoteNaBobina = (idxBob, loteSelecionado) => {
     const loteNormalizado = String(loteSelecionado || '').trim();
@@ -1591,8 +1932,23 @@ const PrepararRequisicao = () => {
     }));
   };
 
+  const aplicarSerialSugestao = (idxBob, snSelecionado) => {
+    const sn = String(snSelecionado || '').trim();
+    if (!sn) return;
+    setFormItem((prev) => ({
+      ...prev,
+      bobinas: (prev.bobinas || []).map((bb, i) => {
+        if (i !== idxBob) return bb;
+        const had = String(bb.serialnumber || '').trim();
+        if (!had) return { ...bb, serialnumber: sn, _ordemColeta: bumpColetaOrdem() };
+        return { ...bb, serialnumber: sn };
+      }),
+    }));
+  };
+
   useEffect(() => {
     setLocOrigemSugestoesOpen(false);
+    setSerialDropdownAbertoIdx(null);
   }, [itemPreparando?.id]);
 
   if (loading) {
@@ -1626,9 +1982,21 @@ const PrepararRequisicao = () => {
   const preparacaoBloqueadaOutrem = preparacaoReservadaOutroUtilizador(requisicao, user);
   const podeAgirSeparacao = canPrepare && !preparacaoBloqueadaOutrem;
   const podeTrflTraReporte = podeAgirSeparacao && podeDocsPosSeparacao;
-  const isFluxoDevolucao =
+  const tipoRequisicaoNorm = String(requisicao?.tipo || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+  /** Alinhar à API (`devolucao`, `devolucao de carrinha`) — muitas requisições da lista devoluções vêm sem `tipo`. */
+  const isDevolucaoCarrinha =
+    tipoRequisicaoNorm === 'devolucao de carrinha' ||
+    tipoRequisicaoNorm === 'devolucao';
+  const geometriaDevolucaoViaturaCentral =
     String(armazemOrigem?.tipo || requisicao.armazem_origem_tipo || '').toLowerCase() === 'viatura' &&
     String(armazemDestino?.tipo || requisicao.armazem_destino_tipo || '').toLowerCase() === 'central';
+  const isFluxoDevolucao =
+    geometriaDevolucaoViaturaCentral &&
+    (isDevolucaoCarrinha || origemPagina === 'devolucoes');
   const isFluxoRecebimentoMercadoria = String(requisicao?.observacoes || '')
     .toUpperCase()
     .startsWith(RECEBIMENTO_TRANSFERENCIA_MARKER);
@@ -1957,7 +2325,22 @@ const PrepararRequisicao = () => {
               const isPreparando = itemPreparando?.id === item.id;
               const preparado = item.preparacao_confirmada === true;
               const seriaisDoItem = seriaisListFromItem(item);
+              const detalheEsperadoReceb = seriaisDetalheFromItem(item);
               const seriaisInlineMuitos = seriaisDoItem.length > SN_INLINE_PREVIEW;
+              const qFiltroRec = String(filtroEsperadoRecebimento || '')
+                .normalize('NFD')
+                .replace(/[\u0300-\u036f]/g, '')
+                .toLowerCase()
+                .trim();
+              const detalheEsperadoFiltrado = !qFiltroRec
+                ? detalheEsperadoReceb
+                : detalheEsperadoReceb.filter(
+                    (row) =>
+                      row.serialnumber.toLowerCase().includes(qFiltroRec) ||
+                      String(row.codigo_caixa || '')
+                        .toLowerCase()
+                        .includes(qFiltroRec)
+                  );
 
               return (
                 <div
@@ -2314,6 +2697,192 @@ const PrepararRequisicao = () => {
                           )}
                         </div>
                       </section>
+                      {isFluxoRecebimentoMercadoria &&
+                        isTipoControloSerial(item.tipocontrolo) &&
+                        detalheEsperadoReceb.length > 0 && (
+                          <section className="rounded-xl border border-emerald-200 bg-emerald-50/50 p-4 shadow-sm space-y-2">
+                            <h4 className="text-sm font-semibold text-emerald-900">
+                              S/N e caixa esperados (conferência)
+                            </h4>
+                            <p className="text-[11px] text-emerald-800/90">
+                              Lista definida na criação da tarefa. Filtre por parte do número de série ou do código de
+                              caixa.
+                            </p>
+                            <input
+                              type="search"
+                              value={filtroEsperadoRecebimento}
+                              onChange={(e) => setFiltroEsperadoRecebimento(e.target.value)}
+                              className="w-full max-w-md px-3 py-2 border border-emerald-200 rounded-lg text-sm font-mono bg-white"
+                              placeholder="Serial ou caixa…"
+                              autoComplete="off"
+                            />
+                            <div className="text-[11px] text-emerald-800">
+                              {detalheEsperadoFiltrado.length} de {detalheEsperadoReceb.length} linha(s)
+                              {qFiltroRec && detalheEsperadoFiltrado.length === 0 && (
+                                <span className="ml-2 font-medium text-amber-800">— sem correspondência</span>
+                              )}
+                            </div>
+                            <div className="max-h-52 overflow-y-auto rounded-lg border border-emerald-100 bg-white">
+                              <table className="min-w-full text-xs">
+                                <thead>
+                                  <tr className="bg-emerald-100/90 text-left text-emerald-900">
+                                    <th className="px-2 py-1.5 font-semibold">S/N</th>
+                                    <th className="px-2 py-1.5 font-semibold">Caixa</th>
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y divide-emerald-50">
+                                  {detalheEsperadoFiltrado.map((row, ri) => (
+                                    <tr key={`${row.serialnumber}-${ri}`}>
+                                      <td className="px-2 py-1.5 font-mono break-all align-top">{row.serialnumber}</td>
+                                      <td className="px-2 py-1.5 font-mono break-all align-top text-gray-700">
+                                        {row.codigo_caixa || '—'}
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                            <div className="mt-4 pt-3 border-t border-emerald-200/90 space-y-3">
+                              <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center sm:justify-between gap-2">
+                                <h5 className="text-xs font-semibold uppercase tracking-wide text-emerald-900">
+                                  Amostra (1 S/N por caixa + ~10%)
+                                </h5>
+                                <div className="flex flex-wrap gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => gerarAmostra10Recebimento(item)}
+                                    className="px-3 py-1.5 rounded-lg bg-amber-600 text-white text-xs font-bold hover:bg-amber-700 shadow-sm"
+                                  >
+                                    GERAR AMOSTRA
+                                  </button>
+                                  {amostraConferencia?.itemId === item.id && (amostraConferencia.linhas || []).length > 0 && (
+                                    <button
+                                      type="button"
+                                      onClick={() => gerarAmostra10Recebimento(item)}
+                                      className="px-3 py-1.5 rounded-lg border border-emerald-700 text-emerald-900 text-xs font-semibold bg-white hover:bg-emerald-100/80"
+                                    >
+                                      Nova amostra
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                              <p className="text-[10px] text-emerald-800/90">
+                                Inclui pelo menos 1 S/N aleatório por caixa (com código) e até ~10% do total. Por linha: confira o
+                                físico e digite o S/N ou use
+                                a câmara para ler código de barras / QR. Com todas as linhas ✓, use «Confirmar amostragem»;
+                                só depois poderá «Confirmar preparação». Qualquer alteração nos S/N da amostra anula essa
+                                confirmação.
+                              </p>
+                              {amostraConferencia?.itemId === item.id && (amostraConferencia.linhas || []).length > 0 && (
+                                <>
+                                  <div className="max-h-64 overflow-y-auto rounded-lg border border-amber-100 bg-white">
+                                    <table className="min-w-full text-xs">
+                                      <thead>
+                                        <tr className="bg-amber-50 text-left">
+                                          <th className="px-2 py-1.5 font-semibold text-amber-900 w-8">#</th>
+                                          <th className="px-2 py-1.5 font-semibold text-amber-900">Caixa (referência)</th>
+                                          <th className="px-2 py-1.5 font-semibold text-amber-900">Confirme o S/N</th>
+                                          <th className="px-2 py-1.5 font-semibold text-amber-900 w-10 text-center">
+                                            OK
+                                          </th>
+                                        </tr>
+                                      </thead>
+                                      <tbody className="divide-y divide-amber-50/80">
+                                        {amostraConferencia.linhas.map((L, ai) => (
+                                          <tr key={L.uid}>
+                                            <td className="px-2 py-1.5 tabular-nums text-gray-600 align-middle">
+                                              {ai + 1}
+                                            </td>
+                                            <td className="px-2 py-1.5 font-mono break-all text-gray-800 align-middle">
+                                              {L.esperadoCaixa || '—'}
+                                            </td>
+                                            <td className="px-2 py-1.5 align-middle">
+                                              <div className="flex gap-1.5 items-center min-w-0">
+                                                <input
+                                                  type="text"
+                                                  value={L.input}
+                                                  onChange={(e) => atualizarAmostraInput(L.uid, e.target.value)}
+                                                  className="flex-1 min-w-[8rem] px-2 py-1.5 border border-gray-200 rounded font-mono text-xs"
+                                                  placeholder="Digite o serial…"
+                                                  autoComplete="off"
+                                                  spellCheck={false}
+                                                />
+                                                <button
+                                                  type="button"
+                                                  onClick={() => setAmostraScannerUid(L.uid)}
+                                                  className="shrink-0 px-2.5 py-1.5 border border-amber-300 rounded text-amber-900 hover:bg-amber-50 flex items-center gap-1 text-[11px] font-semibold"
+                                                  title="Ler serial com a câmara (código de barras ou QR)"
+                                                >
+                                                  <FaQrcode /> Câmara
+                                                </button>
+                                              </div>
+                                            </td>
+                                            <td className="px-2 py-1.5 text-center align-middle">
+                                              {L.ok ? (
+                                                <span className="inline-flex text-emerald-600" title="Coincide com o esperado">
+                                                  <FaCheck />
+                                                </span>
+                                              ) : (
+                                                String(L.input || '').trim() !== '' && (
+                                                  <span className="text-red-600 font-bold" title="Não coincide">
+                                                    ×
+                                                  </span>
+                                                )
+                                              )}
+                                            </td>
+                                          </tr>
+                                        ))}
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                  <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center gap-2 justify-between">
+                                    <div className="text-[11px] text-emerald-900 font-medium tabular-nums">
+                                      Confirmados na amostra:{' '}
+                                      {amostraConferencia.linhas.filter((x) => x.ok).length} /{' '}
+                                      {amostraConferencia.linhas.length}
+                                    </div>
+                                    {(() => {
+                                      const linhasAm = amostraConferencia.linhas;
+                                      const todosOk =
+                                        linhasAm.length > 0 && linhasAm.every((L) => L.ok);
+                                      return (
+                                        <div className="flex flex-wrap items-center gap-2">
+                                          {amostragemConfirmada && todosOk && (
+                                            <span className="text-[11px] font-semibold text-emerald-700 flex items-center gap-1">
+                                              <FaCheck className="inline" /> Amostragem confirmada
+                                            </span>
+                                          )}
+                                          <button
+                                            type="button"
+                                            disabled={!todosOk || amostragemConfirmada}
+                                            onClick={() => {
+                                              if (!todosOk) {
+                                                setToast({
+                                                  type: 'error',
+                                                  message:
+                                                    'Preencha e valide todos os S/N da amostra (✓ em cada linha) antes de confirmar.',
+                                                });
+                                                return;
+                                              }
+                                              setAmostragemConfirmada(true);
+                                              setToast({
+                                                type: 'success',
+                                                message: 'Amostragem confirmada. Já pode confirmar a preparação.',
+                                              });
+                                            }}
+                                            className="px-3 py-1.5 rounded-lg bg-emerald-700 text-white text-xs font-bold hover:bg-emerald-800 disabled:opacity-45 disabled:cursor-not-allowed shadow-sm"
+                                          >
+                                            Confirmar amostragem
+                                          </button>
+                                        </div>
+                                      );
+                                    })()}
+                                  </div>
+                                </>
+                              )}
+                            </div>
+                          </section>
+                        )}
                       {(item.tipocontrolo || '').toUpperCase() === 'LOTE' && (
                         <section className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm space-y-3">
                           <h4 className="text-sm font-semibold text-gray-800">Bobinas (lote e metros)</h4>
@@ -2334,8 +2903,9 @@ const PrepararRequisicao = () => {
                                     .normalize('NFD')
                                     .replace(/[\u0300-\u036f]/g, '')
                                     .toUpperCase();
-                                  const lotesFiltrados = loteQuery
-                                    ? (lotesDisponiveisPrep || [])
+                                  const todosLotesLoc = lotesDisponiveisPrep || [];
+                                  const lotesFiltrados = loteQueryNorm
+                                    ? todosLotesLoc
                                         .filter((l) => {
                                           const loteTxt = String(l.lote || '');
                                           const loteNorm = loteTxt
@@ -2344,8 +2914,11 @@ const PrepararRequisicao = () => {
                                             .toUpperCase();
                                           return loteNorm.includes(loteQueryNorm);
                                         })
-                                        .slice(0, 8)
-                                    : [];
+                                        .slice(0, 24)
+                                    : todosLotesLoc.slice(0, 50);
+                                  const mostrarListaLotes =
+                                    loteDropdownAbertoIdx === idxBob
+                                    && Boolean(locParaLotesDisponibilidade);
                                   return (
                                 <div className="sm:col-span-2">
                                   <label className="block text-xs font-medium text-gray-700 mb-1">
@@ -2364,15 +2937,17 @@ const PrepararRequisicao = () => {
                                         setTimeout(() => setLoteDropdownAbertoIdx((prev) => (prev === idxBob ? null : prev)), 120);
                                       }}
                                       className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm"
-                                      placeholder="Lote"
+                                      placeholder="Pesquisar ou escolher lote da localização"
                                       autoComplete="off"
                                     />
-                                    {loteDropdownAbertoIdx === idxBob && loteQuery && (
-                                      <div className="absolute z-20 mt-1 w-full rounded-md border border-gray-200 bg-white shadow-lg max-h-44 overflow-auto">
-                                        {lotesFiltrados.length > 0 ? (
+                                    {mostrarListaLotes && (
+                                      <div className="absolute z-20 mt-1 w-full rounded-md border border-gray-200 bg-white shadow-lg max-h-60 overflow-auto">
+                                        {loadingLotesPrep ? (
+                                          <div className="px-3 py-2 text-xs text-gray-500">A carregar lotes…</div>
+                                        ) : lotesFiltrados.length > 0 ? (
                                           lotesFiltrados.map((loteOpt) => (
                                             <button
-                                              key={`${idxBob}-${loteOpt.id}`}
+                                              key={`${idxBob}-${loteOpt.id}-${loteOpt.lote}`}
                                               type="button"
                                               onMouseDown={(e) => {
                                                 e.preventDefault();
@@ -2385,9 +2960,13 @@ const PrepararRequisicao = () => {
                                               <span className="text-gray-500"> ({formatMetrosSemZeros(loteOpt.quantidade_disponivel)} m)</span>
                                             </button>
                                           ))
+                                        ) : loteQuery ? (
+                                          <div className="px-3 py-2 text-xs text-gray-500">
+                                            Nenhum lote encontrado para &quot;{loteQuery}&quot; nesta localização.
+                                          </div>
                                         ) : (
                                           <div className="px-3 py-2 text-xs text-gray-500">
-                                            Nenhum lote encontrado para "{loteQuery}".
+                                            Nenhum lote com stock disponível nesta localização.
                                           </div>
                                         )}
                                       </div>
@@ -2396,7 +2975,7 @@ const PrepararRequisicao = () => {
                                   <p className="mt-1 text-[11px] text-gray-500">
                                     {loadingLotesPrep
                                       ? 'A carregar lotes disponíveis...'
-                                      : locOrigemPreparacaoCanonica
+                                      : locParaLotesDisponibilidade
                                         ? 'Ao selecionar um lote disponível, a metragem será preenchida automaticamente.'
                                         : 'Selecione primeiro a localização de saída para ver os lotes disponíveis.'}
                                   </p>
@@ -2426,26 +3005,28 @@ const PrepararRequisicao = () => {
                                   />
                                 </div>
                                 <div className="flex items-center gap-2">
-                                  <label className="inline-flex items-center gap-1 text-xs text-violet-800 mr-1">
-                                    <input
-                                      type="checkbox"
-                                      checked={Boolean(b?.apeado)}
-                                      onChange={(e) => {
-                                        const checked = Boolean(e.target.checked);
-                                        setFormItem((prev) => {
-                                          const bobinas = (prev.bobinas || []).map((bb, i) =>
-                                            i === idxBob ? { ...bb, apeado: checked } : bb
-                                          );
-                                          return {
-                                            ...prev,
-                                            bobinas,
-                                            quantidade_apeados: bobinas.filter((x) => Boolean(x?.apeado)).length,
-                                          };
-                                        });
-                                      }}
-                                    />
-                                    <span>APEADO</span>
-                                  </label>
+                                  {isFluxoDevolucao && (
+                                    <label className="inline-flex items-center gap-1 text-xs text-violet-800 mr-1">
+                                      <input
+                                        type="checkbox"
+                                        checked={Boolean(b?.apeado)}
+                                        onChange={(e) => {
+                                          const checked = Boolean(e.target.checked);
+                                          setFormItem((prev) => {
+                                            const bobinas = (prev.bobinas || []).map((bb, i) =>
+                                              i === idxBob ? { ...bb, apeado: checked } : bb
+                                            );
+                                            return {
+                                              ...prev,
+                                              bobinas,
+                                              quantidade_apeados: bobinas.filter((x) => Boolean(x?.apeado)).length,
+                                            };
+                                          });
+                                        }}
+                                      />
+                                      <span>APEADO</span>
+                                    </label>
+                                  )}
                                   <button
                                     type="button"
                                     onClick={() =>
@@ -2623,34 +3204,96 @@ const PrepararRequisicao = () => {
                                       Serial number {labelNum}
                                       <span className="ml-1 font-normal text-gray-400">(pos. requisição {idxBob + 1})</span>
                                     </label>
-                                    <div className="flex gap-2">
-                                      <input
-                                        type="text"
-                                        value={b.serialnumber}
-                                        onChange={(e) => {
-                                          const val = e.target.value;
-                                          setFormItem((prev) => ({
-                                            ...prev,
-                                            bobinas: prev.bobinas.map((bb, i) => {
-                                              if (i !== idxBob) return bb;
-                                              const had = String(bb.serialnumber || '').trim();
-                                              const nextTrim = String(val).trim();
-                                              if (!had && nextTrim) {
-                                                return { ...bb, serialnumber: val, _ordemColeta: bumpColetaOrdem() };
-                                              }
-                                              if (had && !nextTrim) {
-                                                return { ...bb, serialnumber: val, _ordemColeta: undefined };
-                                              }
-                                              return { ...bb, serialnumber: val };
-                                            }),
-                                          }));
-                                        }}
-                                        className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm"
-                                        placeholder="Informe o serial"
-                                        onKeyDown={(e) => {
-                                          if (e.key === 'Enter') e.preventDefault();
-                                        }}
-                                      />
+                                    {(() => {
+                                      const snQuery = String(b.serialnumber || '').trim();
+                                      const snNorm = snQuery
+                                        .normalize('NFD')
+                                        .replace(/[\u0300-\u036f]/g, '')
+                                        .toUpperCase();
+                                      const todosSnLoc = seriaisDisponiveisPrep || [];
+                                      const seriaisFiltrados = snNorm
+                                        ? todosSnLoc.filter((row) => {
+                                          const s = String(row?.serialnumber || '');
+                                          const sN = s
+                                            .normalize('NFD')
+                                            .replace(/[\u0300-\u036f]/g, '')
+                                            .toUpperCase();
+                                          return sN.includes(snNorm);
+                                        }).slice(0, 24)
+                                        : todosSnLoc.slice(0, 50);
+                                      const mostrarListaSn =
+                                        serialDropdownAbertoIdx === idxBob && Boolean(locParaLotesDisponibilidade);
+                                      return (
+                                    <div className="flex gap-2 w-full min-w-0">
+                                      <div className="relative flex-1 min-w-0">
+                                        <input
+                                          type="text"
+                                          value={b.serialnumber}
+                                          onChange={(e) => {
+                                            const val = e.target.value;
+                                            setFormItem((prev) => ({
+                                              ...prev,
+                                              bobinas: prev.bobinas.map((bb, i) => {
+                                                if (i !== idxBob) return bb;
+                                                const had = String(bb.serialnumber || '').trim();
+                                                const nextTrim = String(val).trim();
+                                                if (!had && nextTrim) {
+                                                  return { ...bb, serialnumber: val, _ordemColeta: bumpColetaOrdem() };
+                                                }
+                                                if (had && !nextTrim) {
+                                                  return { ...bb, serialnumber: val, _ordemColeta: undefined };
+                                                }
+                                                return { ...bb, serialnumber: val };
+                                              }),
+                                            }));
+                                          }}
+                                          className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm"
+                                          placeholder="Pesquisar ou escolher serial na localização"
+                                          onFocus={() => setSerialDropdownAbertoIdx(idxBob)}
+                                          onBlur={() => {
+                                            setTimeout(
+                                              () => setSerialDropdownAbertoIdx((prev) => (prev === idxBob ? null : prev)),
+                                              120
+                                            );
+                                          }}
+                                          onKeyDown={(e) => {
+                                            if (e.key === 'Enter') e.preventDefault();
+                                          }}
+                                        />
+                                        {mostrarListaSn && (
+                                          <div className="absolute z-20 mt-1 w-full rounded-md border border-gray-200 bg-white shadow-lg max-h-60 overflow-auto">
+                                            {loadingSeriaisPrep ? (
+                                              <div className="px-3 py-2 text-xs text-gray-500">A carregar seriais…</div>
+                                            ) : seriaisFiltrados.length > 0 ? (
+                                              seriaisFiltrados.map((rowSn) => (
+                                                <button
+                                                  key={`${idxBob}-sn-${rowSn.id}-${rowSn.serialnumber}`}
+                                                  type="button"
+                                                  onMouseDown={(e) => {
+                                                    e.preventDefault();
+                                                    aplicarSerialSugestao(idxBob, rowSn.serialnumber);
+                                                    setSerialDropdownAbertoIdx(null);
+                                                  }}
+                                                  className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 border-b border-gray-100 last:border-b-0"
+                                                >
+                                                  <span className="font-medium text-gray-800">{rowSn.serialnumber}</span>
+                                                  {rowSn.lote ? (
+                                                    <span className="text-gray-500"> · lote {rowSn.lote}</span>
+                                                  ) : null}
+                                                </button>
+                                              ))
+                                            ) : snQuery ? (
+                                              <div className="px-3 py-2 text-xs text-gray-500">
+                                                Nenhum serial disponível para &quot;{snQuery}&quot; nesta localização.
+                                              </div>
+                                            ) : (
+                                              <div className="px-3 py-2 text-xs text-gray-500">
+                                                Nenhum serial disponível nesta localização.
+                                              </div>
+                                            )}
+                                          </div>
+                                        )}
+                                      </div>
                                       <button
                                         type="button"
                                         onClick={() => {
@@ -2663,28 +3306,39 @@ const PrepararRequisicao = () => {
                                         <FaQrcode /> Câmara
                                       </button>
                                     </div>
+                                      );
+                                    })()}
+                                    <p className="mt-1 text-[11px] text-gray-500">
+                                      {loadingSeriaisPrep
+                                        ? 'A carregar seriais disponíveis…'
+                                        : locParaLotesDisponibilidade
+                                          ? 'Sugestões: stock «disponivel» nesta localização. Pode ainda digitar outro valor.'
+                                          : 'Selecione primeiro a localização de saída para ver seriais sugeridos.'}
+                                    </p>
                                   </div>
                                   <div className="flex items-center gap-2">
-                                    <label className="inline-flex items-center gap-1 text-xs text-violet-800 mr-1">
-                                      <input
-                                        type="checkbox"
-                                        checked={Boolean(b?.apeado)}
-                                        onChange={(e) => {
-                                          const checked = Boolean(e.target.checked);
-                                          setFormItem((prev) => {
-                                            const bobinas = (prev.bobinas || []).map((bb, i) =>
-                                              i === idxBob ? { ...bb, apeado: checked } : bb
-                                            );
-                                            return {
-                                              ...prev,
-                                              bobinas,
-                                              quantidade_apeados: bobinas.filter((x) => Boolean(x?.apeado)).length,
-                                            };
-                                          });
-                                        }}
-                                      />
-                                      <span>APEADO</span>
-                                    </label>
+                                    {isFluxoDevolucao && (
+                                      <label className="inline-flex items-center gap-1 text-xs text-violet-800 mr-1">
+                                        <input
+                                          type="checkbox"
+                                          checked={Boolean(b?.apeado)}
+                                          onChange={(e) => {
+                                            const checked = Boolean(e.target.checked);
+                                            setFormItem((prev) => {
+                                              const bobinas = (prev.bobinas || []).map((bb, i) =>
+                                                i === idxBob ? { ...bb, apeado: checked } : bb
+                                              );
+                                              return {
+                                                ...prev,
+                                                bobinas,
+                                                quantidade_apeados: bobinas.filter((x) => Boolean(x?.apeado)).length,
+                                              };
+                                            });
+                                          }}
+                                        />
+                                        <span>APEADO</span>
+                                      </label>
+                                    )}
                                     <button
                                       type="button"
                                       onClick={() =>
@@ -2766,26 +3420,28 @@ const PrepararRequisicao = () => {
                                       </div>
                                     </div>
                                     <div className="flex items-center gap-2">
-                                      <label className="inline-flex items-center gap-1 text-xs text-violet-800 mr-1">
-                                        <input
-                                          type="checkbox"
-                                          checked={Boolean(b?.apeado)}
-                                          onChange={(e) => {
-                                            const checked = Boolean(e.target.checked);
-                                            setFormItem((prev) => {
-                                              const bobinas = (prev.bobinas || []).map((bb, i) =>
-                                                i === idxBob ? { ...bb, apeado: checked } : bb
-                                              );
-                                              return {
-                                                ...prev,
-                                                bobinas,
-                                                quantidade_apeados: bobinas.filter((x) => Boolean(x?.apeado)).length,
-                                              };
-                                            });
-                                          }}
-                                        />
-                                        <span>APEADO</span>
-                                      </label>
+                                      {isFluxoDevolucao && (
+                                        <label className="inline-flex items-center gap-1 text-xs text-violet-800 mr-1">
+                                          <input
+                                            type="checkbox"
+                                            checked={Boolean(b?.apeado)}
+                                            onChange={(e) => {
+                                              const checked = Boolean(e.target.checked);
+                                              setFormItem((prev) => {
+                                                const bobinas = (prev.bobinas || []).map((bb, i) =>
+                                                  i === idxBob ? { ...bb, apeado: checked } : bb
+                                                );
+                                                return {
+                                                  ...prev,
+                                                  bobinas,
+                                                  quantidade_apeados: bobinas.filter((x) => Boolean(x?.apeado)).length,
+                                                };
+                                              });
+                                            }}
+                                          />
+                                          <span>APEADO</span>
+                                        </label>
+                                      )}
                                       <button
                                         type="button"
                                         onClick={() =>
@@ -2826,6 +3482,21 @@ const PrepararRequisicao = () => {
                             }}
                             title="Ler serial com a câmara (adiciona automaticamente)"
                             readerId="qr-reader-serial-rapido"
+                            closeOnScan
+                            formatsToSupport={FORMATOS_QR_BARCODE}
+                          />
+                          <QrScannerModal
+                            open={amostraScannerUid != null}
+                            onClose={() => setAmostraScannerUid(null)}
+                            onScan={(texto) => {
+                              const sn = String(texto || '').trim();
+                              if (!sn || !amostraScannerUid) return;
+                              atualizarAmostraInput(amostraScannerUid, sn);
+                              setAmostraScannerUid(null);
+                              setToast({ type: 'success', message: `S/N lido: ${sn}` });
+                            }}
+                            title="Ler serial (código de barras / QR)"
+                            readerId="qr-reader-amostra-conferencia"
                             closeOnScan
                             formatsToSupport={FORMATOS_QR_BARCODE}
                           />
@@ -3186,30 +3857,67 @@ const PrepararRequisicao = () => {
                             </p>
                           </div>
                         </div>
-                        <div className="flex flex-wrap gap-2 sm:justify-end">
-                          <button
-                            type="button"
-                            onClick={fecharPrepararItem}
-                            className="px-4 py-2.5 border border-gray-300 rounded-xl bg-white text-gray-700 text-sm font-medium hover:bg-gray-50 order-2 sm:order-1"
-                          >
-                            Cancelar
-                          </button>
-                          <button
-                            type="submit"
-                            disabled={submitting === item.id}
-                            className="px-5 py-2.5 bg-emerald-600 text-white rounded-xl hover:bg-emerald-700 disabled:opacity-50 flex items-center justify-center gap-2 text-sm font-semibold shadow-sm order-1 sm:order-2 min-w-[200px]"
-                          >
-                            {submitting === item.id ? (
+                        <div className="flex flex-col items-stretch sm:items-end gap-2 order-1 sm:order-2">
+                          {(() => {
+                            const linhasAmostra =
+                              amostraConferencia?.itemId === item.id
+                                ? (amostraConferencia.linhas || [])
+                                : [];
+                            const amostraTodosOk =
+                              linhasAmostra.length > 0 && linhasAmostra.every((L) => L.ok);
+                            const bloquearPelaAmostra =
+                              isFluxoRecebimentoMercadoria &&
+                              isTipoControloSerial(item.tipocontrolo) &&
+                              linhasAmostra.length > 0 &&
+                              (!amostraTodosOk || !amostragemConfirmada);
+                            return (
                               <>
-                                <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent" />
-                                A guardar…
+                                {isFluxoRecebimentoMercadoria &&
+                                  isTipoControloSerial(item.tipocontrolo) &&
+                                  linhasAmostra.length > 0 &&
+                                  !amostraTodosOk && (
+                                    <p className="text-xs text-amber-800 text-right max-w-md sm:ml-auto">
+                                      Preencha a amostra até ter ✓ verde em todas as linhas; depois use «Confirmar
+                                      amostragem» acima.
+                                    </p>
+                                  )}
+                                {isFluxoRecebimentoMercadoria &&
+                                  isTipoControloSerial(item.tipocontrolo) &&
+                                  linhasAmostra.length > 0 &&
+                                  amostraTodosOk &&
+                                  !amostragemConfirmada && (
+                                    <p className="text-xs text-amber-800 text-right max-w-md sm:ml-auto">
+                                      Confirme a amostragem com o botão na secção da amostra para desbloquear o guardar.
+                                    </p>
+                                  )}
+                                <div className="flex flex-wrap gap-2 sm:justify-end">
+                                  <button
+                                    type="button"
+                                    onClick={fecharPrepararItem}
+                                    className="px-4 py-2.5 border border-gray-300 rounded-xl bg-white text-gray-700 text-sm font-medium hover:bg-gray-50 order-2 sm:order-1"
+                                  >
+                                    Cancelar
+                                  </button>
+                                  <button
+                                    type="submit"
+                                    disabled={submitting === item.id || bloquearPelaAmostra}
+                                    className="px-5 py-2.5 bg-emerald-600 text-white rounded-xl hover:bg-emerald-700 disabled:opacity-50 flex items-center justify-center gap-2 text-sm font-semibold shadow-sm order-1 sm:order-2 min-w-[200px]"
+                                  >
+                                    {submitting === item.id ? (
+                                      <>
+                                        <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent" />
+                                        A guardar…
+                                      </>
+                                    ) : (
+                                      <>
+                                        <FaCheck /> Confirmar preparação
+                                      </>
+                                    )}
+                                  </button>
+                                </div>
                               </>
-                            ) : (
-                              <>
-                                <FaCheck /> Confirmar preparação
-                              </>
-                            )}
-                          </button>
+                            );
+                          })()}
                         </div>
                       </section>
                     </form>
@@ -3266,6 +3974,41 @@ const PrepararRequisicao = () => {
           {isSeparado && (
             <div className="mt-6 pt-6 border-t border-gray-200">
               <p className="text-green-600 font-medium">✓ Requisição totalmente preparada (Separadas)</p>
+              {isFluxoDevolucao &&
+                !requisicao.separacao_confirmada &&
+                podeAgirSeparacao && (
+                  <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-amber-900 text-sm">
+                    <p className="mb-3">
+                      A separação ficou registada como <strong>Separadas</strong>, mas o ciclo da devolução ainda não
+                      avançou para <strong>Em processo</strong>. Confirme abaixo para continuar (GERAR DEV / receção).
+                    </p>
+                    <button
+                      type="button"
+                      disabled={avancandoCicloDevolucao}
+                      onClick={async () => {
+                        if (preparacaoReservadaOutroUtilizador(requisicao, user)) {
+                          setToast({
+                            type: 'error',
+                            message: 'Esta requisição está a ser preparada por outro utilizador.',
+                          });
+                          return;
+                        }
+                        setAvancandoCicloDevolucao(true);
+                        try {
+                          await avancarCicloDevolucaoPosSeparacao({
+                            softFailOnAdvanceError: false,
+                            navigateToDevolucoesMs: null,
+                          });
+                        } finally {
+                          setAvancandoCicloDevolucao(false);
+                        }
+                      }}
+                      className="px-4 py-2.5 bg-amber-700 text-white rounded-lg hover:bg-amber-800 disabled:opacity-50 text-sm font-medium"
+                    >
+                      {avancandoCicloDevolucao ? 'A avançar…' : 'Avançar ciclo da devolução (Em processo)'}
+                    </button>
+                  </div>
+                )}
             </div>
           )}
 

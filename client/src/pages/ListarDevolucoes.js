@@ -1805,7 +1805,7 @@ const ListarDevolucoes = () => {
                             });
                             return;
                           }
-                          navigate(`/requisicoes/preparar/${r.id}`);
+                          navigate(`/requisicoes/preparar/${r.id}?origem=devolucoes`);
                         }}
                       >
                         <div className="grid grid-cols-1 lg:grid-cols-[260px_minmax(0,1fr)] gap-3">
@@ -1944,7 +1944,7 @@ const ListarDevolucoes = () => {
                                       handleConfirmarArtigosDevolucao(r.id);
                                       return;
                                     }
-                                    navigate(`/requisicoes/preparar/${r.id}`);
+                                    navigate(`/requisicoes/preparar/${r.id}?origem=devolucoes`);
                                   }}
                                   disabled={prepBloqueio}
                                 >
@@ -1971,7 +1971,7 @@ const ListarDevolucoes = () => {
                                       'devolucao_editar_artigos_foco_v1',
                                       JSON.stringify(Number(r.id))
                                     );
-                                    navigate(`/requisicoes/preparar/${r.id}`);
+                                    navigate(`/requisicoes/preparar/${r.id}?origem=devolucoes`);
                                   }}
                                   disabled={prepBloqueio}
                                   title="Editar artigos"
@@ -2166,7 +2166,7 @@ const ListarDevolucoes = () => {
                   setContextMenu((prev) => ({ ...prev, visible: false }));
                   return;
                 }
-                navigate(`/requisicoes/preparar/${contextMenu.req.id}`);
+                navigate(`/requisicoes/preparar/${contextMenu.req.id}?origem=devolucoes`);
                 setContextMenu((prev) => ({ ...prev, visible: false }));
               }}
             >

@@ -6,6 +6,7 @@
  *   npm run db:migrate                              → preparação
  *   npm run db:migrate:separacao                    → confirmação de separação
  *   npm run db:migrate:em-separacao                 → status EM SEPARACAO (separação em curso)
+ *   npm run db:migrate:movimentacao-interna-lotes   → lotes por ticket (TRFL linha a linha)
  */
 const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '.env') });
@@ -67,8 +68,12 @@ const migrationFile = path.join(
                           ? 'migrate-requisicoes-itens-quantidade-apeados.sql'
                       : arg === 'requisicoes-itens-serial-long' || arg === 'serial-long'
                         ? 'migrate-requisicoes-itens-serial-long.sql'
+                      : arg === 'requisicoes-itens-bobinas-apeado' || arg === 'bobinas-apeado'
+                        ? 'migrate-requisicoes-itens-bobinas-apeado.sql'
                       : arg === 'requisicoes-itens-seriais' || arg === 'itens-seriais'
                         ? 'migrate-requisicoes-itens-seriais.sql'
+                      : arg === 'requisicoes-itens-seriais-caixa' || arg === 'itens-seriais-caixa'
+                        ? 'migrate-requisicoes-itens-seriais-caixa.sql'
                       : arg === 'integrations-v1' || arg === 'integracoes-v1'
                         ? 'migrate-integrations-v1.sql'
                       : arg === 'localizacao-estoque' || arg === 'armazens-localizacao-item'
@@ -79,6 +84,8 @@ const migrationFile = path.join(
                         ? 'migrate-usuarios-pode-consulta-movimentos.sql'
                       : arg === 'movimentacao-interna' || arg === 'armazem-movimentacao-interna'
                         ? 'migrate-armazem-movimentacao-interna.sql'
+                      : arg === 'movimentacao-interna-lotes' || arg === 'armazem-movimentacao-interna-lotes'
+                        ? 'migrate-armazem-movimentacao-interna-lotes.sql'
                       : arg === 'requisicoes-trfl-tra-estoque' || arg === 'trfl-tra-estoque'
                         ? 'migrate-requisicoes-trfl-tra-estoque.sql'
                       : arg === 'requisicoes-movimentos-overrides' || arg === 'movimentos-overrides'

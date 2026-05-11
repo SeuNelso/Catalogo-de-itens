@@ -15,6 +15,44 @@ const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
 const fs = require('fs');
+/** Debug session NDJSON (não usar extensão `.log` — está em `.gitignore`). */
+const DEBUG_AGENT_TRANSF_LOC_NDJSON = path.join(__dirname, '..', 'debug-cfd2c9.ndjson');
+/** Extrai lista de seriais do body (nomes de campo legados / variantes). */
+function serialsArrayFromTransferenciaLinha(row) {
+  if (Array.isArray(row?.serials)) return row.serials;
+  if (Array.isArray(row?.seriais)) return row.seriais;
+  if (Array.isArray(row?.serial)) return row.serial;
+  const single = String(row?.serialnumber || row?.serial_number || row?.sn || '').trim();
+  if (single) return [single];
+  return [];
+}
+
+function debugAgentTransfLocAppend(payload) {
+  const line = `${JSON.stringify(payload)}\n`;
+  const cursorDir = path.join(__dirname, '..', '.cursor');
+  try {
+    fs.mkdirSync(cursorDir, { recursive: true });
+  } catch (_) {
+    /* ignore */
+  }
+  const targets = [
+    DEBUG_AGENT_TRANSF_LOC_NDJSON,
+    path.join(process.cwd(), 'debug-cfd2c9.ndjson'),
+    path.join(cursorDir, 'debug-cfd2c9.ndjson'),
+  ];
+  for (const p of targets) {
+    try {
+      fs.appendFileSync(p, line);
+      if (payload.hypothesisId === 'H-entry') {
+        console.warn('[DEBUG_CFD2C9] NDJSON append ok:', p);
+      }
+    } catch (e) {
+      if (payload.hypothesisId === 'H-entry') {
+        console.warn('[DEBUG_CFD2C9] NDJSON append fail:', p, String(e && e.message));
+      }
+    }
+  }
+}
 const sharp = require('sharp');
 
 const { pool, pgPoolMax } = require('./db/pool');
@@ -5690,10 +5728,11 @@ app.get('/api/armazens/:armazemId/localizacoes/:locId/estoque', authenticateToke
 });
 
 app.get('/api/armazens/:armazemId/localizacoes/:locId/itens/:itemId/seriais-disponiveis', authenticateToken, async (req, res) => {
-  if (!usuarioTemPermissaoControloStock(req)) {
+  /** Mesmo critério que `POST .../transferencia-localizacao`: listar S/N para escolher na UI. */
+  if (!usuarioTemPermissaoControloStock(req) && !usuarioPodeOperarTicketsMovInterna(req)) {
     return res.status(403).json({
       error:
-        'O seu perfil não tem permissão para controlo de stock. Um administrador pode ativar esta opção no utilizador.',
+        'O seu perfil não tem permissão para consultar seriais neste contexto (controlo de stock ou movimentação interna).',
       code: 'CONTROLO_STOCK_NEGADO',
     });
   }
@@ -6184,6 +6223,26 @@ app.post('/api/armazens/:armazemId/aplicar-stock-nacional-recebimento', authenti
 
 // Mover stock entre duas localizações do mesmo armazém central (sem requisição)
 app.post('/api/armazens/:armazemId/transferencia-localizacao', authenticateToken, async (req, res) => {
+  // #region agent log
+  debugAgentTransfLocAppend({
+    sessionId: 'cfd2c9',
+    runId: 'post-fix-4',
+    hypothesisId: 'H-entry',
+    message: 'transferencia-localizacao entered',
+    data: {
+      armazemIdParam: String(req.params?.armazemId || ''),
+      hasLinhas: Array.isArray(req.body?.linhas),
+      linhasLen: Array.isArray(req.body?.linhas) ? req.body.linhas.length : 0,
+      firstSerialsInBody: (() => {
+        const r = req.body?.linhas?.[0];
+        if (!r) return -1;
+        return serialsArrayFromTransferenciaLinha(r).length;
+      })(),
+      firstLineKeysSample: Object.keys(req.body?.linhas?.[0] || {}).slice(0, 20),
+    },
+    timestamp: Date.now(),
+  });
+  // #endregion
   const podeControlarStock = usuarioTemPermissaoControloStock(req);
   if (!podeControlarStock && !usuarioPodeOperarTicketsMovInterna(req)) {
     return res.status(403).json({
@@ -6267,6 +6326,23 @@ app.post('/api/armazens/:armazemId/transferencia-localizacao', authenticateToken
     if (chkOrig.rows.length === 0 || chkDst.rows.length === 0) {
       return res.status(404).json({ error: 'Uma ou ambas as localizações não pertencem a este armazém' });
     }
+    const locRows = await pool.query(
+      `SELECT id, armazem_id, localizacao
+       FROM armazens_localizacoes
+       WHERE id = ANY($1::int[])`,
+      [[origemLocId, destinoLocId]]
+    );
+    const locById = new Map((locRows.rows || []).map((r) => [Number(r.id), r]));
+    const origemLocRow = locById.get(Number(origemLocId));
+    const destinoLocRow = locById.get(Number(destinoLocId));
+    if (!origemLocRow || !destinoLocRow) {
+      return res.status(404).json({ error: 'Não foi possível resolver as localizações de origem/destino.' });
+    }
+    const origemLocLabel = String(origemLocRow.localizacao || '').trim();
+    const destinoLocLabel = String(destinoLocRow.localizacao || '').trim();
+    const destinoArmazemEfetivoId = modoApeado && Number.isFinite(apeadoArmazemId)
+      ? Number(apeadoArmazemId)
+      : Number(armazemId);
     const linhas = req.body?.linhas;
     if (!Array.isArray(linhas) || linhas.length === 0) {
       return res.status(400).json({ error: 'Body inválido: "linhas" (array não vazio) é obrigatório' });
@@ -6284,12 +6360,14 @@ app.post('/api/armazens/:armazemId/transferencia-localizacao', authenticateToken
       if (!Number.isFinite(q) || q <= 0) {
         return res.status(400).json({ error: 'Quantidade inválida (deve ser > 0).' });
       }
+      const serialsRaw = serialsArrayFromTransferenciaLinha(row);
       normalized.push({
         item_id: Number.isFinite(itemIdRaw) ? itemIdRaw : null,
         item_codigo: itemCodigoRaw,
         quantidade: q,
-        serials: Array.isArray(row?.serials)
-          ? row.serials.map((s) => String(s || '').trim()).filter(Boolean)
+        serials: serialsRaw.map((s) => String(s || '').trim()).filter(Boolean),
+        lotes: Array.isArray(row?.lotes)
+          ? [...new Set(row.lotes.map((s) => String(s || '').trim()).filter(Boolean))]
           : [],
       });
     }
@@ -6297,13 +6375,46 @@ app.post('/api/armazens/:armazemId/transferencia-localizacao', authenticateToken
       return res.status(400).json({ error: 'Nenhuma linha válida em "linhas"' });
     }
 
+    // #region agent log
+    {
+      const first = normalized[0];
+      debugAgentTransfLocAppend({
+        sessionId: 'cfd2c9',
+        runId: 'post-fix-4',
+        hypothesisId: 'H0',
+        location: 'index.js:transferencia-localizacao',
+        message: 'request normalized linhas',
+        data: {
+          nLinhas: normalized.length,
+          firstSerialsLen: Array.isArray(first?.serials) ? first.serials.length : -1,
+          firstItemId: first?.item_id,
+          firstCodigo: String(first?.item_codigo || '').slice(0, 24),
+        },
+        timestamp: Date.now(),
+      });
+    }
+    // #endregion
+
     const temTabelaTickets = await armazemMovimentacaoInternaTableExists();
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
       let moved = 0;
       const ticketIds = [];
-      for (const { item_id: itemIdRaw, item_codigo: itemCodigoRaw, quantidade: q, serials: serialsLinhaRaw } of normalized) {
+      const hasTicketLotesTableQ = temTabelaTickets
+        ? await client.query(
+            `SELECT to_regclass('public.armazem_movimentacao_interna_lotes') IS NOT NULL AS ok`
+          )
+        : { rows: [{ ok: false }] };
+      const hasTicketLotesTable = Boolean(hasTicketLotesTableQ.rows?.[0]?.ok);
+      for (const {
+        item_id: itemIdRaw,
+        item_codigo: itemCodigoRaw,
+        quantidade: q,
+        serials: serialsLinhaRaw,
+        lotes: lotesLinhaRaw,
+      } of normalized) {
+        let linhasLoteTicket = [];
         let itemId = Number(itemIdRaw);
         if (!Number.isFinite(itemId) || itemId <= 0) {
           const byCode = await client.query('SELECT id FROM itens WHERE UPPER(TRIM(codigo)) = UPPER(TRIM($1::text)) LIMIT 1', [itemCodigoRaw]);
@@ -6316,6 +6427,30 @@ app.post('/api/armazens/:armazemId/transferencia-localizacao', authenticateToken
         }
         const tipoControlo = String(ir.rows[0]?.tipocontrolo || '').trim().toUpperCase();
         const serialsLinha = Array.isArray(serialsLinhaRaw) ? [...new Set(serialsLinhaRaw)] : [];
+        const lotesLinha = Array.isArray(lotesLinhaRaw) ? [...new Set(lotesLinhaRaw)] : [];
+        // #region agent log
+        (() => {
+          const payload = {
+            sessionId: 'cfd2c9',
+            runId: 'post-fix-4',
+            hypothesisId: 'H2',
+            location: 'index.js:transferencia-localizacao',
+            message: 'server normalized line',
+            data: {
+              itemId,
+              itemCodigoRaw: String(itemCodigoRaw || '').slice(0, 32),
+              tipoControlo,
+              serialsLinhaLength: serialsLinha.length,
+              q: Number(q),
+              qtdInt: Math.floor(Number(q) || 0),
+              isTipoSerial: isTipoControloSerial(tipoControlo),
+              origemLocId,
+            },
+            timestamp: Date.now(),
+          };
+          debugAgentTransfLocAppend(payload);
+        })();
+        // #endregion
         if (isTipoControloSerial(tipoControlo)) {
           const qtdInt = Math.floor(Number(q) || 0);
           if (!serialsLinha.length) {
@@ -6337,9 +6472,130 @@ app.post('/api/armazens/:armazemId/transferencia-localizacao', authenticateToken
             [itemId, armazemId, origemLocId, serialsLinha.map((s) => String(s).trim().toUpperCase())]
           );
           if ((seriaisQ.rows || []).length !== serialsLinha.length) {
+            // #region agent log
+            (() => {
+              const payload = {
+                sessionId: 'cfd2c9',
+                runId: 'post-fix-4',
+                hypothesisId: 'H5',
+                location: 'index.js:transferencia-localizacao',
+                message: 'serials not found at origem loc',
+                data: {
+                  itemId,
+                  itemCodigoRaw: String(itemCodigoRaw || '').slice(0, 32),
+                  serialsRequested: serialsLinha.length,
+                  seriaisFound: (seriaisQ.rows || []).length,
+                  armazemId,
+                  origemLocId,
+                },
+                timestamp: Date.now(),
+              };
+              debugAgentTransfLocAppend(payload);
+            })();
+            // #endregion
             await client.query('ROLLBACK');
             return res.status(400).json({ error: `Um ou mais serial numbers selecionados para ${itemCodigoRaw || itemId} não estão disponíveis na localização de origem.` });
           }
+          const movedSerial = await client.query(
+            `UPDATE stock_serial
+             SET localizacao = $5,
+                 armazem_id = $6,
+                 atualizado_em = CURRENT_TIMESTAMP
+             WHERE item_id = $1
+               AND armazem_id = $2
+               AND UPPER(TRIM(localizacao)) = UPPER(TRIM($3::text))
+               AND UPPER(TRIM(serialnumber)) = ANY($4::text[])
+               AND status IN ('disponivel', 'reservado')
+             RETURNING id`,
+            [
+              itemId,
+              armazemId,
+              origemLocLabel,
+              serialsLinha.map((s) => String(s).trim().toUpperCase()),
+              destinoLocLabel,
+              destinoArmazemEfetivoId,
+            ]
+          );
+          if ((movedSerial.rows || []).length !== serialsLinha.length) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({
+              error: `Não foi possível atualizar a localização de todos os serial numbers de ${itemCodigoRaw || itemId}.`,
+            });
+          }
+        } else if (tipoControlo === 'LOTE') {
+          const lotesNorm = lotesLinha
+            .map((l) => String(l || '').trim().toUpperCase())
+            .filter(Boolean);
+          const lotesFiltro = lotesNorm.length > 0 ? lotesNorm : null;
+          const lotesOrigemQ = await client.query(
+            `SELECT id, lote, quantidade_disponivel
+             FROM stock_lote
+             WHERE item_id = $1
+               AND armazem_id = $2
+               AND UPPER(TRIM(localizacao)) = UPPER(TRIM($3::text))
+               AND quantidade_disponivel > 0
+               AND ($4::text[] IS NULL OR UPPER(TRIM(lote)) = ANY($4::text[]))
+             ORDER BY quantidade_disponivel DESC, id ASC
+             FOR UPDATE`,
+            [itemId, armazemId, origemLocLabel, lotesFiltro]
+          );
+          const totalDisponivelLotes = (lotesOrigemQ.rows || []).reduce(
+            (sum, row) => sum + (Number(row.quantidade_disponivel) || 0),
+            0
+          );
+          if (totalDisponivelLotes < Number(q)) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({
+              error: `Saldo insuficiente por lote para ${itemCodigoRaw || itemId} na localização de origem.`,
+            });
+          }
+          let restante = Number(q);
+          for (const loteRow of lotesOrigemQ.rows || []) {
+            if (restante <= 0) break;
+            const disponivel = Number(loteRow.quantidade_disponivel) || 0;
+            if (disponivel <= 0) continue;
+            const mover = Math.min(restante, disponivel);
+            if (mover <= 0) continue;
+            linhasLoteTicket.push({
+              lote: String(loteRow.lote || '').trim(),
+              quantidade: mover,
+            });
+            // Debita origem
+            // eslint-disable-next-line no-await-in-loop
+            await client.query(
+              `UPDATE stock_lote
+               SET quantidade_disponivel = quantidade_disponivel - $2::numeric,
+                   atualizado_em = CURRENT_TIMESTAMP
+               WHERE id = $1`,
+              [loteRow.id, mover]
+            );
+            // Crédito destino (mesmo lote)
+            // eslint-disable-next-line no-await-in-loop
+            await client.query(
+              `INSERT INTO stock_lote (item_id, armazem_id, localizacao, lote, quantidade_disponivel)
+               VALUES ($1, $2, $3, $4, $5::numeric)
+               ON CONFLICT (item_id, armazem_id, localizacao, lote)
+               DO UPDATE SET
+                 quantidade_disponivel = stock_lote.quantidade_disponivel + EXCLUDED.quantidade_disponivel,
+                 atualizado_em = CURRENT_TIMESTAMP`,
+              [itemId, destinoArmazemEfetivoId, destinoLocLabel, String(loteRow.lote || '').trim(), mover]
+            );
+            restante -= mover;
+          }
+          if (restante > 0) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({
+              error: `Não foi possível alocar toda a quantidade por lote de ${itemCodigoRaw || itemId}.`,
+            });
+          }
+          await client.query(
+            `DELETE FROM stock_lote
+             WHERE item_id = $1
+               AND armazem_id = $2
+               AND UPPER(TRIM(localizacao)) = UPPER(TRIM($3::text))
+               AND quantidade_disponivel <= 0`,
+            [itemId, armazemId, origemLocLabel]
+          );
         }
         if (podeControlarStock) {
           const sub = await client.query(
@@ -6404,6 +6660,16 @@ app.post('/api/armazens/:armazemId/transferencia-localizacao', authenticateToken
                  VALUES ($1, $2, $3)
                  ON CONFLICT (ticket_id, serialnumber) DO NOTHING`,
                 [ti.rows[0].id, s.id, String(s.serialnumber || '').trim()]
+              );
+            }
+          }
+          if (hasTicketLotesTable && tipoControlo === 'LOTE' && linhasLoteTicket.length > 0) {
+            const ticketId = ti.rows[0].id;
+            for (const ll of linhasLoteTicket) {
+              await client.query(
+                `INSERT INTO armazem_movimentacao_interna_lotes (ticket_id, lote, quantidade)
+                 VALUES ($1, $2, $3::numeric)`,
+                [ticketId, ll.lote, ll.quantidade]
               );
             }
           }
@@ -6600,6 +6866,10 @@ app.post('/api/armazens/:armazemId/movimentacoes-internas/export-trfl', authenti
       `SELECT to_regclass('public.armazem_movimentacao_interna_seriais') IS NOT NULL AS ok`
     );
     const hasTicketSerialTable = Boolean(hasTicketSerialTableQ.rows?.[0]?.ok);
+    const hasTicketLotesTableQ = await pool.query(
+      `SELECT to_regclass('public.armazem_movimentacao_interna_lotes') IS NOT NULL AS ok`
+    );
+    const hasTicketLotesTable = Boolean(hasTicketLotesTableQ.rows?.[0]?.ok);
     const client = await pool.connect();
     const rows = [];
     try {
@@ -6610,28 +6880,67 @@ app.post('/api/armazens/:armazemId/movimentacoes-internas/export-trfl', authenti
         const wh = String(row.armazem_codigo || 'E');
         const tipoControlo = String(row.tipocontrolo || '').trim().toUpperCase().replace(/\s+/g, '');
         const isSerial = tipoControlo === 'S/N' || tipoControlo === 'SN' || tipoControlo === 'SERIAL';
+        const isLote = tipoControlo === 'LOTE';
         const qtd = Number(row.quantidade) || 0;
         if (isSerial && qtd > 0) {
           const qtdInt = Math.floor(qtd);
-          const serialQ = await client.query(
-            `SELECT id, serialnumber
-             FROM stock_serial
-             WHERE item_id = $1
-               AND armazem_id = $2
-               AND UPPER(TRIM(localizacao)) = UPPER(TRIM($3::text))
-               AND status IN ('disponivel', 'reservado')
-             ORDER BY atualizado_em ASC NULLS LAST, id ASC
-             LIMIT $4`,
-            [row.item_id, armazemId, String(row.origem_loc || ''), qtdInt]
-          );
-          if (serialQ.rows.length < qtdInt) {
+          /** Após `POST transferencia-localizacao` os S/N já estão no destino; o ticket guarda-os em `armazem_movimentacao_interna_seriais`. */
+          let serialRows = [];
+          if (hasTicketSerialTable) {
+            const linked = await client.query(
+              `SELECT ss.id, ss.serialnumber
+               FROM armazem_movimentacao_interna_seriais amis
+               INNER JOIN stock_serial ss ON ss.id = amis.stock_serial_id
+               WHERE amis.ticket_id = $1
+               ORDER BY ss.serialnumber ASC`,
+              [row.id]
+            );
+            if ((linked.rows || []).length >= qtdInt) {
+              serialRows = (linked.rows || []).slice(0, qtdInt);
+            }
+          }
+          if (serialRows.length < qtdInt) {
+            const fromOrig = await client.query(
+              `SELECT id, serialnumber
+               FROM stock_serial
+               WHERE item_id = $1
+                 AND armazem_id = $2
+                 AND UPPER(TRIM(localizacao)) = UPPER(TRIM($3::text))
+                 AND status IN ('disponivel', 'reservado')
+                 AND TRIM(COALESCE(serialnumber, '')) <> ''
+               ORDER BY atualizado_em ASC NULLS LAST, id ASC
+               LIMIT $4`,
+              [row.item_id, armazemId, String(row.origem_loc || ''), qtdInt]
+            );
+            if ((fromOrig.rows || []).length >= qtdInt) {
+              serialRows = (fromOrig.rows || []).slice(0, qtdInt);
+            }
+          }
+          if (serialRows.length < qtdInt) {
+            const fromDest = await client.query(
+              `SELECT id, serialnumber
+               FROM stock_serial
+               WHERE item_id = $1
+                 AND armazem_id = $2
+                 AND UPPER(TRIM(localizacao)) = UPPER(TRIM($3::text))
+                 AND status IN ('disponivel', 'reservado')
+                 AND TRIM(COALESCE(serialnumber, '')) <> ''
+               ORDER BY atualizado_em DESC NULLS LAST, id DESC
+               LIMIT $4`,
+              [row.item_id, armazemId, String(row.destino_loc || ''), qtdInt]
+            );
+            if ((fromDest.rows || []).length >= qtdInt) {
+              serialRows = (fromDest.rows || []).slice(0, qtdInt);
+            }
+          }
+          if (serialRows.length < qtdInt) {
             await client.query('ROLLBACK');
             return res.status(400).json({
               error: `Seriais insuficientes na origem para o artigo ${String(row.item_codigo || '')}.`,
               code: 'SERIAIS_ORIGEM_INSUFICIENTE',
             });
           }
-          for (const s of serialQ.rows) {
+          for (const s of serialRows) {
             await client.query(
               `UPDATE stock_serial
                SET localizacao = $1,
@@ -6670,6 +6979,36 @@ app.post('/api/armazens/:armazemId/movimentacoes-internas/export-trfl', authenti
             });
           }
           continue;
+        }
+        if (isLote && hasTicketLotesTable) {
+          const lr = await client.query(
+            `SELECT lote, quantidade::float AS quantidade
+             FROM armazem_movimentacao_interna_lotes
+             WHERE ticket_id = $1
+             ORDER BY lote ASC`,
+            [row.id]
+          );
+          if ((lr.rows || []).length > 0) {
+            for (const lot of lr.rows) {
+              const qLot = Number(lot.quantidade) || 0;
+              rows.push({
+                Date: dateStr,
+                OriginWarehouse: wh,
+                OriginLocation: String(row.origem_loc || ''),
+                Article: String(row.item_codigo || ''),
+                Quatity: qLot,
+                SerialNumber1: '',
+                SerialNumber2: '',
+                MacAddress: '',
+                CentroCusto: '',
+                DestinationWarehouse: wh,
+                DestinationLocation: String(row.destino_loc || ''),
+                ProjectCode: '',
+                Batch: String(lot.lote || ''),
+              });
+            }
+            continue;
+          }
         }
         rows.push({
           Date: dateStr,
@@ -6768,6 +7107,10 @@ app.post('/api/armazens/:armazemId/movimentacoes-internas/export-tra-apeado', au
       `SELECT to_regclass('public.armazem_movimentacao_interna_seriais') IS NOT NULL AS ok`
     );
     const hasTicketSerialTable = Boolean(hasTicketSerialTableQ.rows?.[0]?.ok);
+    const hasTicketLotesTableQ = await pool.query(
+      `SELECT to_regclass('public.armazem_movimentacao_interna_lotes') IS NOT NULL AS ok`
+    );
+    const hasTicketLotesTable = Boolean(hasTicketLotesTableQ.rows?.[0]?.ok);
     const client = await pool.connect();
     const rows = [];
     try {
@@ -6777,28 +7120,67 @@ app.post('/api/armazens/:armazemId/movimentacoes-internas/export-tra-apeado', au
         const dateStr = `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
         const tipoControlo = String(row.tipocontrolo || '').trim().toUpperCase().replace(/\s+/g, '');
         const isSerial = tipoControlo === 'S/N' || tipoControlo === 'SN' || tipoControlo === 'SERIAL';
+        const isLote = tipoControlo === 'LOTE';
         const qtd = Number(row.quantidade) || 0;
         if (isSerial && qtd > 0) {
           const qtdInt = Math.floor(qtd);
-          const serialQ = await client.query(
-            `SELECT id, serialnumber
-             FROM stock_serial
-             WHERE item_id = $1
-               AND armazem_id = $2
-               AND UPPER(TRIM(localizacao)) = UPPER(TRIM($3::text))
-               AND status IN ('disponivel', 'reservado')
-             ORDER BY atualizado_em ASC NULLS LAST, id ASC
-             LIMIT $4`,
-            [row.item_id, armazemId, String(row.origem_loc || ''), qtdInt]
-          );
-          if (serialQ.rows.length < qtdInt) {
+          const destArmId = Number(row.destino_armazem_id || 0) || armazemId;
+          let serialRows = [];
+          if (hasTicketSerialTable) {
+            const linked = await client.query(
+              `SELECT ss.id, ss.serialnumber
+               FROM armazem_movimentacao_interna_seriais amis
+               INNER JOIN stock_serial ss ON ss.id = amis.stock_serial_id
+               WHERE amis.ticket_id = $1
+               ORDER BY ss.serialnumber ASC`,
+              [row.id]
+            );
+            if ((linked.rows || []).length >= qtdInt) {
+              serialRows = (linked.rows || []).slice(0, qtdInt);
+            }
+          }
+          if (serialRows.length < qtdInt) {
+            const fromOrig = await client.query(
+              `SELECT id, serialnumber
+               FROM stock_serial
+               WHERE item_id = $1
+                 AND armazem_id = $2
+                 AND UPPER(TRIM(localizacao)) = UPPER(TRIM($3::text))
+                 AND status IN ('disponivel', 'reservado')
+                 AND TRIM(COALESCE(serialnumber, '')) <> ''
+               ORDER BY atualizado_em ASC NULLS LAST, id ASC
+               LIMIT $4`,
+              [row.item_id, armazemId, String(row.origem_loc || ''), qtdInt]
+            );
+            if ((fromOrig.rows || []).length >= qtdInt) {
+              serialRows = (fromOrig.rows || []).slice(0, qtdInt);
+            }
+          }
+          if (serialRows.length < qtdInt) {
+            const fromDest = await client.query(
+              `SELECT id, serialnumber
+               FROM stock_serial
+               WHERE item_id = $1
+                 AND armazem_id = $2
+                 AND UPPER(TRIM(localizacao)) = UPPER(TRIM($3::text))
+                 AND status IN ('disponivel', 'reservado')
+                 AND TRIM(COALESCE(serialnumber, '')) <> ''
+               ORDER BY atualizado_em DESC NULLS LAST, id DESC
+               LIMIT $4`,
+              [row.item_id, destArmId, String(row.destino_loc || ''), qtdInt]
+            );
+            if ((fromDest.rows || []).length >= qtdInt) {
+              serialRows = (fromDest.rows || []).slice(0, qtdInt);
+            }
+          }
+          if (serialRows.length < qtdInt) {
             await client.query('ROLLBACK');
             return res.status(400).json({
               error: `Seriais insuficientes na origem para o artigo ${String(row.item_codigo || '')}.`,
               code: 'SERIAIS_ORIGEM_INSUFICIENTE',
             });
           }
-          for (const s of serialQ.rows) {
+          for (const s of serialRows) {
             await client.query(
               `UPDATE stock_serial
                SET localizacao = $1,
@@ -6809,7 +7191,7 @@ app.post('/api/armazens/:armazemId/movimentacoes-internas/export-tra-apeado', au
                    reservado_em = NULL,
                    atualizado_em = CURRENT_TIMESTAMP
                WHERE id = $3`,
-              [String(row.destino_loc || ''), row.destino_armazem_id || armazemId, s.id]
+              [String(row.destino_loc || ''), destArmId, s.id]
             );
             if (hasTicketSerialTable) {
               await client.query(
@@ -6837,6 +7219,36 @@ app.post('/api/armazens/:armazemId/movimentacoes-internas/export-tra-apeado', au
             });
           }
           continue;
+        }
+        if (isLote && hasTicketLotesTable) {
+          const lr = await client.query(
+            `SELECT lote, quantidade::float AS quantidade
+             FROM armazem_movimentacao_interna_lotes
+             WHERE ticket_id = $1
+             ORDER BY lote ASC`,
+            [row.id]
+          );
+          if ((lr.rows || []).length > 0) {
+            for (const lot of lr.rows) {
+              const qLot = Number(lot.quantidade) || 0;
+              rows.push({
+                Date: dateStr,
+                OriginWarehouse: String(row.origem_armazem_codigo || ''),
+                OriginLocation: String(row.origem_loc || ''),
+                Article: String(row.item_codigo || ''),
+                Quatity: qLot,
+                SerialNumber1: '',
+                SerialNumber2: '',
+                MacAddress: '',
+                CentroCusto: '',
+                DestinationWarehouse: String(row.destino_armazem_codigo || ''),
+                DestinationLocation: String(row.destino_loc || ''),
+                ProjectCode: '',
+                Batch: String(lot.lote || ''),
+              });
+            }
+            continue;
+          }
         }
         rows.push({
           Date: dateStr,
