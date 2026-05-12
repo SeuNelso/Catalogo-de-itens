@@ -128,6 +128,16 @@ function serialConferenciaMatch(digitado, esperado) {
   return conferenciaNorm(digitado) === conferenciaNorm(esperado);
 }
 
+/** Ordenação da coluna Caixa na amostra de recebimento (vazio no fim; depois alfanumérica). */
+function compararCaixaAmostraRecebimento(caixaA, caixaB) {
+  const a = conferenciaNorm(caixaA);
+  const b = conferenciaNorm(caixaB);
+  if (!a && !b) return 0;
+  if (!a) return 1;
+  if (!b) return -1;
+  return a.localeCompare(b, 'pt', { numeric: true, sensitivity: 'base' });
+}
+
 /** S/N esperados com a mesma referência de caixa (vários artigos podem partilhar caixa no import). */
 function seriaisAceitesParaCaixa(det, codigoCaixaRef) {
   const k = conferenciaNorm(codigoCaixaRef);
@@ -493,6 +503,15 @@ const PrepararRequisicao = () => {
         ok: false
       };
     });
+    linhas.sort((a, b) => {
+      const byCaixa = compararCaixaAmostraRecebimento(a.esperadoCaixa, b.esperadoCaixa);
+      if (byCaixa !== 0) return byCaixa;
+      return conferenciaNorm(a.esperadoSn).localeCompare(
+        conferenciaNorm(b.esperadoSn),
+        'pt',
+        { numeric: true, sensitivity: 'base' }
+      );
+    });
     setAmostragemConfirmada(false);
     setAmostraConferencia({ itemId: item.id, linhas });
     const msgCaixa =
@@ -521,6 +540,33 @@ const PrepararRequisicao = () => {
         })
       };
     });
+  }, []);
+
+  const aplicarPreparacaoRecebimentoPorSeriaisEsperados = useCallback((item) => {
+    const det = seriaisDetalheFromItem(item);
+    if (!det.length) return 0;
+    const qtd = Math.min(det.length, MAX_BOBINAS_LOTE);
+    const bobinasInicial = det.slice(0, qtd).map((r) => ({
+      lote: '',
+      serialnumber: String(r.serialnumber || '').trim(),
+      metros: '',
+      apeado: false,
+    }));
+    const bobinasComOrdem = aplicarOrdemInicialSN(bobinasInicial);
+    coletaOrdemRef.current = bobinasComOrdem.reduce(
+      (m, b) => Math.max(m, Number(b._ordemColeta) || 0),
+      0
+    );
+    setSnPagina(1);
+    prevSnPreenchidosRef.current = bobinasComOrdem.filter((b) =>
+      String(b?.serialnumber || '').trim()
+    ).length;
+    setFormItem((prev) => ({
+      ...prev,
+      quantidade_preparada: qtd,
+      bobinas: bobinasComOrdem,
+    }));
+    return qtd;
   }, []);
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1326,6 +1372,12 @@ const PrepararRequisicao = () => {
 
   const handleQuantidadePreparadaChange = (e) => {
     const val = e.target.value;
+    const obsRec = String(requisicao?.observacoes || '')
+      .toUpperCase()
+      .startsWith(RECEBIMENTO_TRANSFERENCIA_MARKER);
+    if (obsRec && isTipoControloSerial(itemPreparando?.tipocontrolo)) {
+      setAmostragemConfirmada(false);
+    }
     setFormItem((prev) => {
       const next = { ...prev, quantidade_preparada: val };
       const tipoControlo = (itemPreparando?.tipocontrolo || '').toUpperCase();
@@ -1388,34 +1440,50 @@ const PrepararRequisicao = () => {
     if (!canPrepare || !itemPreparando) return;
 
     const obsRec = String(requisicao?.observacoes || '').toUpperCase().startsWith(RECEBIMENTO_TRANSFERENCIA_MARKER);
-    if (obsRec && isTipoControloSerial(itemPreparando.tipocontrolo)) {
+    const seriaisEsperadosReceb =
+      obsRec && isTipoControloSerial(itemPreparando.tipocontrolo)
+        ? seriaisDetalheFromItem(itemPreparando)
+        : [];
+    if (obsRec && isTipoControloSerial(itemPreparando.tipocontrolo) && seriaisEsperadosReceb.length > 0) {
       const linhasAm =
         amostraConferencia?.itemId === itemPreparando.id ? (amostraConferencia.linhas || []) : [];
-      if (linhasAm.length > 0) {
-        if (!linhasAm.every((L) => L.ok)) {
-          setToast({
-            type: 'error',
-            message: 'Confirme todos os S/N da amostra de conferência (✓ verde em cada linha) antes de guardar.',
-          });
-          return;
-        }
-        if (!amostragemConfirmada) {
-          setToast({
-            type: 'error',
-            message: 'Clique em «Confirmar amostragem» antes de confirmar a preparação.',
-          });
-          return;
-        }
+      if (linhasAm.length === 0) {
+        setToast({
+          type: 'error',
+          message: 'Gere a amostra de conferência antes de confirmar a preparação.',
+        });
+        return;
+      }
+      if (!linhasAm.every((L) => L.ok)) {
+        setToast({
+          type: 'error',
+          message: 'Confirme todos os S/N da amostra de conferência (✓ verde em cada linha) antes de guardar.',
+        });
+        return;
+      }
+      if (!amostragemConfirmada) {
+        setToast({
+          type: 'error',
+          message: 'Clique em «Confirmar amostragem» antes de confirmar a preparação.',
+        });
+        return;
       }
     }
 
     const tipoControlo = (itemPreparando.tipocontrolo || '').toUpperCase();
     const isLote = tipoControlo === 'LOTE';
+    const preparacaoRecebPorAmostragem =
+      obsRec &&
+      amostragemConfirmada &&
+      isTipoControloSerial(tipoControlo) &&
+      seriaisEsperadosReceb.length > 0;
     const qtdRequisitada = parseFloat(itemPreparando.quantidade) || 0;
     let qtdPreparadaParaComparacao = 0;
     let qtdPreparadaParaStock = 0;
     let qtdPreparadaParaPayload = 0;
-    const qtdDigitada = parseFloat(formItem.quantidade_preparada);
+    const qtdDigitada = preparacaoRecebPorAmostragem
+      ? seriaisEsperadosReceb.length
+      : parseFloat(formItem.quantidade_preparada);
 
     if (Number.isNaN(qtdDigitada) || qtdDigitada < 0) {
       setToast({ type: 'error', message: 'Informe uma quantidade válida (use 0 se não tiver o item).' });
@@ -1529,17 +1597,25 @@ const PrepararRequisicao = () => {
       }
       bobinasPayload = bobinasValidas;
     } else if (isTipoControloSerial(tipoControlo)) {
-      if (!Array.isArray(formItem.bobinas) || formItem.bobinas.length === 0) {
-        setToast({ type: 'error', message: 'Adicione pelo menos um serial number.' });
-        return;
-      }
-      const seriais = [];
-      for (const b of formItem.bobinas) {
-        const sn = (b.serialnumber || '').trim();
-        // Permite apagar um serial deixando a linha vazia sem bloquear a preparação:
-        // só os seriais efetivamente preenchidos entram no payload.
-        if (!sn) continue;
-        seriais.push(sn);
+      const usarSeriaisEsperadosReceb =
+        obsRec && amostragemConfirmada && seriaisEsperadosReceb.length > 0;
+      let seriais = [];
+      if (usarSeriaisEsperadosReceb) {
+        seriais = seriaisEsperadosReceb
+          .map((r) => String(r.serialnumber || '').trim())
+          .filter(Boolean);
+      } else {
+        if (!Array.isArray(formItem.bobinas) || formItem.bobinas.length === 0) {
+          setToast({ type: 'error', message: 'Adicione pelo menos um serial number.' });
+          return;
+        }
+        for (const b of formItem.bobinas) {
+          const sn = (b.serialnumber || '').trim();
+          // Permite apagar um serial deixando a linha vazia sem bloquear a preparação:
+          // só os seriais efetivamente preenchidos entram no payload.
+          if (!sn) continue;
+          seriais.push(sn);
+        }
       }
       if (seriais.length === 0) {
         setToast({ type: 'error', message: 'Adicione pelo menos um serial number.' });
@@ -2770,8 +2846,8 @@ const PrepararRequisicao = () => {
                                 Inclui pelo menos 1 S/N aleatório por caixa (com código) e até ~10% do total. Por linha: confira o
                                 físico e digite o S/N ou use
                                 a câmara para ler código de barras / QR. Com todas as linhas ✓, use «Confirmar amostragem»;
-                                só depois poderá «Confirmar preparação». Qualquer alteração nos S/N da amostra anula essa
-                                confirmação.
+                                o sistema aplica a quantidade e todos os seriais esperados da tarefa. Só depois poderá «Confirmar
+                                preparação». Qualquer alteração nos S/N da amostra anula essa confirmação.
                               </p>
                               {amostraConferencia?.itemId === item.id && (amostraConferencia.linhas || []).length > 0 && (
                                 <>
@@ -2865,9 +2941,12 @@ const PrepararRequisicao = () => {
                                                 return;
                                               }
                                               setAmostragemConfirmada(true);
+                                              const totalAplicado = aplicarPreparacaoRecebimentoPorSeriaisEsperados(item);
                                               setToast({
                                                 type: 'success',
-                                                message: 'Amostragem confirmada. Já pode confirmar a preparação.',
+                                                message: totalAplicado > 0
+                                                  ? `Amostragem confirmada. Quantidade e ${totalAplicado} serial(is) esperados aplicados — já pode confirmar a preparação.`
+                                                  : 'Amostragem confirmada. Já pode confirmar a preparação.',
                                               });
                                             }}
                                             className="px-3 py-1.5 rounded-lg bg-emerald-700 text-white text-xs font-bold hover:bg-emerald-800 disabled:opacity-45 disabled:cursor-not-allowed shadow-sm"
@@ -3865,13 +3944,20 @@ const PrepararRequisicao = () => {
                                 : [];
                             const amostraTodosOk =
                               linhasAmostra.length > 0 && linhasAmostra.every((L) => L.ok);
-                            const bloquearPelaAmostra =
+                            const exigeAmostragemReceb =
                               isFluxoRecebimentoMercadoria &&
                               isTipoControloSerial(item.tipocontrolo) &&
-                              linhasAmostra.length > 0 &&
-                              (!amostraTodosOk || !amostragemConfirmada);
+                              detalheEsperadoReceb.length > 0;
+                            const bloquearPelaAmostra =
+                              exigeAmostragemReceb &&
+                              (linhasAmostra.length === 0 || !amostraTodosOk || !amostragemConfirmada);
                             return (
                               <>
+                                {exigeAmostragemReceb && linhasAmostra.length === 0 && (
+                                  <p className="text-xs text-amber-800 text-right max-w-md sm:ml-auto">
+                                    Gere a amostra de conferência antes de confirmar a preparação.
+                                  </p>
+                                )}
                                 {isFluxoRecebimentoMercadoria &&
                                   isTipoControloSerial(item.tipocontrolo) &&
                                   linhasAmostra.length > 0 &&
