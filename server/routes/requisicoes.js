@@ -1050,6 +1050,49 @@ async function aplicarStockDevolucaoEntradaRecebimento(client, { centralId, locR
   }
 }
 
+/**
+ * Garante que cada linha de `requisicoes_itens` traz em `serialnumber` os S/N de `requisicoes_itens_seriais`
+ * (a preparação de recebimento costuma persistir só na tabela filha).
+ */
+async function mergeRequisicaoItensSeriaisFromChildTable(client, itensRows) {
+  const rows = Array.isArray(itensRows) ? itensRows : [];
+  const ids = rows.map((r) => Number(r.id)).filter(Number.isFinite);
+  if (!ids.length) return rows;
+  let seriaisQ;
+  try {
+    seriaisQ = await client.query(
+      `SELECT requisicao_item_id, TRIM(serialnumber) AS sn
+       FROM requisicoes_itens_seriais
+       WHERE requisicao_item_id = ANY($1::int[])
+       ORDER BY requisicao_item_id, ordem, id`,
+      [ids]
+    );
+  } catch (e) {
+    if (e.code === '42P01') return rows;
+    throw e;
+  }
+  const byRi = new Map();
+  for (const r of seriaisQ.rows || []) {
+    const rid = Number(r.requisicao_item_id);
+    const sn = String(r.sn || '').trim();
+    if (!Number.isFinite(rid) || !sn) continue;
+    if (!byRi.has(rid)) byRi.set(rid, []);
+    byRi.get(rid).push(sn);
+  }
+  return rows.map((ri) => {
+    const fromChild = byRi.get(Number(ri.id)) || [];
+    if (!fromChild.length) return ri;
+    const fromBlob = serialsNormalizadosList(ri.serialnumber);
+    const merged = [
+      ...new Set(
+        [...fromBlob, ...fromChild].map((s) => String(s || '').trim()).filter(Boolean)
+      ),
+    ];
+    if (!merged.length) return ri;
+    return { ...ri, serialnumber: merged.join('\n') };
+  });
+}
+
 /** TRFL interna devolução: recebimento → FERR / zona normal (mesmo central). */
 async function aplicarStockTrflDevolucaoInterno(client, {
   centralId,
@@ -2640,6 +2683,32 @@ function podeExportarReporteDevolucaoEmProcesso(requisicao) {
   );
 }
 
+/** Mesmo prefixo que `RECEBIMENTO_TRANSFERENCIA_MARKER` em `createRequisicoesRouter`. */
+function observacoesIndicamRecebimentoMercadoriaTransfer(requisicao) {
+  return String(requisicao?.observacoes || '')
+    .toUpperCase()
+    .startsWith('RECEBIMENTO_TRANSFERENCIA_V1');
+}
+
+/**
+ * Reporte com TRFL já registada, em EM EXPEDICAO (ex.: transferências entre centrais).
+ * Exclui recebimento de mercadoria e cancelamento em expedição.
+ */
+function podeExportarReporteEmExpedicaoPosTrfl(requisicao) {
+  if (String(requisicao?.status || '') !== 'EM EXPEDICAO') return false;
+  if (observacoesIndicamRecebimentoMercadoriaTransfer(requisicao)) return false;
+  if (requisicao?.cancelada_em_expedicao) return false;
+  return Boolean(requisicao?.tra_gerada_em);
+}
+
+function podeExportarReporteRequisicao(requisicao) {
+  return (
+    podeExportarReporteOuClog(requisicao) ||
+    podeExportarReporteDevolucaoEmProcesso(requisicao) ||
+    podeExportarReporteEmExpedicaoPosTrfl(requisicao)
+  );
+}
+
 /** Clog permite também devolução em APEADOS após DEV + Nº DEV guardado. */
 function podeExportarClog(requisicao) {
   if (podeExportarReporteOuClog(requisicao)) return true;
@@ -3205,26 +3274,21 @@ router.get('/:id/export-trfl', ...requisicaoAuth, denyOperador, async (req, res)
       const qty = parseInt(ri.quantidade_preparada ?? ri.quantidade, 10) || 0;
       if (qty <= 0) continue;
       if (isTipoControloSerial(tipoControlo)) {
-        const serials = serialsNormalizadosList(ri.serialnumber);
-        if (serials.length > 0) {
-          for (const sn of serials) {
-            const originLocation = isCancelamentoExpedicao ? localizacaoExpedicao : (ri.localizacao_origem || '');
-            const destinationLocation = isCancelamentoExpedicao ? (ri.localizacao_origem || '') : localizacaoExpedicao;
-            rows.push({
-              Date: dateStr,
-              OriginWarehouse: codigoOrigem,
-              OriginLocation: originLocation,
-              Article: String(ri.item_codigo || ''),
-              Quatity: 1,
-              SerialNumber1: sn, SerialNumber2: '', MacAddress: '', CentroCusto: '',
-              DestinationWarehouse: codigoOrigem,
-              DestinationLocation: destinationLocation,
-              ProjectCode: '',
-              Batch: ri.lote || ''
-            });
-          }
-          continue;
-        }
+        const originLocation = isCancelamentoExpedicao ? localizacaoExpedicao : (ri.localizacao_origem || '');
+        const destinationLocation = isCancelamentoExpedicao ? (ri.localizacao_origem || '') : localizacaoExpedicao;
+        rows.push({
+          Date: dateStr,
+          OriginWarehouse: codigoOrigem,
+          OriginLocation: originLocation,
+          Article: String(ri.item_codigo || ''),
+          Quatity: qty,
+          SerialNumber1: '', SerialNumber2: '', MacAddress: '', CentroCusto: '',
+          DestinationWarehouse: codigoOrigem,
+          DestinationLocation: destinationLocation,
+          ProjectCode: '',
+          Batch: ri.lote || ''
+        });
+        continue;
       }
       const originLocation = isCancelamentoExpedicao ? localizacaoExpedicao : (ri.localizacao_origem || '');
       const destinationLocation = isCancelamentoExpedicao ? (ri.localizacao_origem || '') : localizacaoExpedicao;
@@ -3365,26 +3429,21 @@ router.post('/export-trfl-multi', ...requisicaoAuth, denyOperador, async (req, r
         const qty = parseInt(ri.quantidade_preparada ?? ri.quantidade, 10) || 0;
         if (qty <= 0) continue;
         if (isTipoControloSerial(tipoControlo)) {
-          const serials = serialsNormalizadosList(ri.serialnumber);
-          if (serials.length > 0) {
-            for (const sn of serials) {
-              const originLocation = isCancelamentoExpedicao ? localizacaoExpedicao : (ri.localizacao_origem || '');
-              const destinationLocation = isCancelamentoExpedicao ? (ri.localizacao_origem || '') : localizacaoExpedicao;
-              rows.push({
-                Date: dateStr,
-                OriginWarehouse: codigoOrigem,
-                OriginLocation: originLocation,
-                Article: String(ri.item_codigo || ''),
-                Quatity: 1,
-                SerialNumber1: sn, SerialNumber2: '', MacAddress: '', CentroCusto: '',
-                DestinationWarehouse: codigoOrigem,
-                DestinationLocation: destinationLocation,
-                ProjectCode: '',
-                Batch: ri.lote || ''
-              });
-            }
-            continue;
-          }
+          const originLocation = isCancelamentoExpedicao ? localizacaoExpedicao : (ri.localizacao_origem || '');
+          const destinationLocation = isCancelamentoExpedicao ? (ri.localizacao_origem || '') : localizacaoExpedicao;
+          rows.push({
+            Date: dateStr,
+            OriginWarehouse: codigoOrigem,
+            OriginLocation: originLocation,
+            Article: String(ri.item_codigo || ''),
+            Quatity: qty,
+            SerialNumber1: '', SerialNumber2: '', MacAddress: '', CentroCusto: '',
+            DestinationWarehouse: codigoOrigem,
+            DestinationLocation: destinationLocation,
+            ProjectCode: '',
+            Batch: ri.lote || ''
+          });
+          continue;
         }
 
         const originLocation = isCancelamentoExpedicao ? localizacaoExpedicao : (ri.localizacao_origem || '');
@@ -3549,24 +3608,19 @@ router.get('/:id/export-tra', ...requisicaoAuth, denyOperador, async (req, res) 
         const qty = parseInt(qtyBase, 10) || 0;
         if (qty <= 0) continue;
         if (isTipoControloSerial(tipoControlo)) {
-          const serials = serialsNormalizadosList(ri.serialnumber);
-          if (serials.length > 0) {
-            for (const sn of serials) {
-              rows.push({
-                Date: dateStr,
-                OriginWarehouse: codigoViatura,
-                OriginLocation: ri.localizacao_origem || '',
-                Article: String(ri.item_codigo || ''),
-                Quatity: 1,
-                SerialNumber1: sn, SerialNumber2: '', MacAddress: '', CentroCusto: '',
-                DestinationWarehouse: codigoCentral,
-                DestinationLocation: locRec,
-                ProjectCode: '',
-                Batch: ri.lote || ''
-              });
-            }
-            continue;
-          }
+          rows.push({
+            Date: dateStr,
+            OriginWarehouse: codigoViatura,
+            OriginLocation: ri.localizacao_origem || '',
+            Article: String(ri.item_codigo || ''),
+            Quatity: qty,
+            SerialNumber1: '', SerialNumber2: '', MacAddress: '', CentroCusto: '',
+            DestinationWarehouse: codigoCentral,
+            DestinationLocation: locRec,
+            ProjectCode: '',
+            Batch: ri.lote || ''
+          });
+          continue;
         }
 
         rows.push({
@@ -3764,31 +3818,22 @@ router.get('/:id/export-tra', ...requisicaoAuth, denyOperador, async (req, res) 
       const qty = parseInt(qtyBase, 10) || 0;
       if (qty <= 0) continue;
       if (isTipoControloSerial(tipoControlo)) {
-        // Para TRA, preferir os seriais recolhidos persistidos (tabela dedicada)
-        // e cair para o campo legado quando necessário.
-        // Objetivo: 1 linha por serial com quantidade 1.
-        // eslint-disable-next-line no-await-in-loop
-        const serials = await serialsRecolhidosRequisicaoItem(pool, ri.id, ri);
-        if (serials.length > 0) {
-          for (const sn of serials) {
-            rows.push({
-              Date: dateStr,
-              OriginWarehouse: codigoOrigem,
-              OriginLocation: fluxoCentralApeado ? (ri.localizacao_origem || '') : localizacaoOrigemTRA,
-              Article: String(ri.item_codigo || ''),
-              Quatity: 1,
-              SerialNumber1: sn, SerialNumber2: '', MacAddress: '', CentroCusto: '',
-              DestinationWarehouse: codigoDestino,
-              DestinationLocation:
-                tipoDestNorm === 'central'
-                  ? localizacaoDestinoRecebimento
-                  : (ri.is_ferramenta ? localizacaoFERR : localizacaoNormal),
-              ProjectCode: '',
-              Batch: ri.lote || ''
-            });
-          }
-          continue;
-        }
+        rows.push({
+          Date: dateStr,
+          OriginWarehouse: codigoOrigem,
+          OriginLocation: fluxoCentralApeado ? (ri.localizacao_origem || '') : localizacaoOrigemTRA,
+          Article: String(ri.item_codigo || ''),
+          Quatity: qty,
+          SerialNumber1: '', SerialNumber2: '', MacAddress: '', CentroCusto: '',
+          DestinationWarehouse: codigoDestino,
+          DestinationLocation:
+            tipoDestNorm === 'central'
+              ? localizacaoDestinoRecebimento
+              : (ri.is_ferramenta ? localizacaoFERR : localizacaoNormal),
+          ProjectCode: '',
+          Batch: ri.lote || ''
+        });
+        continue;
       }
 
       rows.push({
@@ -4587,28 +4632,22 @@ router.post('/export-tra-multi', ...requisicaoAuth, denyOperador, async (req, re
         const qty = parseInt(qtyBase, 10) || 0;
         if (qty <= 0) continue;
         if (isTipoControloSerial(tipoControlo)) {
-          // eslint-disable-next-line no-await-in-loop
-          const serials = await serialsRecolhidosRequisicaoItem(pool, ri.id, ri);
-          if (serials.length > 0) {
-            for (const sn of serials) {
-              rows.push({
-                Date: dateStr,
-                OriginWarehouse: codigoOrigem,
-                OriginLocation: localizacaoOrigemTRA,
-                Article: String(ri.item_codigo || ''),
-                Quatity: 1,
-                SerialNumber1: sn, SerialNumber2: '', MacAddress: '', CentroCusto: '',
-                DestinationWarehouse: codigoDestino,
-                DestinationLocation:
-                  tipoDestNormMulti === 'central'
-                    ? localizacaoDestinoRecebimentoMulti
-                    : (ri.is_ferramenta ? localizacaoFERR : localizacaoNormal),
-                ProjectCode: '',
-                Batch: ri.lote || ''
-              });
-            }
-            continue;
-          }
+          rows.push({
+            Date: dateStr,
+            OriginWarehouse: codigoOrigem,
+            OriginLocation: localizacaoOrigemTRA,
+            Article: String(ri.item_codigo || ''),
+            Quatity: qty,
+            SerialNumber1: '', SerialNumber2: '', MacAddress: '', CentroCusto: '',
+            DestinationWarehouse: codigoDestino,
+            DestinationLocation:
+              tipoDestNormMulti === 'central'
+                ? localizacaoDestinoRecebimentoMulti
+                : (ri.is_ferramenta ? localizacaoFERR : localizacaoNormal),
+            ProjectCode: '',
+            Batch: ri.lote || ''
+          });
+          continue;
         }
 
         rows.push({
@@ -4847,24 +4886,19 @@ router.post('/export-dev-multi', ...requisicaoAuth, denyOperador, async (req, re
         if (qty <= 0) continue;
 
         if (isTipoControloSerial(tipoControlo)) {
-          const serials = serialsNormalizadosList(ri.serialnumber);
-          if (serials.length > 0) {
-            for (const sn of serials) {
-              rows.push({
-                Date: dateStr,
-                OriginWarehouse: codigoViatura,
-                OriginLocation: ri.localizacao_origem || '',
-                Article: String(ri.item_codigo || ''),
-                Quatity: 1,
-                SerialNumber1: sn, SerialNumber2: '', MacAddress: '', CentroCusto: '',
-                DestinationWarehouse: codigoCentral,
-                DestinationLocation: locRec,
-                ProjectCode: '',
-                Batch: ri.lote || ''
-              });
-            }
-            continue;
-          }
+          rows.push({
+            Date: dateStr,
+            OriginWarehouse: codigoViatura,
+            OriginLocation: ri.localizacao_origem || '',
+            Article: String(ri.item_codigo || ''),
+            Quatity: qty,
+            SerialNumber1: '', SerialNumber2: '', MacAddress: '', CentroCusto: '',
+            DestinationWarehouse: codigoCentral,
+            DestinationLocation: locRec,
+            ProjectCode: '',
+            Batch: ri.lote || ''
+          });
+          continue;
         }
 
         rows.push({
@@ -5081,38 +5115,39 @@ function clogRowsFromItemData(
     const qty = qtySign * (Number(qtyBase) || 0);
     if (qty === 0) continue;
     const serialsItem = isTipoControloSerial(tipoControlo) ? serialsNormalizadosList(ri.serialnumber) : [];
-    /** Uma linha por S/N (devolução, saída, transferência central): lista de movimentos e TRFL alinhados. */
+    /** Uma linha por artigo: S/N agregados (newline), alinhado com ConsultaMovimentos.parseSeriaisMovimento. */
     if (serialsItem.length > 0) {
       const maxSerialRows = Math.min(serialsItem.length, Math.max(1, Math.floor(Math.abs(Number(qtyBase) || 0))));
-      for (let i = 0; i < maxSerialRows; i += 1) {
-        const sn = String(serialsItem[i] || '').trim();
-        if (!sn) continue;
-        rows.push({
-          requisicao_id: reqId,
-          usuario_id: reqUserId,
-          armazem_origem_id: armazemOrigemId,
-          armazem_id: armazemDestinoId,
-          armazem_origem_tipo: origemTipo,
-          armazem_destino_tipo: destinoTipoNorm,
-          mov_id: `req:${reqId}:ri:${Number(ri.id || 0)}:item:${Number(ri.item_id || 0)}:sn:${i + 1}`,
-          __ordem_movimento: 1,
-          'Tipo de Movimento': tipoMovimento,
-          'Dt_Recepção': dateStr,
-          'REF.': String(ri.item_codigo || ''),
-          DESCRIPTION: String(ri.item_descricao || ''),
-          QTY: qtySign,
-          Loc_Inicial: clogLocInicial(isDevolucao, localizacaoOrigemTRA, ri),
-          'S/N': sn,
-          Lote: ri.lote || '',
-          'Novo Armazém': codigoDestino,
-          'TRA / DEV': traDev,
-          'New Localização': isDevolucao
-            ? newLocDevolucao
-            : (isDestinoCentral ? (destinoTraLoc || localizacaoNormal) : (ri.is_ferramenta ? localizacaoFERR : localizacaoNormal)),
-          DEP: '',
-          Observações: colaboradorObs
-        });
-      }
+      const serialsUsados = serialsItem
+        .slice(0, maxSerialRows)
+        .map((s) => String(s || '').trim())
+        .filter(Boolean);
+      const snCell = serialsUsados.join('\n');
+      rows.push({
+        requisicao_id: reqId,
+        usuario_id: reqUserId,
+        armazem_origem_id: armazemOrigemId,
+        armazem_id: armazemDestinoId,
+        armazem_origem_tipo: origemTipo,
+        armazem_destino_tipo: destinoTipoNorm,
+        mov_id: `req:${reqId}:ri:${Number(ri.id || 0)}:item:${Number(ri.item_id || 0)}:base`,
+        __ordem_movimento: 1,
+        'Tipo de Movimento': tipoMovimento,
+        'Dt_Recepção': dateStr,
+        'REF.': String(ri.item_codigo || ''),
+        DESCRIPTION: String(ri.item_descricao || ''),
+        QTY: qty,
+        Loc_Inicial: clogLocInicial(isDevolucao, localizacaoOrigemTRA, ri),
+        'S/N': snCell,
+        Lote: ri.lote || '',
+        'Novo Armazém': codigoDestino,
+        'TRA / DEV': traDev,
+        'New Localização': isDevolucao
+          ? newLocDevolucao
+          : (isDestinoCentral ? (destinoTraLoc || localizacaoNormal) : (ri.is_ferramenta ? localizacaoFERR : localizacaoNormal)),
+        DEP: '',
+        Observações: colaboradorObs
+      });
       continue;
     }
 
@@ -5742,6 +5777,21 @@ async function persistMovimentosHistoricoForRequisicoes(ids) {
     [idsClean]
   );
   await upsertMovimentosHistorico(rows);
+}
+
+/**
+ * Agenda persistência do snapshot de movimentos sem bloquear a resposta HTTP.
+ * `buildClogRowsForRequisicaoIds` + `upsertMovimentosHistorico` podem demorar muito (ex.: muitos S/N).
+ */
+function schedulePersistMovimentosHistoricoForRequisicoes(ids, contextLabel = '') {
+  const idsClean = [...new Set((ids || []).map((x) => parseInt(x, 10)).filter(Boolean))];
+  if (!idsClean.length) return;
+  setImmediate(() => {
+    persistMovimentosHistoricoForRequisicoes(idsClean).catch((e) => {
+      const tag = contextLabel ? ` (${contextLabel})` : '';
+      console.warn(`[movimentos_historico] falha ao persistir snapshot assíncrono${tag}:`, e?.message || e);
+    });
+  });
 }
 
 router.get('/movimentos-clog/consulta', ...requisicaoAuth, denyOnlyOperador, async (req, res) => {
@@ -6909,8 +6959,11 @@ router.get('/:id/export-reporte', ...requisicaoAuth, denyOperador, async (req, r
     if (!requisicaoArmazemOrigemAcessoPermitido(req, requisicao.armazem_origem_id, { requisicao })) {
       return res.status(403).json({ error: 'Sem acesso a esta requisição.' });
     }
-    if (!podeExportarReporteOuClog(requisicao) && !podeExportarReporteDevolucaoEmProcesso(requisicao)) {
-      return res.status(400).json({ error: 'Ficheiro de reporte só está disponível após gerar a TRA (Entregue), quando a requisição estiver finalizada, ou durante devolução em EM EXPEDICAO.' });
+    if (!podeExportarReporteRequisicao(requisicao)) {
+      return res.status(400).json({
+        error:
+          'Ficheiro de reporte só está disponível após gerar a TRA (Entregue), quando a requisição estiver finalizada, durante devolução em EM EXPEDICAO, ou em EM EXPEDICAO com TRFL já gerada (exceto recebimento de mercadoria).',
+      });
     }
 
     // Mesma origem/destino usados na TRA
@@ -7005,8 +7058,11 @@ router.get('/:id/reporte-dados', ...requisicaoAuth, denyOperador, async (req, re
     if (!requisicaoArmazemOrigemAcessoPermitido(req, requisicao.armazem_origem_id, { requisicao })) {
       return res.status(403).json({ error: 'Sem acesso a esta requisição.' });
     }
-    if (!podeExportarReporteOuClog(requisicao) && !podeExportarReporteDevolucaoEmProcesso(requisicao)) {
-      return res.status(400).json({ error: 'Dados do reporte só estão disponíveis após gerar a TRA (Entregue), quando a requisição estiver finalizada, ou durante devolução em EM EXPEDICAO.' });
+    if (!podeExportarReporteRequisicao(requisicao)) {
+      return res.status(400).json({
+        error:
+          'Dados do reporte só estão disponíveis após gerar a TRA (Entregue), quando a requisição estiver finalizada, durante devolução em EM EXPEDICAO, ou em EM EXPEDICAO com TRFL já gerada (exceto recebimento de mercadoria).',
+      });
     }
 
     const destinoEPI = isDestinoEPI(requisicao);
@@ -7116,7 +7172,7 @@ router.post('/reporte-dados-multi', ...requisicaoAuth, denyOperador, async (req,
 
       const requisicao = await getRequisicaoComItens(id);
       if (!requisicao) continue;
-      if (!podeExportarReporteOuClog(requisicao)) continue;
+      if (!podeExportarReporteRequisicao(requisicao)) continue;
 
       const destinoEPI = isDestinoEPI(requisicao);
       if (destinoEPI) includeObservacoes = true;
@@ -7239,7 +7295,7 @@ router.post('/export-reporte-multi', ...requisicaoAuth, denyOperador, async (req
       if (!id) continue;
       const requisicao = await getRequisicaoComItens(id);
       if (!requisicao) continue;
-      if (!podeExportarReporteOuClog(requisicao)) continue;
+      if (!podeExportarReporteRequisicao(requisicao)) continue;
       const destinoEPI = isDestinoEPI(requisicao);
       const colaboradorObs = destinoEPI ? (requisicao.observacoes || '') : '';
       if (destinoEPI) includeObservacoes = true;
@@ -9376,10 +9432,10 @@ router.patch('/:id/atender-item', ...requisicaoAuth, denyBackofficeOperations, a
 
     try {
       if (await movimentosHistoricoTableExists()) {
-        await persistMovimentosHistoricoForRequisicoes([Number(id)]);
+        schedulePersistMovimentosHistoricoForRequisicoes([Number(id)], 'atender-item');
       }
     } catch (eh) {
-      console.warn('[movimentos_historico] falha ao atualizar snapshot após atender-item:', eh.message);
+      console.warn('[movimentos_historico] falha ao agendar snapshot após atender-item:', eh.message);
     }
 
     res.json(requisicao);
@@ -10577,11 +10633,7 @@ router.patch('/:id/finalizar', ...requisicaoAuth, denyOperador, async (req, res)
         cFinNormal.release();
       }
     }
-    try {
-      await persistMovimentosHistoricoForRequisicoes([id]);
-    } catch (e) {
-      console.warn('[movimentos_historico] falha ao persistir snapshot no finalizar:', e.message);
-    }
+    schedulePersistMovimentosHistoricoForRequisicoes([id], 'finalizar requisição');
     res.json({ ok: true, id: parseInt(id, 10), status: 'FINALIZADO' });
   } catch (error) {
     console.error('Erro ao finalizar requisição:', error);
@@ -10755,7 +10807,8 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
           return res.status(400).json({ error: 'Sem linhas de artigos na tabela ORIGINAL.' });
         }
 
-        // 3) Extrair código + quantidade (tolerante a quebra de linha/formato)
+        // 3) Extrair código + quantidade (tolerante a quebra de linha/formato).
+        // Quantidade: número antes de UN/UND/UNID ou Mt/METROS (GT em PT); fallback ignora o código inicial (≥4 dígitos).
         const parseLocaleNumber = (raw) => {
           const s = String(raw || '').replace(/\s+/g, '');
           if (!s) return NaN;
@@ -10776,13 +10829,20 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
           const m = /^\s*(\d{4,})\b/.exec(String(text || ''));
           return m ? String(m[1]).trim() : null;
         };
+        /** Unidades de quantidade na GT (PDF): caixas/unidades e comprimentos em metros. */
+        const unidadeQuantidadeGt = '(?:UN|UND\\.?|UNID(?:\\.|ADE)?S?|MT|METROS?|M\\.?\\s*T\\.?)';
         const extractQuantidade = (text) => {
           const ln = String(text || '');
-          const mQtyBeforeUn = /(\d{1,3}(?:[.\s]\d{3})*(?:,\d+)?|\d+(?:[.,]\d+)?)\s*(?:UN|UND\.?|UNID(?:\.|ADE)?S?)\b/i.exec(ln);
-          if (mQtyBeforeUn) return parseLocaleNumber(mQtyBeforeUn[1]);
-          // fallback: pegar o primeiro número decimal "grande" da linha (normalmente a quantidade),
-          // evitando o último valor monetário (ex.: 0,00).
-          const nums = ln.match(/\d{1,3}(?:[.\s]\d{3})*(?:,\d+)?|\d+(?:[.,]\d+)?/g) || [];
+          const mQtyAntesUnidade = new RegExp(
+            `(\\d{1,3}(?:[.\\s]\\d{3})*(?:,\\d+)?|\\d+(?:[.,]\\d+)?)\\s*${unidadeQuantidadeGt}\\b`,
+            'i'
+          ).exec(ln);
+          if (mQtyAntesUnidade) return parseLocaleNumber(mQtyAntesUnidade[1]);
+          // Sem coluna de unidade visível: ignorar o código no início (\\d{4,}) para não confundir
+          // "300" de "3001789" com a quantidade (ex.: cabos em Mt).
+          const restoSemCodigo = ln.replace(/^\s*\d{4,}\b\s*/i, '').trim();
+          const nums =
+            restoSemCodigo.match(/\d{1,3}(?:[.\s]\d{3})*(?:,\d+)?|\d+(?:[.,]\d+)?/g) || [];
           for (const raw of nums) {
             const n = parseLocaleNumber(raw);
             if (Number.isFinite(n) && n > 0) return n;
@@ -12140,13 +12200,14 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
           if (!serialsByReqItemId.has(rid)) serialsByReqItemId.set(rid, []);
           serialsByReqItemId.get(rid).push(sn);
         }
-        const itensComSeriais = (itensQ.rows || []).map((ri) => {
+        const itensComSeriaisBobinas = (itensQ.rows || []).map((ri) => {
           const snRi = String(ri.serialnumber || '').trim();
           if (snRi) return ri;
           const fromBobinas = serialsByReqItemId.get(Number(ri.id)) || [];
           if (!fromBobinas.length) return ri;
           return { ...ri, serialnumber: fromBobinas.join('\n') };
         });
+        const itensComSeriais = await mergeRequisicaoItensSeriaisFromChildTable(client, itensComSeriaisBobinas);
 
         const locRec =
           (await localizacaoArmazemPorTipoConn(client, row.armazem_origem_id, 'recebimento')) ||
@@ -12259,13 +12320,14 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
             if (!serialsByReqItemId.has(rid)) serialsByReqItemId.set(rid, []);
             serialsByReqItemId.get(rid).push(sn);
           }
-          const itensComSeriais = (itensQ.rows || []).map((ri) => {
+          const itensComSeriaisBobinas = (itensQ.rows || []).map((ri) => {
             const snRi = String(ri.serialnumber || '').trim();
             if (snRi) return ri;
             const fromBobinas = serialsByReqItemId.get(Number(ri.id)) || [];
             if (!fromBobinas.length) return ri;
             return { ...ri, serialnumber: fromBobinas.join('\n') };
           });
+          const itensComSeriais = await mergeRequisicaoItensSeriaisFromChildTable(client, itensComSeriaisBobinas);
           const locRec =
             (await localizacaoArmazemPorTipoConn(client, row.armazem_origem_id, 'recebimento')) ||
             LOCALIZACAO_RECEBIMENTO_FALLBACK;
@@ -12286,11 +12348,7 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
           [reqId]
         );
         await client.query('COMMIT');
-        try {
-          await persistMovimentosHistoricoForRequisicoes([reqId]);
-        } catch (eh) {
-          console.warn('[movimentos_historico] falha ao persistir snapshot no finalizar recebimento:', eh.message);
-        }
+        schedulePersistMovimentosHistoricoForRequisicoes([reqId], 'finalizar recebimento');
         const updated = await getRequisicaoComItens(reqId);
         return res.json(updated);
       } catch (e) {

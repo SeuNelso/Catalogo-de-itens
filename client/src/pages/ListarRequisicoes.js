@@ -1784,6 +1784,22 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
     return true;
   };
 
+  /** Alinhado ao servidor: devolução viatura→central em expedição pode consultar reporte sem TRA. */
+  const podeExportarReporteDevolucaoEmExpedicao = (reqObj) => {
+    if (String(reqObj?.status || '') !== 'EM EXPEDICAO') return false;
+    const o = String(reqObj?.armazem_origem_tipo || '').trim().toLowerCase();
+    const d = String(reqObj?.armazem_destino_tipo || '').trim().toLowerCase();
+    return o === 'viatura' && d === 'central';
+  };
+
+  /** TRFL já gerada (`tra_gerada_em`), ainda em expedição — exclui recebimento mercadoria e cancelamento. */
+  const podeExportarReporteEmExpedicaoPosTrfl = (reqObj) => {
+    if (String(reqObj?.status || '') !== 'EM EXPEDICAO') return false;
+    if (isFluxoRecebimentoMercadoria(reqObj)) return false;
+    if (reqObj?.cancelada_em_expedicao) return false;
+    return Boolean(reqObj?.tra_gerada_em);
+  };
+
   const recebimentoEntregaConfirmada = (reqObj) => Boolean(reqObj?.recebimento_entrega_confirmada);
   const recebimentoTraConfirmada = (reqObj) => Boolean(reqObj?.recebimento_tra_confirmada);
   const recebimentoAguardandoTraOrigem = (reqObj) => Boolean(reqObj?.aguardando_tra_origem);
@@ -2815,7 +2831,13 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
 
               const canGerarTRA = all(r => podeGerarTraAposRececao(r));
               const canBaixarTRA = all(r => (r.status === 'Entregue' && r.tra_gerada_em) || r.status === 'FINALIZADO');
-              const canGerarReporte = all(r => (r.status === 'Entregue' && r.tra_gerada_em) || r.status === 'FINALIZADO');
+              const canGerarReporte = all(
+                (r) =>
+                  (r.status === 'Entregue' && r.tra_gerada_em) ||
+                  r.status === 'FINALIZADO' ||
+                  podeExportarReporteDevolucaoEmExpedicao(r) ||
+                  podeExportarReporteEmExpedicaoPosTrfl(r)
+              );
               const canVoltarEmExpedicao = all(
                 (r) =>
                   String(r?.status || '') === 'Entregue' &&
