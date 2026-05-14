@@ -6067,7 +6067,15 @@ router.get('/movimentos-clog/consulta', ...requisicaoAuth, denyOnlyOperador, asy
         const hr = await pool.query(
           `SELECT row_data
            FROM requisicoes_movimentos_historico
-           ORDER BY id DESC
+           ORDER BY
+             (
+               CASE
+                 WHEN TRIM(COALESCE(row_data->>'Dt_Recepção', '')) ~ '^[0-9]{2}/[0-9]{2}/[0-9]{4}$'
+                 THEN to_date(TRIM(row_data->>'Dt_Recepção'), 'DD/MM/YYYY')
+                 ELSE NULL
+               END
+             ) DESC NULLS LAST,
+             id DESC
            LIMIT $1 OFFSET $2`,
           [histBatchSize, histOffset]
         );
