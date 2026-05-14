@@ -5761,13 +5761,71 @@ async function enriquecerClogRastreioVazioComDadosAoVivo(rows) {
   return enriquecerSeriaisClogDesdeTabelaSeriais(pool, mapped);
 }
 
+/**
+ * Antes de apagar o histórico, guarda `Dt_Recepção` já persistido por requisição
+ * para o recálculo não substituir datas por `tra_gerada_em`/`updated_at` recentes.
+ * Se houver várias datas distintas no snapshot antigo, usa a mais antiga (dd/mm/aaaa).
+ */
+async function fetchPreservedDtRecepcaoPorRequisicao(reqIds) {
+  const map = new Map();
+  if (!Array.isArray(reqIds) || reqIds.length === 0) return map;
+  if (!(await movimentosHistoricoTableExists())) return map;
+  const r = await pool.query(
+    `SELECT requisicao_id, row_data
+     FROM requisicoes_movimentos_historico
+     WHERE requisicao_id = ANY($1::int[])`,
+    [reqIds]
+  );
+  const parseBrToTime = (s) => {
+    const m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(String(s || '').trim());
+    if (!m) return NaN;
+    const d = new Date(parseInt(m[3], 10), parseInt(m[2], 10) - 1, parseInt(m[1], 10));
+    const t = d.getTime();
+    return Number.isNaN(t) ? NaN : t;
+  };
+  const byReq = new Map();
+  for (const row of r.rows || []) {
+    const rid = Number(row.requisicao_id);
+    if (!Number.isFinite(rid) || rid <= 0) continue;
+    const data = row.row_data && typeof row.row_data === 'object' ? row.row_data : null;
+    if (!data) continue;
+    const dt = String(data['Dt_Recepção'] ?? '').trim();
+    if (!dt) continue;
+    if (!byReq.has(rid)) byReq.set(rid, new Set());
+    byReq.get(rid).add(dt);
+  }
+  for (const [rid, set] of byReq) {
+    const arr = [...set];
+    if (arr.length === 1) {
+      map.set(rid, arr[0]);
+      continue;
+    }
+    arr.sort((a, b) => {
+      const ta = parseBrToTime(a);
+      const tb = parseBrToTime(b);
+      if (Number.isFinite(ta) && Number.isFinite(tb)) return ta - tb;
+      if (Number.isFinite(ta)) return -1;
+      if (Number.isFinite(tb)) return 1;
+      return String(a).localeCompare(String(b));
+    });
+    map.set(rid, arr[0]);
+  }
+  return map;
+}
+
 async function persistMovimentosHistoricoForRequisicoes(ids) {
   const idsClean = [...new Set((ids || []).map((x) => parseInt(x, 10)).filter(Boolean))];
   if (!idsClean.length) return;
   if (!(await movimentosHistoricoTableExists())) return;
+  const preservedDtRecepcao = await fetchPreservedDtRecepcaoPorRequisicao(idsClean);
   const rows = await buildClogRowsForRequisicaoIds(
     idsClean,
-    (r) => formatDateBR(new Date(r.tra_gerada_em || r.updated_at || r.created_at || Date.now())),
+    (r) => {
+      const rid = Number(r.id);
+      const kept = preservedDtRecepcao.get(rid);
+      if (kept) return kept;
+      return formatDateBR(new Date(r.tra_gerada_em || r.updated_at || r.created_at || Date.now()));
+    },
     { withOverrides: false }
   );
   if (!rows.length) return;
@@ -6627,12 +6685,78 @@ router.post('/movimentos-clog/backfill-historico', ...requisicaoAuth, denyOperad
       });
     }
 
-    const mesesRaw = parseInt(String(req.body?.meses || '12'), 10);
-    const meses = Number.isFinite(mesesRaw) ? Math.max(1, Math.min(mesesRaw, 24)) : 12;
+    const modo = String(req.body?.modo || 'padrao').trim().toLowerCase();
+    if (modo && modo !== 'padrao' && modo !== 'finalizados') {
+      return res.status(400).json({ error: 'modo inválido. Omita o campo ou use "padrao" ou "finalizados".' });
+    }
     const batchSize = 400;
     let offset = 0;
     let totalReq = 0;
     let lotes = 0;
+
+    if (modo === 'finalizados') {
+      /**
+       * Reconstrói snapshot de movimentos para requisições FINALIZADO (transferências, devoluções, etc.),
+       * sem exigir Nº TRA nem janela temporal por omissão. Opcional: `meses` > 0 limita à última janela.
+       * Requer armazéns para o JOIN usado em buildClogRowsForRequisicaoIds.
+       */
+      const mesesOptRaw = req.body?.meses;
+      const mesesOptParsed = parseInt(String(mesesOptRaw ?? ''), 10);
+      const comFiltroData = Number.isFinite(mesesOptParsed) && mesesOptParsed > 0;
+      const mesesFiltro = comFiltroData ? Math.max(1, Math.min(mesesOptParsed, 600)) : null;
+      const maxLotesRaw = parseInt(String(req.body?.max_lotes ?? ''), 10);
+      const maxLotes = Number.isFinite(maxLotesRaw) && maxLotesRaw > 0 ? Math.min(maxLotesRaw, 100000) : null;
+
+      while (true) {
+        if (maxLotes != null && lotes >= maxLotes) break;
+        const r = comFiltroData
+          ? await pool.query(
+              `
+              SELECT r.id
+              FROM requisicoes r
+              WHERE r.status = 'FINALIZADO'
+                AND r.armazem_origem_id IS NOT NULL
+                AND r.armazem_id IS NOT NULL
+                AND COALESCE(r.tra_gerada_em, r.updated_at, r.created_at)
+                  >= (CURRENT_TIMESTAMP - ($1::int * INTERVAL '1 month'))
+              ORDER BY r.id DESC
+              LIMIT $2 OFFSET $3
+              `,
+              [mesesFiltro, batchSize, offset]
+            )
+          : await pool.query(
+              `
+              SELECT r.id
+              FROM requisicoes r
+              WHERE r.status = 'FINALIZADO'
+                AND r.armazem_origem_id IS NOT NULL
+                AND r.armazem_id IS NOT NULL
+              ORDER BY r.id DESC
+              LIMIT $1 OFFSET $2
+              `,
+              [batchSize, offset]
+            );
+        const ids = (r.rows || []).map((x) => Number(x.id)).filter(Number.isFinite);
+        if (!ids.length) break;
+        await persistMovimentosHistoricoForRequisicoes(ids);
+        totalReq += ids.length;
+        lotes += 1;
+        offset += batchSize;
+      }
+
+      return res.json({
+        ok: true,
+        modo: 'finalizados',
+        filtro_data: comFiltroData,
+        meses: comFiltroData ? mesesFiltro : null,
+        max_lotes: maxLotes,
+        requisicoes_processadas: totalReq,
+        lotes,
+      });
+    }
+
+    const mesesRaw = parseInt(String(req.body?.meses || '12'), 10);
+    const meses = Number.isFinite(mesesRaw) ? Math.max(1, Math.min(mesesRaw, 24)) : 12;
 
     while (true) {
       const r = await pool.query(
@@ -6669,9 +6793,10 @@ router.post('/movimentos-clog/backfill-historico', ...requisicaoAuth, denyOperad
 
     return res.json({
       ok: true,
+      modo: 'padrao',
       meses,
       requisicoes_processadas: totalReq,
-      lotes
+      lotes,
     });
   } catch (error) {
     return res.status(500).json({ error: 'Erro no backfill do histórico de movimentos', details: error.message });
