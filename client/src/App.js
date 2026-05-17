@@ -39,6 +39,7 @@ import TransferenciaLocalizacao from './pages/TransferenciaLocalizacao';
 import ConsultaMovimentos from './pages/ConsultaMovimentos';
 import DashboardViaturas from './pages/DashboardViaturas';
 import ConsultaStockNacionalArmazem from './pages/ConsultaStockNacionalArmazem';
+import IdentificacaoItens from './pages/IdentificacaoItens';
 import Inventario from './pages/Inventario';
 import ContagemSemanal from './pages/ContagemSemanal';
 import StockRastreavelConsulta from './pages/StockRastreavelConsulta';
@@ -299,6 +300,14 @@ function App() {
                   element={
                     <ProtectedRoute allowedRoles={['admin', 'backoffice_armazem', 'supervisor_armazem', 'operador']}>
                       <ConsultaStockNacionalArmazem />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/identificacao-itens"
+                  element={
+                    <ProtectedRoute allowedRoles={['admin', 'backoffice_armazem', 'supervisor_armazem', 'operador', 'controller', 'backoffice_operations']}>
+                      <IdentificacaoItens />
                     </ProtectedRoute>
                   }
                 />

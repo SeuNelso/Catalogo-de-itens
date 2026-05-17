@@ -2537,6 +2537,20 @@ function observacoesClogEpiCodigoNome(obsRaw) {
   return numero || nome || '';
 }
 
+/** Coluna Observações no reporte EPI (modal / XLSX): só "nº - nome" extraído do texto da requisição. */
+function observacoesReporteEpiColaborador(obsRaw) {
+  const s = String(obsRaw || '').trim();
+  if (!s) return '';
+  const nomeMatch = s.match(/colaborador\s*:\s*([^|]+)/i);
+  const numeroMatch = s.match(/nr\.\s*colab\.?\s*:\s*([^|]+)/i);
+  const nome = String(nomeMatch?.[1] || '').trim();
+  const numero = String(numeroMatch?.[1] || '').trim();
+  if (numero && nome) return `${numero} - ${nome}`;
+  if (numero) return numero;
+  if (nome) return nome;
+  return '';
+}
+
 function labelArmazem(codigo, descricao) {
   const cod = String(codigo || '').trim();
   const desc = String(descricao || '').trim();
@@ -7136,7 +7150,7 @@ router.get('/:id/export-reporte', ...requisicaoAuth, denyOperador, async (req, r
     }
 
     const destinoEPI = isDestinoEPI(requisicao);
-    const colaboradorObs = destinoEPI ? (requisicao.observacoes || '') : '';
+    const colaboradorObs = destinoEPI ? observacoesReporteEpiColaborador(requisicao.observacoes) : '';
     const rows = [];
     for (const b of bobinas) {
       rows.push({
@@ -7199,7 +7213,7 @@ router.get('/:id/reporte-dados', ...requisicaoAuth, denyOperador, async (req, re
     }
 
     const destinoEPI = isDestinoEPI(requisicao);
-    const colaboradorObs = destinoEPI ? (requisicao.observacoes || '') : '';
+    const colaboradorObs = destinoEPI ? observacoesReporteEpiColaborador(requisicao.observacoes) : '';
 
     // Mesma origem/destino usados na TRA
     const codigoDestino = requisicao.armazem_destino_codigo || '';
@@ -7309,7 +7323,7 @@ router.post('/reporte-dados-multi', ...requisicaoAuth, denyOperador, async (req,
 
       const destinoEPI = isDestinoEPI(requisicao);
       if (destinoEPI) includeObservacoes = true;
-      const colaboradorObs = destinoEPI ? (requisicao.observacoes || '') : '';
+      const colaboradorObs = destinoEPI ? observacoesReporteEpiColaborador(requisicao.observacoes) : '';
 
       // Linha de separação entre requisições
       allRows.push({
@@ -7430,7 +7444,7 @@ router.post('/export-reporte-multi', ...requisicaoAuth, denyOperador, async (req
       if (!requisicao) continue;
       if (!podeExportarReporteRequisicao(requisicao)) continue;
       const destinoEPI = isDestinoEPI(requisicao);
-      const colaboradorObs = destinoEPI ? (requisicao.observacoes || '') : '';
+      const colaboradorObs = destinoEPI ? observacoesReporteEpiColaborador(requisicao.observacoes) : '';
       if (destinoEPI) includeObservacoes = true;
 
       // Mesma origem/destino usados na TRA (por requisição)
