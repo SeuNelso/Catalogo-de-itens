@@ -1,4 +1,4 @@
-﻿import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+﻿import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import axios from 'axios';
 import Toast from '../components/Toast';
 import PesquisaComLeitorQr from '../components/PesquisaComLeitorQr';
@@ -43,40 +43,28 @@ const novaLinhaArtigo = () => ({
   busca: '',
   codigo: '',
   descricao: '',
-  localizacao: ''
+  localizacao: '',
+  quantidade: ''
 });
 
 const IdentificacaoItens = () => {
   const [modo, setModo] = useState(MODOS_PDF.FOLHA_INTEIRA);
-
-  const [buscaItem, setBuscaItem] = useState('');
-  const [codigo, setCodigo] = useState('');
-  const [descricao, setDescricao] = useState('');
 
   const [linhas, setLinhas] = useState([novaLinhaArtigo()]);
   const [linhaSugAtiva, setLinhaSugAtiva] = useState(null);
   const [sugestoesLinha, setSugestoesLinha] = useState([]);
   const [locOpenIdx, setLocOpenIdx] = useState(null);
 
-  const [quantidade, setQuantidade] = useState('');
-  const [localizacao, setLocalizacao] = useState('');
-  const [sugestoes, setSugestoes] = useState([]);
-  const [sugOpen, setSugOpen] = useState(false);
   const [loadingSug, setLoadingSug] = useState(false);
   const [gerando, setGerando] = useState(false);
   const [toast, setToast] = useState(null);
 
   const [localizacoesOpts, setLocalizacoesOpts] = useState([]);
-  const [filtroLoc, setFiltroLoc] = useState('');
-  const [locOpen, setLocOpen] = useState(false);
 
   const [scannerItemOpen, setScannerItemOpen] = useState(false);
   const [scannerLocOpen, setScannerLocOpen] = useState(false);
   const [scannerLinhaIdx, setScannerLinhaIdx] = useState(null);
   const [scannerLocLinhaIdx, setScannerLocLinhaIdx] = useState(null);
-
-  const sugRef = useRef(null);
-  const locRef = useRef(null);
 
   const isTres = modo === MODOS_PDF.TRES_POR_FOLHA;
 
@@ -102,37 +90,7 @@ const IdentificacaoItens = () => {
   }, []);
 
   useEffect(() => {
-    if (isTres) return undefined;
-    if (artigoJaSelecionado(buscaItem, codigo, descricao)) {
-      setSugestoes([]);
-      return undefined;
-    }
-    const term = termoPesquisaArtigo(buscaItem);
-    if (term.length < 2) {
-      setSugestoes([]);
-      return undefined;
-    }
-    const t = setTimeout(async () => {
-      setLoadingSug(true);
-      try {
-        const params = new URLSearchParams({ search: term, limit: '12', page: '1' });
-        const res = await fetch(`/api/itens?${params.toString()}`);
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(data.error || 'Erro na pesquisa');
-        setSugestoes(Array.isArray(data.itens) ? data.itens : []);
-        setSugOpen(true);
-      } catch (e) {
-        setSugestoes([]);
-        setToast({ type: 'error', message: e.message || 'Erro ao pesquisar artigos.' });
-      } finally {
-        setLoadingSug(false);
-      }
-    }, 300);
-    return () => clearTimeout(t);
-  }, [buscaItem, codigo, descricao, isTres]);
-
-  useEffect(() => {
-    if (!isTres || linhaSugAtiva == null) return undefined;
+    if (linhaSugAtiva == null) return undefined;
     const linha = linhas[linhaSugAtiva];
     if (artigoJaSelecionado(linha?.busca, linha?.codigo, linha?.descricao)) {
       setSugestoesLinha([]);
@@ -158,28 +116,18 @@ const IdentificacaoItens = () => {
       }
     }, 300);
     return () => clearTimeout(t);
-  }, [isTres, linhaSugAtiva, linhas]);
+  }, [linhaSugAtiva, linhas]);
 
   useEffect(() => {
     const onDoc = (e) => {
-      if (sugRef.current && !sugRef.current.contains(e.target)) {
-        setSugOpen(false);
+      if (!e.target.closest('[data-ident-sug]') && !e.target.closest('[data-ident-loc]')) {
         setLinhaSugAtiva(null);
-      }
-      if (locRef.current && !locRef.current.contains(e.target)) {
-        setLocOpen(false);
         setLocOpenIdx(null);
       }
     };
     document.addEventListener('mousedown', onDoc);
     return () => document.removeEventListener('mousedown', onDoc);
   }, []);
-
-  const localizacoesFiltradas = useMemo(() => {
-    const q = normalize(filtroLoc || localizacao);
-    if (!q) return localizacoesOpts.slice(0, 30);
-    return localizacoesOpts.filter((l) => normalize(l).includes(q)).slice(0, 30);
-  }, [localizacoesOpts, filtroLoc, localizacao]);
 
   const localizacoesFiltradasLinha = useMemo(() => {
     if (locOpenIdx == null) return [];
@@ -188,15 +136,6 @@ const IdentificacaoItens = () => {
     if (!q) return localizacoesOpts.slice(0, 30);
     return localizacoesOpts.filter((l) => normalize(l).includes(q)).slice(0, 30);
   }, [localizacoesOpts, locOpenIdx, linhas]);
-
-  const selecionarItem = (item) => {
-    const cod = String(item.codigo || '').trim();
-    const desc = String(item.descricao || item.nome || '').trim();
-    setCodigo(cod);
-    setDescricao(desc);
-    setBuscaItem(formatArtigoExibicao(cod, desc));
-    setSugOpen(false);
-  };
 
   const selecionarItemLinha = (idx, item) => {
     const cod = String(item.codigo || '').trim();
@@ -231,30 +170,21 @@ const IdentificacaoItens = () => {
 
   const mudarModo = (novoModo) => {
     setModo(novoModo);
-    if (novoModo === MODOS_PDF.TRES_POR_FOLHA) {
-      setLinhas([novaLinhaArtigo()]);
-      setLinhaSugAtiva(null);
-      setLocOpenIdx(null);
-    }
+    setLinhaSugAtiva(null);
+    setLocOpenIdx(null);
   };
 
-  const aplicarCodigoLido = useCallback(async (valor, linhaIdx = null) => {
+  const aplicarCodigoLido = useCallback(async (valor, linhaIdx) => {
     const v = String(valor || '').trim();
-    if (!v) return;
+    if (!v || linhaIdx == null) return;
 
     const preencher = (cod, desc) => {
       const exib = formatArtigoExibicao(cod, desc) || cod || v;
-      if (linhaIdx != null) {
-        setLinhas((prev) =>
-          prev.map((l, i) =>
-            i === linhaIdx ? { ...l, busca: exib, codigo: cod, descricao: desc } : l
-          )
-        );
-      } else {
-        setBuscaItem(exib);
-        setCodigo(cod);
-        setDescricao(desc);
-      }
+      setLinhas((prev) =>
+        prev.map((l, i) =>
+          i === linhaIdx ? { ...l, busca: exib, codigo: cod, descricao: desc } : l
+        )
+      );
     };
 
     preencher(v, '');
@@ -276,19 +206,13 @@ const IdentificacaoItens = () => {
     }
   }, []);
 
-  const aplicarLocalizacaoLida = (valor, linhaIdx = null) => {
+  const aplicarLocalizacaoLida = (valor, linhaIdx) => {
     const v = String(valor || '').trim();
-    if (!v) return;
-    if (linhaIdx != null) {
-      setLinhas((prev) =>
-        prev.map((l, i) => (i === linhaIdx ? { ...l, localizacao: v } : l))
-      );
-      setLocOpenIdx(null);
-    } else {
-      setLocalizacao(v);
-      setFiltroLoc(v);
-      setLocOpen(false);
-    }
+    if (!v || linhaIdx == null) return;
+    setLinhas((prev) =>
+      prev.map((l, i) => (i === linhaIdx ? { ...l, localizacao: v } : l))
+    );
+    setLocOpenIdx(null);
   };
 
   const linhasPreenchidas = useMemo(
@@ -297,7 +221,8 @@ const IdentificacaoItens = () => {
         .map((l) => ({
           codigo: String(l.codigo || '').trim(),
           descricao: String(l.descricao || '').trim(),
-          localizacao: String(l.localizacao || '').trim()
+          localizacao: String(l.localizacao || '').trim(),
+          quantidade: String(l.quantidade || '').trim()
         }))
         .filter((l) => l.codigo),
     [linhas]
@@ -305,41 +230,38 @@ const IdentificacaoItens = () => {
 
   const podeGerar = useMemo(() => {
     if (gerando) return false;
-    if (isTres) {
-      return (
-        linhasPreenchidas.length >= 1 &&
-        linhasPreenchidas.every((l) => l.localizacao)
-      );
-    }
-    return Boolean(codigo.trim() && localizacao.trim());
-  }, [gerando, localizacao, isTres, linhasPreenchidas, codigo]);
+    return (
+      linhasPreenchidas.length >= 1 &&
+      linhasPreenchidas.every((l) => l.localizacao)
+    );
+  }, [gerando, linhasPreenchidas]);
 
   const handleGerarPdf = async () => {
-    const qtdRaw = quantidade.trim();
-    if (!isTres && qtdRaw && !/^\d{1,6}$/.test(qtdRaw.replace(/\s/g, ''))) {
-      setToast({
-        type: 'error',
-        message: `Quantidade inválida. Use até ${MAX_QTD_DIGITOS} dígitos (ex.: 35 ou 123456).`
-      });
-      return;
+    if (!isTres) {
+      for (let i = 0; i < linhasPreenchidas.length; i += 1) {
+        const qtdRaw = linhasPreenchidas[i].quantidade;
+        if (qtdRaw && !/^\d{1,6}$/.test(qtdRaw.replace(/\s/g, ''))) {
+          setToast({
+            type: 'error',
+            message: `Quantidade inválida no artigo ${i + 1}. Use até ${MAX_QTD_DIGITOS} dígitos.`
+          });
+          return;
+        }
+      }
     }
 
     try {
       setGerando(true);
-      const itens = isTres
-        ? linhasPreenchidas
-        : [
-            {
-              codigo: codigo.trim(),
-              descricao: descricao.trim(),
-              localizacao: localizacao.trim(),
-              quantidade: quantidade.trim() || undefined
-            }
-          ];
+      const itens = linhasPreenchidas.map((l) => ({
+        codigo: l.codigo,
+        descricao: l.descricao,
+        localizacao: l.localizacao,
+        quantidade: isTres ? undefined : l.quantidade || undefined
+      }));
 
       await gerarPdfIdentificacao({
         modo,
-        localizacao: isTres ? '' : localizacao.trim(),
+        localizacao: '',
         itens
       });
       setToast({ type: 'success', message: 'PDF gerado com sucesso.' });
@@ -402,57 +324,11 @@ const IdentificacaoItens = () => {
             </div>
           </fieldset>
 
-          {!isTres && (
-            <div ref={sugRef} className="relative">
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Artigo <span className="font-normal text-gray-500">(código ou descrição)</span>
-                </label>
-                <PesquisaComLeitorQr
-                  value={buscaItem}
-                  onChange={(e) => {
-                    const v = e.target.value;
-                    setBuscaItem(v);
-                    if (!artigoJaSelecionado(v, codigo, descricao)) {
-                      setCodigo('');
-                      setDescricao('');
-                    }
-                    setSugOpen(true);
-                  }}
-                  onLerClick={() => setScannerItemOpen(true)}
-                  placeholder="Pesquisar por código ou descrição…"
-                />
-                {sugOpen && sugestoes.length > 0 && listaSugestoes(sugestoes, selecionarItem)}
-                {loadingSug && <p className="text-xs text-gray-500 mt-1">A pesquisar…</p>}
-              </div>
-
-          )}
-
-          {!isTres && (
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2" htmlFor="quantidade-ident">
-                Quantidade
-              </label>
-              <input
-                id="quantidade-ident"
-                type="text"
-                inputMode="numeric"
-                maxLength={MAX_QTD_DIGITOS}
-                value={quantidade}
-                onChange={(e) => {
-                  const v = e.target.value.replace(/\D/g, '').slice(0, MAX_QTD_DIGITOS);
-                  setQuantidade(v);
-                }}
-                placeholder={`Opcional — máx. ${MAX_QTD_DIGITOS} dígitos`}
-                className="w-full px-3 py-2.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#0915FF]/30 focus:border-[#0915FF]"
-              />
-            </div>
-          )}
-
-          {isTres && (
-            <div className="space-y-4">
+          <div className="space-y-4">
               <p className="text-sm text-gray-600">
-                Adicione quantos artigos precisar (3 por página A4; novas páginas são criadas
-                automaticamente). Cada etiqueta usa a localização do respetivo artigo no QR.
+                {isTres
+                  ? 'Adicione quantos artigos precisar (3 por página A4; novas páginas são criadas automaticamente). Cada etiqueta usa a localização do respetivo artigo no QR.'
+                  : 'Adicione quantos artigos precisar (1 etiqueta por página A4 horizontal). Todos entram num único PDF com várias folhas.'}
               </p>
               {linhas.map((linha, idx) => (
                 <div
@@ -480,7 +356,7 @@ const IdentificacaoItens = () => {
                       )}
                     </div>
                   </div>
-                  <div className="relative">
+                  <div className="relative" data-ident-sug>
                     <label className="block text-xs font-medium text-gray-600 mb-1">
                       Artigo (código ou descrição)
                     </label>
@@ -512,8 +388,36 @@ const IdentificacaoItens = () => {
                     {linhaSugAtiva === idx &&
                       sugestoesLinha.length > 0 &&
                       listaSugestoes(sugestoesLinha, (item) => selecionarItemLinha(idx, item))}
+                    {linhaSugAtiva === idx && loadingSug && (
+                      <p className="text-xs text-gray-500 mt-1">A pesquisar…</p>
+                    )}
                   </div>
-                  <div className="relative">
+                  {!isTres && (
+                    <div>
+                      <label
+                        className="block text-xs font-medium text-gray-600 mb-1"
+                        htmlFor={`quantidade-ident-${linha.id}`}
+                      >
+                        Quantidade
+                      </label>
+                      <input
+                        id={`quantidade-ident-${linha.id}`}
+                        type="text"
+                        inputMode="numeric"
+                        maxLength={MAX_QTD_DIGITOS}
+                        value={linha.quantidade}
+                        onChange={(e) => {
+                          const v = e.target.value.replace(/\D/g, '').slice(0, MAX_QTD_DIGITOS);
+                          setLinhas((prev) =>
+                            prev.map((l, i) => (i === idx ? { ...l, quantidade: v } : l))
+                          );
+                        }}
+                        placeholder={`Opcional — máx. ${MAX_QTD_DIGITOS} dígitos`}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#0915FF]/30 focus:border-[#0915FF]"
+                      />
+                    </div>
+                  )}
+                  <div className="relative" data-ident-loc>
                     <label className="block text-xs font-medium text-gray-600 mb-1">
                       Localização (QR)
                     </label>
@@ -567,51 +471,7 @@ const IdentificacaoItens = () => {
               >
                 + Adicionar artigo
               </button>
-            </div>
-          )}
-
-          {!isTres && (
-          <div ref={locRef} className="relative">
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Localização (QR)
-            </label>
-            <PesquisaComLeitorQr
-              value={localizacao}
-              onChange={(e) => {
-                setLocalizacao(e.target.value);
-                setFiltroLoc(e.target.value);
-                setLocOpen(true);
-              }}
-              onFocus={() => setLocOpen(true)}
-              onLerClick={() => {
-                setScannerLocLinhaIdx(null);
-                setScannerLocOpen(true);
-              }}
-              placeholder="Ex.: GERAL.E.R"
-              fontMono
-              lerTitle="Ler QR da localização"
-            />
-            {locOpen && localizacoesFiltradas.length > 0 && (
-              <ul className="absolute z-20 left-0 right-0 mt-1 max-h-48 overflow-auto bg-white border border-gray-200 rounded-lg shadow-lg text-sm">
-                {localizacoesFiltradas.map((loc) => (
-                  <li key={loc}>
-                    <button
-                      type="button"
-                      className="w-full text-left px-3 py-2 hover:bg-gray-50 font-mono border-b border-gray-100 last:border-0"
-                      onClick={() => {
-                        setLocalizacao(loc);
-                        setFiltroLoc(loc);
-                        setLocOpen(false);
-                      }}
-                    >
-                      {loc}
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
           </div>
-          )}
 
           <button
             type="button"

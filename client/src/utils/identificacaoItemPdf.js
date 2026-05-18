@@ -395,7 +395,7 @@ function drawEtiqueta(doc, x0, y0, w, h, { codigo, descricao, localizacao, quant
 }
 
 /**
- * Gera PDF: folha inteira (1 etiqueta) ou múltiplos por folha (3/página, páginas extra).
+ * Gera PDF: folha inteira (1 etiqueta por página) ou múltiplos por folha (3/página, páginas extra).
  * @param {{ modo: string, itens: Array<{ codigo: string, descricao?: string, localizacao?: string, quantidade?: string|number }>, localizacao?: string }} params
  * @param {{ filename?: string }} [opts]
  */
@@ -416,7 +416,7 @@ export async function gerarPdfIdentificacao(params, opts = {}) {
     throw new Error(msg);
   }
 
-  const itensPdf = modo === MODOS_PDF.FOLHA_INTEIRA ? itens.slice(0, 1) : itens;
+  const itensPdf = itens;
   const orientation = orientacaoFolhaPdf(modo);
   const doc = new jsPDF({ unit: 'mm', format: 'a4', orientation });
 
@@ -435,9 +435,15 @@ export async function gerarPdfIdentificacao(params, opts = {}) {
       }
     }
   } else {
-    const slots = calcSlotsA4(modo, itensPdf.length);
-    const assets = await prepararAssetsEtiqueta(itensPdf[0], slots[0].w, slots[0].h);
-    drawEtiqueta(doc, slots[0].x, slots[0].y, slots[0].w, slots[0].h, assets.payload, assets);
+    for (let i = 0; i < itensPdf.length; i += 1) {
+      if (i > 0) {
+        doc.addPage('a4', orientation);
+      }
+      const slots = calcSlotsA4(modo, 1);
+      const slot = slots[0];
+      const assets = await prepararAssetsEtiqueta(itensPdf[i], slot.w, slot.h);
+      drawEtiqueta(doc, slot.x, slot.y, slot.w, slot.h, assets.payload, assets);
+    }
   }
 
   const primeiro = itensPdf[0];
@@ -445,7 +451,9 @@ export async function gerarPdfIdentificacao(params, opts = {}) {
     opts.filename ||
     (modo === MODOS_PDF.TRES_POR_FOLHA
       ? `IDENT_${itensPdf.length}x_${sanitizeFilenamePart(primeiro.localizacao)}.pdf`
-      : `IDENT_${sanitizeFilenamePart(primeiro.codigo)}_${sanitizeFilenamePart(primeiro.localizacao)}.pdf`);
+      : itensPdf.length > 1
+        ? `IDENT_${itensPdf.length}pag_${sanitizeFilenamePart(primeiro.codigo)}.pdf`
+        : `IDENT_${sanitizeFilenamePart(primeiro.codigo)}_${sanitizeFilenamePart(primeiro.localizacao)}.pdf`);
   doc.save(baseName.endsWith('.pdf') ? baseName : `${baseName}.pdf`);
 }
 
