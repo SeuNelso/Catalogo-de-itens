@@ -1,6 +1,6 @@
 /**
  * PDF de identificação de item (etiqueta) — layout DIGI em A4.
- * Folha inteira: horizontal; 3 por folha: vertical.
+ * Folha inteira: horizontal; múltiplos por folha: vertical.
  * QR = localização; código de barras 1D = código do artigo.
  */
 import jsPDF from 'jspdf';
@@ -395,7 +395,7 @@ function drawEtiqueta(doc, x0, y0, w, h, { codigo, descricao, localizacao, quant
 }
 
 /**
- * Gera PDF A4 horizontal com 1 etiqueta (folha inteira) ou até 3 etiquetas.
+ * Gera PDF: folha inteira (1 etiqueta) ou múltiplos por folha (3/página, páginas extra).
  * @param {{ modo: string, itens: Array<{ codigo: string, descricao?: string, localizacao?: string, quantidade?: string|number }>, localizacao?: string }} params
  * @param {{ filename?: string }} [opts]
  */
@@ -415,21 +415,29 @@ export async function gerarPdfIdentificacao(params, opts = {}) {
         : 'Indique o artigo com código e localização.';
     throw new Error(msg);
   }
-  if (modo === MODOS_PDF.TRES_POR_FOLHA && itens.length > 3) {
-    throw new Error('Máximo de 3 artigos por folha.');
-  }
 
-  const itensPdf =
-    modo === MODOS_PDF.FOLHA_INTEIRA ? itens.slice(0, 1) : itens.slice(0, 3);
-  const slots = calcSlotsA4(modo, itensPdf.length);
+  const itensPdf = modo === MODOS_PDF.FOLHA_INTEIRA ? itens.slice(0, 1) : itens;
   const orientation = orientacaoFolhaPdf(modo);
   const doc = new jsPDF({ unit: 'mm', format: 'a4', orientation });
 
-  for (let i = 0; i < itensPdf.length; i += 1) {
-    const slot = slots[i];
-    if (!slot) break;
-    const assets = await prepararAssetsEtiqueta(itensPdf[i], slot.w, slot.h);
-    drawEtiqueta(doc, slot.x, slot.y, slot.w, slot.h, assets.payload, assets);
+  if (modo === MODOS_PDF.TRES_POR_FOLHA) {
+    for (let pageStart = 0; pageStart < itensPdf.length; pageStart += MAX_ETIQUETAS_TRES_POR_FOLHA) {
+      if (pageStart > 0) {
+        doc.addPage('a4', orientation);
+      }
+      const pageItens = itensPdf.slice(pageStart, pageStart + MAX_ETIQUETAS_TRES_POR_FOLHA);
+      const slots = calcSlotsA4(modo, pageItens.length);
+      for (let i = 0; i < pageItens.length; i += 1) {
+        const slot = slots[i];
+        if (!slot) break;
+        const assets = await prepararAssetsEtiqueta(pageItens[i], slot.w, slot.h);
+        drawEtiqueta(doc, slot.x, slot.y, slot.w, slot.h, assets.payload, assets);
+      }
+    }
+  } else {
+    const slots = calcSlotsA4(modo, itensPdf.length);
+    const assets = await prepararAssetsEtiqueta(itensPdf[0], slots[0].w, slots[0].h);
+    drawEtiqueta(doc, slots[0].x, slots[0].y, slots[0].w, slots[0].h, assets.payload, assets);
   }
 
   const primeiro = itensPdf[0];

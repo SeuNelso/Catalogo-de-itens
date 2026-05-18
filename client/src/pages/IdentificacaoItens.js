@@ -226,7 +226,7 @@ const IdentificacaoItens = () => {
   };
 
   const adicionarLinha = () => {
-    setLinhas((prev) => (prev.length >= 3 ? prev : [...prev, novaLinhaArtigo()]));
+    setLinhas((prev) => [...prev, novaLinhaArtigo()]);
   };
 
   const mudarModo = (novoModo) => {
@@ -397,7 +397,7 @@ const IdentificacaoItens = () => {
                   checked={modo === MODOS_PDF.TRES_POR_FOLHA}
                   onChange={() => mudarModo(MODOS_PDF.TRES_POR_FOLHA)}
                 />
-                <span className="text-sm font-semibold text-gray-800">3 por folha</span>
+                <span className="text-sm font-semibold text-gray-800">Multiplos por folha</span>
               </label>
             </div>
           </fieldset>
@@ -451,7 +451,8 @@ const IdentificacaoItens = () => {
           {isTres && (
             <div className="space-y-4">
               <p className="text-sm text-gray-600">
-                Adicione 1 a 3 artigos. Cada etiqueta usa a localização do respetivo artigo no QR.
+                Adicione quantos artigos precisar (3 por página A4; novas páginas são criadas
+                automaticamente). Cada etiqueta usa a localização do respetivo artigo no QR.
               </p>
               {linhas.map((linha, idx) => (
                 <div
@@ -559,15 +560,13 @@ const IdentificacaoItens = () => {
                   </div>
                 </div>
               ))}
-              {linhas.length < 3 && (
-                <button
-                  type="button"
-                  onClick={adicionarLinha}
-                  className="w-full py-2.5 rounded-lg text-sm font-medium border border-dashed border-gray-300 text-gray-700 hover:bg-gray-50"
-                >
-                  + Adicionar artigo ({linhas.length}/3)
-                </button>
-              )}
+              <button
+                type="button"
+                onClick={adicionarLinha}
+                className="w-full py-2.5 rounded-lg text-sm font-medium border border-dashed border-gray-300 text-gray-700 hover:bg-gray-50"
+              >
+                + Adicionar artigo
+              </button>
             </div>
           )}
 
