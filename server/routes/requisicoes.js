@@ -2390,8 +2390,12 @@ router.get('/:id/export-seriais-entrada', ...requisicaoAuth, denyOperador, async
       return res.status(400).json({ error: 'Requisição deve estar preparada / confirmada para exportar seriais.' });
     }
 
-    const templatePath = path.join(__dirname, '..', 'stock-entry-serial-numbers.2026-04-16.xlsx');
-    if (!fs.existsSync(templatePath)) {
+    const templateCandidates = [
+      path.join(__dirname, '..', 'docExemplo', 'stock-entry-serial-numbers.2026-04-16.xlsx'),
+      path.join(__dirname, '..', 'stock-entry-serial-numbers.2026-04-16.xlsx'),
+    ];
+    const templatePath = templateCandidates.find((p) => fs.existsSync(p));
+    if (!templatePath) {
       return res.status(500).json({ error: 'Modelo Excel de entrada de seriais não encontrado no servidor.' });
     }
 
