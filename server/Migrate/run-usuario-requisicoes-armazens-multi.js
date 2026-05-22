@@ -2,10 +2,10 @@
  * Cria usuario_requisicoes_armazens, copia dados da coluna legada (se existir) e remove a coluna.
  * Uso: node server/run-usuario-requisicoes-armazens-multi.js
  */
-require('dotenv').config({ path: require('path').join(__dirname, '.env') });
+const { loadEnv, sqlInMigrate } = require('./_paths');
+loadEnv();
 const { Pool } = require('pg');
 const fs = require('fs');
-const path = require('path');
 
 const pool = new Pool({
   connectionString:
@@ -17,7 +17,7 @@ const pool = new Pool({
 async function run() {
   const client = await pool.connect();
   try {
-    const ddl = fs.readFileSync(path.join(__dirname, 'migrate-usuario-requisicoes-armazens-junction.sql'), 'utf8');
+    const ddl = fs.readFileSync(sqlInMigrate('migrate-usuario-requisicoes-armazens-junction.sql'), 'utf8');
     const ddlStmts = ddl
       .split('\n')
       .filter((line) => !line.trim().startsWith('--'))

@@ -1,5 +1,5 @@
 /**
- * Histórico de migrações SQL corridas via `node server/run-migration.js`.
+ * Histórico de migrações SQL corridas via `node server/Migrate/run-migration.js`.
  * Permite saber o que foi aplicado no db:dev para repetir na produção (mesmos comandos, DATABASE_URL da prod).
  */
 const path = require('path');

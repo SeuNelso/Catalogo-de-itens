@@ -96,6 +96,25 @@ const normalizarParticaoPrefill = (raw, modoFallback = 'normal') => {
   return String(modoFallback || '').trim().toLowerCase() === 'apeado' ? 'apeado' : 'normal';
 };
 
+/** Ticket APEADO: pendente até `tra_apeado_numero`; TRFL: pendente até ficheiro gerado. */
+function ticketMovInternaPendente(t, modoTransferencia) {
+  if (modoTransferencia === 'apeado') {
+    return !String(t?.tra_apeado_numero || '').trim();
+  }
+  return t?.trfl_gerada_em == null;
+}
+
+function ticketMovInternaEstado(t, modoTransferencia) {
+  if (modoTransferencia === 'apeado') {
+    const num = String(t?.tra_apeado_numero || '').trim();
+    if (num) return { kind: 'concluido', text: num };
+    if (t?.tra_apeado_gerada_em) return { kind: 'aguarda_numero', text: 'Aguarda Nº TRA' };
+    return { kind: 'pendente', text: 'Pendente' };
+  }
+  if (t?.trfl_gerada_em == null) return { kind: 'pendente', text: 'Pendente' };
+  return { kind: 'gerada', text: 'Gerada' };
+}
+
 const mapPrefillPayloadToRows = (payload) => {
   const modoFallback = normalizarParticaoPrefill(payload?.modo, 'normal');
   const rows = [];
@@ -346,6 +365,8 @@ const TransferenciaLocalizacao = () => {
   const [selectedTicketIds, setSelectedTicketIds] = useState([]);
   const [exportingTrfl, setExportingTrfl] = useState(false);
   const [deletingTickets, setDeletingTickets] = useState(false);
+  const [traNumeroByTicketId, setTraNumeroByTicketId] = useState({});
+  const [savingTraTicketId, setSavingTraTicketId] = useState(null);
   const [ticketsPage, setTicketsPage] = useState(1);
   const [sugestoesRemotasCodigo, setSugestoesRemotasCodigo] = useState([]);
   const [sugestoesCodigoLoading, setSugestoesCodigoLoading] = useState(false);
@@ -1665,8 +1686,59 @@ const TransferenciaLocalizacao = () => {
   };
 
   const selecionarTodosPendentes = () => {
-    const pendentes = tickets.filter((t) => t.trfl_gerada_em == null).map((t) => t.id);
+    const pendentes = tickets
+      .filter((t) => ticketMovInternaPendente(t, modoTransferencia))
+      .map((t) => t.id);
     setSelectedTicketIds(pendentes);
+  };
+
+  const handleTraNumeroTicketChange = (ticketId, value) => {
+    setTraNumeroByTicketId((prev) => ({ ...prev, [ticketId]: value }));
+  };
+
+  const handleGuardarTraNumeroTicket = async (ticket) => {
+    const ticketId = Number(ticket?.id);
+    if (!Number.isFinite(ticketId) || !armazemId) return;
+    const valor = String(traNumeroByTicketId[ticketId] ?? ticket?.tra_apeado_numero ?? '').trim();
+    if (!valor) {
+      setToast({ type: 'error', message: 'Número da TRA é obrigatório.' });
+      return;
+    }
+    try {
+      setSavingTraTicketId(ticketId);
+      const token = localStorage.getItem('token');
+      const response = await fetch(
+        `/api/armazens/${armazemId}/movimentacoes-internas/tra-apeado-numero`,
+        {
+          method: 'PATCH',
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ticketId, traNumero: valor }),
+        }
+      );
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || 'Erro ao guardar número da TRA');
+      }
+      const data = await response.json().catch(() => ({}));
+      const gravado = String(data?.ticket?.tra_apeado_numero || valor).trim();
+      setToast({
+        type: 'success',
+        message: data?.movimentos_registados
+          ? `Nº TRA ${gravado} registado. O movimento Transf. Apeado ficará disponível na consulta de movimentos.`
+          : `Nº TRA ${gravado} registado. Ticket concluído.`,
+      });
+      setTraNumeroByTicketId((prev) => {
+        const next = { ...prev };
+        delete next[ticketId];
+        return next;
+      });
+      loadTickets();
+      window.dispatchEvent(new CustomEvent(RECEBIMENTO_REFRESH_EVENT));
+    } catch (error) {
+      setToast({ type: 'error', message: error.message || 'Erro ao guardar número da TRA' });
+    } finally {
+      setSavingTraTicketId(null);
+    }
   };
 
   const totalTicketsPages = Math.max(1, Math.ceil(tickets.length / TICKETS_PAGE_SIZE));
@@ -1691,7 +1763,7 @@ const TransferenciaLocalizacao = () => {
     }
     const selectedSet = new Set(selectedTicketIds.map((x) => Number(x)));
     const haviaPendenteSelecionado = tickets.some(
-      (t) => selectedSet.has(Number(t.id)) && t.trfl_gerada_em == null
+      (t) => selectedSet.has(Number(t.id)) && ticketMovInternaPendente(t, modoTransferencia)
     );
     setExportingTrfl(true);
     setToast(null);
@@ -1735,7 +1807,10 @@ const TransferenciaLocalizacao = () => {
       window.URL.revokeObjectURL(url);
       setToast({
         type: 'success',
-        message: modoTransferencia === 'apeado' ? 'Ficheiro TRA APEADO transferido.' : 'Ficheiro TRFL transferido.',
+        message:
+          modoTransferencia === 'apeado'
+            ? 'Ficheiro TRA APEADO transferido. Registe o Nº TRA em cada ticket para concluir.'
+            : 'Ficheiro TRFL transferido.',
       });
       if (haviaPendenteSelecionado) {
         window.dispatchEvent(new CustomEvent(RECEBIMENTO_REFRESH_EVENT));
@@ -1757,7 +1832,9 @@ const TransferenciaLocalizacao = () => {
     }
     const ok = window.confirm(
       `Confirma excluir ${selectedTicketIds.length} ticket(s) selecionado(s)?\n\n` +
-      `Apenas tickets sem ${nomeDocumentoFila} gerada podem ser removidos.`
+      (modoTransferencia === 'apeado'
+        ? 'Apenas tickets sem Nº TRA registado podem ser removidos.'
+        : `Apenas tickets sem ${nomeDocumentoFila} gerada podem ser removidos.`)
     );
     if (!ok) return;
 
@@ -1789,7 +1866,10 @@ const TransferenciaLocalizacao = () => {
       if (skipped > 0) {
         setToast({
           type: 'warning',
-          message: `${deleted} ticket(s) excluído(s). ${skipped} não foram removidos (${nomeDocumentoFila} já gerada).`,
+          message:
+            modoTransferencia === 'apeado'
+              ? `${deleted} ticket(s) excluído(s). ${skipped} não foram removidos (Nº TRA já registado).`
+              : `${deleted} ticket(s) excluído(s). ${skipped} não foram removidos (${nomeDocumentoFila} já gerada).`,
         });
       } else {
         setToast({ type: 'success', message: `${deleted} ticket(s) excluído(s) com sucesso.` });
@@ -3229,24 +3309,47 @@ const TransferenciaLocalizacao = () => {
                           <th className="px-2 py-2 w-[20%]">Data</th>
                           <th className="px-2 py-2 w-[14%]">Origem</th>
                           <th className="px-2 py-2 w-[14%]">Destino</th>
-                          <th className="px-2 py-2 w-[31%]">Artigo</th>
-                          <th className="px-2 py-2 w-[8%] text-right">Qtd</th>
-                          <th className="px-2 py-2 w-[8%]">{nomeDocumentoFila}</th>
+                          <th className="px-2 py-2 w-[26%]">Artigo</th>
+                          <th className="px-2 py-2 w-[7%] text-right">Qtd</th>
+                          <th className="px-2 py-2 w-[10%]">{nomeDocumentoFila}</th>
+                          {modoTransferencia === 'apeado' && podeExportarTrfl && (
+                            <th className="px-2 py-2 w-[18%]">Nº TRA</th>
+                          )}
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-gray-100 bg-white">
                         {ticketsPaginaAtual.map((t) => {
-                          const pendente = t.trfl_gerada_em == null;
+                          const pendente = ticketMovInternaPendente(t, modoTransferencia);
+                          const estado = ticketMovInternaEstado(t, modoTransferencia);
                           const checked = selectedTicketIds.includes(t.id);
+                          const aguardaNumeroTra =
+                            modoTransferencia === 'apeado' && estado.kind === 'aguarda_numero';
                           return (
-                            <tr key={t.id} className={pendente ? 'hover:bg-gray-50/80' : 'opacity-70 bg-gray-50/50'}>
+                            <tr
+                              key={t.id}
+                              className={
+                                pendente
+                                  ? aguardaNumeroTra
+                                    ? 'hover:bg-amber-50/60 bg-amber-50/30'
+                                    : 'hover:bg-gray-50/80'
+                                  : 'opacity-70 bg-gray-50/50'
+                              }
+                            >
                               {podeExportarTrfl && (
                                 <td className="px-2 py-2 align-top">
                                   <input
                                     type="checkbox"
                                     checked={checked}
                                     onChange={() => toggleTicket(t.id)}
-                                    title={pendente ? '' : `${nomeDocumentoFila} já gerada: pode selecionar para re-download`}
+                                    title={
+                                      pendente
+                                        ? aguardaNumeroTra
+                                          ? 'Excel já gerado: pode re-download; registe o Nº TRA para concluir'
+                                          : ''
+                                        : modoTransferencia === 'apeado'
+                                          ? 'Ticket concluído: pode selecionar para re-download do Excel'
+                                          : `${nomeDocumentoFila} já gerada: pode selecionar para re-download`
+                                    }
                                   />
                                 </td>
                               )}
@@ -3271,12 +3374,48 @@ const TransferenciaLocalizacao = () => {
                               </td>
                               <td className="px-2 py-2 text-right tabular-nums font-medium text-[11px] align-top">{t.quantidade}</td>
                               <td className="px-2 py-2 text-[11px] align-top">
-                                {pendente ? (
-                                  <span className="text-amber-700 font-medium">Pendente</span>
+                                {estado.kind === 'concluido' ? (
+                                  <span className="text-emerald-700 font-medium" title={estado.text}>
+                                    Concluído
+                                  </span>
+                                ) : estado.kind === 'aguarda_numero' ? (
+                                  <span className="text-amber-800 font-medium">{estado.text}</span>
+                                ) : estado.kind === 'pendente' ? (
+                                  <span className="text-amber-700 font-medium">{estado.text}</span>
                                 ) : (
-                                  <span className="text-emerald-700 font-medium">Gerada</span>
+                                  <span className="text-emerald-700 font-medium">{estado.text}</span>
                                 )}
                               </td>
+                              {modoTransferencia === 'apeado' && podeExportarTrfl && (
+                                <td className="px-2 py-2 align-top">
+                                  {estado.kind === 'concluido' ? (
+                                    <span className="font-mono text-[11px] text-emerald-800">{estado.text}</span>
+                                  ) : (
+                                    <div className="flex flex-col gap-1 min-w-0">
+                                      <input
+                                        type="text"
+                                        className="w-full min-w-0 border border-gray-300 rounded px-1.5 py-1 font-mono text-[11px]"
+                                        placeholder="TRA…"
+                                        value={String(
+                                          traNumeroByTicketId[t.id] ?? t.tra_apeado_numero ?? ''
+                                        )}
+                                        onChange={(e) =>
+                                          handleTraNumeroTicketChange(t.id, e.target.value)
+                                        }
+                                        disabled={savingTraTicketId === t.id}
+                                      />
+                                      <button
+                                        type="button"
+                                        onClick={() => handleGuardarTraNumeroTicket(t)}
+                                        disabled={savingTraTicketId === t.id}
+                                        className="ui-btn ui-btn-secondary px-2 py-1 text-[10px] font-semibold disabled:opacity-50"
+                                      >
+                                        {savingTraTicketId === t.id ? 'A gravar…' : 'Guardar Nº TRA'}
+                                      </button>
+                                    </div>
+                                  )}
+                                </td>
+                              )}
                             </tr>
                           );
                         })}

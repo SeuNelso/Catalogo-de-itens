@@ -92,7 +92,6 @@ npm run build
 
 ### npm não funciona?
 - Execute: `.\check-npm.bat` (arquivo .bat, funciona sem problemas de política)
-- Ou consulte: **FIX_NPM.md** para solução rápida
 - Guia completo: **TROUBLESHOOTING_NPM.md**
 
 ### Outros problemas?

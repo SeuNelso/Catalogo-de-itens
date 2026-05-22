@@ -52,10 +52,10 @@
 
 ### Passo 1: Executar Script SQL
 
-Execute o script `server/create-armazens-requisicoes-v2.sql` no banco de dados:
+Execute o script `server/Migrate/create-armazens-requisicoes-v2.sql` no banco de dados (ou `npm run db:armazens`):
 
 ```bash
-psql -h seu_host -U seu_usuario -d seu_database -f server/create-armazens-requisicoes-v2.sql
+psql -h seu_host -U seu_usuario -d seu_database -f server/Migrate/create-armazens-requisicoes-v2.sql
 ```
 
 **⚠️ ATENÇÃO:** Este script irá:

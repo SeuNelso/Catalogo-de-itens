@@ -837,7 +837,10 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
         isRedownload ? 'TRA baixada novamente.' : 'TRA gerada com sucesso.'
       );
       if (!isRedownload && !String(req?.tra_numero || '').trim()) {
-        setToast({ type: 'success', message: 'TRA gerada. Preencha o Nº TRA diretamente na card para poder finalizar.' });
+        const msgCentralApeado = isFluxoCentralApeadoSemTrfl(req)
+          ? 'TRA gerada. Guarde o Nº TRA na card para registar o movimento (Transf. Apeado) na consulta de movimentos e poder finalizar.'
+          : 'TRA gerada. Preencha o Nº TRA diretamente na card para poder finalizar.';
+        setToast({ type: 'success', message: msgCentralApeado });
       }
 
       await fetchRequisicoes();
@@ -1080,8 +1083,13 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
         const data = await response.json().catch(() => ({}));
         throw new Error(data.error || 'Erro ao guardar número da TRA');
       }
+      const data = await response.json().catch(() => ({}));
       await fetchRequisicoes();
-      setToast({ type: 'success', message: `Nº TRA guardado: ${valor}` });
+      const msgSucesso =
+        data?.movimentos_registados || isFluxoCentralApeadoSemTrfl(req)
+          ? `Nº TRA guardado (${valor}). O movimento Transf. Apeado ficará disponível na consulta de movimentos.`
+          : `Nº TRA guardado: ${valor}`;
+      setToast({ type: 'success', message: msgSucesso });
     } catch (error) {
       setToast({ type: 'error', message: error.message || 'Erro ao guardar número da TRA' });
     } finally {
@@ -1747,12 +1755,16 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
     return badges[status] || 'bg-gray-100 text-gray-800';
   };
 
-  const getStatusLabel = (status) => {
+  const getStatusLabel = (status, { recebimentoMercadoria = false } = {}) => {
+    if (recebimentoMercadoria && status === 'EM SEPARACAO') return 'Em inspeção';
     const labels = {
       pendente: 'Pendente',
       'EM SEPARACAO': 'Em separação',
       separado: 'Separadas',
-      'EM EXPEDICAO': 'Em expedição',
+      'EM EXPEDICAO':
+        recebimentoMercadoria || (isModoTransferencias && flowParam === 'recebimento')
+          ? 'Em processo'
+          : 'Em expedição',
       Entregue: 'Entregue',
       FINALIZADO: 'Finalizado',
       cancelada: 'Cancelada'
@@ -1963,7 +1975,8 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
   const statusCards = isModoTransferencias && flowParam === 'recebimento'
     ? [
         { key: 'pendente', label: 'Pendentes', color: 'bg-yellow-50 border-yellow-200 text-yellow-800' },
-        { key: 'EM EXPEDICAO', label: 'Em processo', color: 'bg-orange-50 border-orange-200 text-orange-900' },
+        { key: 'EM SEPARACAO', label: 'Em inspeção', color: 'bg-orange-50 border-orange-200 text-orange-900' },
+        { key: 'EM EXPEDICAO', label: 'Em processo', color: 'bg-blue-50 border-blue-200 text-blue-800' },
         { key: 'FINALIZADO', label: 'Finalizadas', color: 'bg-slate-50 border-slate-300 text-slate-800' },
       ]
     : [
@@ -2009,7 +2022,7 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
             <p className="text-gray-600">
               {showStatusBoard
                 ? 'Selecione um status para abrir a lista e gerir por FIFO.'
-                : `Lista de ${isModoTransferencias ? 'transferências' : 'requisições'}${filtros.status ? ` (${getStatusLabel(filtros.status)})` : ''}.`}
+                : `Lista de ${isModoTransferencias ? 'transferências' : 'requisições'}${filtros.status ? ` (${getStatusLabel(filtros.status, { recebimentoMercadoria: flowParam === 'recebimento' })})` : ''}.`}
             </p>
           </div>
           {podeCriarOuImportarRequisicao && (
@@ -2299,6 +2312,7 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
             )}
             {requisicoesOrdenadas.map((req, idx) => {
               const prepBloqueio = preparacaoReservadaOutroUtilizador(req, user);
+              const isRecebMerc = isFluxoRecebimentoMercadoria(req);
               const separadorNome =
                 req.separador_nome != null && String(req.separador_nome).trim() !== ''
                   ? String(req.separador_nome).trim()
@@ -2340,7 +2354,9 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
                     } else if (canPrepare && prepBloqueio) {
                       setToast({
                         type: 'error',
-                        message: `Esta requisição está reservada para separação (${separadorNome || 'outro operador'}).`
+                        message: isRecebMerc
+                          ? `Esta tarefa está reservada para inspeção (${separadorNome || 'outro operador'}).`
+                          : `Esta requisição está reservada para separação (${separadorNome || 'outro operador'}).`
                       });
                     } else if (!canOpenMonitor) {
                       setToast({
@@ -2359,7 +2375,7 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
                         <div className="flex items-center gap-3 mb-2 flex-wrap">
                           <span className="text-lg font-bold text-gray-900">#{req.id}</span>
                           <span className={`px-2 py-1 text-xs font-semibold rounded-full ${getStatusBadge(req.status)}`}>
-                            {getStatusLabel(req.status)}
+                            {getStatusLabel(req.status, { recebimentoMercadoria: isRecebMerc })}
                           </span>
                           {req.status === 'EM EXPEDICAO' && Boolean(req.cancelada_em_expedicao) && (
                             <span className="px-2 py-1 text-xs font-semibold rounded-full bg-red-100 text-red-800">
@@ -2379,9 +2395,13 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
                           {req.separador_usuario_id != null && separadorNome && (
                             <span
                               className="px-2 py-0.5 text-[10px] font-semibold rounded-full bg-amber-100 text-amber-900 uppercase tracking-wide"
-                              title="Utilizador que iniciou a separação / preparação"
+                              title={
+                                isRecebMerc
+                                  ? 'Utilizador que iniciou a inspeção'
+                                  : 'Utilizador que iniciou a separação / preparação'
+                              }
                             >
-                              Separação: {separadorNome}
+                              {isRecebMerc ? 'Inspeção' : 'Separação'}: {separadorNome}
                             </span>
                           )}
                           {isFluxoRecebimentoMercadoria(req) && getRecebimentoFase(req) && (
@@ -2418,12 +2438,19 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
                           {(req.status === 'pendente' || req.status === 'EM SEPARACAO') && canPrepare && !prepBloqueio && (
                             <span className="text-xs text-[#0915FF] flex items-center gap-1">
                               <FaBoxOpen />{' '}
-                              {req.status === 'EM SEPARACAO' ? 'Separação em curso — use Continuar preparação' : 'Use o botão Preparar abaixo'}
+                              {req.status === 'EM SEPARACAO'
+                                ? isRecebMerc
+                                  ? 'Inspeção em curso — use Continuar inspeção'
+                                  : 'Separação em curso — use Continuar preparação'
+                                : isRecebMerc
+                                  ? 'Use o botão Inspecionar abaixo'
+                                  : 'Use o botão Preparar abaixo'}
                             </span>
                           )}
                           {(req.status === 'pendente' || req.status === 'EM SEPARACAO') && canPrepare && prepBloqueio && (
                             <span className="text-xs text-amber-700 flex items-center gap-1">
-                              Em preparação por {separadorNome || 'outro operador'}
+                              {isRecebMerc ? 'Em inspeção por' : 'Em preparação por'}{' '}
+                              {separadorNome || 'outro operador'}
                             </span>
                           )}
                           {req.status === 'separado' && req.separacao_confirmada && req.separacao_confirmada_em && (
@@ -2510,11 +2537,20 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
                           <div className="mt-3 flex items-end gap-2 flex-wrap" onClick={(e) => e.stopPropagation()}>
                             <div className="flex flex-col">
                               <label className="text-xs font-semibold text-gray-700 mb-1">Nº TRA</label>
+                              {isFluxoCentralApeadoSemTrfl(req) && !String(req.tra_numero || '').trim() && (
+                                <span className="mb-1 text-[10px] text-indigo-800">
+                                  Obrigatório para registar Transf. Apeado na consulta de movimentos
+                                </span>
+                              )}
                               <input
                                 type="text"
                                 value={String(traNumeroByReqId[req.id] ?? req.tra_numero ?? '')}
                                 onChange={(e) => handleTraNumeroChange(req.id, e.target.value)}
-                                placeholder="Digite o número da TRA"
+                                placeholder={
+                                  isFluxoCentralApeadoSemTrfl(req)
+                                    ? 'Nº TRA (registo do movimento)'
+                                    : 'Digite o número da TRA'
+                                }
                                 disabled={savingTraReqId === req.id || req.status === 'FINALIZADO'}
                                 className="px-3 py-2 border border-gray-300 rounded-lg text-sm w-[220px] focus:ring-2 focus:ring-[#0915FF] focus:border-transparent disabled:bg-gray-100 disabled:text-gray-500"
                               />
@@ -2719,11 +2755,26 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
                         }`}
                         title={
                           prepBloqueio
-                            ? `Em preparação por ${separadorNome || 'outro operador'}`
-                            : req.status === 'EM SEPARACAO' ? 'Continuar separação' : 'Abrir preparação'
+                            ? isRecebMerc
+                              ? `Em inspeção por ${separadorNome || 'outro operador'}`
+                              : `Em preparação por ${separadorNome || 'outro operador'}`
+                            : req.status === 'EM SEPARACAO'
+                              ? isRecebMerc
+                                ? 'Continuar inspeção'
+                                : 'Continuar separação'
+                              : isRecebMerc
+                                ? 'Abrir inspeção'
+                                : 'Abrir preparação'
                         }
                       >
-                        <FaBoxOpen /> {req.status === 'EM SEPARACAO' ? 'Continuar preparação' : 'Preparar'}
+                        <FaBoxOpen />{' '}
+                        {req.status === 'EM SEPARACAO'
+                          ? isRecebMerc
+                            ? 'Continuar inspeção'
+                            : 'Continuar preparação'
+                          : isRecebMerc
+                            ? 'Inspecionar'
+                            : 'Preparar'}
                       </button>
                     )}
                     {canEditRequisicao(req) && (
@@ -2773,9 +2824,12 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
                     String(contextMenu.req.separador_nome).trim() !== ''
                       ? String(contextMenu.req.separador_nome).trim()
                       : 'outro operador';
+                  const ctxReceb = isFluxoRecebimentoMercadoria(contextMenu.req);
                   setToast({
                     type: 'error',
-                    message: `Esta requisição está reservada para separação (${nome}).`
+                    message: ctxReceb
+                      ? `Esta tarefa está reservada para inspeção (${nome}).`
+                      : `Esta requisição está reservada para separação (${nome}).`
                   });
                   setContextMenu(prev => ({ ...prev, visible: false }));
                   return;

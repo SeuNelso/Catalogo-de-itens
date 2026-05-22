@@ -98,6 +98,9 @@ const { expandirComposicaoAteFolhas } = require('./utils/composicaoExpandida');
 const { loadStockByCodigoFromXlsx, normCodigo: normCodigoStock } = require('./utils/stockListXlsxMap');
 const { quantidadeStockNacionalNoArmazem } = require('./utils/stockNacionalMatch');
 const { createRequisicoesRouter } = require('./routes/requisicoes');
+const {
+  schedulePersistTransfApeadoMovimentoFromTicket,
+} = require('./services/movimentosHistoricoTicketApeado');
 const { createInventarioRouter } = require('./routes/inventario');
 const { createIntegrationRouter } = require('./routes/integrations');
 
@@ -1579,9 +1582,26 @@ app.post('/api/login', loginRateLimiter, async (req, res) => {
       );
     } catch (dbErr) {
       console.error('[LOGIN] Erro no banco:', dbErr.message);
+      const code = dbErr.code || '';
+      const msg = String(dbErr.message || '');
+      let error =
+        'Erro ao ligar ao Postgres. Execute npm run db:check e confira DATABASE_URL em server/.env.';
+      if (code === 'ECONNRESET' || msg.includes('ECONNRESET')) {
+        error =
+          'Ligação ao Postgres interrompida (ECONNRESET). No Railway: verifique se o Postgres está ativo, ' +
+          'copie de novo a URL pública (Connect → Public, host *.proxy.rlwy.net) para server/.env e volte a correr npm run db:check.';
+      } else if (code === 'ENOTFOUND' || msg.includes('ENOTFOUND') || msg.includes('railway.internal')) {
+        error =
+          'Host do Postgres inacessível neste PC. Use a URL pública do Railway, não postgres.railway.internal.';
+      } else if (code === '28P01') {
+        error = 'Autenticação no Postgres falhou. Atualize DATABASE_URL em server/.env com a URL atual do painel.';
+      } else if (code === '42P01') {
+        error =
+          'Tabela em falta. Execute npm run db:init e, se necessário, migrações em server/Migrate/ (npm run db:migrate:*).';
+      }
       return res.status(500).json({
-        error: 'Erro ao conectar. Verifique se o banco está configurado e se a tabela usuarios existe (com colunas username e password).',
-        details: process.env.NODE_ENV === 'development' ? dbErr.message : undefined
+        error,
+        details: msg,
       });
     }
 
@@ -1595,7 +1615,7 @@ app.post('/api/login', loginRateLimiter, async (req, res) => {
     const user = result.rows[0];
     const hash = user.password || user.senha;
     if (!hash) {
-      console.error('[LOGIN] Usuário sem senha no banco (coluna password/senha). Execute a migração migrate-usuarios-username-password.sql');
+      console.error('[LOGIN] Usuário sem senha no banco (coluna password/senha). Execute: npm run db:migrate (ou server/Migrate/migrate-usuarios-username-password.sql)');
       return res.status(500).json({ error: 'Configuração do usuário inválida. Execute as migrações do banco.' });
     }
 
@@ -3892,7 +3912,7 @@ app.patch('/api/usuarios/:id', authenticateToken, async (req, res) => {
         hint:
           'O CHECK na coluna role não inclui este perfil. Na mesma base que a API, execute: npm run db:usuarios-roles ' +
           '(cada instrução SQL em separado). No Railway use a URL **direta** do Postgres (porta 5432), não a do pooler (6543). ' +
-          'Ou cole server/migrate-usuarios-roles-novos.sql no Query do Postgres.'
+          'Ou cole server/Migrate/migrate-usuarios-roles-novos.sql no Query do Postgres.'
       });
     }
     res.status(500).json({ error: 'Erro ao atualizar utilizador.', details: error.message });
@@ -5498,8 +5518,8 @@ function usuarioPodeOperarMovInternaNoArmazem(req, armazemId) {
 // Listar todos os armazéns (com localizações quando a tabela existir)
 // Query `destino_requisicao=1`: não aplica o filtro de supervisor — necessário para escolher
 // armazém destino (viatura, EPI, APEADO, etc.) ao criar/editar requisição; a origem continua validada no POST.
-// Query `consulta_estoque_localizacao=1`: para backoffice_armazem, lista só armazéns associados ao utilizador
-// (como supervisor já tem na listagem geral). Usado pela página de consulta localizações/stock.
+// Query `consulta_estoque_localizacao=1`: para perfis não-admin, lista só armazéns associados ao utilizador
+// (como supervisor na listagem geral). Usado por consulta localizações, identificação de itens, etc.
 app.get('/api/armazens', authenticateToken, async (req, res) => {
   try {
     const { ativo, destino_requisicao, consulta_estoque_localizacao } = req.query;
@@ -5541,7 +5561,7 @@ app.get('/api/armazens', authenticateToken, async (req, res) => {
       req.user &&
       !listagemParaDestinoRequisicao &&
       (req.user.role === 'supervisor_armazem' ||
-        (listagemConsultaEstoqueLocalizacao && req.user.role === 'backoffice_armazem'));
+        (listagemConsultaEstoqueLocalizacao && req.user.role !== 'admin'));
     if (aplicarFiltroArmazensPorUtilizador) {
       const allowed = await fetchRequisicoesArmazemIdsForUser(req.user.id);
       if (!allowed.length) {
@@ -6695,6 +6715,14 @@ app.post('/api/armazens/:armazemId/transferencia-localizacao', authenticateToken
   }
 });
 
+function formatarNumeroTraApeadoTicket(raw) {
+  const s = String(raw || '').trim().toUpperCase();
+  if (!s) return '';
+  if (/^TRA\d/.test(s.replace(/\s+/g, ''))) return s.replace(/\s+/g, '');
+  const digits = s.replace(/\D/g, '');
+  return digits ? `TRA${digits}` : s;
+}
+
 // Fila de tickets de movimentação interna (mesmo armazém central)
 app.get('/api/armazens/:armazemId/movimentacoes-internas', authenticateToken, async (req, res) => {
   if (!usuarioTemPermissaoControloStock(req) && !usuarioPodeOperarTicketsMovInterna(req)) {
@@ -6723,7 +6751,8 @@ app.get('/api/armazens/:armazemId/movimentacoes-internas', authenticateToken, as
       String(req.query.pendente_trfl || '') === '1' || String(req.query.pendente_trfl || '').toLowerCase() === 'true';
     let sql = `
       SELECT ami.id, ami.armazem_id, ami.usuario_id, ami.origem_localizacao_id, ami.destino_localizacao_id,
-        ami.item_id, ami.quantidade::float AS quantidade, ami.trfl_gerada_em, ami.created_at,
+        ami.item_id, ami.quantidade::float AS quantidade, ami.trfl_gerada_em,
+        ami.tra_apeado_gerada_em, ami.tra_apeado_numero, ami.created_at,
         a.codigo AS armazem_codigo, i.codigo AS item_codigo, i.descricao AS item_descricao,
         lo.localizacao AS origem_localizacao_label, ld.localizacao AS destino_localizacao_label,
         al_o.id AS origem_armazem_id, al_o.codigo AS origem_armazem_codigo, LOWER(TRIM(COALESCE(al_o.tipo, ''))) AS origem_armazem_tipo,
@@ -6738,7 +6767,10 @@ app.get('/api/armazens/:armazemId/movimentacoes-internas', authenticateToken, as
       WHERE ami.armazem_id = $1`;
     const params = [armazemId];
     if (apenasPendente) {
-      sql += ' AND ami.trfl_gerada_em IS NULL';
+      sql += ` AND (
+        (LOWER(TRIM(COALESCE(al_d.tipo, ''))) = 'apeado' AND COALESCE(TRIM(ami.tra_apeado_numero), '') = '')
+        OR (LOWER(TRIM(COALESCE(al_d.tipo, ''))) <> 'apeado' AND ami.trfl_gerada_em IS NULL)
+      )`;
     }
     sql += ` ORDER BY ami.created_at DESC, ami.id DESC LIMIT $2`;
     params.push(limit);
@@ -6790,9 +6822,17 @@ app.delete('/api/armazens/:armazemId/movimentacoes-internas', authenticateToken,
     }
 
     const del = await pool.query(
-      `DELETE FROM armazem_movimentacao_interna
-       WHERE id = ANY($1::int[]) AND armazem_id = $2 AND trfl_gerada_em IS NULL
-       RETURNING id`,
+      `DELETE FROM armazem_movimentacao_interna ami
+       USING armazens_localizacoes ld, armazens al_d
+       WHERE ami.id = ANY($1::int[])
+         AND ami.armazem_id = $2
+         AND ld.id = ami.destino_localizacao_id
+         AND al_d.id = ld.armazem_id
+         AND (
+           (LOWER(TRIM(COALESCE(al_d.tipo, ''))) = 'apeado' AND COALESCE(TRIM(ami.tra_apeado_numero), '') = '')
+           OR (LOWER(TRIM(COALESCE(al_d.tipo, ''))) <> 'apeado' AND ami.trfl_gerada_em IS NULL)
+         )
+       RETURNING ami.id`,
       [idNums, armazemId]
     );
     const deleted = del.rows.length;
@@ -7268,7 +7308,7 @@ app.post('/api/armazens/:armazemId/movimentacoes-internas/export-tra-apeado', au
       }
       await client.query(
         `UPDATE armazem_movimentacao_interna
-         SET trfl_gerada_em = COALESCE(trfl_gerada_em, CURRENT_TIMESTAMP)
+         SET tra_apeado_gerada_em = COALESCE(tra_apeado_gerada_em, CURRENT_TIMESTAMP)
          WHERE id = ANY($1::int[]) AND armazem_id = $2`,
         [idNums, armazemId]
       );
@@ -7286,6 +7326,55 @@ app.post('/api/armazens/:armazemId/movimentacoes-internas/export-tra-apeado', au
     return res.status(500).json({ error: 'Erro ao gerar TRA APEADO', details: e.message });
   }
 });
+
+app.patch(
+  '/api/armazens/:armazemId/movimentacoes-internas/tra-apeado-numero',
+  authenticateToken,
+  async (req, res) => {
+    try {
+      if (!(await armazemMovimentacaoInternaTableExists())) {
+        return res.status(503).json({ error: 'Tabela de tickets de movimentação interna indisponível' });
+      }
+      const armazemId = parseInt(req.params.armazemId, 10);
+      if (!Number.isFinite(armazemId) || armazemId <= 0) {
+        return res.status(400).json({ error: 'armazemId inválido' });
+      }
+      const { ticketId, traNumero } = req.body || {};
+      const idNum = parseInt(ticketId, 10);
+      if (!Number.isFinite(idNum) || idNum <= 0) {
+        return res.status(400).json({ error: 'ticketId inválido' });
+      }
+      const numero = formatarNumeroTraApeadoTicket(traNumero);
+      if (!numero) {
+        return res.status(400).json({ error: 'Nº TRA é obrigatório' });
+      }
+      const upd = await pool.query(
+        `UPDATE armazem_movimentacao_interna ami
+         SET tra_apeado_numero = $3,
+             tra_apeado_gerada_em = COALESCE(ami.tra_apeado_gerada_em, CURRENT_TIMESTAMP)
+         FROM armazens_localizacoes ld, armazens al_d
+         WHERE ami.id = $1 AND ami.armazem_id = $2
+           AND ld.id = ami.destino_localizacao_id
+           AND al_d.id = ld.armazem_id
+           AND LOWER(TRIM(COALESCE(al_d.tipo, ''))) = 'apeado'
+         RETURNING ami.id, ami.tra_apeado_numero, ami.tra_apeado_gerada_em`,
+        [idNum, armazemId, numero]
+      );
+      if (!upd.rows.length) {
+        return res.status(404).json({ error: 'Ticket não encontrado ou destino não é APEADO' });
+      }
+      schedulePersistTransfApeadoMovimentoFromTicket(pool, idNum, armazemId, 'tra-apeado-numero');
+      return res.json({
+        ok: true,
+        ticket: upd.rows[0],
+        movimentos_registados: true,
+      });
+    } catch (e) {
+      console.error('Erro tra-apeado-numero movimentacoes-internas:', e);
+      return res.status(500).json({ error: 'Erro ao gravar Nº TRA', details: e.message });
+    }
+  }
+);
 
 // Criar novo armazém (apenas admin)
 app.post('/api/armazens', authenticateToken, async (req, res) => {
@@ -7414,17 +7503,17 @@ app.post('/api/armazens', authenticateToken, async (req, res) => {
         } else if (missingCompartilhaStockSerial) {
           return res.status(503).json({
             error: 'Coluna compartilha_stock_serial em falta na base de dados.',
-            details: 'Execute a migração: server/migrate-armazens-compartilha-stock-serial.sql'
+            details: 'Execute a migração: server/Migrate/migrate-armazens-compartilha-stock-serial.sql'
           });
         } else if (armazemCentralVinculadoId && missingVinculoCol) {
           return res.status(503).json({
             error: 'A base de dados não suporta vínculo central para APEADO/EPI.',
-            details: 'Execute a migração: server/migrate-armazens-vinculo-central.sql'
+            details: 'Execute a migração: server/Migrate/migrate-armazens-vinculo-central.sql'
           });
         } else if (missingTipoCol) {
           return res.status(503).json({
             error: 'A base de dados não suporta tipos de armazém (central/viatura/APEADO/EPI).',
-            details: 'Execute a migração: server/migrate-armazens-tipo-central-viatura.sql'
+            details: 'Execute a migração: server/Migrate/migrate-armazens-tipo-central-viatura.sql'
           });
         } else {
           try {
@@ -7438,7 +7527,7 @@ app.post('/api/armazens', authenticateToken, async (req, res) => {
           } catch (fallbackErr) {
             console.error('Erro ao criar armazém (fallback):', fallbackErr);
             return res.status(500).json({
-              error: 'Erro ao criar armazém. Execute a migração: server/migrate-armazens-add-codigo.sql',
+              error: 'Erro ao criar armazém. Execute a migração: server/Migrate/migrate-armazens-add-codigo.sql',
               details: fallbackErr.message
             });
           }
@@ -7466,13 +7555,13 @@ app.post('/api/armazens', authenticateToken, async (req, res) => {
           }
         }
         if (localizacoesSemTipo) {
-          console.warn('⚠️ Coluna tipo_localizacao não existe. Execute: server/migrate-armazens-tipo-central-viatura.sql');
+          console.warn('⚠️ Coluna tipo_localizacao não existe. Execute: server/Migrate/migrate-armazens-tipo-central-viatura.sql');
         }
       } catch (e) {
         if (e.code === '42P01') {
           return res.status(503).json({
             error: 'Tabela armazens_localizacoes não existe. Execute a migração:',
-            details: 'server/migrate-armazens-multiplas-localizacoes.sql ou server/criar-tabelas-armazens-requisicoes.sql'
+            details: 'server/Migrate/migrate-armazens-multiplas-localizacoes.sql ou server/Migrate/criar-tabelas-armazens-requisicoes.sql'
           });
         }
         if (
@@ -7494,7 +7583,7 @@ app.post('/api/armazens', authenticateToken, async (req, res) => {
     armazemFinal.tipo = armazemFinal.tipo || tipoArmazem;
     armazemFinal.localizacoes = locsWithTipo.map((l, i) => ({ id: i + 1, localizacao: l.localizacao, tipo_localizacao: l.tipo_localizacao || 'normal' }));
     if (localizacoesSemTipo) {
-      armazemFinal.warning = 'Localizações foram salvas, mas o tipo (Recebimento/Expedição) não. Execute a migração: server/migrate-armazens-tipo-central-viatura.sql';
+      armazemFinal.warning = 'Localizações foram salvas, mas o tipo (Recebimento/Expedição) não. Execute a migração: server/Migrate/migrate-armazens-tipo-central-viatura.sql';
     }
     console.log(`✅ Armazém criado: ${armazemFinal.codigo} - ${armazemFinal.descricao}`);
     res.status(201).json(armazemFinal);
@@ -7753,13 +7842,13 @@ app.put('/api/armazens/:id', authenticateToken, async (req, res) => {
           if (missingColMsg.includes('recebimento_transferencia_digital')) {
             return res.status(503).json({
               error: 'Coluna recebimento_transferencia_digital em falta na base de dados.',
-              details: 'Execute a migração: server/migrate-armazens-recebimento-transferencia-digital.sql',
+              details: 'Execute a migração: server/Migrate/migrate-armazens-recebimento-transferencia-digital.sql',
             });
           }
           if (missingColMsg.includes('compartilha_stock_serial')) {
             return res.status(503).json({
               error: 'Coluna compartilha_stock_serial em falta na base de dados.',
-              details: 'Execute a migração: server/migrate-armazens-compartilha-stock-serial.sql',
+              details: 'Execute a migração: server/Migrate/migrate-armazens-compartilha-stock-serial.sql',
             });
           }
         }
@@ -7772,13 +7861,13 @@ app.put('/api/armazens/:id', authenticateToken, async (req, res) => {
           if (armCentralIdx !== -1 && missingVinculoCol) {
             return res.status(503).json({
               error: 'A base de dados não suporta vínculo central para APEADO/EPI.',
-              details: 'Execute a migração: server/migrate-armazens-vinculo-central.sql'
+              details: 'Execute a migração: server/Migrate/migrate-armazens-vinculo-central.sql'
             });
           }
           if (tipoIdx !== -1 && missingTipoCol) {
             return res.status(503).json({
               error: 'A base de dados não suporta tipos de armazém (central/viatura/APEADO/EPI).',
-              details: 'Execute a migração: server/migrate-armazens-tipo-central-viatura.sql'
+              details: 'Execute a migração: server/Migrate/migrate-armazens-tipo-central-viatura.sql'
             });
           }
           cleanParams.push(id);
@@ -7887,7 +7976,7 @@ app.put('/api/armazens/:id', authenticateToken, async (req, res) => {
         if (e.code === '42P01') {
           return res.status(503).json({
             error: 'Tabela armazens_localizacoes não existe. Execute a migração:',
-            details: 'server/migrate-armazens-multiplas-localizacoes.sql ou server/criar-tabelas-armazens-requisicoes.sql'
+            details: 'server/Migrate/migrate-armazens-multiplas-localizacoes.sql ou server/Migrate/criar-tabelas-armazens-requisicoes.sql'
           });
         }
         throw e;

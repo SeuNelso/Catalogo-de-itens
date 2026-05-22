@@ -17,6 +17,7 @@ Monorepo Node: API **Express** em `server/` (CommonJS) e SPA **React 18** (Creat
 - **Nunca** commitar credenciais, `.env`, JSON de credenciais GCP, nem chaves em código.
 - Novas variáveis: documentar em `server/env.example` e usar `process.env` / `REACT_APP_*` no client.
 - Banco: preferir `DATABASE_URL`; detalhes em `server/env.example` e deploy em `RAILWAY_DEPLOY.md`.
+- Migrações SQL em `server/Migrate/`; schema inicial `server/init-db.sql`; comandos `npm run db:*` usam `server/Migrate/run-*.js`. Exemplos Excel em `server/docExemplo/` (não usados em runtime).
 
 ## Escopo das alterações
 

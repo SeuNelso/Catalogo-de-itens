@@ -8,16 +8,17 @@
  *   USUARIO_PARA_ID1  — (legado) se usar sem USUARIO_MIGRAR, username aqui; ID_DESTINO continua 1 por omissão
  *
  * Exemplos (raiz do projeto, com server/.env):
- *   ID_DESTINO=13 USUARIO_MIGRAR="Pablo Batistella" node server/run-usuario-para-id1.js
+ *   ID_DESTINO=13 USUARIO_MIGRAR="Pablo Batistella" node server/Migrate/run-usuario-para-id1.js
  *   npm run db:migrate:usuario-id1
  *
  * Depois da migração: faça logout/login para renovar o JWT.
  */
-require('dotenv').config({ path: require('path').join(__dirname, '.env') });
+const { loadEnv } = require('./_paths');
+loadEnv();
 const { Pool } = require('pg');
 const bcrypt = require('bcryptjs');
 
-// CLI: node server/run-usuario-para-id1.js --dest 13 --user "Pablo Batistella"
+// CLI: node server/Migrate/run-usuario-para-id1.js --dest 13 --user "Pablo Batistella"
 const argv = process.argv.slice(2);
 for (let i = 0; i < argv.length; i++) {
   if (argv[i] === '--dest' && argv[i + 1]) {

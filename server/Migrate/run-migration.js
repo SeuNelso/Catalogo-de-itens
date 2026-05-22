@@ -1,23 +1,22 @@
 /**
  * Executa uma migração SQL (usa o .env do server = mesma BD da aplicação).
  * Uso:
- *   node server/run-migration.js                    → migração de preparação (requisicoes_itens)
- *   node server/run-migration.js separacao-confirmada → migração de confirmação de separação
+ *   node server/Migrate/run-migration.js                    → migração de preparação (requisicoes_itens)
+ *   node server/Migrate/run-migration.js separacao-confirmada → migração de confirmação de separação
  *   npm run db:migrate                              → preparação
  *   npm run db:migrate:separacao                    → confirmação de separação
  *   npm run db:migrate:em-separacao                 → status EM SEPARACAO (separação em curso)
  *   npm run db:migrate:movimentacao-interna-lotes   → lotes por ticket (TRFL linha a linha)
  */
 const path = require('path');
-require('dotenv').config({ path: path.join(__dirname, '.env') });
 const fs = require('fs');
-// Mesma resolução de DATABASE_URL / DATABASE_URL_RAILWAY / SSL que server/db/pool.js
-const { pool, getConnectionTargetInfo } = require('./db/pool');
-const { ensureSchemaMigrationsTable, recordSchemaMigration } = require('./utils/schemaMigrationsLog');
+const { loadEnv, sqlInMigrate } = require('./_paths');
+loadEnv();
+const { pool, getConnectionTargetInfo } = require('../db/pool');
+const { ensureSchemaMigrationsTable, recordSchemaMigration } = require('../utils/schemaMigrationsLog');
 
 const arg = process.argv[2];
-const migrationFile = path.join(
-  __dirname,
+const migrationFile = sqlInMigrate(
   arg === 'separacao-confirmada'
     ? 'migrate-requisicoes-separacao-confirmada.sql'
     : arg === 'status-fases'
@@ -86,6 +85,8 @@ const migrationFile = path.join(
                         ? 'migrate-armazem-movimentacao-interna.sql'
                       : arg === 'movimentacao-interna-lotes' || arg === 'armazem-movimentacao-interna-lotes'
                         ? 'migrate-armazem-movimentacao-interna-lotes.sql'
+                      : arg === 'movimentacao-interna-tra-apeado' || arg === 'tra-apeado-ticket'
+                        ? 'migrate-armazem-movimentacao-interna-tra-apeado.sql'
                       : arg === 'requisicoes-trfl-tra-estoque' || arg === 'trfl-tra-estoque'
                         ? 'migrate-requisicoes-trfl-tra-estoque.sql'
                       : arg === 'requisicoes-movimentos-overrides' || arg === 'movimentos-overrides'

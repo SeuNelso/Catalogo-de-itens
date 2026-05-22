@@ -81,9 +81,12 @@ export const AuthProvider = ({ children }) => {
             : 'Erro no login';
           return { success: false, message: fallback };
         }
-        const msg = data.error || data.message || (response.status === 500
+        const base = data.error || data.message || (response.status === 500
           ? 'Erro no servidor. Verifique variáveis de ambiente e migrações do banco.'
           : 'Erro no login');
+        const msg = data.details && !base.includes(data.details)
+          ? `${base} (${data.details})`
+          : base;
         return { success: false, message: msg };
       }
     } catch (error) {

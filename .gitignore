@@ -106,6 +106,10 @@ Thumbs.db
 *.tmp
 *.temp
 
+# Cursor / sessões de debug NDJSON (não versionar)
+debug-*.ndjson
+.cursor/debug-*.ndjson
+
 # Credenciais locais (não versionar)
 credentials.json
 token.json

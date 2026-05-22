@@ -124,6 +124,48 @@ function destinoResumo(row) {
   return '—';
 }
 
+function codigoArmazemDaLocalizacao(loc) {
+  const partes = String(loc || '')
+    .split('.')
+    .map((p) => p.trim())
+    .filter(Boolean);
+  return partes.length ? partes[0] : '';
+}
+
+function origemDescricaoLista(row, armazemDescById, armazemDescByCodigo) {
+  return (
+    String(row?.armazem_origem_descricao || '').trim() ||
+    armazemDescById.get(Number(row?.armazem_origem_id)) ||
+    armazemDescByCodigo.get(String(row?.armazem_origem_codigo || '').trim().toUpperCase()) ||
+    armazemDescByCodigo.get(String(row?.Loc_Inicial || '').trim().toUpperCase()) ||
+    cellOrDash(row, 'Loc_Inicial')
+  );
+}
+
+function destinoDescricaoLista(row, armazemDescById, armazemDescByCodigo) {
+  return (
+    String(row?.armazem_destino_descricao || '').trim() ||
+    armazemDescById.get(Number(row?.armazem_id)) ||
+    armazemDescByCodigo.get(String(row?.armazem_destino_codigo || '').trim().toUpperCase()) ||
+    armazemDescByCodigo.get(String(row?.['Novo Armazém'] || '').trim().toUpperCase()) ||
+    destinoResumo(row)
+  );
+}
+
+function armazemCardDetalhe(row) {
+  const codigoOrigem =
+    String(row?.armazem_origem_codigo || '').trim() ||
+    codigoArmazemDaLocalizacao(row?.Loc_Inicial) ||
+    '—';
+  const codigoDestino =
+    String(row?.armazem_destino_codigo || '').trim() ||
+    String(row?.['Novo Armazém'] || '').trim() ||
+    '—';
+  const locOrigem = cellOrDash(row, 'Loc_Inicial');
+  const locDestino = cellOrDash(row, 'New Localização');
+  return { codigoOrigem, codigoDestino, locOrigem, locDestino };
+}
+
 function armazemDescricaoPorId(armazens) {
   const map = new Map();
   for (const a of armazens || []) {
@@ -1318,18 +1360,10 @@ const ConsultaMovimentos = () => {
                   })()}
                 </div>
                 <div className="line-clamp-2 min-w-0 break-words text-[11px] font-medium leading-snug text-gray-800">
-                  {String(row?.armazem_origem_descricao || '').trim() ||
-                    armazemDescById.get(Number(row?.armazem_origem_id)) ||
-                    armazemDescByCodigo.get(String(row?.armazem_origem_codigo || '').trim().toUpperCase()) ||
-                    armazemDescByCodigo.get(String(row?.Loc_Inicial || '').trim().toUpperCase()) ||
-                    cellOrDash(row, 'Loc_Inicial')}
+                  {origemDescricaoLista(row, armazemDescById, armazemDescByCodigo)}
                 </div>
                 <div className="line-clamp-2 min-w-0 break-words text-[11px] font-medium leading-snug text-gray-800">
-                  {String(row?.armazem_destino_descricao || '').trim() ||
-                    armazemDescById.get(Number(row?.armazem_id)) ||
-                    armazemDescByCodigo.get(String(row?.armazem_destino_codigo || '').trim().toUpperCase()) ||
-                    armazemDescByCodigo.get(String(row?.['Novo Armazém'] || '').trim().toUpperCase()) ||
-                    destinoResumo(row)}
+                  {destinoDescricaoLista(row, armazemDescById, armazemDescByCodigo)}
                 </div>
                 <div className="line-clamp-2 min-w-0 break-words text-[10px] font-mono font-semibold leading-snug text-indigo-800">
                   {cellOrDash(row, 'TRA / DEV')}
@@ -1393,56 +1427,83 @@ const ConsultaMovimentos = () => {
                 </button>
               </div>
               <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+                <div className="mb-4 rounded-lg border border-indigo-100 bg-indigo-50/40 px-3 py-3 space-y-2">
+                  {(() => {
+                    const arm = armazemCardDetalhe(detailRow);
+                    return (
+                      <>
+                        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                          <div>
+                            <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+                              Armazém origem (código)
+                            </div>
+                            <div className="mt-0.5 font-mono text-sm font-semibold text-gray-900">{arm.codigoOrigem}</div>
+                          </div>
+                          <div>
+                            <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+                              Armazém destino (código)
+                            </div>
+                            <div className="mt-0.5 font-mono text-sm font-semibold text-gray-900">{arm.codigoDestino}</div>
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                          <div>
+                            <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+                              Localização origem
+                            </div>
+                            <div className="mt-0.5 break-words text-sm text-gray-900">{arm.locOrigem}</div>
+                          </div>
+                          <div>
+                            <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+                              Localização destino
+                            </div>
+                            <div className="mt-0.5 break-words text-sm text-gray-900">{arm.locDestino}</div>
+                          </div>
+                        </div>
+                        {(String(detailRow?.armazem_origem_descricao || '').trim() ||
+                          String(detailRow?.armazem_destino_descricao || '').trim()) && (
+                          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 pt-1 border-t border-indigo-100">
+                            <div>
+                              <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">Origem</div>
+                              <div className="mt-0.5 text-sm text-gray-800">
+                                {String(detailRow?.armazem_origem_descricao || '').trim() || '—'}
+                              </div>
+                            </div>
+                            <div>
+                              <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">Destino</div>
+                              <div className="mt-0.5 text-sm text-gray-800">
+                                {String(detailRow?.armazem_destino_descricao || '').trim() || '—'}
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </>
+                    );
+                  })()}
+                </div>
                 <div className="space-y-3">
                   {columns.map((c) => {
                     const editingThis = isAdmin && editingMovId === String(detailRow?.mov_id || '').trim();
-                    const codigoOrigemDaLocInicial =
-                      String(detailRow?.armazem_origem_codigo || '').trim() ||
-                      (String(detailRow?.Loc_Inicial || '')
-                        .split('.')
-                        .map((p) => p.trim())
-                        .filter(Boolean)
-                        .pop() || '—');
                     if (editingThis) {
                       return (
-                        <React.Fragment key={c}>
-                          <div className="border-b border-gray-100 pb-3 last:border-0 last:pb-0">
-                            <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">{c}</div>
-                            <input
-                              value={editingDraft[c] ?? ''}
-                              onChange={(e) => setEditingDraft((p) => ({ ...p, [c]: e.target.value }))}
-                              className="mt-1 w-full rounded border border-gray-300 px-2 py-1.5 text-sm"
-                              aria-label={c}
-                            />
-                          </div>
-                          {c === 'QTY' && (
-                            <div className="border-b border-gray-100 pb-3">
-                              <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
-                                Armazém origem
-                              </div>
-                              <div className="mt-1 break-words text-sm text-gray-900">{codigoOrigemDaLocInicial}</div>
-                            </div>
-                          )}
-                        </React.Fragment>
+                        <div key={c} className="border-b border-gray-100 pb-3 last:border-0 last:pb-0">
+                          <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">{c}</div>
+                          <input
+                            value={editingDraft[c] ?? ''}
+                            onChange={(e) => setEditingDraft((p) => ({ ...p, [c]: e.target.value }))}
+                            className="mt-1 w-full rounded border border-gray-300 px-2 py-1.5 text-sm"
+                            aria-label={c}
+                          />
+                        </div>
                       );
                     }
                     return (
-                      <React.Fragment key={c}>
-                        <div className="border-b border-gray-100 pb-3 last:border-0 last:pb-0">
-                          <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">{c}</div>
-                          <div className="mt-1 break-words text-sm text-gray-900">
-                            {renderCellContent(detailRow, c, 0, true)}
-                          </div>
+                      <div key={c} className="border-b border-gray-100 pb-3 last:border-0 last:pb-0">
+                        <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">{c}</div>
+                        <div className="mt-1 break-words text-sm text-gray-900">
+                          {renderCellContent(detailRow, c, 0, true)}
                         </div>
-                        {c === 'QTY' && (
-                          <div className="border-b border-gray-100 pb-3">
-                            <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
-                              Armazém origem
-                            </div>
-                            <div className="mt-1 break-words text-sm text-gray-900">{codigoOrigemDaLocInicial}</div>
-                          </div>
-                        )}
-                      </React.Fragment>
+                      </div>
                     );
                   })}
                 </div>

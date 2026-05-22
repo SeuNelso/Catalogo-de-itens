@@ -32,6 +32,12 @@ import {
   podeFinalizarDevolucaoTransferenciasPendentes,
   mensagemDocumentosEmFaltaFinalizarDevolucao
 } from '../utils/podeFinalizarDevolucaoTransferenciasPendentes';
+import {
+  formatArtigoExibicao,
+  isTipoControloSerial,
+  metrosTotalFromBobinas,
+  quantidadePreparadaPayload,
+} from '../features/requisicoes/preparar/preparacaoPayload';
 
 function labelArmazem(armazem) {
   if (!armazem) return '';
@@ -44,13 +50,6 @@ const SN_LISTA_PAGE_SIZE = 20;
 const SN_INLINE_PREVIEW = 5;
 const RECEBIMENTO_TRANSFERENCIA_MARKER = 'RECEBIMENTO_TRANSFERENCIA_V1';
 const RECEBIMENTO_REFRESH_EVENT = 'recebimento-card-refresh';
-
-const isTipoControloSerial = (tipoControlo) => {
-  const raw = String(tipoControlo || '').trim().toUpperCase();
-  if (!raw) return false;
-  const norm = raw.replace(/\s+/g, '');
-  return norm === 'S/N' || norm === 'SN' || norm === 'SERIAL';
-};
 
 /** Preferir `seriais` da API; senão partir `serialnumber` (legado). Ignora sufixo \\tcaixa na mesma linha. */
 function seriaisListFromItem(item) {
@@ -1496,7 +1495,7 @@ const PrepararRequisicao = () => {
       qtdPreparadaParaPayload = qtdDigitada; // quantidade_preparada em requisicoes_itens (bobinas)
       if (Array.isArray(formItem.bobinas) && formItem.bobinas.length > 0) {
         // Para controlo de stock, o consumo real deve ser em metros.
-        qtdPreparadaParaStock = formItem.bobinas.reduce((sum, b) => sum + (parseFloat(b.metros) || 0), 0);
+        qtdPreparadaParaStock = metrosTotalFromBobinas(formItem.bobinas);
       }
     } else {
       qtdPreparadaParaComparacao = qtdDigitada;
@@ -1565,7 +1564,7 @@ const PrepararRequisicao = () => {
     }
 
     let bobinasPayload = undefined;
-    if (tipoControlo === 'LOTE') {
+    if (!isZero && tipoControlo === 'LOTE') {
       if (!Array.isArray(formItem.bobinas) || formItem.bobinas.length === 0) {
         setToast({ type: 'error', message: 'Adicione pelo menos uma bobina (lote + metros).' });
         return;
@@ -1596,7 +1595,7 @@ const PrepararRequisicao = () => {
         return;
       }
       bobinasPayload = bobinasValidas;
-    } else if (isTipoControloSerial(tipoControlo)) {
+    } else if (!isZero && isTipoControloSerial(tipoControlo)) {
       const usarSeriaisEsperadosReceb =
         obsRec && amostragemConfirmada && seriaisEsperadosReceb.length > 0;
       let seriais = [];
@@ -1636,18 +1635,16 @@ const PrepararRequisicao = () => {
     try {
       setSubmitting(itemPreparando.id);
       const token = localStorage.getItem('token');
-      await axios.patch(
+      const { data: requisicaoAtualizada } = await axios.patch(
         `/api/requisicoes/${id}/atender-item`,
         {
           requisicao_item_id: itemPreparando.id,
-          quantidade_preparada:
-            tipoControlo === 'LOTE'
-              ? (Array.isArray(bobinasPayload)
-                  ? bobinasPayload.reduce((sum, b) => sum + (Number(b?.metros) || 0), 0)
-                  : qtdPreparadaParaPayload)
-              : (isTipoControloSerial(tipoControlo) && Array.isArray(bobinasPayload)
-                  ? bobinasPayload.length
-                  : qtdPreparadaParaPayload),
+          quantidade_preparada: quantidadePreparadaPayload({
+            tipoControlo,
+            quantidadePreparada: qtdPreparadaParaPayload,
+            bobinasPayload,
+            isTipoControloSerial,
+          }),
           quantidade_apeados:
             !isFluxoDevolucao
               ? 0
@@ -1661,8 +1658,11 @@ const PrepararRequisicao = () => {
           localizacao_origem: isFluxoRecebimentoMercadoria ? null : locOrigem,
           lote: formItem.lote || null,
           serialnumber: formItem.serialnumber || null,
-          bobinas: tipoControlo === 'LOTE' ? bobinasPayload : undefined,
-          serials: isTipoControloSerial(tipoControlo) ? bobinasPayload.map((b) => b.serialnumber) : undefined,
+          bobinas: !isZero && tipoControlo === 'LOTE' ? bobinasPayload : undefined,
+          serials:
+            !isZero && isTipoControloSerial(tipoControlo) && Array.isArray(bobinasPayload)
+              ? bobinasPayload.map((b) => b.serialnumber)
+              : undefined,
           serials_apeados: isTipoControloSerial(tipoControlo)
             && isFluxoDevolucao
             ? (formItem.bobinas || [])
@@ -1680,7 +1680,11 @@ const PrepararRequisicao = () => {
       );
       setToast({ type: 'success', message: 'Item preparado com sucesso!' });
       fecharPrepararItem();
-      await fetchRequisicao(true, { navigateOnError: false });
+      if (requisicaoAtualizada) {
+        setRequisicao(requisicaoAtualizada);
+      } else {
+        await fetchRequisicao(true, { navigateOnError: false });
+      }
     } catch (error) {
       const data = error.response?.data;
       let msg = data?.error || 'Erro ao preparar item';
@@ -2050,7 +2054,10 @@ const PrepararRequisicao = () => {
     isEmSeparacao ||
     (user && isAdmin(user.role) && (isSeparado || isEmExpedicao));
   const podeAdminRemoverLinha =
-    user && isAdmin(user.role) && (isSeparado || isEmExpedicao) && (requisicao.itens?.length || 0) > 1;
+    user &&
+    isAdmin(user.role) &&
+    (isPendente || isEmSeparacao || isSeparado || isEmExpedicao) &&
+    (requisicao.itens?.length || 0) > 1;
   const fasePreparacaoAberta = isPendente || isEmSeparacao;
   const locsOrigem = armazemOrigem?.localizacoes?.map((l) => l.localizacao).filter(Boolean) || [];
   const todosPreparados = requisicao.itens?.every(it => it.preparacao_confirmada === true) ?? false;
@@ -2092,11 +2099,22 @@ const PrepararRequisicao = () => {
       <div className="max-w-4xl mx-auto">
         {preparacaoBloqueadaOutrem && (
           <div className="mb-4 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-amber-900 text-sm">
-            <strong>Separação em curso por outro utilizador.</strong>{' '}
+            <strong>
+              {isFluxoRecebimentoMercadoria
+                ? 'Inspeção em curso por outro utilizador.'
+                : 'Separação em curso por outro utilizador.'}
+            </strong>{' '}
             {requisicao.separador_nome && requisicao.separador_nome !== '—' ? (
-              <>Atribuída a <strong>{requisicao.separador_nome}</strong>. Só esse utilizador, ou administrador/backoffice armazém/supervisor armazém, pode preparar ou avançar esta requisição.</>
+              <>
+                Atribuída a <strong>{requisicao.separador_nome}</strong>. Só esse utilizador, ou administrador/backoffice
+                armazém/supervisor armazém, pode{' '}
+                {isFluxoRecebimentoMercadoria ? 'inspecionar ou avançar esta tarefa' : 'preparar ou avançar esta requisição'}.
+              </>
             ) : (
-              <>Só o utilizador que iniciou a preparação, ou administrador/backoffice armazém/supervisor armazém, pode continuar.</>
+              <>
+                Só o utilizador que iniciou {isFluxoRecebimentoMercadoria ? 'a inspeção' : 'a preparação'}, ou
+                administrador/backoffice armazém/supervisor armazém, pode continuar.
+              </>
             )}
           </div>
         )}
@@ -2323,8 +2341,9 @@ const PrepararRequisicao = () => {
                   'bg-gray-100 text-gray-800'
                 }`}>
                   {requisicao.status === 'pendente' ? 'Pendente' :
-                    requisicao.status === 'EM SEPARACAO' ? 'Em separação' :
-                    requisicao.status === 'separado' ? 'Separadas' :
+                    requisicao.status === 'EM SEPARACAO'
+                      ? (isFluxoRecebimentoMercadoria ? 'Em inspeção' : 'Em separação')
+                      : requisicao.status === 'separado' ? 'Separadas' :
                     requisicao.status === 'EM EXPEDICAO' ? ((isFluxoDevolucao || isFluxoRecebimentoMercadoria) ? 'Em processo' : 'Em expedição') :
                     requisicao.status === 'APEADOS' ? 'APEADOS' :
                     requisicao.status === 'Entregue' ? 'Entregue' :
@@ -2441,10 +2460,9 @@ const PrepararRequisicao = () => {
                               </span>
                             )}
                           </div>
-                          <div className="font-mono font-semibold text-gray-900">{item.item_codigo}</div>
-                          <p className="text-sm text-gray-600 line-clamp-2" title={item.item_descricao}>
-                            {item.item_descricao}
-                          </p>
+                          <div className="font-mono font-semibold text-gray-900">
+                            {formatArtigoExibicao(item.item_codigo, item.item_descricao)}
+                          </div>
                           <p className="text-xs text-gray-500">
                             Pedido na requisição:{' '}
                             <strong className="text-[#0915FF] tabular-nums">{item.quantidade}</strong>

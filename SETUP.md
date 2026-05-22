@@ -96,7 +96,7 @@ psql -U seu_usuario -d catalogo -f server/create-armazens-requisicoes-v2.sql
 
 Se a tabela `requisicoes` já existia, execute também a migração para armazém origem:
 ```bash
-psql -U seu_usuario -d catalogo -f server/migrate-requisicoes-armazem-origem.sql
+psql -U seu_usuario -d catalogo -f server/Migrate/migrate-requisicoes-armazem-origem.sql
 ```
 
 Se usar **pgAdmin** ou outro cliente gráfico: abra cada arquivo `.sql` e execute no banco.

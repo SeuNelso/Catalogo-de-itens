@@ -49,7 +49,7 @@ Isso cria índices extra (login, listagens de requisições, stocks por item) e 
 O login usa a tabela **`usuarios`** com as colunas **`username`** e **`password`**.
 
 - Se o banco já existia com outra estrutura (ex.: `email` e `senha`), rode a migração:
-  - Arquivo: `server/migrate-usuarios-username-password.sql`
+  - Arquivo: `server/Migrate/migrate-usuarios-username-password.sql`
   - No Railway: use o **Query** do Postgres no dashboard ou conecte com um cliente (DBeaver, psql) usando a `DATABASE_URL` e execute o SQL.
 
 - Se está criando do zero, crie a tabela e um usuário. Exemplo mínimo:
@@ -79,6 +79,7 @@ Erros como `[LOGIN] Erro no banco:` indicam problema de conexão ou tabela/colun
 
 - **`password authentication failed for user "usuario"`** — o `DATABASE_URL` no `server/.env` ainda é o exemplo (`localhost` / `usuario`) ou está vazio e cai nos placeholders. Cole a URL **pública** do Postgres (Railway → PostgreSQL → **Connect**).
 - **`getaddrinfo ENOTFOUND postgres.railway.internal`** (ou timeout) — você está usando a URL **interna** do Railway. No notebook ela não resolve; use a conexão **pública** / TCP proxy (host do tipo `*.proxy.rlwy.net` ou o que o painel mostrar em “Public network”).
+- **`read ECONNRESET`** — a ligação TCP ao Postgres foi cortada. Confirme no Railway que o serviço PostgreSQL está **Running** (planos gratuitos podem “dormir”), regenere/copie de novo a `DATABASE_URL` pública em `server/.env`, teste com `npm run db:check`. Se persistir, tente `DATABASE_SSL=true` em `server/.env` ou use Postgres local em dev (`DATABASE_URL=postgres://...@localhost:5432/catalogo`).
 
 ## 4. Build
 

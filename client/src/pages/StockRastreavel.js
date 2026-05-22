@@ -10,6 +10,18 @@ const formatQuantidadeConsulta = (value) => {
   return String(num);
 };
 
+const formatQuantidadeLinhaConsulta = (row) => {
+  if (String(row?.tipo || '').toLowerCase() !== 'lote') {
+    return formatQuantidadeConsulta(row?.quantidade);
+  }
+  const disp = formatQuantidadeConsulta(row?.quantidade);
+  const res = Number(row?.quantidade_reservada) || 0;
+  if (res > 0) {
+    return `${disp} disp. / ${formatQuantidadeConsulta(res)} res.`;
+  }
+  return disp;
+};
+
 const formatLocalizacaoView = (value) => {
   const text = String(value || '').trim();
   return text ? text.toUpperCase() : '—';
@@ -1207,7 +1219,7 @@ const StockRastreavel = ({ mode = 'all' }) => {
                         <td className="px-2 py-1">{r.item_descricao || '—'}</td>
                         <td className="px-2 py-1">{formatUpperView(r.serialnumber)}</td>
                         <td className="px-2 py-1">{formatUpperView(r.lote)}</td>
-                        <td className="px-2 py-1">{formatQuantidadeConsulta(r.quantidade)}</td>
+                        <td className="px-2 py-1">{formatQuantidadeLinhaConsulta(r)}</td>
                         <td className="px-2 py-1">{formatLocalizacaoView(r.localizacao)}</td>
                         <td className="px-2 py-1">{r.codigo_caixa || '—'}</td>
                         <td className="px-2 py-1">{r.status}</td>

@@ -3,9 +3,9 @@
  * Usa o .env do server (DATABASE_URL = banco local ou Railway).
  * Uso: npm run db:armazens
  */
-require('dotenv').config({ path: require('path').join(__dirname, '.env') });
+const { loadEnv, sqlInMigrate } = require('./_paths');
+loadEnv();
 const { Pool } = require('pg');
-const path = require('path');
 const fs = require('fs');
 
 const connectionString = process.env.DATABASE_URL || `postgres://${process.env.DB_USER}:${process.env.DB_PASSWORD}@${process.env.DB_HOST}:${process.env.DB_PORT}/${process.env.DB_NAME}`;
@@ -18,11 +18,11 @@ async function run() {
   let client;
   try {
     client = await pool.connect();
-    const sql = fs.readFileSync(path.join(__dirname, 'create-armazens-requisicoes-v2.sql'), 'utf8');
+    const sql = fs.readFileSync(sqlInMigrate('create-armazens-requisicoes-v2.sql'), 'utf8');
     await client.query(sql);
     console.log('Tabelas armazens, armazens_localizacoes, requisicoes e requisicoes_itens criadas.');
 
-    const migTipo = path.join(__dirname, 'migrate-armazens-tipo-central-viatura.sql');
+    const migTipo = sqlInMigrate('migrate-armazens-tipo-central-viatura.sql');
     if (fs.existsSync(migTipo)) {
       const sqlTipo = fs.readFileSync(migTipo, 'utf8');
       await client.query(sqlTipo);

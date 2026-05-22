@@ -9,9 +9,10 @@
  * Uso: npm run db:usuarios-roles
  */
 const path = require('path');
-require('dotenv').config({ path: path.join(__dirname, '.env') });
 const fs = require('fs');
-const { pool, getConnectionTargetInfo } = require('./db/pool');
+const { loadEnv, sqlInMigrate } = require('./_paths');
+loadEnv();
+const { pool, getConnectionTargetInfo } = require('../db/pool');
 
 /**
  * Divide o ficheiro SQL em instruções, mantendo o bloco DO $$ ... END $$; intacto.
@@ -70,7 +71,7 @@ async function run() {
   );
   warnIfPoolerUrl();
 
-  const sqlPath = path.join(__dirname, 'migrate-usuarios-roles-novos.sql');
+  const sqlPath = sqlInMigrate('migrate-usuarios-roles-novos.sql');
   const sql = fs.readFileSync(sqlPath, 'utf8');
   const statements = splitMigrationSql(sql);
   if (statements.length === 0) {

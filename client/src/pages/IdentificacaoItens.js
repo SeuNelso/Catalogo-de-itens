@@ -1,6 +1,10 @@
 ﻿import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import axios from 'axios';
+import { FaWarehouse } from 'react-icons/fa';
 import Toast from '../components/Toast';
+import { useAuth } from '../contexts/AuthContext';
+import { isAdmin } from '../utils/roles';
+import { getRequisicoesArmazemOrigemIds } from '../utils/requisicoesArmazemOrigem';
 import PesquisaComLeitorQr from '../components/PesquisaComLeitorQr';
 import QrScannerModal from '../components/QrScannerModal';
 import { FORMATOS_QR_BARCODE, Html5QrcodeSupportedFormats } from '../utils/qrBarcodeFormats';
@@ -48,6 +52,7 @@ const novaLinhaArtigo = () => ({
 });
 
 const IdentificacaoItens = () => {
+  const { user } = useAuth();
   const [modo, setModo] = useState(MODOS_PDF.FOLHA_INTEIRA);
 
   const [linhas, setLinhas] = useState([novaLinhaArtigo()]);
@@ -59,6 +64,9 @@ const IdentificacaoItens = () => {
   const [gerando, setGerando] = useState(false);
   const [toast, setToast] = useState(null);
 
+  const [armazens, setArmazens] = useState([]);
+  const [loadingArmazens, setLoadingArmazens] = useState(true);
+  const [armazemId, setArmazemId] = useState('');
   const [localizacoesOpts, setLocalizacoesOpts] = useState([]);
 
   const [scannerItemOpen, setScannerItemOpen] = useState(false);
@@ -69,25 +77,59 @@ const IdentificacaoItens = () => {
   const isTres = modo === MODOS_PDF.TRES_POR_FOLHA;
 
   useEffect(() => {
-    const loadLocs = async () => {
+    const loadArmazens = async () => {
       try {
+        setLoadingArmazens(true);
         const token = localStorage.getItem('token');
         const { data } = await axios.get('/api/armazens?ativo=true&consulta_estoque_localizacao=1', {
           headers: { Authorization: `Bearer ${token}` }
         });
-        const armazens = Array.isArray(data) ? data : [];
-        const centrais = armazens.filter((a) => String(a?.tipo || '').trim().toLowerCase() === 'central');
-        const alvo = centrais[0];
-        const locs = (alvo?.localizacoes || [])
-          .map((l) => String(l?.localizacao || '').trim())
-          .filter(Boolean);
-        setLocalizacoesOpts([...new Set(locs)].sort((a, b) => a.localeCompare(b, 'pt')));
+        setArmazens(Array.isArray(data) ? data : []);
       } catch {
-        setLocalizacoesOpts([]);
+        setArmazens([]);
+      } finally {
+        setLoadingArmazens(false);
       }
     };
-    loadLocs();
+    loadArmazens();
   }, []);
+
+  const armazensIdentificacao = useMemo(() => {
+    const list = Array.isArray(armazens) ? armazens : [];
+    const sorted = [...list].sort((a, b) =>
+      String(a?.codigo || '').localeCompare(String(b?.codigo || ''), 'pt')
+    );
+    if (isAdmin(user?.role)) return sorted;
+    const ids = new Set(getRequisicoesArmazemOrigemIds(user));
+    if (!ids.size) return [];
+    return sorted.filter((a) => ids.has(Number(a.id)));
+  }, [armazens, user]);
+
+  useEffect(() => {
+    if (armazensIdentificacao.length === 1) {
+      setArmazemId(String(armazensIdentificacao[0].id));
+      return;
+    }
+    if (
+      armazemId &&
+      !armazensIdentificacao.some((a) => String(a.id) === String(armazemId))
+    ) {
+      setArmazemId('');
+    }
+  }, [armazensIdentificacao, armazemId]);
+
+  const armazemSelecionado = useMemo(
+    () => armazensIdentificacao.find((a) => String(a.id) === String(armazemId)),
+    [armazensIdentificacao, armazemId]
+  );
+
+  useEffect(() => {
+    const locs = (armazemSelecionado?.localizacoes || [])
+      .map((l) => String(l?.localizacao || '').trim())
+      .filter(Boolean);
+    setLocalizacoesOpts([...new Set(locs)].sort((a, b) => a.localeCompare(b, 'pt')));
+    setLocOpenIdx(null);
+  }, [armazemSelecionado]);
 
   useEffect(() => {
     if (linhaSugAtiva == null) return undefined;
@@ -228,13 +270,23 @@ const IdentificacaoItens = () => {
     [linhas]
   );
 
+  const precisaSelecionarArmazem =
+    armazensIdentificacao.length > 1 && !armazemId;
+
   const podeGerar = useMemo(() => {
-    if (gerando) return false;
+    if (gerando || loadingArmazens || precisaSelecionarArmazem) return false;
+    if (armazensIdentificacao.length === 0) return false;
     return (
       linhasPreenchidas.length >= 1 &&
       linhasPreenchidas.every((l) => l.localizacao)
     );
-  }, [gerando, linhasPreenchidas]);
+  }, [
+    gerando,
+    linhasPreenchidas,
+    loadingArmazens,
+    precisaSelecionarArmazem,
+    armazensIdentificacao.length
+  ]);
 
   const handleGerarPdf = async () => {
     if (!isTres) {
@@ -298,6 +350,50 @@ const IdentificacaoItens = () => {
         </p>
 
         <section className="bg-white rounded-2xl shadow-lg border border-gray-200 p-4 sm:p-6 space-y-5">
+          {loadingArmazens ? (
+            <p className="text-sm text-gray-500">A carregar armazéns…</p>
+          ) : armazensIdentificacao.length === 0 ? (
+            <div className="text-sm text-amber-900 bg-amber-50 border border-amber-200 rounded-lg px-3 py-3">
+              Não há armazéns atribuídos ao seu utilizador para identificação de itens. Peça a um
+              administrador para associar armazéns em <strong>Utilizadores</strong>.
+            </div>
+          ) : (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                <FaWarehouse className="inline mr-2 text-[#0915FF]" />
+                Armazém da identificação
+              </label>
+              {armazensIdentificacao.length > 1 ? (
+                <select
+                  value={armazemId}
+                  onChange={(e) => setArmazemId(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#0915FF]/30 focus:border-[#0915FF]"
+                >
+                  <option value="">Selecione o armazém…</option>
+                  {armazensIdentificacao.map((a) => (
+                    <option key={a.id} value={String(a.id)}>
+                      {a.codigo} — {a.descricao}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <p className="text-sm text-gray-800 font-medium px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg">
+                  {armazemSelecionado?.codigo} — {armazemSelecionado?.descricao}
+                </p>
+              )}
+              {precisaSelecionarArmazem && (
+                <p className="text-xs text-amber-800 mt-1.5">
+                  Selecione o armazém para carregar as localizações disponíveis.
+                </p>
+              )}
+              {armazemId && localizacoesOpts.length === 0 && (
+                <p className="text-xs text-amber-800 mt-1.5">
+                  Este armazém não tem localizações registadas. Edite o armazém em Armazéns.
+                </p>
+              )}
+            </div>
+          )}
+
           <fieldset>
             <legend className="text-sm font-medium text-gray-700 mb-3">Formato da folha</legend>
             <div className="flex flex-col sm:flex-row gap-2">
@@ -438,6 +534,8 @@ const IdentificacaoItens = () => {
                       placeholder="Ex.: GERAL.E.R"
                       fontMono
                       lerTitle="Ler QR da localização"
+                      disabled={!armazemId || armazensIdentificacao.length === 0}
+                      lerDisabled={!armazemId || armazensIdentificacao.length === 0}
                     />
                     {locOpenIdx === idx && localizacoesFiltradasLinha.length > 0 && (
                       <ul className="absolute z-20 left-0 right-0 mt-1 max-h-48 overflow-auto bg-white border border-gray-200 rounded-lg shadow-lg text-sm">

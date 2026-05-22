@@ -1,9 +1,21 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Toast from '../components/Toast';
 
-const PAGE_SIZE = 40;
-const MAX_PAGES = 80;
 const VIATURAS_PAGE_SIZE = 10;
+const DEFAULT_RANGE_DAYS = 90;
+
+function defaultFiltroDatas() {
+  const fim = new Date();
+  const inicio = new Date();
+  inicio.setDate(inicio.getDate() - DEFAULT_RANGE_DAYS);
+  const iso = (d) => {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  };
+  return { data_inicio: iso(inicio), data_fim: iso(fim) };
+}
 const STATUS_PENDENTES = new Set(['pendente', 'em separacao', 'separado', 'em expedicao', 'apeados']);
 
 function normalizeDateFilterValue(raw) {
@@ -14,19 +26,6 @@ function normalizeDateFilterValue(raw) {
   return s;
 }
 
-function numberOrZero(v) {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : 0;
-}
-
-function parseDateBR(v) {
-  const s = String(v || '').trim();
-  const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(s);
-  if (!m) return 0;
-  const dt = new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1]));
-  return Number.isNaN(dt.getTime()) ? 0 : dt.getTime();
-}
-
 function parseSeriais(raw) {
   const s = String(raw || '').trim();
   if (!s) return [];
@@ -35,27 +34,6 @@ function parseSeriais(raw) {
     .flatMap((part) => String(part || '').split(/\s*,\s*/))
     .map((x) => x.trim())
     .filter(Boolean);
-}
-
-function detectarViaturaDaLinha(row, tiposPorId, viaturaIdsFallback) {
-  const origemId = Number(row?.armazem_origem_id || 0);
-  const destinoId = Number(row?.armazem_id || 0);
-  const origemTipoRow = String(row?.armazem_origem_tipo || '').trim().toLowerCase();
-  const destinoTipoRow = String(row?.armazem_destino_tipo || '').trim().toLowerCase();
-  const origemTipo = origemTipoRow || tiposPorId.get(origemId) || '';
-  const destinoTipo = destinoTipoRow || tiposPorId.get(destinoId) || '';
-  const origemDesc = String(row?.armazem_origem_descricao || row?.Loc_Inicial || '').trim();
-  const destinoDesc = String(
-    row?.armazem_destino_descricao || row?.['Novo Armazém'] || row?.['New Localização'] || ''
-  ).trim();
-
-  if (destinoTipo === 'viatura' || viaturaIdsFallback.has(destinoId)) {
-    return { id: destinoId, nome: destinoDesc || `Viatura #${destinoId}`, sentido: 'entrada' };
-  }
-  if (origemTipo === 'viatura' || viaturaIdsFallback.has(origemId)) {
-    return { id: origemId, nome: origemDesc || `Viatura #${origemId}`, sentido: 'saida' };
-  }
-  return null;
 }
 
 function statusRequisicaoPendente(rawStatus) {
@@ -104,7 +82,14 @@ const DashboardViaturas = () => {
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState(null);
   const [armazens, setArmazens] = useState([]);
-  const [rows, setRows] = useState([]);
+  const [agregadosApi, setAgregadosApi] = useState({
+    lista: [],
+    totalViaturas: 0,
+    totalAbastecido: 0,
+    totalDevolvido: 0,
+    totalPendentesEntrega: 0,
+    totalDevolucoesPendentes: 0,
+  });
   const [requisicoesPendentesEntrega, setRequisicoesPendentesEntrega] = useState([]);
   const [requisicoesPendentesDevolucao, setRequisicoesPendentesDevolucao] = useState([]);
   const [selectedViaturaId, setSelectedViaturaId] = useState('');
@@ -114,8 +99,9 @@ const DashboardViaturas = () => {
   const [cardFiltroAtivo, setCardFiltroAtivo] = useState('viaturas');
   const [selectedReqDetail, setSelectedReqDetail] = useState(null);
   const [selectedReqSeriais, setSelectedReqSeriais] = useState(null);
-  const [reporteReqRows, setReporteReqRows] = useState([]);
-  const [reporteReqLoading, setReporteReqLoading] = useState(false);
+  const [detailItensLoading, setDetailItensLoading] = useState(false);
+  const itensResumoCacheRef = useRef(new Map());
+  const detailFetchAbortRef = useRef(null);
   const [expandReqPend, setExpandReqPend] = useState(false);
   const [expandReqConc, setExpandReqConc] = useState(false);
   const [expandDevPend, setExpandDevPend] = useState(false);
@@ -124,21 +110,10 @@ const DashboardViaturas = () => {
   const [filtroReqConc, setFiltroReqConc] = useState('');
   const [filtroDevPend, setFiltroDevPend] = useState('');
   const [filtroDevConc, setFiltroDevConc] = useState('');
-  const [filtros, setFiltros] = useState({
-    data_inicio: '',
-    data_fim: '',
+  const [filtros, setFiltros] = useState(() => ({
+    ...defaultFiltroDatas(),
     armazem_id: '',
-  });
-
-  const tiposPorId = useMemo(() => {
-    const map = new Map();
-    for (const arm of armazens || []) {
-      const id = Number(arm?.id || 0);
-      if (!id) continue;
-      map.set(id, String(arm?.tipo || '').trim().toLowerCase());
-    }
-    return map;
-  }, [armazens]);
+  }));
 
   const viaturaIdsFallback = useMemo(() => {
     const all = (armazens || []).filter((a) => Number(a?.id) > 0);
@@ -193,116 +168,126 @@ const DashboardViaturas = () => {
     }
   }, []);
 
-  const fetchAllRows = useCallback(async (targetFiltros) => {
-    const token = localStorage.getItem('token');
-    const rowsOut = [];
-    const visitedOffsets = new Set();
-    let offset = 0;
-    let page = 0;
-
-    while (page < MAX_PAGES) {
-      if (visitedOffsets.has(offset)) break;
-      visitedOffsets.add(offset);
-      const params = new URLSearchParams();
-      params.set('page_size', String(PAGE_SIZE));
-      params.set('offset', String(offset));
-      const dataInicioNorm = normalizeDateFilterValue(targetFiltros?.data_inicio);
-      const dataFimNorm = normalizeDateFilterValue(targetFiltros?.data_fim);
-      if (dataInicioNorm) params.set('data_inicio', dataInicioNorm);
-      if (dataFimNorm) params.set('data_fim', dataFimNorm);
-      if (String(targetFiltros?.armazem_id || '').trim()) params.set('armazem_id', String(targetFiltros.armazem_id));
-
-      const response = await fetch(`/api/requisicoes/movimentos-clog/consulta?${params.toString()}`, {
-        headers: { Authorization: `Bearer ${token}` },
-        cache: 'no-store',
-      });
-      if (!response.ok) {
-        const data = await response.json().catch(() => ({}));
-        throw new Error(data?.error || 'Erro ao carregar movimentos das viaturas');
-      }
-      const data = await response.json();
-      const batch = Array.isArray(data?.rows) ? data.rows : [];
-      rowsOut.push(...batch);
-      const next = Number.isFinite(Number(data?.next_offset)) ? Number(data.next_offset) : null;
-      if (next === null || next <= offset) break;
-      offset = next;
-      page += 1;
-    }
-
-    return rowsOut;
-  }, []);
-
-  const fetchRequisicoesPendentes = useCallback(async () => {
-    const token = localStorage.getItem('token');
-    const [resEntrega, resDevolucao] = await Promise.all([
-      fetch('/api/requisicoes', {
-        headers: { Authorization: `Bearer ${token}` },
-        cache: 'no-store',
-      }),
-      fetch('/api/requisicoes?devolucoes=1', {
-        headers: { Authorization: `Bearer ${token}` },
-        cache: 'no-store',
-      }),
-    ]);
-    if (!resEntrega.ok || !resDevolucao.ok) {
-      const dataEntrega = await resEntrega.json().catch(() => ({}));
-      const dataDevolucao = await resDevolucao.json().catch(() => ({}));
-      throw new Error(
-        dataEntrega?.error ||
-          dataDevolucao?.error ||
-          'Erro ao carregar pendentes de entrega/devolução'
-      );
-    }
-    const dataEntrega = await resEntrega.json().catch(() => ([]));
-    const dataDevolucao = await resDevolucao.json().catch(() => ([]));
-    return {
-      entrega: Array.isArray(dataEntrega) ? dataEntrega : [],
-      devolucao: Array.isArray(dataDevolucao) ? dataDevolucao : [],
-    };
-  }, []);
-
   const carregarDashboard = useCallback(async () => {
     try {
       setLoading(true);
       setToast(null);
-      const [{ entrega, devolucao }, allRows] = await Promise.all([
-        fetchRequisicoesPendentes(),
-        fetchAllRows(filtros),
-      ]);
-      setRequisicoesPendentesEntrega(entrega);
-      setRequisicoesPendentesDevolucao(devolucao);
-      setRows(allRows);
+      itensResumoCacheRef.current.clear();
+      const token = localStorage.getItem('token');
+      const params = new URLSearchParams();
+      const dataInicioNorm = normalizeDateFilterValue(filtros?.data_inicio);
+      const dataFimNorm = normalizeDateFilterValue(filtros?.data_fim);
+      if (dataInicioNorm) params.set('data_inicio', dataInicioNorm);
+      if (dataFimNorm) params.set('data_fim', dataFimNorm);
+      if (String(filtros?.armazem_id || '').trim()) params.set('armazem_id', String(filtros.armazem_id));
+
+      const response = await fetch(`/api/requisicoes/dashboard-viaturas?${params.toString()}`, {
+        headers: { Authorization: `Bearer ${token}` },
+        cache: 'no-store',
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data?.error || 'Erro ao carregar dashboard de viaturas');
+      }
+
+      setAgregadosApi({
+        lista: Array.isArray(data?.lista) ? data.lista : [],
+        totalViaturas: Number(data?.totalViaturas ?? data?.lista?.length ?? 0) || 0,
+        totalAbastecido: Number(data?.totalAbastecido || 0) || 0,
+        totalDevolvido: Number(data?.totalDevolvido || 0) || 0,
+        totalPendentesEntrega: Number(data?.totalPendentesEntrega || 0) || 0,
+        totalDevolucoesPendentes: Number(data?.totalDevolucoesPendentes || 0) || 0,
+      });
+      setRequisicoesPendentesEntrega(
+        Array.isArray(data?.requisicoes_entrega) ? data.requisicoes_entrega : []
+      );
+      setRequisicoesPendentesDevolucao(
+        Array.isArray(data?.requisicoes_devolucao) ? data.requisicoes_devolucao : []
+      );
     } catch (error) {
       setToast({ type: 'error', message: error.message || 'Erro ao carregar dashboard' });
-      setRows([]);
+      setAgregadosApi({
+        lista: [],
+        totalViaturas: 0,
+        totalAbastecido: 0,
+        totalDevolvido: 0,
+        totalPendentesEntrega: 0,
+        totalDevolucoesPendentes: 0,
+      });
+      setRequisicoesPendentesEntrega([]);
+      setRequisicoesPendentesDevolucao([]);
     } finally {
       setLoading(false);
     }
-  }, [fetchAllRows, fetchRequisicoesPendentes, filtros]);
+  }, [filtros]);
 
-  const abrirDetalheRequisicao = useCallback(async (reqRow) => {
-    const reqId = Number(reqRow?.id || 0);
-    if (!reqId) return;
-    try {
-      setReporteReqLoading(true);
-      const token = localStorage.getItem('token');
-      const response = await fetch(`/api/requisicoes/${reqId}/reporte-dados`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      const data = await response.json().catch(() => ({}));
-      if (response.ok) {
-        setReporteReqRows(Array.isArray(data?.rows) ? data.rows : []);
-      } else {
-        setReporteReqRows([]);
-      }
-      setSelectedReqDetail(reqRow);
-    } catch (_) {
-      setReporteReqRows([]);
-      setSelectedReqDetail(reqRow);
-    } finally {
-      setReporteReqLoading(false);
+  const fetchItensResumo = useCallback(async (reqId, signal) => {
+    const cached = itensResumoCacheRef.current.get(reqId);
+    if (cached) return cached;
+    const token = localStorage.getItem('token');
+    const response = await fetch(`/api/requisicoes/${reqId}/itens-resumo`, {
+      headers: { Authorization: `Bearer ${token}` },
+      cache: 'no-store',
+      signal,
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(data?.error || 'Erro ao carregar itens');
     }
+    const itens = Array.isArray(data?.itens) ? data.itens : [];
+    itensResumoCacheRef.current.set(reqId, itens);
+    return itens;
   }, []);
+
+  const prefetchItensResumo = useCallback(
+    (reqId) => {
+      const id = Number(reqId || 0);
+      if (!id || itensResumoCacheRef.current.has(id)) return;
+      fetchItensResumo(id).catch(() => {});
+    },
+    [fetchItensResumo]
+  );
+
+  const abrirDetalheRequisicao = useCallback(
+    async (reqRow) => {
+      const reqId = Number(reqRow?.id || 0);
+      if (!reqId) return;
+
+      if (detailFetchAbortRef.current) {
+        detailFetchAbortRef.current.abort();
+      }
+      const ac = new AbortController();
+      detailFetchAbortRef.current = ac;
+
+      const cachedItens = itensResumoCacheRef.current.get(reqId);
+      setSelectedReqDetail({
+        id: reqRow.id,
+        status: reqRow.status,
+        data: reqRow.data,
+        tra_dev: reqRow.tra_dev,
+        itens: cachedItens || [],
+      });
+
+      if (cachedItens) return;
+
+      setDetailItensLoading(true);
+      try {
+        const itens = await fetchItensResumo(reqId, ac.signal);
+        if (ac.signal.aborted) return;
+        setSelectedReqDetail((prev) =>
+          prev && Number(prev.id) === reqId ? { ...prev, itens } : prev
+        );
+      } catch (err) {
+        if (err?.name === 'AbortError') return;
+        setSelectedReqDetail((prev) =>
+          prev && Number(prev.id) === reqId ? { ...prev, itens: [] } : prev
+        );
+      } finally {
+        if (!ac.signal.aborted) setDetailItensLoading(false);
+      }
+    },
+    [fetchItensResumo]
+  );
 
   useEffect(() => {
     carregarArmazens();
@@ -318,104 +303,7 @@ const DashboardViaturas = () => {
     setSelectedViaturaId(id);
   }, [filtros.armazem_id]);
 
-  const agregados = useMemo(() => {
-    const byViatura = new Map();
-    let totalAbastecido = 0;
-    let totalDevolvido = 0;
-    let totalPendentesEntrega = 0;
-    let totalDevolucoesPendentes = 0;
-
-    for (const row of rows || []) {
-      const v = detectarViaturaDaLinha(row, tiposPorId, viaturaIdsFallback);
-      if (!v) continue;
-
-      const qtyRaw = numberOrZero(row?.QTY);
-      const qtdAbs = Math.abs(qtyRaw);
-      const key = Number(v.id || 0) || v.nome;
-      const nome = String(v.nome || '').trim() || `Viatura ${key}`;
-      const current = byViatura.get(key) || {
-        viatura_id: Number(v.id || 0) || null,
-        viatura_nome: nome,
-        abastecido: 0,
-        abastecido_qtd: 0,
-        devolvido: 0,
-        devolvido_qtd: 0,
-        requisicoes_atendidas_set: new Set(),
-        devolucoes_set: new Set(),
-        pendentes_entrega: 0,
-        devolucoes_pendentes: 0,
-        movimentos: 0,
-        ultimo_ts: 0,
-        ultimo_texto: '',
-      };
-
-      if (v.sentido === 'entrada') {
-        current.abastecido_qtd += qtdAbs;
-        const reqId = Number(row?.requisicao_id || 0);
-        if (reqId > 0) current.requisicoes_atendidas_set.add(reqId);
-      } else {
-        current.devolvido_qtd += qtdAbs;
-        const reqId = Number(row?.requisicao_id || 0);
-        if (reqId > 0) current.devolucoes_set.add(reqId);
-      }
-      current.movimentos += 1;
-      const ts = parseDateBR(row?.['Dt_Recepção']);
-      if (ts >= current.ultimo_ts) {
-        current.ultimo_ts = ts;
-        current.ultimo_texto = String(row?.['Dt_Recepção'] || '').trim();
-      }
-      byViatura.set(key, current);
-    }
-
-    const pendentesEntregaPorViatura = new Map();
-    for (const req of requisicoesPendentesEntrega || []) {
-      if (!statusRequisicaoPendente(req?.status)) continue;
-      const viaturaId = Number(req?.armazem_id || 0);
-      if (!viaturaId || !viaturaIdsFallback.has(viaturaId)) continue;
-      const set = pendentesEntregaPorViatura.get(viaturaId) || new Set();
-      set.add(Number(req?.id || 0));
-      pendentesEntregaPorViatura.set(viaturaId, set);
-    }
-
-    const devolucoesPendentesPorViatura = new Map();
-    for (const req of requisicoesPendentesDevolucao || []) {
-      if (!statusRequisicaoPendente(req?.status)) continue;
-      const viaturaId = Number(req?.armazem_origem_id || 0);
-      if (!viaturaId || !viaturaIdsFallback.has(viaturaId)) continue;
-      const set = devolucoesPendentesPorViatura.get(viaturaId) || new Set();
-      set.add(Number(req?.id || 0));
-      devolucoesPendentesPorViatura.set(viaturaId, set);
-    }
-
-    const lista = Array.from(byViatura.values())
-      .map((x) => {
-        const requisicoesAtendidas = x.requisicoes_atendidas_set.size;
-        const devolucoes = x.devolucoes_set.size;
-        const pendentesEntrega = (pendentesEntregaPorViatura.get(Number(x.viatura_id || 0)) || new Set()).size;
-        const devolucoesPendentes = (devolucoesPendentesPorViatura.get(Number(x.viatura_id || 0)) || new Set()).size;
-        totalAbastecido += requisicoesAtendidas;
-        totalDevolvido += devolucoes;
-        totalPendentesEntrega += pendentesEntrega;
-        totalDevolucoesPendentes += devolucoesPendentes;
-        return {
-          ...x,
-          abastecido: requisicoesAtendidas,
-          devolvido: devolucoes,
-          pendentes_entrega: pendentesEntrega,
-          devolucoes_pendentes: devolucoesPendentes,
-        };
-      })
-      .sort((a, b) => b.abastecido - a.abastecido || b.movimentos - a.movimentos);
-
-    return {
-      lista,
-      totalAbastecido,
-      totalDevolvido,
-      totalPendentesEntrega,
-      totalDevolucoesPendentes,
-      totalViaturas: lista.length,
-    };
-  }, [rows, viaturaIdsFallback, requisicoesPendentesEntrega, requisicoesPendentesDevolucao]);
+  const agregados = agregadosApi;
 
   const detalhesViatura = useMemo(() => {
     const selected = Number(selectedViaturaId || 0);
@@ -485,39 +373,14 @@ const DashboardViaturas = () => {
 
   const itensRequisicaoSelecionada = useMemo(() => {
     const itensReq = Array.isArray(selectedReqDetail?.itens) ? selectedReqDetail.itens : [];
-    const descricaoByRef = new Map();
-    for (const it of itensReq) {
-      const ref = String(it?.item_codigo || it?.codigo || '').trim();
-      const desc = String(it?.item_descricao || it?.descricao || '').trim();
-      if (ref && desc && !descricaoByRef.has(ref)) descricaoByRef.set(ref, desc);
-    }
-
-    if (Array.isArray(reporteReqRows) && reporteReqRows.length > 0) {
-      return reporteReqRows.map((row, idx) => {
-        const ref = String(row?.Artigo || row?.Article || row?.['REF.'] || row?.REF || '').trim() || '—';
-        const descricao =
-          descricaoByRef.get(ref) ||
-          String(row?.['Descrição'] || row?.Description || row?.DESCRIPTION || '').trim() ||
-          '—';
-        const qtd = Number(row?.Quantidade ?? row?.Quatity ?? row?.QTY ?? 0);
-        const serialsRaw = [row?.['S/N'], row?.SerialNumber1, row?.SerialNumber2].filter(Boolean).join('\n');
-        const seriais = parseSeriais(serialsRaw);
-        return {
-          key: `${selectedReqDetail?.id || 'req'}-rep-${idx}`,
-          ref,
-          descricao,
-          qtd: Number.isFinite(qtd) ? qtd : 0,
-          lote: String(row?.LOTE || row?.Batch || '').trim() || '—',
-          seriais,
-        };
-      });
-    }
-
     return itensReq.map((it, idx) => {
-      const seriais = extrairSeriaisDoItem(it);
+      const seriaisApi = Array.isArray(it?.seriais)
+        ? it.seriais.map((s) => String(s || '').trim()).filter(Boolean)
+        : [];
+      const seriais = seriaisApi.length > 0 ? seriaisApi : extrairSeriaisDoItem(it);
       const ref = String(it?.item_codigo || it?.codigo || '').trim() || '—';
       return {
-        key: `${selectedReqDetail?.id || 'req'}-${Number(it?.id || 0) || idx}`,
+        key: `${selectedReqDetail?.id || 'req'}-${Number(it?.requisicao_item_id || it?.id || 0) || idx}`,
         ref,
         descricao: String(it?.item_descricao || it?.descricao || '').trim() || '—',
         qtd: Number(it?.quantidade_preparada ?? it?.quantidade ?? 0) || 0,
@@ -525,7 +388,7 @@ const DashboardViaturas = () => {
         seriais,
       };
     });
-  }, [selectedReqDetail, reporteReqRows]);
+  }, [selectedReqDetail]);
 
   const viaturasSelectOptions = useMemo(() => {
     const byId = new Map();
@@ -848,6 +711,7 @@ const DashboardViaturas = () => {
                         <tr
                           key={`rp-${r.id}`}
                           className="border-t cursor-pointer hover:bg-blue-50"
+                          onMouseEnter={() => prefetchItensResumo(r.id)}
                           onClick={() => abrirDetalheRequisicao(r)}
                         >
                           <td className="text-center px-3 py-2 font-medium">{r.id}</td>
@@ -901,6 +765,7 @@ const DashboardViaturas = () => {
                         <tr
                           key={`rc-${r.id}`}
                           className="border-t cursor-pointer hover:bg-blue-50"
+                          onMouseEnter={() => prefetchItensResumo(r.id)}
                           onClick={() => abrirDetalheRequisicao(r)}
                         >
                           <td className="text-center px-3 py-2 font-medium">{r.id}</td>
@@ -957,6 +822,7 @@ const DashboardViaturas = () => {
                         <tr
                           key={`dp-${r.id}`}
                           className="border-t cursor-pointer hover:bg-blue-50"
+                          onMouseEnter={() => prefetchItensResumo(r.id)}
                           onClick={() => abrirDetalheRequisicao(r)}
                         >
                           <td className="text-center px-3 py-2 font-medium">{r.id}</td>
@@ -1013,6 +879,7 @@ const DashboardViaturas = () => {
                         <tr
                           key={`dc-${r.id}`}
                           className="border-t cursor-pointer hover:bg-blue-50"
+                          onMouseEnter={() => prefetchItensResumo(r.id)}
                           onClick={() => abrirDetalheRequisicao(r)}
                         >
                           <td className="text-center px-3 py-2 font-medium">{r.id}</td>
@@ -1049,8 +916,8 @@ const DashboardViaturas = () => {
           className="fixed inset-0 z-[10070] flex items-center justify-center bg-black/50 p-4"
           onClick={(e) => {
             if (e.target === e.currentTarget) {
+              if (detailFetchAbortRef.current) detailFetchAbortRef.current.abort();
               setSelectedReqDetail(null);
-              setReporteReqRows([]);
             }
           }}
         >
@@ -1063,16 +930,16 @@ const DashboardViaturas = () => {
                 <p className="text-xs text-gray-500 mt-1">
                   Status: {selectedReqDetail.status} · Data: {selectedReqDetail.data} · TRA/DEV: {selectedReqDetail.tra_dev}
                 </p>
-                {reporteReqLoading ? (
-                  <p className="text-xs text-gray-500 mt-1">A carregar lotes/metragens do reporte...</p>
+                {detailItensLoading ? (
+                  <p className="text-xs text-gray-500 mt-1">A carregar artigos...</p>
                 ) : null}
               </div>
               <button
                 type="button"
                 className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm hover:bg-gray-50"
                 onClick={() => {
+                  if (detailFetchAbortRef.current) detailFetchAbortRef.current.abort();
                   setSelectedReqDetail(null);
-                  setReporteReqRows([]);
                 }}
               >
                 Fechar
