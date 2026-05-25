@@ -32,6 +32,35 @@ const formatUpperView = (value) => {
   return text ? text.toUpperCase() : '—';
 };
 
+const parseQuantidadeInput = (val) => {
+  const s = String(val ?? '').trim().replace(/\s/g, '').replace(',', '.');
+  if (!s) return null;
+  const n = Number(s);
+  return Number.isFinite(n) ? n : null;
+};
+
+/** Quantidade editável do lote conforme o status atual (disp. / res. / cons.). */
+function quantidadeLoteParaEdicao(row) {
+  const st = String(row?.status || 'disponivel').trim().toLowerCase();
+  if (st === 'reservado') {
+    const q = row?.quantidade_reservada ?? row?.quantidade;
+    return q != null ? Number(q) : 0;
+  }
+  if (st === 'consumido') {
+    const q = row?.quantidade_consumida ?? 0;
+    return q != null ? Number(q) : 0;
+  }
+  const q = row?.quantidade ?? row?.quantidade_disponivel;
+  return q != null ? Number(q) : 0;
+}
+
+const labelQuantidadeLotePorStatus = (status) => {
+  const st = String(status || 'disponivel').trim().toLowerCase();
+  if (st === 'reservado') return 'Quantidade reservada';
+  if (st === 'consumido') return 'Quantidade consumida';
+  return 'Quantidade disponível';
+};
+
 /** Cabeçalho fixo ao fazer scroll dentro de contentores `overflow-auto` */
 const TH_STICKY_SCROLL =
   'text-left px-2 py-1 border-b sticky top-0 z-10 bg-slate-100 shadow-[inset_0_-1px_0_0_rgb(226_232_240)]';
@@ -50,6 +79,17 @@ const SERIAIS_FILTROS_COL_VAZIOS = {
 };
 
 const SERIAIS_PAGE_SIZE = 200;
+
+const EXPORT_STATUS_OPTS = [
+  { value: 'disponivel', label: 'Disponível' },
+  { value: 'reservado', label: 'Reservado' },
+  { value: 'consumido', label: 'Consumido' },
+];
+
+const EXPORT_TIPO_OPTS = [
+  { value: 'serial', label: 'S/N' },
+  { value: 'lote', label: 'Lote' },
+];
 
 const StockRastreavel = ({ mode = 'all' }) => {
   const { user } = useAuth();
@@ -84,6 +124,22 @@ const StockRastreavel = ({ mode = 'all' }) => {
   const seriaisPageRef = useRef(0);
   const seriaisTotalCacheRef = useRef(null);
   const [seriaisLoading, setSeriaisLoading] = useState(false);
+  const [exportandoSeriais, setExportandoSeriais] = useState(false);
+  const [exportStatusSel, setExportStatusSel] = useState(() => ({
+    disponivel: true,
+    reservado: true,
+    consumido: true,
+  }));
+  const [exportFCodigoArtigo, setExportFCodigoArtigo] = useState('');
+  const [exportTipoSel, setExportTipoSel] = useState(() => ({
+    serial: true,
+    lote: true,
+  }));
+  /** Compat. HMR: exportação filtra por tipo (S/N / Lote), não por texto de série ou lote */
+  const [exportFSerial, setExportFSerial] = useState('');
+  const [exportFLote, setExportFLote] = useState('');
+  void setExportFSerial;
+  void setExportFLote;
   const [meusArmazens, setMeusArmazens] = useState([]);
   const [armazemSelecionadoId, setArmazemSelecionadoId] = useState('');
   const [importArmazemId, setImportArmazemId] = useState('');
@@ -105,6 +161,7 @@ const StockRastreavel = ({ mode = 'all' }) => {
   const [manualAdded, setManualAdded] = useState([]);
   const [deletingKey, setDeletingKey] = useState('');
   const [consultaEditRow, setConsultaEditRow] = useState(null);
+  const [consultaEditErro, setConsultaEditErro] = useState('');
   const [consultaEditForm, setConsultaEditForm] = useState({
     status: 'disponivel',
     requisicao_id: '',
@@ -240,6 +297,63 @@ const StockRastreavel = ({ mode = 'all' }) => {
       seriaisTotalCacheRef.current = null;
       loadSeriaisConsultaArmazem(0, seriaisColFiltrosRef.current);
     }, 400);
+  };
+
+  const exportarSeriaisPorArmazem = async () => {
+    const aid = armazemSelecionadoId || fArmazemId;
+    if (!aid) {
+      setErro('Selecione o armazém antes de exportar.');
+      return;
+    }
+    const statuses = EXPORT_STATUS_OPTS.map((o) => o.value).filter((s) => exportStatusSel[s]);
+    const tipos = EXPORT_TIPO_OPTS.map((o) => o.value).filter((t) => exportTipoSel[t]);
+    if (!tipos.length) {
+      setErro('Selecione pelo menos um tipo (S/N ou Lote) para exportar.');
+      return;
+    }
+    if (!statuses.length) {
+      setErro('Selecione pelo menos um status para exportar.');
+      return;
+    }
+    setExportandoSeriais(true);
+    setErro('');
+    try {
+      const token = localStorage.getItem('token');
+      const p = new URLSearchParams();
+      p.set('armazem_id', aid);
+      p.set('status', statuses.join(','));
+      p.set('tipos', tipos.join(','));
+      const codigoArtigo = String(exportFCodigoArtigo || '').trim();
+      if (codigoArtigo) {
+        p.set('item_codigo', codigoArtigo);
+        if (/^\d+$/.test(codigoArtigo)) p.set('item_id', codigoArtigo);
+      }
+      if (fLocalizacao) p.set('localizacao', fLocalizacao);
+
+      const response = await fetch(
+        `/api/requisicoes/stock/seriais-por-armazem/export?${p.toString()}`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || 'Erro ao exportar seriais');
+      }
+      const blob = await response.blob();
+      const disp = response.headers.get('content-disposition') || '';
+      let fn = `seriais_arm${aid}.xlsx`;
+      const m = /filename\*?=(?:UTF-8'')?["']?([^";\n]+)/i.exec(disp);
+      if (m) fn = decodeURIComponent(m[1].replace(/["']/g, '').trim());
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = fn;
+      a.click();
+      window.URL.revokeObjectURL(url);
+    } catch (e) {
+      setErro(e.message || 'Erro ao exportar seriais');
+    } finally {
+      setExportandoSeriais(false);
+    }
   };
 
   const renderSeriaisThFiltro = (colKey, label) => {
@@ -621,28 +735,43 @@ const StockRastreavel = ({ mode = 'all' }) => {
   const abrirEdicaoRegistroConsulta = (row) => {
     if (!isAdminUser || !row) return;
     const tipo = consultaRowTipo(row);
+    const statusNorm = String(row.status || 'disponivel').trim().toLowerCase();
+    const qtdIni =
+      tipo === 'lote' ? quantidadeLoteParaEdicao(row) : Number(row.quantidade) || 0;
+    setConsultaEditErro('');
     setConsultaEditRow({ ...row, tipo });
     setConsultaEditForm({
-      status: String(row.status || 'disponivel').trim().toLowerCase(),
+      status: statusNorm,
       requisicao_id: row.requisicao_id != null ? String(row.requisicao_id) : '',
       requisicao_item_id: row.requisicao_item_id != null ? String(row.requisicao_item_id) : '',
-      quantidade: row.quantidade != null ? String(row.quantidade) : '',
+      quantidade: Number.isFinite(qtdIni) ? String(qtdIni) : '',
     });
   };
 
   const fecharEdicaoRegistroConsulta = () => {
     if (savingEditKey) return;
     setConsultaEditRow(null);
+    setConsultaEditErro('');
   };
 
   const salvarEdicaoRegistroConsulta = async () => {
     if (!isAdminUser || !consultaEditRow) return;
-    const tipo = consultaEditRow.tipo;
+    const tipo = consultaRowTipo(consultaEditRow);
+    const armazemId = Number(armazemSelecionadoId || fArmazemId || 0);
+    if (!armazemId) {
+      setConsultaEditErro('Selecione o armazém antes de guardar.');
+      return;
+    }
+    const localizacao = String(consultaEditRow.localizacao ?? '').trim();
+    if (!localizacao) {
+      setConsultaEditErro('Localização em falta no registo.');
+      return;
+    }
     const body = {
       tipo,
-      item_id: consultaEditRow.item_id,
-      armazem_id: armazemSelecionadoId || fArmazemId,
-      localizacao: consultaEditRow.localizacao,
+      item_id: Number(consultaEditRow.item_id) || null,
+      armazem_id: armazemId,
+      localizacao,
       serialnumber: consultaEditRow.serialnumber || null,
       lote: consultaEditRow.lote || null,
     };
@@ -657,10 +786,16 @@ const StockRastreavel = ({ mode = 'all' }) => {
           ? null
           : Number(consultaEditForm.requisicao_item_id);
     } else {
+      const qtd = parseQuantidadeInput(consultaEditForm.quantidade);
+      if (qtd === null || qtd < 0) {
+        setConsultaEditErro('Informe uma quantidade válida para o lote.');
+        return;
+      }
       body.status = String(consultaEditForm.status || '').trim().toLowerCase();
-      body.quantidade = Number(consultaEditForm.quantidade);
+      body.quantidade = qtd;
     }
 
+    setConsultaEditErro('');
     setErro('');
     const key = consultaRowActionKey(consultaEditRow);
     setSavingEditKey(key);
@@ -677,9 +812,12 @@ const StockRastreavel = ({ mode = 'all' }) => {
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.error || 'Erro ao guardar alterações');
       setConsultaEditRow(null);
+      setConsultaEditErro('');
       await loadSeriaisConsultaArmazem(seriaisPageRef.current, seriaisColFiltrosRef.current);
     } catch (e) {
-      setErro(e.message || 'Erro ao guardar alterações');
+      const msg = e.message || 'Erro ao guardar alterações';
+      setConsultaEditErro(msg);
+      setErro(msg);
     } finally {
       setSavingEditKey('');
     }
@@ -1113,6 +1251,59 @@ const StockRastreavel = ({ mode = 'all' }) => {
               Consultar
             </button>
           </div>
+          <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg space-y-3">
+            <p className="text-xs font-medium text-gray-700">Exportar Excel</p>
+            <input
+              value={exportFCodigoArtigo}
+              onChange={(e) => setExportFCodigoArtigo(e.target.value)}
+              placeholder="Código do artigo (opcional)"
+              className="w-full max-w-md px-3 py-2 border border-gray-300 rounded text-sm"
+            />
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+              <span className="text-xs text-gray-600">Tipos:</span>
+              {EXPORT_TIPO_OPTS.map((o) => (
+                <label key={o.value} className="inline-flex items-center gap-1.5 text-sm text-gray-800 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(exportTipoSel[o.value])}
+                    onChange={(e) =>
+                      setExportTipoSel((prev) => ({ ...prev, [o.value]: e.target.checked }))
+                    }
+                  />
+                  {o.label}
+                </label>
+              ))}
+            </div>
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+              <span className="text-xs text-gray-600">Status:</span>
+              {EXPORT_STATUS_OPTS.map((o) => (
+                <label key={o.value} className="inline-flex items-center gap-1.5 text-sm text-gray-800 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(exportStatusSel[o.value])}
+                    onChange={(e) =>
+                      setExportStatusSel((prev) => ({ ...prev, [o.value]: e.target.checked }))
+                    }
+                  />
+                  {o.label}
+                </label>
+              ))}
+              <button
+                type="button"
+                onClick={exportarSeriaisPorArmazem}
+                disabled={
+                  exportandoSeriais ||
+                  seriaisLoading ||
+                  !(armazemSelecionadoId || fArmazemId) ||
+                  !EXPORT_TIPO_OPTS.some((o) => exportTipoSel[o.value]) ||
+                  !EXPORT_STATUS_OPTS.some((o) => exportStatusSel[o.value])
+                }
+                className="px-3 py-2 rounded-lg text-sm font-semibold bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50"
+              >
+                {exportandoSeriais ? 'A exportar…' : 'Exportar S/N e lotes'}
+              </button>
+            </div>
+          </div>
           {seriaisData && (
             <div className="border border-slate-200 rounded overflow-hidden">
               <div className="p-2 bg-slate-50 text-xs text-slate-700 flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -1373,6 +1564,11 @@ const StockRastreavel = ({ mode = 'all' }) => {
                   : `Lote ${formatUpperView(consultaEditRow.lote)} · ${consultaEditRow.item_codigo}`}
               </p>
               <div className="mt-4 space-y-3">
+                {consultaEditErro ? (
+                  <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded px-3 py-2" role="alert">
+                    {consultaEditErro}
+                  </p>
+                ) : null}
                 <div>
                   <label className="block text-xs font-medium text-gray-700 mb-1" htmlFor="consulta-edit-status">
                     Status
@@ -1380,9 +1576,20 @@ const StockRastreavel = ({ mode = 'all' }) => {
                   <select
                     id="consulta-edit-status"
                     value={consultaEditForm.status}
-                    onChange={(e) =>
-                      setConsultaEditForm((prev) => ({ ...prev, status: e.target.value }))
-                    }
+                    onChange={(e) => {
+                      const status = e.target.value;
+                      setConsultaEditForm((prev) => {
+                        if (consultaEditRow?.tipo !== 'lote') {
+                          return { ...prev, status };
+                        }
+                        const qtd = quantidadeLoteParaEdicao({ ...consultaEditRow, status });
+                        return {
+                          ...prev,
+                          status,
+                          quantidade: Number.isFinite(qtd) ? String(qtd) : prev.quantidade,
+                        };
+                      });
+                    }}
                     className="w-full px-3 py-2 border border-gray-300 rounded text-sm"
                   >
                     <option value="disponivel">disponivel</option>
@@ -1434,7 +1641,7 @@ const StockRastreavel = ({ mode = 'all' }) => {
                 ) : (
                   <div>
                     <label className="block text-xs font-medium text-gray-700 mb-1" htmlFor="consulta-edit-qtd">
-                      Quantidade
+                      {labelQuantidadeLotePorStatus(consultaEditForm.status)}
                     </label>
                     <input
                       id="consulta-edit-qtd"

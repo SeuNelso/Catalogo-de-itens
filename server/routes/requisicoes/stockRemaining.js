@@ -1,6 +1,47 @@
 const express = require('express');
-const { SQL_STOCK_LOTE_STATUS, STOCK_STATUS } = require('../../services/stock/loteStatus');
+const ExcelJS = require('exceljs');
+const {
+  SQL_STOCK_LOTE_STATUS,
+  STOCK_STATUS,
+  statusStockLoteFromQuantidades,
+} = require('../../services/stock/loteStatus');
 const { logStockMovimento } = require('../../services/stock/auditoria');
+
+const SERIAIS_STATUS_VALIDOS = new Set(['disponivel', 'reservado', 'consumido']);
+const SERIAIS_EXPORT_MAX_ROWS = 50000;
+
+function parseStatusesFromQuery(query) {
+  const raw = query?.status;
+  const parts = [];
+  if (Array.isArray(raw)) {
+    for (const x of raw) parts.push(...String(x).split(/[,;]/));
+  } else if (raw != null && String(raw).trim()) {
+    parts.push(...String(raw).split(/[,;]/));
+  }
+  return [...new Set(parts.map((s) => s.trim().toLowerCase()).filter((s) => SERIAIS_STATUS_VALIDOS.has(s)))];
+}
+
+/** Tipos de linha na exportação: stock_serial (S/N) e/ou stock_lote (Lote). */
+function parseTiposExportFromQuery(query) {
+  const raw = query?.tipos ?? query?.tipo;
+  const parts = [];
+  if (Array.isArray(raw)) {
+    for (const x of raw) parts.push(...String(x).split(/[,;]/));
+  } else if (raw != null && String(raw).trim()) {
+    parts.push(...String(raw).split(/[,;]/));
+  }
+  const set = new Set();
+  for (const t of parts.map((s) => s.trim().toLowerCase())) {
+    if (t === 'serial' || t === 'sn' || t === 's/n') set.add('serial');
+    if (t === 'lote' || t === 'lotes') set.add('lote');
+  }
+  return [...set];
+}
+
+/** Desloca $1..$n após parâmetros já usados no UNION (ex.: offset 3 → $1 vira $4). */
+function renumberSqlPlaceholders(sql, paramOffset) {
+  return sql.replace(/\$(\d+)/g, (_, n) => `$${paramOffset + Number(n)}`);
+}
 
 function createStockRemainingRouter(deps) {
   const {
@@ -10,6 +51,216 @@ function createStockRemainingRouter(deps) {
     requisicaoArmazemOrigemAcessoPermitido,
   } = deps;
   const router = express.Router();
+
+  router.get('/seriais-por-armazem/export', ...requisicaoAuth, async (req, res) => {
+    try {
+      const armazemId = Number(req.query.armazem_id || 0);
+      const itemId = Number(req.query.item_id || 0) || null;
+      const itemCodigo = String(req.query.item_codigo || req.query.codigo_artigo || '').trim();
+      const localizacao = String(req.query.localizacao || '').trim();
+      const statuses = parseStatusesFromQuery(req.query);
+      const tipos = parseTiposExportFromQuery(req.query);
+      if (!armazemId) return res.status(400).json({ error: 'armazem_id é obrigatório' });
+      if (!tipos.length) {
+        return res.status(400).json({ error: 'Selecione pelo menos um tipo: S/N e/ou Lote.' });
+      }
+      if (!requisicaoArmazemOrigemAcessoPermitido(req, armazemId)) {
+        return res.status(403).json({ error: 'Sem acesso ao armazém informado.' });
+      }
+
+      const unionParts = [];
+      const unionParams = [];
+
+      if (tipos.includes('serial')) {
+        const innerFilters = ['s.armazem_id = $1'];
+        const innerParams = [armazemId];
+        let p = 2;
+        if (itemId && itemCodigo) {
+          innerParams.push(itemId, `%${itemCodigo}%`);
+          innerFilters.push(
+            `(s.item_id = $${p} OR UPPER(TRIM(i.codigo::text)) LIKE UPPER(TRIM($${p + 1}::text)))`
+          );
+          p += 2;
+        } else if (itemId) {
+          innerFilters.push(`s.item_id = $${p++}`);
+          innerParams.push(itemId);
+        } else if (itemCodigo) {
+          innerFilters.push(`UPPER(TRIM(i.codigo::text)) LIKE UPPER(TRIM($${p++}::text))`);
+          innerParams.push(`%${itemCodigo}%`);
+        }
+        if (localizacao) {
+          innerFilters.push(`s.localizacao = $${p++}`);
+          innerParams.push(localizacao);
+        }
+        if (statuses.length === 1) {
+          innerFilters.push(`s.status = $${p++}`);
+          innerParams.push(statuses[0]);
+        } else if (statuses.length > 1) {
+          innerFilters.push(`s.status = ANY($${p++}::text[])`);
+          innerParams.push(statuses);
+        }
+        unionParts.push(`
+          SELECT 'S/N'::text AS tipo,
+                 a.codigo AS armazem_codigo,
+                 i.codigo AS item_codigo,
+                 i.descricao AS item_descricao,
+                 s.serialnumber,
+                 s.lote,
+                 s.localizacao,
+                 c.codigo_caixa,
+                 s.status,
+                 1::numeric AS quantidade,
+                 NULL::numeric AS quantidade_reservada,
+                 s.requisicao_id,
+                 s.reservado_em,
+                 s.consumido_em,
+                 s.atualizado_em
+          FROM stock_serial s
+          INNER JOIN itens i ON i.id = s.item_id
+          INNER JOIN armazens a ON a.id = s.armazem_id
+          LEFT JOIN stock_caixa_seriais cs ON cs.stock_serial_id = s.id
+          LEFT JOIN stock_caixas c ON c.id = cs.caixa_id
+          WHERE ${innerFilters.join(' AND ')}`);
+        unionParams.push(...innerParams);
+      }
+
+      if (tipos.includes('lote')) {
+        const innerFilters = ['l.armazem_id = $1'];
+        const innerParams = [armazemId];
+        let p = 2;
+        if (itemId && itemCodigo) {
+          innerParams.push(itemId, `%${itemCodigo}%`);
+          innerFilters.push(
+            `(l.item_id = $${p} OR UPPER(TRIM(i.codigo::text)) LIKE UPPER(TRIM($${p + 1}::text)))`
+          );
+          p += 2;
+        } else if (itemId) {
+          innerFilters.push(`l.item_id = $${p++}`);
+          innerParams.push(itemId);
+        } else if (itemCodigo) {
+          innerFilters.push(`UPPER(TRIM(i.codigo::text)) LIKE UPPER(TRIM($${p++}::text))`);
+          innerParams.push(`%${itemCodigo}%`);
+        }
+        if (localizacao) {
+          innerFilters.push(`l.localizacao = $${p++}`);
+          innerParams.push(localizacao);
+        }
+        const loteStatusExpr = SQL_STOCK_LOTE_STATUS;
+        if (statuses.length === 1) {
+          innerFilters.push(`${loteStatusExpr} = $${p++}`);
+          innerParams.push(statuses[0]);
+        } else if (statuses.length > 1) {
+          innerFilters.push(`${loteStatusExpr} = ANY($${p++}::text[])`);
+          innerParams.push(statuses);
+        }
+        const loteSql = `
+          SELECT 'Lote'::text AS tipo,
+                 a.codigo AS armazem_codigo,
+                 i.codigo AS item_codigo,
+                 i.descricao AS item_descricao,
+                 NULL::text AS serialnumber,
+                 l.lote,
+                 l.localizacao,
+                 NULL::text AS codigo_caixa,
+                 ${loteStatusExpr} AS status,
+                 l.quantidade_disponivel AS quantidade,
+                 l.quantidade_reservada AS quantidade_reservada,
+                 NULL::int AS requisicao_id,
+                 NULL::timestamp AS reservado_em,
+                 NULL::timestamp AS consumido_em,
+                 l.atualizado_em
+          FROM stock_lote l
+          INNER JOIN itens i ON i.id = l.item_id
+          INNER JOIN armazens a ON a.id = l.armazem_id
+          WHERE ${innerFilters.join(' AND ')}`;
+        unionParts.push(renumberSqlPlaceholders(loteSql, unionParams.length));
+        unionParams.push(...innerParams);
+      }
+
+      const limIdx = unionParams.length + 1;
+      unionParams.push(SERIAIS_EXPORT_MAX_ROWS + 1);
+
+      const rowsQ = await pool.query(
+        `SELECT * FROM (${unionParts.join(' UNION ALL ')}) u
+         ORDER BY (
+           CASE LOWER(TRIM(COALESCE(u.tipo, '')))
+             WHEN 's/n' THEN 0
+             WHEN 'lote' THEN 1
+             ELSE 2
+           END
+         ), (
+           CASE LOWER(TRIM(COALESCE(u.status, '')))
+             WHEN 'reservado' THEN 0
+             WHEN 'disponivel' THEN 1
+             WHEN 'consumido' THEN 2
+             ELSE 3
+           END
+         ), u.atualizado_em DESC
+         LIMIT $${limIdx}`,
+        unionParams
+      );
+
+      const rows = rowsQ.rows || [];
+      if (rows.length > SERIAIS_EXPORT_MAX_ROWS) {
+        return res.status(400).json({
+          error: `Exportação limitada a ${SERIAIS_EXPORT_MAX_ROWS} linhas. Refine os filtros.`,
+        });
+      }
+      if (!rows.length) {
+        return res.status(400).json({ error: 'Nenhum registo encontrado com os filtros indicados.' });
+      }
+
+      const wb = new ExcelJS.Workbook();
+      const sheet = wb.addWorksheet('Stock');
+      sheet.columns = [
+        { header: 'Tipo', key: 'tipo', width: 8 },
+        { header: 'Armazém', key: 'armazem', width: 12 },
+        { header: 'Artigo', key: 'artigo', width: 16 },
+        { header: 'Descrição', key: 'descricao', width: 36 },
+        { header: 'Serial', key: 'serial', width: 22 },
+        { header: 'Lote', key: 'lote', width: 16 },
+        { header: 'Quantidade', key: 'quantidade', width: 12 },
+        { header: 'Qtd reservada', key: 'quantidade_reservada', width: 12 },
+        { header: 'Localização', key: 'localizacao', width: 18 },
+        { header: 'N.º Caixa', key: 'caixa', width: 14 },
+        { header: 'Status', key: 'status', width: 12 },
+        { header: 'Requisição', key: 'req', width: 10 },
+        { header: 'Reservado em', key: 'reservado_em', width: 20 },
+        { header: 'Consumido em', key: 'consumido_em', width: 20 },
+      ];
+      sheet.getRow(1).font = { bold: true };
+      for (const r of rows) {
+        const qtdRes = Number(r.quantidade_reservada) || 0;
+        sheet.addRow({
+          tipo: r.tipo || '',
+          armazem: r.armazem_codigo || '',
+          artigo: r.item_codigo || '',
+          descricao: r.item_descricao || '',
+          serial: r.serialnumber || '',
+          lote: r.lote || '',
+          quantidade: r.quantidade != null ? Number(r.quantidade) : '',
+          quantidade_reservada: qtdRes > 0 ? qtdRes : '',
+          localizacao: r.localizacao || '',
+          caixa: r.codigo_caixa || '',
+          status: r.status || '',
+          req: r.requisicao_id != null ? String(r.requisicao_id) : '',
+          reservado_em: r.reservado_em ? new Date(r.reservado_em) : '',
+          consumido_em: r.consumido_em ? new Date(r.consumido_em) : '',
+        });
+      }
+
+      const armCod = String(rows[0]?.armazem_codigo || armazemId).replace(/[^\w.-]+/g, '_');
+      const statusTag = statuses.length > 0 ? statuses.join('-') : 'todos';
+      const tipoTag = tipos.join('-');
+      const fn = `stock_${armCod}_${tipoTag}_${statusTag}_${new Date().toISOString().slice(0, 10)}.xlsx`;
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', `attachment; filename="${fn}"`);
+      await wb.xlsx.write(res);
+      return res.end();
+    } catch (e) {
+      return res.status(500).json({ error: e.message || 'Erro ao exportar stock do armazém' });
+    }
+  });
 
   router.get('/seriais-por-armazem', ...requisicaoAuth, async (req, res) => {
     try {
@@ -133,6 +384,7 @@ function createStockRemainingRouter(deps) {
           s.status,
           1::numeric AS quantidade,
           NULL::numeric AS quantidade_reservada,
+          NULL::numeric AS quantidade_consumida,
           s.requisicao_id,
           s.requisicao_item_id,
           c.codigo_caixa,
@@ -158,6 +410,7 @@ function createStockRemainingRouter(deps) {
           ${SQL_STOCK_LOTE_STATUS} AS status,
           l.quantidade_disponivel AS quantidade,
           l.quantidade_reservada AS quantidade_reservada,
+          l.quantidade_consumida AS quantidade_consumida,
           NULL::int AS requisicao_id,
           NULL::int AS requisicao_item_id,
           NULL::text AS codigo_caixa,
@@ -507,20 +760,35 @@ function createStockRemainingRouter(deps) {
             : statusAtual === STOCK_STATUS.RESERVADO
               ? qRes
               : qCons;
-        const nextQty = quantidadeInformada ? Number(quantidadeBody) : qtyAtual;
-        if (!Number.isFinite(nextQty) || nextQty < 0) {
-          await client.query('ROLLBACK');
-          return res.status(400).json({ error: 'quantidade inválida.' });
+        let nextQty = qtyAtual;
+        if (quantidadeInformada) {
+          const qParsed = Number(String(quantidadeBody).trim().replace(',', '.'));
+          if (!Number.isFinite(qParsed) || qParsed < 0) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({ error: 'quantidade inválida.' });
+          }
+          nextQty = qParsed;
         }
 
-        if (nextStatus !== statusAtual) {
-          if (statusAtual === STOCK_STATUS.DISPONIVEL) qDisp = 0;
-          else if (statusAtual === STOCK_STATUS.RESERVADO) qRes = 0;
-          else qCons = 0;
+        if (nextStatus === STOCK_STATUS.DISPONIVEL) {
+          qDisp = nextQty;
+          if (nextStatus !== statusAtual) {
+            qRes = 0;
+            qCons = 0;
+          }
+        } else if (nextStatus === STOCK_STATUS.RESERVADO) {
+          qRes = nextQty;
+          if (nextStatus !== statusAtual) {
+            qDisp = 0;
+            qCons = 0;
+          }
+        } else {
+          qCons = nextQty;
+          if (nextStatus !== statusAtual) {
+            qDisp = 0;
+            qRes = 0;
+          }
         }
-        if (nextStatus === STOCK_STATUS.DISPONIVEL) qDisp = nextQty;
-        else if (nextStatus === STOCK_STATUS.RESERVADO) qRes = nextQty;
-        else qCons = nextQty;
 
         await client.query(
           `UPDATE stock_lote
