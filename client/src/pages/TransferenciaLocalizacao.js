@@ -66,6 +66,46 @@ const pickDestinoPadraoApeado = (locs = []) => {
   return locs[0];
 };
 
+/** Destino de armazenagem no central (exclui origem / receção). */
+const pickDestinoPadraoArmazenagem = (locs = [], origemId = '') => {
+  const candidatas = (locs || []).filter(
+    (l) => l?.id != null && String(l.id) !== String(origemId || '')
+  );
+  if (!candidatas.length) return null;
+  const prioridade = ['geral.e.r', 'geral.e', 'estoque', 'armazen', 'guarda', 'prateleira'];
+  for (const termo of prioridade) {
+    const hit = candidatas.find((l) => {
+      const loc = normBusca(l?.localizacao || '');
+      return loc.includes(termo) && !loc.includes('receb') && !loc.includes('recepcao');
+    });
+    if (hit) return hit;
+  }
+  const semRececao = candidatas.filter((l) => {
+    const loc = normBusca(l?.localizacao || '');
+    return !loc.includes('receb') && !loc.includes('recepcao') && !loc.includes('reception');
+  });
+  return semRececao[0] || candidatas[0];
+};
+
+const resolveOrigemFromLabel = (locs = [], label = '') => {
+  const list = (locs || []).filter((l) => l?.id != null);
+  const n = normBusca(label);
+  if (!n) return null;
+  const exact = list.find((l) => normBusca(l?.localizacao || '') === n);
+  if (exact) return exact;
+  const partial = list.find((l) => {
+    const loc = normBusca(l?.localizacao || '');
+    return loc.includes(n) || n.includes(loc);
+  });
+  if (partial) return partial;
+  return (
+    list.find((l) => {
+      const loc = normBusca(l?.localizacao || '');
+      return loc.includes('receb') || loc.includes('recepcao') || loc.includes('reception');
+    }) || null
+  );
+};
+
 const isTipoControloSerial = (tipoControlo) => {
   const raw = String(tipoControlo || '').trim().toUpperCase();
   const norm = raw.replace(/\s+/g, '');
@@ -379,6 +419,9 @@ const TransferenciaLocalizacao = () => {
   const [loteOrigemLabel, setLoteOrigemLabel] = useState('');
   const [submittingLote, setSubmittingLote] = useState(false);
   const prefillConsumidoRef = useRef(false);
+  const recebimentoAutoSubmitRef = useRef(false);
+  const autoSubmitExecutadoRef = useRef(false);
+  const gerarTicketsLoteRecebimentoRef = useRef(() => {});
   const wizardCatalogMetaReqIdRef = useRef(0);
   /** 1=origem, 2=artigo, 3=quantidade, 4=destino, 5=confirmar */
   const [wizardStep, setWizardStep] = useState(1);
@@ -433,6 +476,7 @@ const TransferenciaLocalizacao = () => {
     const hasV1 = Array.isArray(payload?.items) && payload.items.length > 0;
     if (!payload || (!hasV2 && !hasV1)) return;
     prefillConsumidoRef.current = true;
+    recebimentoAutoSubmitRef.current = payload.autoSubmit !== false;
 
     const modoPrefill = String(payload.modo || '').trim().toLowerCase();
     if (modoPrefill === 'apeado') setModoTransferencia('apeado');
@@ -620,6 +664,8 @@ const TransferenciaLocalizacao = () => {
     setOrigemId('');
     setFiltroOrigemLoc('');
     setWizardStep(1);
+    recebimentoAutoSubmitRef.current = false;
+    autoSubmitExecutadoRef.current = false;
     // Limpa o state da rota para não reaplicar o pré-preenchimento ao regressar.
     navigate(location.pathname, { replace: true, state: null });
   }, [location.pathname, navigate]);
@@ -899,17 +945,28 @@ const TransferenciaLocalizacao = () => {
 
   useEffect(() => {
     if (!loteRecebimento.length || origemId || !loteOrigemLabel || !locsComId.length) return;
-    const n = normBusca(loteOrigemLabel);
-    const exact = locsComId.find((l) => normBusca(l?.localizacao || '') === n);
-    if (exact) {
-      setOrigemId(String(exact.id));
-      setFiltroOrigemLoc(exact.localizacao || loteOrigemLabel);
+    const hit = resolveOrigemFromLabel(locsComId, loteOrigemLabel);
+    if (hit?.id != null) {
+      setOrigemId(String(hit.id));
+      setFiltroOrigemLoc(hit.localizacao || loteOrigemLabel);
     }
   }, [loteRecebimento, origemId, loteOrigemLabel, locsComId]);
 
   useEffect(() => {
-    if (modoTransferencia !== 'apeado' || !loteRecebimento.length || !origemId) return;
-    const destinoPadrao = pickDestinoPadraoApeado(locsApeadoComId);
+    if (!loteRecebimento.length || !origemId) return;
+    if (modoTransferencia === 'apeado') {
+      const destinoPadrao = pickDestinoPadraoApeado(locsApeadoComId);
+      if (!destinoPadrao?.id) return;
+      const destinoPadraoId = String(destinoPadrao.id);
+      setLoteRecebimento((prev) =>
+        prev.map((it) => {
+          const atual = String(it?.destinoId || '').trim();
+          return atual && atual !== String(origemId) ? it : { ...it, destinoId: destinoPadraoId };
+        })
+      );
+      return;
+    }
+    const destinoPadrao = pickDestinoPadraoArmazenagem(locsComId, origemId);
     if (!destinoPadrao?.id) return;
     const destinoPadraoId = String(destinoPadrao.id);
     setLoteRecebimento((prev) =>
@@ -918,7 +975,7 @@ const TransferenciaLocalizacao = () => {
         return atual && atual !== String(origemId) ? it : { ...it, destinoId: destinoPadraoId };
       })
     );
-  }, [modoTransferencia, loteRecebimento.length, origemId, locsApeadoComId]);
+  }, [modoTransferencia, loteRecebimento.length, origemId, locsApeadoComId, locsComId]);
 
   useEffect(() => {
     setLinhasOrigem([]);
@@ -2054,12 +2111,41 @@ const TransferenciaLocalizacao = () => {
       loadTickets();
       window.dispatchEvent(new CustomEvent(RECEBIMENTO_REFRESH_EVENT));
     } catch (e) {
+      autoSubmitExecutadoRef.current = false;
       const msg = e?.response?.data?.error || e?.message || 'Erro ao gerar tickets em lote.';
       setToast({ type: 'error', message: msg });
     } finally {
       setSubmittingLote(false);
     }
   };
+
+  gerarTicketsLoteRecebimentoRef.current = gerarTicketsLoteRecebimento;
+
+  useEffect(() => {
+    if (!recebimentoAutoSubmitRef.current || autoSubmitExecutadoRef.current) return;
+    if (!loteRecebimento.length || !armazemId || !origemId) return;
+    if (loadingArmazens || loadingEstoque) return;
+    if (modoTransferencia === 'apeado' && !apeadoArmazemId) return;
+    const prontas = loteRecebimento.filter((it) => {
+      const codigo = String(it?.codigo || '').trim();
+      const qtd = Number(it?.quantidade || 0) || 0;
+      const dest = String(it?.destinoId || '').trim();
+      return Boolean(codigo) && qtd > 0 && dest && dest !== String(origemId);
+    });
+    if (prontas.length !== loteRecebimento.length) return;
+    if (locsDestinoCandidatas.length === 0) return;
+    autoSubmitExecutadoRef.current = true;
+    gerarTicketsLoteRecebimentoRef.current();
+  }, [
+    loteRecebimento,
+    armazemId,
+    origemId,
+    modoTransferencia,
+    apeadoArmazemId,
+    loadingArmazens,
+    loadingEstoque,
+    locsDestinoCandidatas.length,
+  ]);
 
   const removerLinhaLoteRecebimento = (idx) => {
     setLoteRecebimento((prev) => prev.filter((_, i) => i !== idx));
@@ -2309,6 +2395,11 @@ const TransferenciaLocalizacao = () => {
                         readOnly
                         className="ui-input bg-gray-50 text-sm font-mono"
                       />
+                      {!origemId && loteOrigemLabel && !loadingArmazens && locsComId.length > 0 && (
+                        <p className="text-xs text-amber-800 mt-1">
+                          Localização de receção não encontrada no armazém. Verifique as localizações em Armazéns.
+                        </p>
+                      )}
                     </div>
                   </div>
 

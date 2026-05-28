@@ -11,7 +11,8 @@ import { FORMATOS_QR_BARCODE, Html5QrcodeSupportedFormats } from '../utils/qrBar
 import {
   gerarPdfIdentificacao,
   MAX_QTD_DIGITOS,
-  MODOS_PDF
+  MODOS_PDF,
+  TIPO_ETIQUETA
 } from '../utils/identificacaoItemPdf';
 
 const normalize = (s) =>
@@ -20,6 +21,12 @@ const normalize = (s) =>
     .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase()
     .trim();
+
+function isItemControloLote(item) {
+  return String(item?.tipocontrolo || '')
+    .trim()
+    .toUpperCase() === 'LOTE';
+}
 
 /** Texto na caixa de pesquisa após seleção: «código — descrição». */
 function formatArtigoExibicao(codigo, descricao) {
@@ -42,23 +49,70 @@ function artigoJaSelecionado(busca, codigo, descricao) {
   return Boolean(codigo) && busca === formatArtigoExibicao(codigo, descricao);
 }
 
+function agruparLotesStock(rows) {
+  const map = new Map();
+  for (const row of rows || []) {
+    const lote = String(row?.lote || '').trim().toUpperCase();
+    if (!lote) continue;
+    const prev = map.get(lote) || {
+      lote,
+      quantidade_disponivel: 0,
+      quantidade_reservada: 0
+    };
+    prev.quantidade_disponivel += Number(row?.quantidade_disponivel) || 0;
+    prev.quantidade_reservada += Number(row?.quantidade_reservada) || 0;
+    map.set(lote, prev);
+  }
+  return [...map.values()].sort((a, b) => a.lote.localeCompare(b.lote, 'pt'));
+}
+
+/** Quantidade em stock do lote para preencher a etiqueta. */
+function quantidadeEtiquetaLote(row) {
+  const disp = Number(row?.quantidade_disponivel) || 0;
+  const res = Number(row?.quantidade_reservada) || 0;
+  if (res > 0 && disp <= 0) return Math.trunc(res);
+  return Math.trunc(disp) || Math.trunc(res) || 0;
+}
+
+function quantidadeParaCampoIdent(n) {
+  const v = Math.trunc(Number(n) || 0);
+  if (v <= 0) return '';
+  const max = 10 ** MAX_QTD_DIGITOS - 1;
+  return String(Math.min(v, max));
+}
+
+function rotuloQtdLoteSugestao(row) {
+  const disp = Number(row?.quantidade_disponivel) || 0;
+  const res = Number(row?.quantidade_reservada) || 0;
+  if (disp > 0 && res > 0) return `${disp} disp. / ${res} res.`;
+  if (res > 0) return `${res} res.`;
+  if (disp > 0) return `${disp} disp.`;
+  return '';
+}
+
 const novaLinhaArtigo = () => ({
   id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
   busca: '',
   codigo: '',
   descricao: '',
+  item_id: '',
   localizacao: '',
+  lote: '',
   quantidade: ''
 });
 
 const IdentificacaoItens = () => {
   const { user } = useAuth();
   const [modo, setModo] = useState(MODOS_PDF.FOLHA_INTEIRA);
+  const [etiquetaComLote, setEtiquetaComLote] = useState(false);
 
   const [linhas, setLinhas] = useState([novaLinhaArtigo()]);
   const [linhaSugAtiva, setLinhaSugAtiva] = useState(null);
   const [sugestoesLinha, setSugestoesLinha] = useState([]);
   const [locOpenIdx, setLocOpenIdx] = useState(null);
+  const [loteOpenIdx, setLoteOpenIdx] = useState(null);
+  const [lotesStockRows, setLotesStockRows] = useState([]);
+  const [loadingLotesSug, setLoadingLotesSug] = useState(false);
 
   const [loadingSug, setLoadingSug] = useState(false);
   const [gerando, setGerando] = useState(false);
@@ -75,6 +129,7 @@ const IdentificacaoItens = () => {
   const [scannerLocLinhaIdx, setScannerLocLinhaIdx] = useState(null);
 
   const isTres = modo === MODOS_PDF.TRES_POR_FOLHA;
+  const modoLoteAtivo = !isTres && etiquetaComLote;
 
   useEffect(() => {
     const loadArmazens = async () => {
@@ -129,6 +184,8 @@ const IdentificacaoItens = () => {
       .filter(Boolean);
     setLocalizacoesOpts([...new Set(locs)].sort((a, b) => a.localeCompare(b, 'pt')));
     setLocOpenIdx(null);
+    setLoteOpenIdx(null);
+    setLotesStockRows([]);
   }, [armazemSelecionado]);
 
   useEffect(() => {
@@ -147,10 +204,15 @@ const IdentificacaoItens = () => {
       setLoadingSug(true);
       try {
         const params = new URLSearchParams({ search: term, limit: '12', page: '1' });
+        if (modoLoteAtivo) params.set('tipocontrolo', 'LOTE');
         const res = await fetch(`/api/itens?${params.toString()}`);
         const data = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(data.error || 'Erro na pesquisa');
-        setSugestoesLinha(Array.isArray(data.itens) ? data.itens : []);
+        let itens = Array.isArray(data.itens) ? data.itens : [];
+        if (modoLoteAtivo) {
+          itens = itens.filter(isItemControloLote);
+        }
+        setSugestoesLinha(itens);
       } catch {
         setSugestoesLinha([]);
       } finally {
@@ -158,13 +220,100 @@ const IdentificacaoItens = () => {
       }
     }, 300);
     return () => clearTimeout(t);
-  }, [linhaSugAtiva, linhas]);
+  }, [linhaSugAtiva, linhas, modoLoteAtivo]);
+
+  const lotesSugestoesFiltradas = useMemo(() => {
+    if (loteOpenIdx == null) return [];
+    const termo = String(linhas[loteOpenIdx]?.lote || '').trim();
+    const q = normalize(termo);
+    let list = lotesStockRows;
+    if (q) list = list.filter((r) => normalize(r.lote).includes(q));
+    return list.slice(0, 40);
+  }, [lotesStockRows, loteOpenIdx, linhas]);
+
+  const aplicarLoteNaLinha = useCallback((idx, loteRow) => {
+    const lote = String(loteRow?.lote || '').trim().toUpperCase();
+    if (!lote) return;
+    const qtd = quantidadeParaCampoIdent(quantidadeEtiquetaLote(loteRow));
+    setLinhas((prev) =>
+      prev.map((l, i) =>
+        i === idx ? { ...l, lote, quantidade: qtd } : l
+      )
+    );
+  }, []);
+
+  const procurarLoteStock = useCallback(
+    (loteTexto) => {
+      const alvo = String(loteTexto || '').trim().toUpperCase();
+      if (!alvo) return null;
+      return (
+        lotesStockRows.find((r) => String(r.lote || '').trim().toUpperCase() === alvo) || null
+      );
+    },
+    [lotesStockRows]
+  );
+
+  useEffect(() => {
+    if (!modoLoteAtivo || loteOpenIdx == null) {
+      setLotesStockRows([]);
+      return undefined;
+    }
+    const linha = linhas[loteOpenIdx];
+    const itemId = Number(linha?.item_id || 0);
+    const aid = Number(armazemId || 0);
+    if (!itemId || !aid) {
+      setLotesStockRows([]);
+      return undefined;
+    }
+    const idxAtivo = loteOpenIdx;
+    const termoLote = String(linha?.lote || '').trim().toUpperCase();
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      setLoadingLotesSug(true);
+      try {
+        const token = localStorage.getItem('token');
+        const { data } = await axios.get('/api/requisicoes/stock/disponibilidade', {
+          params: { item_id: itemId, armazem_id: aid, localizacao: '' },
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (cancelled) return;
+        const agregados = agruparLotesStock(data?.lotes);
+        setLotesStockRows(agregados);
+        if (termoLote) {
+          const hit = agregados.find(
+            (r) => String(r.lote || '').trim().toUpperCase() === termoLote
+          );
+          if (hit) {
+            setLinhas((prev) =>
+              prev.map((l, i) =>
+                i === idxAtivo
+                  ? {
+                      ...l,
+                      quantidade: quantidadeParaCampoIdent(quantidadeEtiquetaLote(hit))
+                    }
+                  : l
+              )
+            );
+          }
+        }
+      } catch {
+        if (!cancelled) setLotesStockRows([]);
+      } finally {
+        if (!cancelled) setLoadingLotesSug(false);
+      }
+    }, 280);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [modoLoteAtivo, loteOpenIdx, linhas, armazemId]);
 
   useEffect(() => {
     const onDoc = (e) => {
-      if (!e.target.closest('[data-ident-sug]') && !e.target.closest('[data-ident-loc]')) {
+      if (!e.target.closest('[data-ident-sug]') && !e.target.closest('[data-ident-loc]') && !e.target.closest('[data-ident-lote]')) {
         setLinhaSugAtiva(null);
         setLocOpenIdx(null);
+        setLoteOpenIdx(null);
       }
     };
     document.addEventListener('mousedown', onDoc);
@@ -180,12 +329,28 @@ const IdentificacaoItens = () => {
   }, [localizacoesOpts, locOpenIdx, linhas]);
 
   const selecionarItemLinha = (idx, item) => {
+    if (modoLoteAtivo && !isItemControloLote(item)) {
+      setToast({
+        type: 'error',
+        message: 'Selecione um artigo com controlo de stock por Lote.'
+      });
+      return;
+    }
     const cod = String(item.codigo || '').trim();
     const desc = String(item.descricao || item.nome || '').trim();
+    const itemId = Number(item.id || item.item_id || 0) || '';
     setLinhas((prev) =>
       prev.map((l, i) =>
         i === idx
-          ? { ...l, codigo: cod, descricao: desc, busca: formatArtigoExibicao(cod, desc) }
+          ? {
+              ...l,
+              codigo: cod,
+              descricao: desc,
+              item_id: itemId,
+              busca: formatArtigoExibicao(cod, desc),
+              lote: '',
+              quantidade: ''
+            }
           : l
       )
     );
@@ -204,6 +369,7 @@ const IdentificacaoItens = () => {
     });
     setLinhaSugAtiva(null);
     setLocOpenIdx(null);
+    setLoteOpenIdx(null);
   };
 
   const adicionarLinha = () => {
@@ -212,41 +378,72 @@ const IdentificacaoItens = () => {
 
   const mudarModo = (novoModo) => {
     setModo(novoModo);
+    if (novoModo === MODOS_PDF.TRES_POR_FOLHA) {
+      setEtiquetaComLote(false);
+    }
     setLinhaSugAtiva(null);
     setLocOpenIdx(null);
+    setLoteOpenIdx(null);
   };
 
-  const aplicarCodigoLido = useCallback(async (valor, linhaIdx) => {
-    const v = String(valor || '').trim();
-    if (!v || linhaIdx == null) return;
+  const ativarEtiquetaComLote = (ativo) => {
+    setEtiquetaComLote(ativo);
+    setLinhas((prev) =>
+      prev.map((l) => ({
+        ...l,
+        localizacao: ativo ? '' : l.localizacao,
+        lote: ativo ? l.lote : ''
+      }))
+    );
+    setLocOpenIdx(null);
+    setLoteOpenIdx(null);
+    setLinhaSugAtiva(null);
+  };
 
-    const preencher = (cod, desc) => {
-      const exib = formatArtigoExibicao(cod, desc) || cod || v;
-      setLinhas((prev) =>
-        prev.map((l, i) =>
-          i === linhaIdx ? { ...l, busca: exib, codigo: cod, descricao: desc } : l
-        )
-      );
-    };
+  const aplicarCodigoLido = useCallback(
+    async (valor, linhaIdx) => {
+      const v = String(valor || '').trim();
+      if (!v || linhaIdx == null) return;
 
-    preencher(v, '');
-    try {
-      const params = new URLSearchParams({ search: v, limit: '5', page: '1' });
-      const res = await fetch(`/api/itens?${params.toString()}`);
-      const data = await res.json().catch(() => ({}));
-      const itens = Array.isArray(data.itens) ? data.itens : [];
-      const exact = itens.find((i) => String(i.codigo || '').trim() === v);
-      const pick = exact || itens[0];
-      if (pick) {
-        preencher(
-          String(pick.codigo || v).trim(),
-          String(pick.descricao || pick.nome || '').trim()
+      const preencher = (cod, desc, itemId = '') => {
+        const exib = formatArtigoExibicao(cod, desc) || cod || v;
+        setLinhas((prev) =>
+          prev.map((l, i) =>
+            i === linhaIdx
+              ? { ...l, busca: exib, codigo: cod, descricao: desc, item_id: itemId || '' }
+              : l
+          )
         );
+      };
+
+      preencher(v, '', '');
+      try {
+        const params = new URLSearchParams({ search: v, limit: '8', page: '1' });
+        if (modoLoteAtivo) params.set('tipocontrolo', 'LOTE');
+        const res = await fetch(`/api/itens?${params.toString()}`);
+        const data = await res.json().catch(() => ({}));
+        let itens = Array.isArray(data.itens) ? data.itens : [];
+        if (modoLoteAtivo) itens = itens.filter(isItemControloLote);
+        const exact = itens.find((i) => String(i.codigo || '').trim() === v);
+        const pick = exact || itens[0];
+        if (pick) {
+          preencher(
+            String(pick.codigo || v).trim(),
+            String(pick.descricao || pick.nome || '').trim(),
+            Number(pick.id || 0) || ''
+          );
+        } else if (modoLoteAtivo) {
+          setToast({
+            type: 'error',
+            message: 'Artigo não encontrado ou não é de controlo por Lote.'
+          });
+        }
+      } catch {
+        /* mantém valor lido */
       }
-    } catch {
-      /* mantém valor lido */
-    }
-  }, []);
+    },
+    [modoLoteAtivo]
+  );
 
   const aplicarLocalizacaoLida = (valor, linhaIdx) => {
     const v = String(valor || '').trim();
@@ -263,7 +460,9 @@ const IdentificacaoItens = () => {
         .map((l) => ({
           codigo: String(l.codigo || '').trim(),
           descricao: String(l.descricao || '').trim(),
+          item_id: String(l.item_id || '').trim(),
           localizacao: String(l.localizacao || '').trim(),
+          lote: String(l.lote || '').trim(),
           quantidade: String(l.quantidade || '').trim()
         }))
         .filter((l) => l.codigo),
@@ -276,16 +475,22 @@ const IdentificacaoItens = () => {
   const podeGerar = useMemo(() => {
     if (gerando || loadingArmazens || precisaSelecionarArmazem) return false;
     if (armazensIdentificacao.length === 0) return false;
-    return (
-      linhasPreenchidas.length >= 1 &&
-      linhasPreenchidas.every((l) => l.localizacao)
-    );
+    if (linhasPreenchidas.length < 1) return false;
+    if (modoLoteAtivo) {
+      return (
+        Boolean(armazemId) &&
+        linhasPreenchidas.every((l) => l.lote)
+      );
+    }
+    return linhasPreenchidas.every((l) => l.localizacao);
   }, [
     gerando,
     linhasPreenchidas,
     loadingArmazens,
     precisaSelecionarArmazem,
-    armazensIdentificacao.length
+    armazensIdentificacao.length,
+    modoLoteAtivo,
+    armazemId
   ]);
 
   const handleGerarPdf = async () => {
@@ -302,17 +507,32 @@ const IdentificacaoItens = () => {
       }
     }
 
+    if (modoLoteAtivo) {
+      for (let i = 0; i < linhasPreenchidas.length; i += 1) {
+        if (!linhasPreenchidas[i].lote) {
+          setToast({
+            type: 'error',
+            message: `Indique o lote no artigo ${i + 1}.`
+          });
+          return;
+        }
+      }
+    }
+
     try {
       setGerando(true);
       const itens = linhasPreenchidas.map((l) => ({
         codigo: l.codigo,
         descricao: l.descricao,
-        localizacao: l.localizacao,
-        quantidade: isTres ? undefined : l.quantidade || undefined
+        localizacao: modoLoteAtivo ? undefined : l.localizacao,
+        lote: modoLoteAtivo ? l.lote : undefined,
+        quantidade: isTres ? undefined : l.quantidade || undefined,
+        tipoEtiqueta: modoLoteAtivo ? TIPO_ETIQUETA.LOTE : TIPO_ETIQUETA.LOCALIZACAO
       }));
 
       await gerarPdfIdentificacao({
         modo,
+        tipoEtiqueta: modoLoteAtivo ? TIPO_ETIQUETA.LOTE : TIPO_ETIQUETA.LOCALIZACAO,
         localizacao: '',
         itens
       });
@@ -335,6 +555,9 @@ const IdentificacaoItens = () => {
           >
             <span className="font-mono font-semibold text-gray-900">{item.codigo}</span>
             <span className="text-gray-600 ml-2 truncate">{item.descricao || item.nome}</span>
+            {modoLoteAtivo && (
+              <span className="ml-2 text-[10px] uppercase text-indigo-600 font-medium">Lote</span>
+            )}
           </button>
         </li>
       ))}
@@ -346,7 +569,10 @@ const IdentificacaoItens = () => {
       <div className="max-w-2xl mx-auto">
         <h1 className="text-2xl sm:text-3xl font-bold text-gray-800">Identificação de itens</h1>
         <p className="text-gray-600 mt-1 mb-6">
-          PDF em A4 (horizontal ou vertical conforme o formato). QR = localização; código de barras = código do artigo.
+          PDF em A4 (horizontal ou vertical conforme o formato).
+          {modoLoteAtivo
+            ? ' QR = lote; código de barras = artigo.'
+            : ' QR = localização; código de barras = código do artigo.'}
         </p>
 
         <section className="bg-white rounded-2xl shadow-lg border border-gray-200 p-4 sm:p-6 space-y-5">
@@ -383,10 +609,11 @@ const IdentificacaoItens = () => {
               )}
               {precisaSelecionarArmazem && (
                 <p className="text-xs text-amber-800 mt-1.5">
-                  Selecione o armazém para carregar as localizações disponíveis.
+                  Selecione o armazém
+                  {modoLoteAtivo ? ' para sugerir lotes em stock.' : ' para carregar as localizações disponíveis.'}
                 </p>
               )}
-              {armazemId && localizacoesOpts.length === 0 && (
+              {armazemId && !modoLoteAtivo && localizacoesOpts.length === 0 && (
                 <p className="text-xs text-amber-800 mt-1.5">
                   Este armazém não tem localizações registadas. Edite o armazém em Armazéns.
                 </p>
@@ -420,11 +647,47 @@ const IdentificacaoItens = () => {
             </div>
           </fieldset>
 
+          {!isTres && (
+            <fieldset>
+              <legend className="text-sm font-medium text-gray-700 mb-3">Tipo de etiqueta (folha inteira)</legend>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <label className="flex-1 flex items-start gap-2 p-3 border rounded-lg cursor-pointer has-[:checked]:border-[#0915FF] has-[:checked]:bg-blue-50/50">
+                  <input
+                    type="radio"
+                    name="tipo-etiqueta"
+                    className="mt-1"
+                    checked={!etiquetaComLote}
+                    onChange={() => ativarEtiquetaComLote(false)}
+                  />
+                  <span className="text-sm text-gray-800">
+                    <span className="font-semibold block">Localização</span>
+                    <span className="text-xs text-gray-500">QR da localização + quantidade opcional</span>
+                  </span>
+                </label>
+                <label className="flex-1 flex items-start gap-2 p-3 border rounded-lg cursor-pointer has-[:checked]:border-[#0915FF] has-[:checked]:bg-blue-50/50">
+                  <input
+                    type="radio"
+                    name="tipo-etiqueta"
+                    className="mt-1"
+                    checked={etiquetaComLote}
+                    onChange={() => ativarEtiquetaComLote(true)}
+                  />
+                  <span className="text-sm text-gray-800">
+                    <span className="font-semibold block">Artigo com lote</span>
+                    <span className="text-xs text-gray-500">Só artigos Lote · QR do lote · LOTE + QTD</span>
+                  </span>
+                </label>
+              </div>
+            </fieldset>
+          )}
+
           <div className="space-y-4">
               <p className="text-sm text-gray-600">
                 {isTres
                   ? 'Adicione quantos artigos precisar (3 por página A4; novas páginas são criadas automaticamente). Cada etiqueta usa a localização do respetivo artigo no QR.'
-                  : 'Adicione quantos artigos precisar (1 etiqueta por página A4 horizontal). Todos entram num único PDF com várias folhas.'}
+                  : modoLoteAtivo
+                    ? 'Adicione artigos com controlo por Lote (1 etiqueta por página A4 horizontal). Pesquise só artigos Lote; o número de lote pode ser escolhido entre os registados no seu armazém.'
+                    : 'Adicione quantos artigos precisar (1 etiqueta por página A4 horizontal). Todos entram num único PDF com várias folhas.'}
               </p>
               {linhas.map((linha, idx) => (
                 <div
@@ -454,7 +717,9 @@ const IdentificacaoItens = () => {
                   </div>
                   <div className="relative" data-ident-sug>
                     <label className="block text-xs font-medium text-gray-600 mb-1">
-                      Artigo (código ou descrição)
+                      {modoLoteAtivo
+                        ? 'Artigo Lote (código ou descrição)'
+                        : 'Artigo (código ou descrição)'}
                     </label>
                     <PesquisaComLeitorQr
                       value={linha.busca}
@@ -468,7 +733,9 @@ const IdentificacaoItens = () => {
                               ...l,
                               busca: v,
                               codigo: limparSel ? '' : l.codigo,
-                              descricao: limparSel ? '' : l.descricao
+                              descricao: limparSel ? '' : l.descricao,
+                              item_id: limparSel ? '' : l.item_id,
+                              lote: limparSel && modoLoteAtivo ? '' : l.lote
                             };
                           })
                         );
@@ -479,7 +746,11 @@ const IdentificacaoItens = () => {
                         setScannerLinhaIdx(idx);
                         setScannerItemOpen(true);
                       }}
-                      placeholder="Pesquisar por código ou descrição…"
+                      placeholder={
+                        modoLoteAtivo
+                          ? 'Pesquisar artigo com controlo Lote…'
+                          : 'Pesquisar por código ou descrição…'
+                      }
                     />
                     {linhaSugAtiva === idx &&
                       sugestoesLinha.length > 0 &&
@@ -488,78 +759,180 @@ const IdentificacaoItens = () => {
                       <p className="text-xs text-gray-500 mt-1">A pesquisar…</p>
                     )}
                   </div>
-                  {!isTres && (
-                    <div>
-                      <label
-                        className="block text-xs font-medium text-gray-600 mb-1"
-                        htmlFor={`quantidade-ident-${linha.id}`}
-                      >
-                        Quantidade
-                      </label>
-                      <input
-                        id={`quantidade-ident-${linha.id}`}
-                        type="text"
-                        inputMode="numeric"
-                        maxLength={MAX_QTD_DIGITOS}
-                        value={linha.quantidade}
-                        onChange={(e) => {
-                          const v = e.target.value.replace(/\D/g, '').slice(0, MAX_QTD_DIGITOS);
-                          setLinhas((prev) =>
-                            prev.map((l, i) => (i === idx ? { ...l, quantidade: v } : l))
-                          );
-                        }}
-                        placeholder={`Opcional — máx. ${MAX_QTD_DIGITOS} dígitos`}
-                        className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#0915FF]/30 focus:border-[#0915FF]"
-                      />
-                    </div>
+
+                  {modoLoteAtivo ? (
+                    <>
+                      <div className="relative" data-ident-lote>
+                        <label className="block text-xs font-medium text-gray-600 mb-1">
+                          Lote
+                        </label>
+                        <input
+                          type="text"
+                          value={linha.lote}
+                          onChange={(e) => {
+                            const v = e.target.value.toUpperCase();
+                            setLinhas((prev) =>
+                              prev.map((l, i) => {
+                                if (i !== idx) return l;
+                                const next = { ...l, lote: v };
+                                if (!v.trim()) next.quantidade = '';
+                                return next;
+                              })
+                            );
+                            setLoteOpenIdx(idx);
+                          }}
+                          onFocus={() => setLoteOpenIdx(idx)}
+                          onBlur={() => {
+                            const hit = procurarLoteStock(linha.lote);
+                            if (hit) aplicarLoteNaLinha(idx, hit);
+                          }}
+                          disabled={!linha.codigo || !armazemId}
+                          placeholder={
+                            !linha.codigo
+                              ? 'Selecione o artigo primeiro'
+                              : !armazemId
+                                ? 'Selecione o armazém'
+                                : 'Número de lote (sugestões do armazém)'
+                          }
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono uppercase focus:outline-none focus:ring-2 focus:ring-[#0915FF]/30 focus:border-[#0915FF] disabled:bg-gray-100"
+                        />
+                        {loteOpenIdx === idx && lotesSugestoesFiltradas.length > 0 && (
+                          <ul className="absolute z-20 left-0 right-0 mt-1 max-h-48 overflow-auto bg-white border border-gray-200 rounded-lg shadow-lg text-sm">
+                            {lotesSugestoesFiltradas.map((row) => (
+                              <li key={row.lote}>
+                                <button
+                                  type="button"
+                                  className="w-full text-left px-3 py-2 hover:bg-gray-50 border-b border-gray-100 last:border-0 flex items-center justify-between gap-2"
+                                  onMouseDown={(e) => e.preventDefault()}
+                                  onClick={() => {
+                                    aplicarLoteNaLinha(idx, row);
+                                    setLoteOpenIdx(null);
+                                  }}
+                                >
+                                  <span className="font-mono">{row.lote}</span>
+                                  {rotuloQtdLoteSugestao(row) ? (
+                                    <span className="text-xs text-gray-500 shrink-0">
+                                      {rotuloQtdLoteSugestao(row)}
+                                    </span>
+                                  ) : null}
+                                </button>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                        {loteOpenIdx === idx && loadingLotesSug && (
+                          <p className="text-xs text-gray-500 mt-1">A carregar lotes…</p>
+                        )}
+                        {loteOpenIdx === idx &&
+                          !loadingLotesSug &&
+                          linha.codigo &&
+                          armazemId &&
+                          lotesSugestoesFiltradas.length === 0 &&
+                          String(linha.lote || '').trim().length >= 1 && (
+                            <p className="text-xs text-gray-500 mt-1">
+                              Sem lotes em stock neste armazém para este artigo (pode escrever um lote novo).
+                            </p>
+                          )}
+                      </div>
+                      <div>
+                        <label
+                          className="block text-xs font-medium text-gray-600 mb-1"
+                          htmlFor={`quantidade-ident-lote-${linha.id}`}
+                        >
+                          Quantidade
+                        </label>
+                        <input
+                          id={`quantidade-ident-lote-${linha.id}`}
+                          type="text"
+                          inputMode="numeric"
+                          maxLength={MAX_QTD_DIGITOS}
+                          value={linha.quantidade}
+                          onChange={(e) => {
+                            const v = e.target.value.replace(/\D/g, '').slice(0, MAX_QTD_DIGITOS);
+                            setLinhas((prev) =>
+                              prev.map((l, i) => (i === idx ? { ...l, quantidade: v } : l))
+                            );
+                          }}
+                          placeholder={`Preenchida ao escolher o lote — máx. ${MAX_QTD_DIGITOS} dígitos`}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#0915FF]/30 focus:border-[#0915FF]"
+                        />
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      {!isTres && (
+                        <div>
+                          <label
+                            className="block text-xs font-medium text-gray-600 mb-1"
+                            htmlFor={`quantidade-ident-${linha.id}`}
+                          >
+                            Quantidade
+                          </label>
+                          <input
+                            id={`quantidade-ident-${linha.id}`}
+                            type="text"
+                            inputMode="numeric"
+                            maxLength={MAX_QTD_DIGITOS}
+                            value={linha.quantidade}
+                            onChange={(e) => {
+                              const v = e.target.value.replace(/\D/g, '').slice(0, MAX_QTD_DIGITOS);
+                              setLinhas((prev) =>
+                                prev.map((l, i) => (i === idx ? { ...l, quantidade: v } : l))
+                              );
+                            }}
+                            placeholder={`Opcional — máx. ${MAX_QTD_DIGITOS} dígitos`}
+                            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#0915FF]/30 focus:border-[#0915FF]"
+                          />
+                        </div>
+                      )}
+                      <div className="relative" data-ident-loc>
+                        <label className="block text-xs font-medium text-gray-600 mb-1">
+                          Localização (QR)
+                        </label>
+                        <PesquisaComLeitorQr
+                          value={linha.localizacao}
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            setLinhas((prev) =>
+                              prev.map((l, i) => (i === idx ? { ...l, localizacao: v } : l))
+                            );
+                            setLocOpenIdx(idx);
+                          }}
+                          onFocus={() => setLocOpenIdx(idx)}
+                          onLerClick={() => {
+                            setScannerLocLinhaIdx(idx);
+                            setScannerLocOpen(true);
+                          }}
+                          placeholder="Ex.: GERAL.E.R"
+                          fontMono
+                          lerTitle="Ler QR da localização"
+                          disabled={!armazemId || armazensIdentificacao.length === 0}
+                          lerDisabled={!armazemId || armazensIdentificacao.length === 0}
+                        />
+                        {locOpenIdx === idx && localizacoesFiltradasLinha.length > 0 && (
+                          <ul className="absolute z-20 left-0 right-0 mt-1 max-h-48 overflow-auto bg-white border border-gray-200 rounded-lg shadow-lg text-sm">
+                            {localizacoesFiltradasLinha.map((loc) => (
+                              <li key={loc}>
+                                <button
+                                  type="button"
+                                  className="w-full text-left px-3 py-2 hover:bg-gray-50 font-mono border-b border-gray-100 last:border-0"
+                                  onClick={() => {
+                                    setLinhas((prev) =>
+                                      prev.map((l, i) =>
+                                        i === idx ? { ...l, localizacao: loc } : l)
+                                    );
+                                    setLocOpenIdx(null);
+                                  }}
+                                >
+                                  {loc}
+                                </button>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                    </>
                   )}
-                  <div className="relative" data-ident-loc>
-                    <label className="block text-xs font-medium text-gray-600 mb-1">
-                      Localização (QR)
-                    </label>
-                    <PesquisaComLeitorQr
-                      value={linha.localizacao}
-                      onChange={(e) => {
-                        const v = e.target.value;
-                        setLinhas((prev) =>
-                          prev.map((l, i) => (i === idx ? { ...l, localizacao: v } : l))
-                        );
-                        setLocOpenIdx(idx);
-                      }}
-                      onFocus={() => setLocOpenIdx(idx)}
-                      onLerClick={() => {
-                        setScannerLocLinhaIdx(idx);
-                        setScannerLocOpen(true);
-                      }}
-                      placeholder="Ex.: GERAL.E.R"
-                      fontMono
-                      lerTitle="Ler QR da localização"
-                      disabled={!armazemId || armazensIdentificacao.length === 0}
-                      lerDisabled={!armazemId || armazensIdentificacao.length === 0}
-                    />
-                    {locOpenIdx === idx && localizacoesFiltradasLinha.length > 0 && (
-                      <ul className="absolute z-20 left-0 right-0 mt-1 max-h-48 overflow-auto bg-white border border-gray-200 rounded-lg shadow-lg text-sm">
-                        {localizacoesFiltradasLinha.map((loc) => (
-                          <li key={loc}>
-                            <button
-                              type="button"
-                              className="w-full text-left px-3 py-2 hover:bg-gray-50 font-mono border-b border-gray-100 last:border-0"
-                              onClick={() => {
-                                setLinhas((prev) =>
-                                  prev.map((l, i) =>
-                                    i === idx ? { ...l, localizacao: loc } : l
-                                  )
-                                );
-                                setLocOpenIdx(null);
-                              }}
-                            >
-                              {loc}
-                            </button>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </div>
                 </div>
               ))}
               <button

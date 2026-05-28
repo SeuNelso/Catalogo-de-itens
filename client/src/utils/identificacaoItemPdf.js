@@ -37,6 +37,7 @@ const FONT_DIGI_REF_PT = 14;
 const FONT_CODIGO_REF_PT = 18;
 const FONT_LOC_REF_PT = 13;
 const FONT_QTD_LABEL_REF_PT = 10;
+const FONT_LOTE_LABEL_REF_PT = 17;
 const FONT_QTD_REF_PT = 26;
 /** Fração da faixa inferior esquerda reservada à quantidade (folha inteira). */
 const QTY_FRAC_BOTTOM_LEFT = 0.5;
@@ -108,23 +109,37 @@ function normalizarQuantidade(val) {
   return raw;
 }
 
-function normalizarItem(item, localizacaoPartilhada) {
+export const TIPO_ETIQUETA = Object.freeze({
+  LOCALIZACAO: 'localizacao',
+  LOTE: 'lote'
+});
+
+function normalizarItem(item, localizacaoPartilhada, tipoEtiquetaGlobal) {
   const codigo = String(item?.codigo || '').trim();
   const descricao = String(item?.descricao || '').trim();
+  const tipoEtiqueta =
+    item?.tipoEtiqueta === TIPO_ETIQUETA.LOTE || tipoEtiquetaGlobal === TIPO_ETIQUETA.LOTE
+      ? TIPO_ETIQUETA.LOTE
+      : TIPO_ETIQUETA.LOCALIZACAO;
+  const lote = localizacaoEmCaixaAlta(item?.lote);
   const locRaw = item?.localizacao != null ? item.localizacao : localizacaoPartilhada;
-  const localizacao = localizacaoEmCaixaAlta(locRaw);
+  const localizacao = tipoEtiqueta === TIPO_ETIQUETA.LOTE ? '' : localizacaoEmCaixaAlta(locRaw);
   const quantidade = normalizarQuantidade(item?.quantidade);
+  const qrPayload = tipoEtiqueta === TIPO_ETIQUETA.LOTE ? lote : localizacao;
   return {
     codigo,
     descricao: descricao || codigo,
     localizacao,
-    quantidade
+    lote,
+    quantidade,
+    tipoEtiqueta,
+    qrPayload
   };
 }
 
-async function qrDataUrlForLocalizacao(localizacao, sizeMm) {
+async function qrDataUrlForPayload(texto, sizeMm) {
   const px = mmToPx(sizeMm);
-  return QRCode.toDataURL(String(localizacao).trim(), {
+  return QRCode.toDataURL(String(texto).trim(), {
     margin: 0,
     width: px,
     errorCorrectionLevel: 'M'
@@ -161,9 +176,13 @@ function barcodeDataUrlCodigoArtigo(codigoArtigo, widthMm, heightMm) {
 }
 
 async function prepararAssetsEtiqueta(item, labelW, labelH) {
-  const layout = calcLayoutMetrics(labelW, labelH);
+  const comQuantidade = Boolean(item?.quantidade);
+  const layout = calcLayoutMetrics(labelW, labelH, { comQuantidade });
+  const qrText = String(item.qrPayload || item.localizacao || item.lote || '').trim();
   const [qrLocalizacao, barcodeCodigoArtigo] = await Promise.all([
-    qrDataUrlForLocalizacao(item.localizacao, layout.qrSizeMm),
+    qrText
+      ? qrDataUrlForPayload(qrText, layout.qrSizeMm)
+      : Promise.resolve(null),
     Promise.resolve(
       barcodeDataUrlCodigoArtigo(item.codigo, layout.barcodeWidthMm, layout.barcodeHeightMm)
     )
@@ -290,9 +309,18 @@ function linhaHorizontalColunaEsquerda(doc, leftX, rightX, y) {
   doc.line(leftX, y, rightX, y);
 }
 
-function drawEtiqueta(doc, x0, y0, w, h, { codigo, descricao, localizacao, quantidade }, { qrLocalizacao, barcodeCodigoArtigo }) {
+function drawEtiqueta(
+  doc,
+  x0,
+  y0,
+  w,
+  h,
+  { codigo, descricao, localizacao, lote, quantidade, tipoEtiqueta },
+  { qrLocalizacao, barcodeCodigoArtigo }
+) {
   const qtyText = quantidade ? String(quantidade) : '';
   const comQuantidade = Boolean(qtyText);
+  const isLote = tipoEtiqueta === TIPO_ETIQUETA.LOTE;
   const m = calcLayoutMetrics(w, h, { comQuantidade });
   const innerX = x0 + m.pad;
   const innerY = y0 + m.pad;
@@ -318,13 +346,13 @@ function drawEtiqueta(doc, x0, y0, w, h, { codigo, descricao, localizacao, quant
     linhaHorizontalColunaEsquerda(doc, leftX, rightX, qtyTop);
   }
 
-  const locText = localizacaoEmCaixaAlta(localizacao);
+  const locText = isLote ? localizacaoEmCaixaAlta(lote) : localizacaoEmCaixaAlta(localizacao);
   const codText = String(codigo || '').trim();
   const descText = String(descricao || '').trim();
 
-  const qrBoxH = bottomSection - innerY;
-  const qrSize = Math.min(m.qrSizeMm, qrBoxH - 0.2);
   if (qrLocalizacao) {
+    const qrBoxH = bottomSection - innerY;
+    const qrSize = Math.min(m.qrSizeMm, qrBoxH - 0.2);
     const qrX = leftX + (m.leftW - qrSize) / 2;
     const qrY = innerY + (qrBoxH - qrSize) / 2;
     doc.addImage(qrLocalizacao, 'PNG', qrX, qrY, qrSize, qrSize, undefined, 'NONE');
@@ -343,27 +371,43 @@ function drawEtiqueta(doc, x0, y0, w, h, { codigo, descricao, localizacao, quant
   const locAreaTop = bottomSection;
   const locAreaH = comQuantidade ? m.locBottomH : m.bottomH;
 
+  const loteLabelPt = Math.min(fontePadraoPt(h, FONT_LOTE_LABEL_REF_PT), locAreaH * 0.3);
+  const reservaRotuloLote = isLote ? loteLabelPt * 0.48 + 1.5 : 0;
+
+  const desenharRotuloLote = () => {
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(loteLabelPt);
+    doc.setTextColor(0, 0, 0);
+    doc.text('LOTE', leftX + 1.2, locAreaTop + loteLabelPt * 0.48);
+  };
+
   if (comQuantidade) {
-    const locCapPt = Math.min(locFont, locAreaH / 0.38);
+    const locCapPt = Math.min(locFont, (locAreaH - reservaRotuloLote) / 0.38);
     const locFit = fitDescricaoNoEspaco(
       doc,
       locText,
       locMaxW,
-      Math.max(1, locAreaH - 0.6),
+      Math.max(1, locAreaH - reservaRotuloLote - 0.4),
       locCapPt,
       fontePadraoPt(h, 7)
     );
+    if (isLote) desenharRotuloLote();
     doc.setFontSize(locFit.size);
-    const locY = locAreaTop + (locAreaH - locFit.blockH) / 2 + locFit.size * 0.32;
+    const textoTop = locAreaTop + reservaRotuloLote;
+    const textoH = locAreaH - reservaRotuloLote;
+    const locY = textoTop + (textoH - locFit.blockH) / 2 + locFit.size * 0.32;
     doc.text(locFit.lines, leftX + m.leftW / 2, locY, { align: 'center' });
 
     drawCaixaQuantidade(doc, leftX, qtyTop, m.leftW, m.qtyH, qtyText, h);
   } else {
+    if (isLote) desenharRotuloLote();
     doc.setFontSize(locFont);
     const locLines = doc.splitTextToSize(locText, locMaxW);
     const locLineH = locFont * LINE_HEIGHT_FACTOR;
     const locBlockH = locLines.length * locLineH;
-    const locY = locAreaTop + (locAreaH - locBlockH) / 2 + locFont * 0.32;
+    const textoTop = locAreaTop + reservaRotuloLote;
+    const textoH = locAreaH - reservaRotuloLote;
+    const locY = textoTop + (textoH - locBlockH) / 2 + locFont * 0.32;
     doc.text(locLines, leftX + m.leftW / 2, locY, { align: 'center' });
   }
 
@@ -402,15 +446,19 @@ function drawEtiqueta(doc, x0, y0, w, h, { codigo, descricao, localizacao, quant
 export async function gerarPdfIdentificacao(params, opts = {}) {
   const modo = params?.modo === MODOS_PDF.TRES_POR_FOLHA ? MODOS_PDF.TRES_POR_FOLHA : MODOS_PDF.FOLHA_INTEIRA;
   const localizacaoPartilhada = localizacaoEmCaixaAlta(params?.localizacao);
+  const tipoEtiquetaGlobal =
+    params?.tipoEtiqueta === TIPO_ETIQUETA.LOTE ? TIPO_ETIQUETA.LOTE : TIPO_ETIQUETA.LOCALIZACAO;
+  const isLoteGlobal = tipoEtiquetaGlobal === TIPO_ETIQUETA.LOTE;
 
   const brutos = Array.isArray(params?.itens) ? params.itens : [];
   const itens = brutos
-    .map((row) => normalizarItem(row, localizacaoPartilhada))
-    .filter((row) => row.codigo && row.localizacao);
+    .map((row) => normalizarItem(row, localizacaoPartilhada, tipoEtiquetaGlobal))
+    .filter((row) => row.codigo && (isLoteGlobal ? row.lote : row.localizacao));
 
   if (itens.length === 0) {
-    const msg =
-      modo === MODOS_PDF.TRES_POR_FOLHA
+    const msg = isLoteGlobal
+      ? 'Indique pelo menos um artigo com controlo Lote, código do artigo e número de lote.'
+      : modo === MODOS_PDF.TRES_POR_FOLHA
         ? 'Indique pelo menos um artigo com código e localização (por artigo).'
         : 'Indique o artigo com código e localização.';
     throw new Error(msg);
@@ -447,13 +495,14 @@ export async function gerarPdfIdentificacao(params, opts = {}) {
   }
 
   const primeiro = itensPdf[0];
+  const sufixoLoc = isLoteGlobal ? primeiro.lote : primeiro.localizacao;
   const baseName =
     opts.filename ||
     (modo === MODOS_PDF.TRES_POR_FOLHA
       ? `IDENT_${itensPdf.length}x_${sanitizeFilenamePart(primeiro.localizacao)}.pdf`
       : itensPdf.length > 1
         ? `IDENT_${itensPdf.length}pag_${sanitizeFilenamePart(primeiro.codigo)}.pdf`
-        : `IDENT_${sanitizeFilenamePart(primeiro.codigo)}_${sanitizeFilenamePart(primeiro.localizacao)}.pdf`);
+        : `IDENT_${sanitizeFilenamePart(primeiro.codigo)}_${sanitizeFilenamePart(sufixoLoc)}.pdf`);
   doc.save(baseName.endsWith('.pdf') ? baseName : `${baseName}.pdf`);
 }
 

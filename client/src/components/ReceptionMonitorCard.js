@@ -303,6 +303,7 @@ function ReceptionMonitorCard() {
       origemLocalizacao: targetLocation,
       modo: part === 'apeado' ? 'apeado' : undefined,
       prefill_version: 2,
+      autoSubmit: true,
       items: legacyItems,
       items_v2: itemsV2,
     };
@@ -399,7 +400,7 @@ function ReceptionMonitorCard() {
                 {clearingTest ? 'A limpar zona (teste)…' : 'Limpar zona de receção (teste, admin)'}
               </button>
             )}
-            {rowsOutros.length > 0 && (
+            {rowsOutros.length > 0 && canArmazenar && (
               <button
                 type="button"
                 className="w-full rounded-md border border-[#0915FF] bg-white px-2 py-1.5 text-xs font-semibold text-[#0915FF] hover:bg-[#0915FF]/5"
@@ -414,7 +415,7 @@ function ReceptionMonitorCard() {
                 Armazenar recebimento/devolução
               </button>
             )}
-            {rowsApeados.length > 0 && (
+            {rowsApeados.length > 0 && canArmazenar && (
               <button
                 type="button"
                 className="w-full rounded-md border border-purple-300 bg-purple-50 px-2 py-1.5 text-xs font-semibold text-purple-800 hover:bg-purple-100"

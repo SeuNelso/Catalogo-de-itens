@@ -1788,6 +1788,12 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
     return true;
   };
 
+  /** Admin: corrigir linhas de artigo em Separadas ou Em expedição (página Preparar). */
+  const adminPodeGerirArtigosRequisicao = (reqObj) =>
+    isAdmin(user?.role) &&
+    ['separado', 'EM EXPEDICAO'].includes(String(reqObj?.status || '')) &&
+    !isFluxoRecebimentoMercadoria(reqObj);
+
   const isFluxoRecebimentoMercadoria = (reqObj) => {
     const obs = String(reqObj?.observacoes || '').toUpperCase();
     if (!obs.startsWith(RECEBIMENTO_TRANSFERENCIA_MARKER)) return false;
@@ -2458,6 +2464,11 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
                               <FaCheck /> Separação confirmada em {new Date(req.separacao_confirmada_em).toLocaleString('pt-BR')}
                             </span>
                           )}
+                          {adminPodeGerirArtigosRequisicao(req) && req.status === 'EM EXPEDICAO' && (
+                            <span className="text-xs text-blue-800 flex items-center gap-1">
+                              <FaEdit /> Use «Gerir artigos» para editar ou remover linhas
+                            </span>
+                          )}
                         </div>
                         <div className="text-sm text-gray-600 space-y-1">
                           {(() => {
@@ -2777,6 +2788,19 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
                             : 'Preparar'}
                       </button>
                     )}
+                    {adminPodeGerirArtigosRequisicao(req) && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          navigate(rotaPrepararComOrigem(req.id));
+                        }}
+                        className="px-3 py-2 text-[#0915FF] rounded-lg border border-[#0915FF] transition-colors flex items-center gap-2 hover:bg-[#0915FF] hover:text-white"
+                        title="Editar preparação, remover ou adicionar artigos desta requisição"
+                      >
+                        <FaEdit /> Gerir artigos
+                      </button>
+                    )}
                     {canEditRequisicao(req) && (
                       <button
                         onClick={() => navigate(`/requisicoes/editar/${req.id}`)}
@@ -2845,6 +2869,17 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
             >
               Abrir
             </button>
+            {adminPodeGerirArtigosRequisicao(contextMenu.req) && (
+              <button
+                className="block w-full text-left px-4 py-2 hover:bg-gray-100 text-[#0915FF] font-medium"
+                onClick={() => {
+                  navigate(rotaPrepararComOrigem(contextMenu.req.id));
+                  setContextMenu(prev => ({ ...prev, visible: false }));
+                }}
+              >
+                Gerir artigos
+              </button>
+            )}
             {podeCriarOuImportarRequisicao && (
               <button
                 className="block w-full text-left px-4 py-2 hover:bg-gray-100"

@@ -785,7 +785,10 @@ const PrepararRequisicao = () => {
     const isFluxoDevNow =
       String(armazemOrigem?.tipo || requisicao?.armazem_origem_tipo || '').toLowerCase() === 'viatura' &&
       String(armazemDestino?.tipo || requisicao?.armazem_destino_tipo || '').toLowerCase() === 'central';
-    if (!isFluxoDevNow) {
+    const stReq = String(requisicao?.status || '');
+    const adminPodeAdicionarLinha =
+      user && isAdmin(user.role) && (stReq === 'separado' || stReq === 'EM EXPEDICAO');
+    if (!isFluxoDevNow && !adminPodeAdicionarLinha) {
       setAddItemResults([]);
       return;
     }
@@ -807,7 +810,15 @@ const PrepararRequisicao = () => {
       } catch (_) {}
     }, 250);
     return () => clearTimeout(t);
-  }, [addItemSearch, armazemOrigem?.tipo, armazemDestino?.tipo, requisicao?.armazem_origem_tipo, requisicao?.armazem_destino_tipo]);
+  }, [
+    addItemSearch,
+    armazemOrigem?.tipo,
+    armazemDestino?.tipo,
+    requisicao?.armazem_origem_tipo,
+    requisicao?.armazem_destino_tipo,
+    requisicao?.status,
+    user?.role,
+  ]);
 
   const handleAdicionarItemDevolucao = async () => {
     const itemId = Number(addItemId);
@@ -2058,12 +2069,18 @@ const PrepararRequisicao = () => {
     isAdmin(user.role) &&
     (isPendente || isEmSeparacao || isSeparado || isEmExpedicao) &&
     (requisicao.itens?.length || 0) > 1;
+  const adminCorrigindoPosSeparacao =
+    Boolean(user && isAdmin(user.role) && (isSeparado || isEmExpedicao));
+  const podeAdminAdicionarLinha = adminCorrigindoPosSeparacao;
   const fasePreparacaoAberta = isPendente || isEmSeparacao;
   const locsOrigem = armazemOrigem?.localizacoes?.map((l) => l.localizacao).filter(Boolean) || [];
   const todosPreparados = requisicao.itens?.every(it => it.preparacao_confirmada === true) ?? false;
   const itensPorConfirmar = requisicao.itens?.filter(it => it.preparacao_confirmada !== true) ?? [];
   const preparacaoBloqueadaOutrem = preparacaoReservadaOutroUtilizador(requisicao, user);
   const podeAgirSeparacao = canPrepare && !preparacaoBloqueadaOutrem;
+  /** Admin em Separadas/Em expedição: editar/remover/adicionar sem depender da reserva de separação. */
+  const podeGerirLinhasItem =
+    podeEditarItensPreparacao && (podeAgirSeparacao || adminCorrigindoPosSeparacao);
   const podeTrflTraReporte = podeAgirSeparacao && podeDocsPosSeparacao;
   const tipoRequisicaoNorm = String(requisicao?.tipo || '')
     .normalize('NFD')
@@ -2354,13 +2371,23 @@ const PrepararRequisicao = () => {
             </div>
           </div>
 
+          {adminCorrigindoPosSeparacao && (
+            <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">
+              <strong>Correção (administrador):</strong> pode{' '}
+              <strong>editar a preparação</strong> de cada artigo, <strong>remover linhas</strong> (com pelo menos 2
+              itens na requisição) ou <strong>adicionar</strong> um artigo em falta. Para desconsiderar um artigo
+              errado, guarde com quantidade preparada igual a <strong>0</strong>.
+            </div>
+          )}
           <h3 className="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2">
-            <FaBox /> Itens a preparar
+            <FaBox /> {adminCorrigindoPosSeparacao ? 'Itens da requisição' : 'Itens a preparar'}
           </h3>
-          {isFluxoDevolucao && podeAgirSeparacao && podeEditarItensPreparacao && (
+          {(isFluxoDevolucao || podeAdminAdicionarLinha) && podeGerirLinhasItem && (
             <div className="mb-4 rounded-lg border border-indigo-200 bg-indigo-50 p-3">
               <div className="text-xs font-semibold text-indigo-900 mb-2">
-                Correção da devolução: adicionar artigo correto
+                {isFluxoDevolucao
+                  ? 'Correção da devolução: adicionar artigo correto'
+                  : 'Adicionar artigo à requisição'}
               </div>
               <div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_120px_160px] gap-2 items-end">
                 <div>
@@ -2547,7 +2574,7 @@ const PrepararRequisicao = () => {
                       )}
                     </div>
                     <div className="flex flex-col sm:flex-row gap-2 flex-shrink-0">
-                      {podeAgirSeparacao && !item.preparacao_confirmada && podeEditarItensPreparacao && (
+                      {podeGerirLinhasItem && !item.preparacao_confirmada && (
                         <button
                           type="button"
                           onClick={() => abrirPrepararItem(item)}
@@ -2557,7 +2584,7 @@ const PrepararRequisicao = () => {
                           <FaBox /> Preparar item
                         </button>
                       )}
-                      {podeAgirSeparacao && item.preparacao_confirmada && podeEditarItensPreparacao && (
+                      {podeGerirLinhasItem && item.preparacao_confirmada && (
                         <button
                           type="button"
                           onClick={() => abrirPrepararItem(item)}
