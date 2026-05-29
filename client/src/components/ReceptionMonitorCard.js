@@ -243,6 +243,11 @@ function ReceptionMonitorCard() {
   }, [canView, fetchRows]);
 
   useEffect(() => {
+    if (!canView || !selectedArmazemId) return;
+    fetchRows();
+  }, [canView, selectedArmazemId, fetchRows]);
+
+  useEffect(() => {
     if (!canView) return undefined;
     const onRefresh = () => {
       fetchRows();
@@ -303,7 +308,7 @@ function ReceptionMonitorCard() {
       origemLocalizacao: targetLocation,
       modo: part === 'apeado' ? 'apeado' : undefined,
       prefill_version: 2,
-      autoSubmit: true,
+      autoSubmit: false,
       items: legacyItems,
       items_v2: itemsV2,
     };

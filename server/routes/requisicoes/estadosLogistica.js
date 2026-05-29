@@ -1846,7 +1846,8 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
           const itens = itensByReqId.get(Number(r.id)) || [];
           const obs = String(r?.observacoes || '');
           if (markerFlagAtivo(obs, RECEBIMENTO_MONITOR_CLEAR_TEST_MARKER)) continue;
-          const isRecebimento = hasRecebimentoMarker(r)
+          const isRecebimentoReq = hasRecebimentoMarker(r);
+          const isRecebimento = isRecebimentoReq
             && markerFlagAtivo(obs, 'TRA_CONFIRMED')
             && Number(r?.armazem_origem_id) === armazemId
             && String(r?.status || '') === 'FINALIZADO';
@@ -1880,8 +1881,10 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
             }
           }
 
-          const isDevolucao = Boolean(r?.devolucao_tra_gerada_em)
-            || Boolean(String(r?.tra_numero || '').trim());
+          const isDevolucao = !isRecebimentoReq && (
+            Boolean(r?.devolucao_tra_gerada_em)
+            || Boolean(String(r?.tra_numero || '').trim())
+          );
           const elegivelDevolucao = isDevolucao
             && Number(r?.armazem_id) === armazemId
             && String(r?.status || '') === 'FINALIZADO';

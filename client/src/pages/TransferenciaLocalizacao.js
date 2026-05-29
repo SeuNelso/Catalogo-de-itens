@@ -954,6 +954,9 @@ const TransferenciaLocalizacao = () => {
 
   useEffect(() => {
     if (!loteRecebimento.length || !origemId) return;
+    // Só sugere destino automaticamente quando autoSubmit está ativo (fluxo legado).
+    // No pré-preenchimento da zona de receção o utilizador escolhe o destino e clica em «Gerar tickets».
+    if (!recebimentoAutoSubmitRef.current) return;
     if (modoTransferencia === 'apeado') {
       const destinoPadrao = pickDestinoPadraoApeado(locsApeadoComId);
       if (!destinoPadrao?.id) return;
