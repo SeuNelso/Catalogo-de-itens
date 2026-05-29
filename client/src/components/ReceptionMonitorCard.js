@@ -58,6 +58,7 @@ function ReceptionMonitorCard() {
   const [totalArtigosRececao, setTotalArtigosRececao] = useState(0);
   const [showAtualizado, setShowAtualizado] = useState(false);
   const [totaisPorCategoria, setTotaisPorCategoria] = useState({});
+  const [contagensPorCategoria, setContagensPorCategoria] = useState({});
   const [clearingTest, setClearingTest] = useState(false);
   const hideAtualizadoTimerRef = useRef(null);
   const requestSeqRef = useRef(0);
@@ -143,6 +144,7 @@ function ReceptionMonitorCard() {
         setPrefillItems([]);
         setTotalArtigosRececao(0);
         setTotaisPorCategoria({});
+        setContagensPorCategoria({});
         setError('');
         return;
       }
@@ -164,6 +166,7 @@ function ReceptionMonitorCard() {
         setRows([]);
         setTotalArtigosRececao(0);
         setTotaisPorCategoria({});
+        setContagensPorCategoria({});
         return;
       }
       if (!response.ok) {
@@ -176,6 +179,7 @@ function ReceptionMonitorCard() {
       const apiRows = Array.isArray(data?.rows) ? data.rows : [];
       const apiPrefillItems = Array.isArray(data?.prefill_items) ? data.prefill_items : [];
       setTotaisPorCategoria(data?.totais_por_categoria && typeof data.totais_por_categoria === 'object' ? data.totais_por_categoria : {});
+      setContagensPorCategoria(data?.contagens_por_categoria && typeof data.contagens_por_categoria === 'object' ? data.contagens_por_categoria : {});
       setTotalArtigosRececao(Number(data?.total ?? apiRows.length) || 0);
       setRows(
         apiRows
@@ -186,6 +190,9 @@ function ReceptionMonitorCard() {
             tipocontrolo: String(r?.tipocontrolo || '').trim(),
             seriais: Array.isArray(r?.seriais)
               ? r.seriais.map((s) => String(s || '').trim()).filter(Boolean)
+              : [],
+            lotes: Array.isArray(r?.lotes)
+              ? r.lotes.map((s) => String(s || '').trim()).filter(Boolean)
               : [],
             qtd: Number(r?.qtd || 0) || 0,
             armazem: String(r?.armazem || '').trim(),
@@ -207,6 +214,9 @@ function ReceptionMonitorCard() {
             quantidade: Number(r?.quantidade || 0) || 0,
             seriais: Array.isArray(r?.seriais)
               ? r.seriais.map((s) => String(s || '').trim()).filter(Boolean)
+              : [],
+            lotes: Array.isArray(r?.lotes)
+              ? r.lotes.map((s) => String(s || '').trim()).filter(Boolean)
               : [],
             referencias: Array.isArray(r?.referencias)
               ? r.referencias.map((s) => String(s || '').trim()).filter(Boolean)
@@ -271,26 +281,46 @@ function ReceptionMonitorCard() {
 
   const buildPrefillPayload = useCallback((targetParticao) => {
     const part = targetParticao === 'apeado' ? 'apeado' : 'normal';
-    const sourceRows = part === 'apeado' ? rowsApeados : rowsOutros;
-    const legacyItems = sourceRows.map((r) => ({
-      item_id: Number(r?.item_id || 0) || null,
-      codigo: String(r?.codigo || '').trim(),
-      descricao: String(r?.descricao || '').trim(),
-      tipocontrolo: String(r?.tipocontrolo || '').trim(),
-      seriais: Array.isArray(r?.seriais) ? r.seriais.map((s) => String(s || '').trim()).filter(Boolean) : [],
-      quantidade: Number(r?.qtd || 0) || 0,
-    }));
+    const prefillParticionados = prefillItems.filter((it) =>
+      part === 'apeado' ? it.particao === 'apeado' : it.particao !== 'apeado'
+    );
+    const fallbackRows = part === 'apeado' ? rowsApeados : rowsOutros;
+    const legacyItems = (prefillParticionados.length > 0 ? prefillParticionados : fallbackRows).map((it) => {
+      const fromPrefill = prefillParticionados.length > 0;
+      const codigo = String(it?.codigo || '').trim();
+      const key = `${Number(it?.item_id || 0) || 0}::${codigo.toUpperCase()}::${part}`;
+      const det = prefillByItemPart.get(key);
+      const lotesRaw = fromPrefill
+        ? (Array.isArray(it?.lotes) ? it.lotes : [])
+        : (Array.isArray(det?.lotes) ? det.lotes : (Array.isArray(it?.lotes) ? it.lotes : []));
+      const seriaisRaw = fromPrefill
+        ? (Array.isArray(it?.seriais) ? it.seriais : [])
+        : (Array.isArray(det?.seriais) ? det.seriais : (Array.isArray(it?.seriais) ? it.seriais : []));
+      return {
+        item_id: Number(it?.item_id || 0) || null,
+        codigo,
+        descricao: String(it?.descricao || det?.descricao || '').trim(),
+        tipocontrolo: String(it?.tipocontrolo || det?.tipocontrolo || '').trim(),
+        seriais: seriaisRaw.map((s) => String(s || '').trim()).filter(Boolean),
+        lotes: lotesRaw.map((s) => String(s || '').trim()).filter(Boolean),
+        quantidade: Number(it?.quantidade ?? it?.qtd ?? det?.quantidade ?? 0) || 0,
+      };
+    }).filter((it) => it.codigo && it.quantidade > 0);
+
     const itemsV2 = legacyItems.map((r) => {
       const key = `${Number(r?.item_id || 0) || 0}::${String(r?.codigo || '').trim().toUpperCase()}::${part}`;
       const det = prefillByItemPart.get(key);
       const quantidade = Number(det?.quantidade || r?.quantidade || 0) || 0;
-      const seriais = Array.isArray(det?.seriais) ? det.seriais : r.seriais;
+      const seriais = Array.isArray(det?.seriais) && det.seriais.length ? det.seriais : r.seriais;
+      const lotes = Array.isArray(det?.lotes) && det.lotes.length ? det.lotes : (Array.isArray(r?.lotes) ? r.lotes : []);
       return {
         item_id: r.item_id,
         codigo: r.codigo,
         descricao: r.descricao,
         tipocontrolo: r.tipocontrolo,
         quantidade_total: quantidade,
+        lotes,
+        seriais,
         allocations: [
           {
             id: `auto-${Date.now()}-${r.codigo || 'item'}`,
@@ -298,7 +328,7 @@ function ReceptionMonitorCard() {
             quantidade,
             destinoId: '',
             seriais,
-            lotes: [],
+            lotes,
           },
         ],
       };
@@ -312,9 +342,13 @@ function ReceptionMonitorCard() {
       items: legacyItems,
       items_v2: itemsV2,
     };
-  }, [rowsApeados, rowsOutros, prefillByItemPart, targetArmazemId, targetLocation]);
-  const totalApeados = Number(totaisPorCategoria?.apeados || rowsApeados.length) || 0;
-  const totalOutros = Number((totaisPorCategoria?.devolucao || 0) + (totaisPorCategoria?.recebimento || 0) || rowsOutros.length) || 0;
+  }, [prefillItems, rowsApeados, rowsOutros, prefillByItemPart, targetArmazemId, targetLocation]);
+  const totalApeados = Number(contagensPorCategoria?.apeados ?? totaisPorCategoria?.apeados ?? rowsApeados.length) || 0;
+  const totalOutros = Number(
+    (contagensPorCategoria?.devolucao || 0)
+    + (contagensPorCategoria?.recebimento || 0)
+    || rowsOutros.length
+  ) || 0;
 
   if (!canView) return null;
 

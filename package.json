@@ -47,6 +47,7 @@
     "db:migrate:movimentacao-interna": "node server/Migrate/run-migration.js movimentacao-interna",
     "db:migrate:movimentacao-interna-lotes": "node server/Migrate/run-migration.js movimentacao-interna-lotes",
     "db:migrate:movimentacao-interna-tra-apeado": "node server/Migrate/run-migration.js movimentacao-interna-tra-apeado",
+    "db:migrate:movimentacao-interna-estoque-aplicado": "node server/Migrate/run-migration.js movimentacao-interna-estoque-aplicado",
     "db:migrate:requisicoes-trfl-tra-estoque": "node server/Migrate/run-migration.js requisicoes-trfl-tra-estoque",
     "db:migrate:requisicoes-movimentos-overrides": "node server/Migrate/run-migration.js requisicoes-movimentos-overrides",
     "db:migrate:requisicoes-movimentos-historico": "node server/Migrate/run-migration.js requisicoes-movimentos-historico",

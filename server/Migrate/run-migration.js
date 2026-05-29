@@ -87,6 +87,8 @@ const migrationFile = sqlInMigrate(
                         ? 'migrate-armazem-movimentacao-interna-lotes.sql'
                       : arg === 'movimentacao-interna-tra-apeado' || arg === 'tra-apeado-ticket'
                         ? 'migrate-armazem-movimentacao-interna-tra-apeado.sql'
+                      : arg === 'movimentacao-interna-estoque-aplicado' || arg === 'estoque-aplicado-ticket'
+                        ? 'migrate-armazem-movimentacao-interna-estoque-aplicado.sql'
                       : arg === 'requisicoes-trfl-tra-estoque' || arg === 'trfl-tra-estoque'
                         ? 'migrate-requisicoes-trfl-tra-estoque.sql'
                       : arg === 'requisicoes-movimentos-overrides' || arg === 'movimentos-overrides'

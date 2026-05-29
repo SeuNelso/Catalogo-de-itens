@@ -94,6 +94,15 @@ const {
   armazemMovimentacaoInternaTableExists,
 } = require('./utils/usuarioDbColumns');
 const { buildExcelTransferencia } = require('./utils/buildExcelTransferencia');
+const {
+  planificarAlocacaoLotes,
+  validarSerialsNaOrigem,
+  reservarSerialsParaTicket,
+  libertarReservaSerialsTicket,
+  aplicarStockLinhaMovInterna,
+  aplicarStockTicketMovInternaSePendente,
+  hasEstoqueAplicadoColumn,
+} = require('./utils/aplicarStockTicketMovInterna');
 const { expandirComposicaoAteFolhas } = require('./utils/composicaoExpandida');
 const { loadStockByCodigoFromXlsx, normCodigo: normCodigoStock } = require('./utils/stockListXlsxMap');
 const { quantidadeStockNacionalNoArmazem } = require('./utils/stockNacionalMatch');
@@ -6435,6 +6444,7 @@ app.post('/api/armazens/:armazemId/transferencia-localizacao', authenticateToken
         lotes: lotesLinhaRaw,
       } of normalized) {
         let linhasLoteTicket = [];
+        let serialRowsForTicket = null;
         let itemId = Number(itemIdRaw);
         if (!Number.isFinite(itemId) || itemId <= 0) {
           const byCode = await client.query('SELECT id FROM itens WHERE UPPER(TRIM(codigo)) = UPPER(TRIM($1::text)) LIMIT 1', [itemCodigoRaw]);
@@ -6481,175 +6491,97 @@ app.post('/api/armazens/:armazemId/transferencia-localizacao', authenticateToken
             await client.query('ROLLBACK');
             return res.status(400).json({ error: `Quantidade de serials inválida para ${itemCodigoRaw || itemId}: esperado ${qtdInt}, recebido ${serialsLinha.length}.` });
           }
-          const seriaisQ = await client.query(
-            `SELECT id, serialnumber
-             FROM stock_serial
-             WHERE item_id = $1
-               AND armazem_id = $2
-               AND UPPER(TRIM(localizacao)) = UPPER(TRIM((SELECT localizacao FROM armazens_localizacoes WHERE id = $3)::text))
-               AND UPPER(TRIM(serialnumber)) = ANY($4::text[])
-               AND status IN ('disponivel', 'reservado')`,
-            [itemId, armazemId, origemLocId, serialsLinha.map((s) => String(s).trim().toUpperCase())]
-          );
-          if ((seriaisQ.rows || []).length !== serialsLinha.length) {
-            // #region agent log
-            (() => {
-              const payload = {
-                sessionId: 'cfd2c9',
-                runId: 'post-fix-4',
-                hypothesisId: 'H5',
-                location: 'index.js:transferencia-localizacao',
-                message: 'serials not found at origem loc',
-                data: {
-                  itemId,
-                  itemCodigoRaw: String(itemCodigoRaw || '').slice(0, 32),
-                  serialsRequested: serialsLinha.length,
-                  seriaisFound: (seriaisQ.rows || []).length,
-                  armazemId,
-                  origemLocId,
-                },
-                timestamp: Date.now(),
-              };
-              debugAgentTransfLocAppend(payload);
-            })();
-            // #endregion
-            await client.query('ROLLBACK');
-            return res.status(400).json({ error: `Um ou mais serial numbers selecionados para ${itemCodigoRaw || itemId} não estão disponíveis na localização de origem.` });
-          }
-          const movedSerial = await client.query(
-            `UPDATE stock_serial
-             SET localizacao = $5,
-                 armazem_id = $6,
-                 atualizado_em = CURRENT_TIMESTAMP
-             WHERE item_id = $1
-               AND armazem_id = $2
-               AND UPPER(TRIM(localizacao)) = UPPER(TRIM($3::text))
-               AND UPPER(TRIM(serialnumber)) = ANY($4::text[])
-               AND status IN ('disponivel', 'reservado')
-             RETURNING id`,
-            [
+          if (temTabelaTickets) {
+            serialRowsForTicket = await validarSerialsNaOrigem(client, {
               itemId,
               armazemId,
+              origemLocId,
+              serialsLinha,
+              itemCodigo: itemCodigoRaw || itemId,
+            });
+          } else {
+            await aplicarStockLinhaMovInterna(client, {
+              itemId,
+              itemCodigo: itemCodigoRaw || String(itemId),
+              tipoControlo,
+              quantidade: q,
+              serialsLinha,
+              lotesLinha,
+              armazemId,
+              origemLocId,
+              destinoLocId,
               origemLocLabel,
-              serialsLinha.map((s) => String(s).trim().toUpperCase()),
               destinoLocLabel,
               destinoArmazemEfetivoId,
-            ]
-          );
-          if ((movedSerial.rows || []).length !== serialsLinha.length) {
-            await client.query('ROLLBACK');
-            return res.status(400).json({
-              error: `Não foi possível atualizar a localização de todos os serial numbers de ${itemCodigoRaw || itemId}.`,
+              podeControlarStock,
             });
           }
         } else if (tipoControlo === 'LOTE') {
-          const lotesNorm = lotesLinha
-            .map((l) => String(l || '').trim().toUpperCase())
-            .filter(Boolean);
-          const lotesFiltro = lotesNorm.length > 0 ? lotesNorm : null;
-          const lotesOrigemQ = await client.query(
-            `SELECT id, lote, quantidade_disponivel
-             FROM stock_lote
-             WHERE item_id = $1
-               AND armazem_id = $2
-               AND UPPER(TRIM(localizacao)) = UPPER(TRIM($3::text))
-               AND quantidade_disponivel > 0
-               AND ($4::text[] IS NULL OR UPPER(TRIM(lote)) = ANY($4::text[]))
-             ORDER BY quantidade_disponivel DESC, id ASC
-             FOR UPDATE`,
-            [itemId, armazemId, origemLocLabel, lotesFiltro]
-          );
-          const totalDisponivelLotes = (lotesOrigemQ.rows || []).reduce(
-            (sum, row) => sum + (Number(row.quantidade_disponivel) || 0),
-            0
-          );
-          if (totalDisponivelLotes < Number(q)) {
+          const plan = await planificarAlocacaoLotes(client, {
+            itemId,
+            armazemId,
+            origemLocLabel,
+            quantidade: q,
+            lotesLinha,
+            forUpdate: !temTabelaTickets,
+          });
+          if (!plan.ok) {
             await client.query('ROLLBACK');
             return res.status(400).json({
               error: `Saldo insuficiente por lote para ${itemCodigoRaw || itemId} na localização de origem.`,
             });
           }
-          let restante = Number(q);
-          for (const loteRow of lotesOrigemQ.rows || []) {
-            if (restante <= 0) break;
-            const disponivel = Number(loteRow.quantidade_disponivel) || 0;
-            if (disponivel <= 0) continue;
-            const mover = Math.min(restante, disponivel);
-            if (mover <= 0) continue;
-            linhasLoteTicket.push({
-              lote: String(loteRow.lote || '').trim(),
-              quantidade: mover,
-            });
-            // Debita origem
-            // eslint-disable-next-line no-await-in-loop
-            await client.query(
-              `UPDATE stock_lote
-               SET quantidade_disponivel = quantidade_disponivel - $2::numeric,
-                   atualizado_em = CURRENT_TIMESTAMP
-               WHERE id = $1`,
-              [loteRow.id, mover]
-            );
-            // Crédito destino (mesmo lote)
-            // eslint-disable-next-line no-await-in-loop
-            await client.query(
-              `INSERT INTO stock_lote (item_id, armazem_id, localizacao, lote, quantidade_disponivel)
-               VALUES ($1, $2, $3, $4, $5::numeric)
-               ON CONFLICT (item_id, armazem_id, localizacao, lote)
-               DO UPDATE SET
-                 quantidade_disponivel = stock_lote.quantidade_disponivel + EXCLUDED.quantidade_disponivel,
-                 atualizado_em = CURRENT_TIMESTAMP`,
-              [itemId, destinoArmazemEfetivoId, destinoLocLabel, String(loteRow.lote || '').trim(), mover]
-            );
-            restante -= mover;
-          }
-          if (restante > 0) {
-            await client.query('ROLLBACK');
-            return res.status(400).json({
-              error: `Não foi possível alocar toda a quantidade por lote de ${itemCodigoRaw || itemId}.`,
+          linhasLoteTicket = plan.linhasLoteTicket;
+          if (!temTabelaTickets) {
+            await aplicarStockLinhaMovInterna(client, {
+              itemId,
+              itemCodigo: itemCodigoRaw || String(itemId),
+              tipoControlo,
+              quantidade: q,
+              lotesLinha,
+              linhasLoteTicketPre: linhasLoteTicket,
+              armazemId,
+              origemLocId,
+              destinoLocId,
+              origemLocLabel,
+              destinoLocLabel,
+              destinoArmazemEfetivoId,
+              podeControlarStock,
             });
           }
-          await client.query(
-            `DELETE FROM stock_lote
-             WHERE item_id = $1
-               AND armazem_id = $2
-               AND UPPER(TRIM(localizacao)) = UPPER(TRIM($3::text))
-               AND quantidade_disponivel <= 0`,
-            [itemId, armazemId, origemLocLabel]
+        } else if (podeControlarStock && temTabelaTickets) {
+          const chkOrigem = await client.query(
+            `SELECT quantidade::float AS quantidade
+             FROM armazens_localizacao_item
+             WHERE localizacao_id = $1 AND item_id = $2`,
+            [origemLocId, itemId]
           );
-        }
-        if (podeControlarStock) {
-          const sub = await client.query(
-            `UPDATE armazens_localizacao_item
-             SET quantidade = quantidade - $1::numeric, updated_at = CURRENT_TIMESTAMP
-             WHERE localizacao_id = $2 AND item_id = $3 AND quantidade >= $1::numeric
-             RETURNING quantidade`,
-            [q, origemLocId, itemId]
-          );
-          if (sub.rows.length === 0) {
+          const dispOrigem = Number(chkOrigem.rows?.[0]?.quantidade) || 0;
+          if (dispOrigem < Number(q)) {
             await client.query('ROLLBACK');
-            const cod = await pool.query('SELECT codigo FROM itens WHERE id = $1', [itemId]);
-            const c = cod.rows[0]?.codigo || String(itemId);
+            const cod = itemCodigoRaw || String(itemId);
             return res.status(400).json({
-              error: `Stock insuficiente na localização de origem para o artigo ${c}.`,
+              error: `Stock insuficiente na localização de origem para o artigo ${cod}.`,
               item_id: itemId,
               code: 'STOCK_ORIGEM_INSUFICIENTE',
             });
           }
-          const rest = Number(sub.rows[0].quantidade);
-          if (rest <= 0) {
-            await client.query(
-              'DELETE FROM armazens_localizacao_item WHERE localizacao_id = $1 AND item_id = $2',
-              [origemLocId, itemId]
-            );
-          }
-          await client.query(
-            `INSERT INTO armazens_localizacao_item (localizacao_id, item_id, quantidade)
-             VALUES ($1, $2, $3::numeric)
-             ON CONFLICT (localizacao_id, item_id) DO UPDATE SET
-               quantidade = armazens_localizacao_item.quantidade + EXCLUDED.quantidade,
-               updated_at = CURRENT_TIMESTAMP`,
-            [destinoLocId, itemId, q]
-          );
+        } else if (podeControlarStock && !temTabelaTickets) {
+          await aplicarStockLinhaMovInterna(client, {
+            itemId,
+            itemCodigo: itemCodigoRaw || String(itemId),
+            tipoControlo,
+            quantidade: q,
+            serialsLinha,
+            lotesLinha,
+            armazemId,
+            origemLocId,
+            destinoLocId,
+            origemLocLabel,
+            destinoLocLabel,
+            destinoArmazemEfetivoId,
+            podeControlarStock,
+          });
         }
         moved += 1;
         if (temTabelaTickets) {
@@ -6665,23 +6597,17 @@ app.post('/api/armazens/:armazemId/transferencia-localizacao', authenticateToken
           );
           const hasTicketSerialTable = Boolean(hasTicketSerialTableQ.rows?.[0]?.ok);
           if (hasTicketSerialTable && isTipoControloSerial(tipoControlo) && serialsLinha.length > 0) {
-            const seriaisForTicket = await client.query(
-              `SELECT id, serialnumber
-               FROM stock_serial
-               WHERE item_id = $1
-                 AND armazem_id = $2
-                 AND UPPER(TRIM(serialnumber)) = ANY($3::text[])`,
-              [itemId, armazemId, serialsLinha.map((s) => String(s).trim().toUpperCase())]
-            );
-            for (const s of seriaisForTicket.rows || []) {
-              await client.query(
-                `INSERT INTO armazem_movimentacao_interna_seriais
-                  (ticket_id, stock_serial_id, serialnumber)
-                 VALUES ($1, $2, $3)
-                 ON CONFLICT (ticket_id, serialnumber) DO NOTHING`,
-                [ti.rows[0].id, s.id, String(s.serialnumber || '').trim()]
-              );
-            }
+            const serialRows = serialRowsForTicket || await validarSerialsNaOrigem(client, {
+              itemId,
+              armazemId,
+              origemLocId,
+              serialsLinha,
+              itemCodigo: itemCodigoRaw || itemId,
+            });
+            await reservarSerialsParaTicket(client, {
+              ticketId: ti.rows[0].id,
+              serialRows,
+            });
           }
           if (hasTicketLotesTable && tipoControlo === 'LOTE' && linhasLoteTicket.length > 0) {
             const ticketId = ti.rows[0].id;
@@ -6699,6 +6625,9 @@ app.post('/api/armazens/:armazemId/transferencia-localizacao', authenticateToken
       return res.json({ ok: true, movimentos: moved, ticket_ids: ticketIds, modo_apeado: modoApeado });
     } catch (inner) {
       await client.query('ROLLBACK');
+      if (inner.isStockMovInternaBiz) {
+        return res.status(inner.status || 400).json({ error: inner.message, code: inner.code });
+      }
       throw inner;
     } finally {
       client.release();
@@ -6710,8 +6639,11 @@ app.post('/api/armazens/:armazemId/transferencia-localizacao', authenticateToken
         hint: 'Execute: npm run db:migrate:localizacao-estoque',
       });
     }
+    if (e.isStockMovInternaBiz) {
+      return res.status(e.status || 400).json({ error: e.message, code: e.code });
+    }
     console.error('Erro POST transferencia-localizacao:', e);
-    return res.status(500).json({ error: 'Erro ao transferir stock', details: e.message });
+    return res.status(500).json({ error: 'Erro ao criar ticket de movimentação', details: e.message });
   }
 });
 
@@ -6821,21 +6753,36 @@ app.delete('/api/armazens/:armazemId/movimentacoes-internas', authenticateToken,
       return res.status(404).json({ error: 'Nenhum ticket encontrado para estes IDs neste armazém.' });
     }
 
-    const del = await pool.query(
-      `DELETE FROM armazem_movimentacao_interna ami
-       USING armazens_localizacoes ld, armazens al_d
-       WHERE ami.id = ANY($1::int[])
-         AND ami.armazem_id = $2
-         AND ld.id = ami.destino_localizacao_id
-         AND al_d.id = ld.armazem_id
-         AND (
-           (LOWER(TRIM(COALESCE(al_d.tipo, ''))) = 'apeado' AND COALESCE(TRIM(ami.tra_apeado_numero), '') = '')
-           OR (LOWER(TRIM(COALESCE(al_d.tipo, ''))) <> 'apeado' AND ami.trfl_gerada_em IS NULL)
-         )
-       RETURNING ami.id`,
-      [idNums, armazemId]
-    );
-    const deleted = del.rows.length;
+    const clientDel = await pool.connect();
+    let deleted = 0;
+    try {
+      await clientDel.query('BEGIN');
+      for (const id of idNums) {
+        // eslint-disable-next-line no-await-in-loop
+        await libertarReservaSerialsTicket(clientDel, id);
+      }
+      const del = await clientDel.query(
+        `DELETE FROM armazem_movimentacao_interna ami
+         USING armazens_localizacoes ld, armazens al_d
+         WHERE ami.id = ANY($1::int[])
+           AND ami.armazem_id = $2
+           AND ld.id = ami.destino_localizacao_id
+           AND al_d.id = ld.armazem_id
+           AND (
+             (LOWER(TRIM(COALESCE(al_d.tipo, ''))) = 'apeado' AND COALESCE(TRIM(ami.tra_apeado_numero), '') = '')
+             OR (LOWER(TRIM(COALESCE(al_d.tipo, ''))) <> 'apeado' AND ami.trfl_gerada_em IS NULL)
+           )
+         RETURNING ami.id`,
+        [idNums, armazemId]
+      );
+      deleted = del.rows.length;
+      await clientDel.query('COMMIT');
+    } catch (delErr) {
+      await clientDel.query('ROLLBACK').catch(() => {});
+      throw delErr;
+    } finally {
+      clientDel.release();
+    }
     const skipped = before.rows.length - deleted;
     return res.json({ ok: true, deleted, skipped });
   } catch (e) {
@@ -6878,9 +6825,11 @@ app.post('/api/armazens/:armazemId/movimentacoes-internas/export-trfl', authenti
     }
     const r = await pool.query(
       `SELECT ami.id, ami.created_at, ami.quantidade::float AS quantidade,
+        ami.origem_localizacao_id, ami.destino_localizacao_id,
         a.codigo AS armazem_codigo,
         i.codigo AS item_codigo, i.tipocontrolo, i.id AS item_id,
         lo.localizacao AS origem_loc, ld.localizacao AS destino_loc,
+        ad.id AS destino_armazem_id,
         LOWER(TRIM(COALESCE(ad.tipo, ''))) AS destino_tipo
        FROM armazem_movimentacao_interna ami
        INNER JOIN armazens a ON a.id = ami.armazem_id
@@ -6902,6 +6851,13 @@ app.post('/api/armazens/:armazemId/movimentacoes-internas/export-trfl', authenti
     if (possuiApeado) {
       return res.status(400).json({ error: 'Tickets para APEADO devem ser exportados em "Gerar TRA APEADO".' });
     }
+    if (!(await hasEstoqueAplicadoColumn(pool))) {
+      return res.status(503).json({
+        error: 'Migração de stock pendente (estoque_aplicado_em).',
+        hint: 'Execute: npm run db:migrate:movimentacao-interna-estoque-aplicado',
+      });
+    }
+    const podeControlarStock = usuarioTemPermissaoControloStock(req);
     const hasTicketSerialTableQ = await pool.query(
       `SELECT to_regclass('public.armazem_movimentacao_interna_seriais') IS NOT NULL AS ok`
     );
@@ -6915,6 +6871,31 @@ app.post('/api/armazens/:armazemId/movimentacoes-internas/export-trfl', authenti
     try {
       await client.query('BEGIN');
       for (const row of r.rows) {
+        try {
+          await aplicarStockTicketMovInternaSePendente(client, {
+            ticketId: row.id,
+            armazemId,
+            origemLocId: Number(row.origem_localizacao_id),
+            destinoLocId: Number(row.destino_localizacao_id),
+            origemLocLabel: String(row.origem_loc || ''),
+            destinoLocLabel: String(row.destino_loc || ''),
+            destinoArmazemEfetivoId: Number(row.destino_armazem_id || armazemId),
+            itemId: Number(row.item_id),
+            itemCodigo: String(row.item_codigo || ''),
+            tipoControlo: String(row.tipocontrolo || ''),
+            quantidade: Number(row.quantidade) || 0,
+            podeControlarStock,
+            hasTicketSerialTable,
+            hasTicketLotesTable,
+          });
+        } catch (applyErr) {
+          await client.query('ROLLBACK');
+          if (applyErr.isStockMovInternaBiz) {
+            return res.status(applyErr.status || 400).json({ error: applyErr.message, code: applyErr.code });
+          }
+          throw applyErr;
+        }
+
         const d = row.created_at ? new Date(row.created_at) : new Date();
         const dateStr = `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
         const wh = String(row.armazem_codigo || 'E');
@@ -6924,7 +6905,6 @@ app.post('/api/armazens/:armazemId/movimentacoes-internas/export-trfl', authenti
         const qtd = Number(row.quantidade) || 0;
         if (isSerial && qtd > 0) {
           const qtdInt = Math.floor(qtd);
-          /** Após `POST transferencia-localizacao` os S/N já estão no destino; o ticket guarda-os em `armazem_movimentacao_interna_seriais`. */
           let serialRows = [];
           if (hasTicketSerialTable) {
             const linked = await client.query(
@@ -6935,73 +6915,16 @@ app.post('/api/armazens/:armazemId/movimentacoes-internas/export-trfl', authenti
                ORDER BY ss.serialnumber ASC`,
               [row.id]
             );
-            if ((linked.rows || []).length >= qtdInt) {
-              serialRows = (linked.rows || []).slice(0, qtdInt);
-            }
-          }
-          if (serialRows.length < qtdInt) {
-            const fromOrig = await client.query(
-              `SELECT id, serialnumber
-               FROM stock_serial
-               WHERE item_id = $1
-                 AND armazem_id = $2
-                 AND UPPER(TRIM(localizacao)) = UPPER(TRIM($3::text))
-                 AND status IN ('disponivel', 'reservado')
-                 AND TRIM(COALESCE(serialnumber, '')) <> ''
-               ORDER BY atualizado_em ASC NULLS LAST, id ASC
-               LIMIT $4`,
-              [row.item_id, armazemId, String(row.origem_loc || ''), qtdInt]
-            );
-            if ((fromOrig.rows || []).length >= qtdInt) {
-              serialRows = (fromOrig.rows || []).slice(0, qtdInt);
-            }
-          }
-          if (serialRows.length < qtdInt) {
-            const fromDest = await client.query(
-              `SELECT id, serialnumber
-               FROM stock_serial
-               WHERE item_id = $1
-                 AND armazem_id = $2
-                 AND UPPER(TRIM(localizacao)) = UPPER(TRIM($3::text))
-                 AND status IN ('disponivel', 'reservado')
-                 AND TRIM(COALESCE(serialnumber, '')) <> ''
-               ORDER BY atualizado_em DESC NULLS LAST, id DESC
-               LIMIT $4`,
-              [row.item_id, armazemId, String(row.destino_loc || ''), qtdInt]
-            );
-            if ((fromDest.rows || []).length >= qtdInt) {
-              serialRows = (fromDest.rows || []).slice(0, qtdInt);
-            }
+            serialRows = (linked.rows || []).slice(0, qtdInt);
           }
           if (serialRows.length < qtdInt) {
             await client.query('ROLLBACK');
             return res.status(400).json({
-              error: `Seriais insuficientes na origem para o artigo ${String(row.item_codigo || '')}.`,
+              error: `Seriais insuficientes para o artigo ${String(row.item_codigo || '')}.`,
               code: 'SERIAIS_ORIGEM_INSUFICIENTE',
             });
           }
           for (const s of serialRows) {
-            await client.query(
-              `UPDATE stock_serial
-               SET localizacao = $1,
-                   armazem_id = $2,
-                   status = 'disponivel',
-                   requisicao_id = NULL,
-                   requisicao_item_id = NULL,
-                   reservado_em = NULL,
-                   atualizado_em = CURRENT_TIMESTAMP
-               WHERE id = $3`,
-              [String(row.destino_loc || ''), armazemId, s.id]
-            );
-            if (hasTicketSerialTable) {
-              await client.query(
-                `INSERT INTO armazem_movimentacao_interna_seriais
-                  (ticket_id, stock_serial_id, serialnumber)
-                 VALUES ($1, $2, $3)
-                 ON CONFLICT (ticket_id, serialnumber) DO NOTHING`,
-                [row.id, s.id, String(s.serialnumber || '').trim()]
-              );
-            }
             rows.push({
               Date: dateStr,
               OriginWarehouse: wh,
@@ -7119,6 +7042,7 @@ app.post('/api/armazens/:armazemId/movimentacoes-internas/export-tra-apeado', au
     }
     const r = await pool.query(
       `SELECT ami.id, ami.created_at, ami.quantidade::float AS quantidade,
+        ami.origem_localizacao_id, ami.destino_localizacao_id,
         ao.codigo AS origem_armazem_codigo, ad.codigo AS destino_armazem_codigo, ad.id AS destino_armazem_id,
         i.codigo AS item_codigo, i.tipocontrolo, i.id AS item_id,
         lo.localizacao AS origem_loc, ld.localizacao AS destino_loc,
@@ -7143,6 +7067,13 @@ app.post('/api/armazens/:armazemId/movimentacoes-internas/export-tra-apeado', au
     if (possuiNaoApeado) {
       return res.status(400).json({ error: 'Selecione apenas tickets com destino em armazém APEADO.' });
     }
+    if (!(await hasEstoqueAplicadoColumn(pool))) {
+      return res.status(503).json({
+        error: 'Migração de stock pendente (estoque_aplicado_em).',
+        hint: 'Execute: npm run db:migrate:movimentacao-interna-estoque-aplicado',
+      });
+    }
+    const podeControlarStock = usuarioTemPermissaoControloStock(req);
     const hasTicketSerialTableQ = await pool.query(
       `SELECT to_regclass('public.armazem_movimentacao_interna_seriais') IS NOT NULL AS ok`
     );
@@ -7156,6 +7087,32 @@ app.post('/api/armazens/:armazemId/movimentacoes-internas/export-tra-apeado', au
     try {
       await client.query('BEGIN');
       for (const row of r.rows) {
+        const destArmId = Number(row.destino_armazem_id || 0) || armazemId;
+        try {
+          await aplicarStockTicketMovInternaSePendente(client, {
+            ticketId: row.id,
+            armazemId,
+            origemLocId: Number(row.origem_localizacao_id),
+            destinoLocId: Number(row.destino_localizacao_id),
+            origemLocLabel: String(row.origem_loc || ''),
+            destinoLocLabel: String(row.destino_loc || ''),
+            destinoArmazemEfetivoId: destArmId,
+            itemId: Number(row.item_id),
+            itemCodigo: String(row.item_codigo || ''),
+            tipoControlo: String(row.tipocontrolo || ''),
+            quantidade: Number(row.quantidade) || 0,
+            podeControlarStock,
+            hasTicketSerialTable,
+            hasTicketLotesTable,
+          });
+        } catch (applyErr) {
+          await client.query('ROLLBACK');
+          if (applyErr.isStockMovInternaBiz) {
+            return res.status(applyErr.status || 400).json({ error: applyErr.message, code: applyErr.code });
+          }
+          throw applyErr;
+        }
+
         const d = row.created_at ? new Date(row.created_at) : new Date();
         const dateStr = `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
         const tipoControlo = String(row.tipocontrolo || '').trim().toUpperCase().replace(/\s+/g, '');
@@ -7164,7 +7121,6 @@ app.post('/api/armazens/:armazemId/movimentacoes-internas/export-tra-apeado', au
         const qtd = Number(row.quantidade) || 0;
         if (isSerial && qtd > 0) {
           const qtdInt = Math.floor(qtd);
-          const destArmId = Number(row.destino_armazem_id || 0) || armazemId;
           let serialRows = [];
           if (hasTicketSerialTable) {
             const linked = await client.query(
@@ -7175,73 +7131,16 @@ app.post('/api/armazens/:armazemId/movimentacoes-internas/export-tra-apeado', au
                ORDER BY ss.serialnumber ASC`,
               [row.id]
             );
-            if ((linked.rows || []).length >= qtdInt) {
-              serialRows = (linked.rows || []).slice(0, qtdInt);
-            }
-          }
-          if (serialRows.length < qtdInt) {
-            const fromOrig = await client.query(
-              `SELECT id, serialnumber
-               FROM stock_serial
-               WHERE item_id = $1
-                 AND armazem_id = $2
-                 AND UPPER(TRIM(localizacao)) = UPPER(TRIM($3::text))
-                 AND status IN ('disponivel', 'reservado')
-                 AND TRIM(COALESCE(serialnumber, '')) <> ''
-               ORDER BY atualizado_em ASC NULLS LAST, id ASC
-               LIMIT $4`,
-              [row.item_id, armazemId, String(row.origem_loc || ''), qtdInt]
-            );
-            if ((fromOrig.rows || []).length >= qtdInt) {
-              serialRows = (fromOrig.rows || []).slice(0, qtdInt);
-            }
-          }
-          if (serialRows.length < qtdInt) {
-            const fromDest = await client.query(
-              `SELECT id, serialnumber
-               FROM stock_serial
-               WHERE item_id = $1
-                 AND armazem_id = $2
-                 AND UPPER(TRIM(localizacao)) = UPPER(TRIM($3::text))
-                 AND status IN ('disponivel', 'reservado')
-                 AND TRIM(COALESCE(serialnumber, '')) <> ''
-               ORDER BY atualizado_em DESC NULLS LAST, id DESC
-               LIMIT $4`,
-              [row.item_id, destArmId, String(row.destino_loc || ''), qtdInt]
-            );
-            if ((fromDest.rows || []).length >= qtdInt) {
-              serialRows = (fromDest.rows || []).slice(0, qtdInt);
-            }
+            serialRows = (linked.rows || []).slice(0, qtdInt);
           }
           if (serialRows.length < qtdInt) {
             await client.query('ROLLBACK');
             return res.status(400).json({
-              error: `Seriais insuficientes na origem para o artigo ${String(row.item_codigo || '')}.`,
+              error: `Seriais insuficientes para o artigo ${String(row.item_codigo || '')}.`,
               code: 'SERIAIS_ORIGEM_INSUFICIENTE',
             });
           }
           for (const s of serialRows) {
-            await client.query(
-              `UPDATE stock_serial
-               SET localizacao = $1,
-                   armazem_id = $2,
-                   status = 'disponivel',
-                   requisicao_id = NULL,
-                   requisicao_item_id = NULL,
-                   reservado_em = NULL,
-                   atualizado_em = CURRENT_TIMESTAMP
-               WHERE id = $3`,
-              [String(row.destino_loc || ''), destArmId, s.id]
-            );
-            if (hasTicketSerialTable) {
-              await client.query(
-                `INSERT INTO armazem_movimentacao_interna_seriais
-                  (ticket_id, stock_serial_id, serialnumber)
-                 VALUES ($1, $2, $3)
-                 ON CONFLICT (ticket_id, serialnumber) DO NOTHING`,
-                [row.id, s.id, String(s.serialnumber || '').trim()]
-              );
-            }
             rows.push({
               Date: dateStr,
               OriginWarehouse: String(row.origem_armazem_codigo || ''),

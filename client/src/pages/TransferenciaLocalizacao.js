@@ -56,6 +56,31 @@ function somaMetragemLotesSelecionados(opcoes, codigosSel) {
   return sum;
 }
 
+function resolveLoteOpcoesRow(row, loteOptionsByItemId, linhasOrigem) {
+  const rowStock = linhasOrigem?.length ? resolveRowStockPrefill(linhasOrigem, row) : null;
+  const itemId = String(Number(rowStock?.item_id || row?.item_id || 0));
+  return Array.isArray(loteOptionsByItemId[itemId]) ? loteOptionsByItemId[itemId] : [];
+}
+
+/** Atualiza `quantidade` da linha LOTE = soma das metragens dos lotes selecionados. */
+function recalcularQuantidadePorLotes(row, loteOptionsByItemId, linhasOrigem) {
+  const rowStock = linhasOrigem?.length ? resolveRowStockPrefill(linhasOrigem, row) : null;
+  const tip = String(rowStock?.tipocontrolo || row?.tipocontrolo || '').trim().toUpperCase();
+  if (tip !== 'LOTE') return row;
+  const lotes = Array.isArray(row?.lotes)
+    ? row.lotes.map((s) => String(s || '').trim()).filter(Boolean)
+    : [];
+  if (lotes.length === 0) {
+    return { ...row, quantidade: 0 };
+  }
+  const opcoes = resolveLoteOpcoesRow(row, loteOptionsByItemId, linhasOrigem);
+  const sum = somaMetragemLotesSelecionados(opcoes, lotes);
+  if (sum > 0) {
+    return { ...row, quantidade: sum };
+  }
+  return row;
+}
+
 const pickDestinoPadraoApeado = (locs = []) => {
   if (!Array.isArray(locs) || locs.length === 0) return null;
   const prioridade = ['reception', 'rececao', 'recepcao', 'receção', 'entrada', 'guarda'];
@@ -166,13 +191,23 @@ const mapPrefillPayloadToRows = (payload) => {
       const basePart = normalizarParticaoPrefill(it?.particao, modoFallback);
       const allocations = Array.isArray(it?.allocations) && it.allocations.length > 0
         ? it.allocations
-        : [{ id: `auto-${idxItem}`, particao: basePart, quantidade: Number(it?.quantidade_total || 0) || 0, destinoId: '', seriais: it?.seriais || [] }];
+        : [{ id: `auto-${idxItem}`, particao: basePart, quantidade: Number(it?.quantidade_total || 0) || 0, destinoId: '', seriais: it?.seriais || [], lotes: it?.lotes || [] }];
       const totalFromAlloc = allocations.reduce((s, a) => s + (Number(a?.quantidade || 0) || 0), 0);
       const quantidadeTotal = Number(it?.quantidade_total || totalFromAlloc || 0) || 0;
       allocations.forEach((al, idxAl) => {
         const qtd = Number(al?.quantidade || 0) || 0;
         if (qtd <= 0) return;
         const particao = normalizarParticaoPrefill(al?.particao, basePart);
+        const lotesLinha = (() => {
+          const fromAl = Array.isArray(al?.lotes)
+            ? al.lotes.map((s) => String(s || '').trim()).filter(Boolean)
+            : [];
+          if (fromAl.length > 0) return [...new Set(fromAl)];
+          const fromIt = Array.isArray(it?.lotes)
+            ? it.lotes.map((s) => String(s || '').trim()).filter(Boolean)
+            : [];
+          return [...new Set(fromIt)];
+        })();
         rows.push({
           item_id: Number.isFinite(itemId) && itemId > 0 ? itemId : null,
           codigo,
@@ -181,9 +216,7 @@ const mapPrefillPayloadToRows = (payload) => {
           seriais_sugeridos: Array.isArray(al?.seriais)
             ? [...new Set(al.seriais.map((s) => String(s || '').trim()).filter(Boolean))]
             : (Array.isArray(it?.seriais) ? [...new Set(it.seriais.map((s) => String(s || '').trim()).filter(Boolean))] : []),
-          lotes_sugeridos: Array.isArray(al?.lotes)
-            ? [...new Set(al.lotes.map((s) => String(s || '').trim()).filter(Boolean))]
-            : [],
+          lotes_sugeridos: lotesLinha,
           quantidade: qtd,
           quantidade_total_item: quantidadeTotal,
           particao,
@@ -193,13 +226,11 @@ const mapPrefillPayloadToRows = (payload) => {
           serials: Array.isArray(al?.seriais)
             ? [...new Set(al.seriais.map((s) => String(s || '').trim()).filter(Boolean))]
             : [],
-          lotes: Array.isArray(al?.lotes)
-            ? [...new Set(al.lotes.map((s) => String(s || '').trim()).filter(Boolean))]
-            : [],
+          lotes: lotesLinha.slice(),
         });
       });
     });
-    return rows;
+    return aplicarLotesAutomaticosRecebimento(rows);
   }
 
   const byCodigo = new Map();
@@ -217,9 +248,15 @@ const mapPrefillPayloadToRows = (payload) => {
       seriais_sugeridos: Array.isArray(it?.seriais)
         ? [...new Set(it.seriais.map((s) => String(s || '').trim()).filter(Boolean))]
         : [],
+      lotes_sugeridos: Array.isArray(it?.lotes)
+        ? [...new Set(it.lotes.map((s) => String(s || '').trim()).filter(Boolean))]
+        : [],
       quantidade: 0,
       destinoId: '',
       serials: [],
+      lotes: Array.isArray(it?.lotes)
+        ? [...new Set(it.lotes.map((s) => String(s || '').trim()).filter(Boolean))]
+        : [],
       quantidade_total_item: 0,
       particao: modoFallback,
       grupo_key: `${Number(itemId || 0) || 0}::${codigo.toUpperCase()}::${modoFallback}`,
@@ -234,10 +271,88 @@ const mapPrefillPayloadToRows = (payload) => {
         ...new Set([...(prev.seriais_sugeridos || []), ...it.seriais.map((s) => String(s || '').trim()).filter(Boolean)]),
       ];
     }
+    if (Array.isArray(it?.lotes) && it.lotes.length > 0) {
+      const mergedL = [
+        ...new Set([...(prev.lotes_sugeridos || []), ...it.lotes.map((s) => String(s || '').trim()).filter(Boolean)]),
+      ];
+      prev.lotes_sugeridos = mergedL;
+      prev.lotes = mergedL.slice();
+    }
     byCodigo.set(key, prev);
   });
-  return [...byCodigo.values()];
+  return aplicarLotesAutomaticosRecebimento([...byCodigo.values()]);
 };
+
+function lotesSetsIguais(a, b) {
+  const sa = new Set((a || []).map((x) => String(x || '').trim().toUpperCase()).filter(Boolean));
+  const sb = new Set((b || []).map((x) => String(x || '').trim().toUpperCase()).filter(Boolean));
+  if (sa.size !== sb.size) return false;
+  for (const v of sa) if (!sb.has(v)) return false;
+  return true;
+}
+
+/** Seleciona automaticamente os lotes recebionados na zona de receção (lotes_sugeridos / stock origem). */
+function aplicarLotesAutomaticosRecebimento(rows, loteOptionsByItemId = {}, { onlyIfEmpty = false, linhasOrigem = null } = {}) {
+  const norm = (s) => String(s || '').trim().toUpperCase();
+  return (rows || []).map((row) => {
+    const rowStock = linhasOrigem?.length ? resolveRowStockPrefill(linhasOrigem, row) : null;
+    const tip = String(rowStock?.tipocontrolo || row?.tipocontrolo || '').trim().toUpperCase();
+    const sugeridos = [
+      ...new Set(
+        (Array.isArray(row?.lotes_sugeridos) ? row.lotes_sugeridos : [])
+          .map((s) => String(s || '').trim())
+          .filter(Boolean)
+      ),
+    ];
+    if (sugeridos.length === 0 && tip !== 'LOTE') return row;
+
+    const current = Array.isArray(row?.lotes)
+      ? row.lotes.map((s) => String(s || '').trim()).filter(Boolean)
+      : [];
+
+    if (tip !== 'LOTE') return row;
+
+    if (onlyIfEmpty && current.length > 0) {
+      return recalcularQuantidadePorLotes(row, loteOptionsByItemId, linhasOrigem);
+    }
+
+    const itemId = String(Number(rowStock?.item_id || row?.item_id || 0));
+    const stockOpts = Array.isArray(loteOptionsByItemId[itemId]) ? loteOptionsByItemId[itemId] : [];
+    let autoSel = sugeridos;
+
+    if (stockOpts.length > 0) {
+      if (sugeridos.length > 0) {
+        const matched = sugeridos
+          .map((sug) => {
+            const hit = stockOpts.find((o) => norm(o?.lote) === norm(sug));
+            return hit ? String(hit.lote || '').trim() : String(sug || '').trim();
+          })
+          .filter(Boolean);
+        autoSel = matched.length > 0 ? [...new Set(matched)] : sugeridos;
+      } else {
+        autoSel = stockOpts
+          .map((o) => String(o?.lote || '').trim())
+          .filter(Boolean);
+      }
+    } else if (sugeridos.length > 0) {
+      autoSel = sugeridos;
+    }
+
+    if (autoSel.length === 0) {
+      return recalcularQuantidadePorLotes(row, loteOptionsByItemId, linhasOrigem);
+    }
+
+    let updated = row;
+    if (!lotesSetsIguais(current, autoSel)) {
+      updated = {
+        ...row,
+        lotes: autoSel,
+        lotes_sugeridos: sugeridos.length > 0 ? sugeridos : autoSel,
+      };
+    }
+    return recalcularQuantidadePorLotes(updated, loteOptionsByItemId, linhasOrigem);
+  });
+}
 
 const makeGrupoKey = (row, modoFallback = 'normal') => {
   const particao = normalizarParticaoPrefill(row?.particao, modoFallback);
@@ -415,7 +530,9 @@ const TransferenciaLocalizacao = () => {
   const [pesquisaArtigo, setPesquisaArtigo] = useState('');
   const [loteRecebimento, setLoteRecebimento] = useState([]);
   const [serialOptionsByItemId, setSerialOptionsByItemId] = useState({});
+  const [loteOptionsByItemId, setLoteOptionsByItemId] = useState({});
   const [serialPickerIdx, setSerialPickerIdx] = useState(null);
+  const [lotePickerIdx, setLotePickerIdx] = useState(null);
   const [loteOrigemLabel, setLoteOrigemLabel] = useState('');
   const [submittingLote, setSubmittingLote] = useState(false);
   const prefillConsumidoRef = useRef(false);
@@ -490,39 +607,6 @@ const TransferenciaLocalizacao = () => {
 
     setLoteRecebimento(mapPrefillPayloadToRows(payload));
   }, [location.state]);
-
-  useEffect(() => {
-    if (!loteRecebimento.length || !armazemId || !origemId) {
-      setSerialOptionsByItemId({});
-      return;
-    }
-    let cancelled = false;
-    (async () => {
-      try {
-        const token = localStorage.getItem('token');
-        const serialRows = [];
-        for (const it of loteRecebimento) {
-          const rowStock = resolveRowStockPrefill(linhasOrigem, it);
-          const tipocontroloItem = String(rowStock?.tipocontrolo || it?.tipocontrolo || '').trim();
-          if (!isTipoControloSerial(tipocontroloItem)) continue;
-          const itemId = Number(rowStock?.item_id || it?.item_id || 0);
-          if (!Number.isFinite(itemId) || itemId <= 0) continue;
-          const { data } = await axios.get(
-            `/api/armazens/${armazemId}/localizacoes/${origemId}/itens/${itemId}/seriais-disponiveis`,
-            { headers: { Authorization: `Bearer ${token}` } }
-          );
-          serialRows.push([String(itemId), Array.isArray(data) ? data : []]);
-        }
-        if (cancelled) return;
-        setSerialOptionsByItemId(Object.fromEntries(serialRows));
-      } catch {
-        if (!cancelled) setSerialOptionsByItemId({});
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [loteRecebimento, linhasOrigem, armazemId, origemId]);
 
   useEffect(() => {
     setWizardSerialsSel([]);
@@ -749,6 +833,77 @@ const TransferenciaLocalizacao = () => {
     if (!q) return locsDestinoCandidatas;
     return locsDestinoCandidatas.filter((l) => normBusca(l.localizacao || '').includes(q));
   }, [locsDestinoCandidatas, filtroDestinoLoc]);
+
+  useEffect(() => {
+    if (!loteRecebimento.length || !armazemId || !origemId) {
+      setSerialOptionsByItemId({});
+      setLoteOptionsByItemId({});
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const token = localStorage.getItem('token');
+        const serialRows = [];
+        const loteRows = [];
+        const locLabel = normalizarLocStockApi(
+          (locsComId || []).find((x) => String(x.id) === String(origemId))?.localizacao || loteOrigemLabel || ''
+        );
+        for (const it of loteRecebimento) {
+          const rowStock = resolveRowStockPrefill(linhasOrigem, it);
+          const tipocontroloItem = String(rowStock?.tipocontrolo || it?.tipocontrolo || '').trim();
+          const itemId = Number(rowStock?.item_id || it?.item_id || 0);
+          if (!Number.isFinite(itemId) || itemId <= 0) continue;
+          if (isTipoControloSerial(tipocontroloItem)) {
+            const { data } = await axios.get(
+              `/api/armazens/${armazemId}/localizacoes/${origemId}/itens/${itemId}/seriais-disponiveis`,
+              { headers: { Authorization: `Bearer ${token}` } }
+            );
+            serialRows.push([String(itemId), Array.isArray(data) ? data : []]);
+          } else if (String(tipocontroloItem || '').trim().toUpperCase() === 'LOTE' && locLabel) {
+            const p = new URLSearchParams();
+            p.set('item_id', String(itemId));
+            p.set('armazem_id', String(Number(armazemId)));
+            p.set('localizacao', locLabel);
+            const response = await fetch(`/api/requisicoes/stock/disponibilidade?${p.toString()}`, {
+              headers: { Authorization: `Bearer ${token}` },
+            });
+            const data = await response.json().catch(() => ({}));
+            const lotes = response.ok && Array.isArray(data?.lotes) ? data.lotes : [];
+            loteRows.push([String(itemId), lotes]);
+          }
+        }
+        if (cancelled) return;
+        setSerialOptionsByItemId(Object.fromEntries(serialRows));
+        setLoteOptionsByItemId(Object.fromEntries(loteRows));
+      } catch {
+        if (!cancelled) {
+          setSerialOptionsByItemId({});
+          setLoteOptionsByItemId({});
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [loteRecebimento, linhasOrigem, armazemId, origemId, locsComId, loteOrigemLabel]);
+
+  /** Alinhar lotes selecionados com stock na origem e recalcular metragem (QTD). */
+  useEffect(() => {
+    if (!loteRecebimento.length) return;
+    setLoteRecebimento((prev) => {
+      const next = aplicarLotesAutomaticosRecebimento(prev, loteOptionsByItemId, {
+        onlyIfEmpty: true,
+        linhasOrigem,
+      });
+      const same = prev.every((r, i) => {
+        const n = next[i];
+        if (!n) return false;
+        return lotesSetsIguais(r.lotes, n.lotes) && Number(r.quantidade) === Number(n.quantidade);
+      });
+      return same ? prev : next;
+    });
+  }, [loteOptionsByItemId, linhasOrigem]);
 
   useEffect(() => {
     if (wizardStep !== 3 || !armazemId || !origemId) {
@@ -1846,6 +2001,9 @@ const TransferenciaLocalizacao = () => {
         try {
           const j = await res.json();
           msg = j.error || j.message || msg;
+          if (j.details && String(j.details).trim() && !msg.includes(String(j.details).trim())) {
+            msg = `${msg} (${j.details})`;
+          }
         } catch {
           /* ignore */
         }
@@ -1974,6 +2132,21 @@ const TransferenciaLocalizacao = () => {
       return;
     }
 
+    const semLotes = linhasAtivas.find((it) => {
+      const rowStock = resolveRowStockPrefill(linhasOrigem, it);
+      const tip = String(rowStock?.tipocontrolo || it?.tipocontrolo || '').trim().toUpperCase();
+      if (tip !== 'LOTE') return false;
+      const lotesSel = Array.isArray(it?.lotes) ? it.lotes.filter((s) => String(s || '').trim()) : [];
+      return lotesSel.length === 0;
+    });
+    if (semLotes) {
+      setToast({
+        type: 'error',
+        message: `Selecione pelo menos um lote rececionado para ${semLotes.codigo}.`,
+      });
+      return;
+    }
+
     const resumoGrupo = new Map();
     for (const it of linhasAtivas) {
       const particao = normalizarParticaoPrefill(it?.particao, modoTransferencia);
@@ -1988,7 +2161,7 @@ const TransferenciaLocalizacao = () => {
       if ((Number(it?.quantidade_total_item || 0) || 0) > prev.total) prev.total = Number(it?.quantidade_total_item || 0) || 0;
       resumoGrupo.set(key, prev);
     }
-    const grupoInvalido = [...resumoGrupo.values()].find((g) => g.total > 0 && g.soma !== g.total);
+    const grupoInvalido = [...resumoGrupo.values()].find((g) => g.total > 0 && (g.soma <= 0 || g.soma > g.total));
     if (grupoInvalido) {
       setToast({
         type: 'error',
@@ -2239,11 +2412,15 @@ const TransferenciaLocalizacao = () => {
   };
 
   const atualizarQuantidadeLinhaLote = (idx, valor) => {
-    const qtd = Math.max(0, Math.floor(Number(valor) || 0));
     setLoteRecebimento((prev) =>
       prev.map((row, i) => {
         if (i !== idx) return row;
-        const serials = Array.isArray(row?.serials) ? row.serials.slice(0, qtd) : [];
+        const rowStock = resolveRowStockPrefill(linhasOrigem, row);
+        const isLote = String(rowStock?.tipocontrolo || row?.tipocontrolo || '').trim().toUpperCase() === 'LOTE';
+        const qtd = isLote
+          ? Math.max(0, Number(valor) || 0)
+          : Math.max(0, Math.floor(Number(valor) || 0));
+        const serials = Array.isArray(row?.serials) ? row.serials.slice(0, Math.floor(qtd)) : [];
         return { ...row, quantidade: qtd, serials };
       })
     );
@@ -2263,6 +2440,26 @@ const TransferenciaLocalizacao = () => {
         }
         if (atual.length >= limite) return row;
         return { ...row, serials: [...atual, sn] };
+      })
+    );
+  };
+
+  const toggleLoteLinhaLote = (idx, loteCod) => {
+    const lote = String(loteCod || '').trim();
+    if (!lote) return;
+    setLoteRecebimento((prev) =>
+      prev.map((row, i) => {
+        if (i !== idx) return row;
+        const atual = Array.isArray(row?.lotes) ? [...new Set(row.lotes.map((s) => String(s || '').trim()).filter(Boolean))] : [];
+        const existe = atual.some((s) => s.toUpperCase() === lote.toUpperCase());
+        const novosLotes = existe
+          ? atual.filter((s) => s.toUpperCase() !== lote.toUpperCase())
+          : [...atual, lote];
+        return recalcularQuantidadePorLotes(
+          { ...row, lotes: novosLotes },
+          loteOptionsByItemId,
+          linhasOrigem
+        );
       })
     );
   };
@@ -2413,7 +2610,7 @@ const TransferenciaLocalizacao = () => {
                           <th className="px-2 py-2 text-left">Artigo</th>
                           <th className="px-2 py-2 text-right">Qtd</th>
                           <th className="px-2 py-2 text-left">Destino</th>
-                          <th className="px-2 py-2 text-left">Seriais</th>
+                          <th className="px-2 py-2 text-left">Seriais / Lotes</th>
                           <th className="px-2 py-2 text-right">Ação</th>
                         </tr>
                       </thead>
@@ -2468,14 +2665,20 @@ const TransferenciaLocalizacao = () => {
                               )}
                             </td>
                             <td className="px-2 py-2 text-right tabular-nums align-top">
-                              <input
-                                type="number"
-                                min="0"
-                                step="1"
-                                value={it.quantidade}
-                                onChange={(e) => atualizarQuantidadeLinhaLote(idx, e.target.value)}
-                                className="w-24 px-2 py-1 border border-gray-300 rounded text-right"
-                              />
+                              {(() => {
+                                const rowStockQtd = resolveRowStockPrefill(linhasOrigem, it);
+                                const isLoteQtd = String(rowStockQtd?.tipocontrolo || it?.tipocontrolo || '').trim().toUpperCase() === 'LOTE';
+                                return (
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    step={isLoteQtd ? 'any' : '1'}
+                                    value={it.quantidade}
+                                    onChange={(e) => atualizarQuantidadeLinhaLote(idx, e.target.value)}
+                                    className="w-24 px-2 py-1 border border-gray-300 rounded text-right"
+                                  />
+                                );
+                              })()}
                             </td>
                             <td className="px-2 py-2 align-top">
                               <select
@@ -2500,6 +2703,62 @@ const TransferenciaLocalizacao = () => {
                               {(() => {
                                 const rowStock = resolveRowStockPrefill(linhasOrigem, it);
                                 const tipocontroloItem = String(rowStock?.tipocontrolo || it?.tipocontrolo || '').trim();
+                                const isLoteItem = String(tipocontroloItem || '').trim().toUpperCase() === 'LOTE';
+                                if (isLoteItem) {
+                                  const itemId = String(Number(rowStock?.item_id || it?.item_id || 0));
+                                  const optionsStock = Array.isArray(loteOptionsByItemId[itemId]) ? loteOptionsByItemId[itemId] : [];
+                                  const optionsFallback = (it?.lotes_sugeridos || []).map((l, pos) => ({
+                                    id: `fallback-lote-${itemId}-${pos}`,
+                                    lote: String(l || '').trim(),
+                                  }));
+                                  const grupoKey = makeGrupoKey(it, modoTransferencia);
+                                  const lotesGrupo = (loteRecebimento || [])
+                                    .filter((x) => makeGrupoKey(x, modoTransferencia) === grupoKey)
+                                    .flatMap((x) => Array.isArray(x?.lotes_sugeridos) ? x.lotes_sugeridos : [])
+                                    .map((s) => String(s || '').trim())
+                                    .filter(Boolean);
+                                  const optionsGrupo = [...new Set(lotesGrupo)].map((l, pos) => ({
+                                    id: `group-lote-${itemId}-${pos}`,
+                                    lote: l,
+                                  }));
+                                  const optionsBase = optionsStock.length > 0
+                                    ? optionsStock
+                                    : (optionsGrupo.length > 0 ? optionsGrupo : optionsFallback);
+                                  const selected = Array.isArray(it?.lotes) ? it.lotes : [];
+                                  const selectedEmOutrasLinhas = new Set(
+                                    (loteRecebimento || [])
+                                      .filter((x, i) => i !== idx && makeGrupoKey(x, modoTransferencia) === grupoKey)
+                                      .flatMap((x) => Array.isArray(x?.lotes) ? x.lotes : [])
+                                      .map((s) => String(s || '').trim().toUpperCase())
+                                      .filter(Boolean)
+                                  );
+                                  const options = optionsBase.filter((o) => {
+                                    const lote = String(o?.lote || '').trim();
+                                    if (!lote) return false;
+                                    if (selected.some((s) => String(s).trim().toUpperCase() === lote.toUpperCase())) return true;
+                                    return !selectedEmOutrasLinhas.has(lote.toUpperCase());
+                                  });
+                                  const totalEsperado = Math.max(
+                                    selected.length,
+                                    options.length,
+                                    optionsGrupo.length || optionsFallback.length,
+                                    1
+                                  );
+                                  return (
+                                    <div className="space-y-1 min-w-0">
+                                      <button
+                                        type="button"
+                                        className="px-2 py-1 text-[11px] border border-gray-300 rounded hover:bg-gray-50"
+                                        onClick={() => setLotePickerIdx(idx)}
+                                      >
+                                        Selecionar lotes
+                                      </button>
+                                      <div className="text-[11px] text-gray-500 whitespace-normal break-words">
+                                        {selected.length}/{totalEsperado} selecionados · {options.length} disponíveis
+                                      </div>
+                                    </div>
+                                  );
+                                }
                                 if (!isTipoControloSerial(tipocontroloItem)) {
                                   return <span className="text-[11px] text-gray-400">—</span>;
                                 }
@@ -2681,6 +2940,92 @@ const TransferenciaLocalizacao = () => {
                         })}
                         {options.length === 0 && (
                           <p className="text-xs text-gray-400">Sem seriais disponíveis para este item.</p>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+
+            {lotePickerIdx != null && loteRecebimento[lotePickerIdx] && (() => {
+              const it = loteRecebimento[lotePickerIdx];
+              const rowStock = resolveRowStockPrefill(linhasOrigem, it);
+              const itemId = String(Number(rowStock?.item_id || it?.item_id || 0));
+              const optionsStock = Array.isArray(loteOptionsByItemId[itemId]) ? loteOptionsByItemId[itemId] : [];
+              const optionsFallback = (it?.lotes_sugeridos || []).map((l, pos) => ({
+                id: `fallback-lote-${itemId}-${pos}`,
+                lote: String(l || '').trim(),
+                quantidade_disponivel: null,
+              }));
+              const grupoKey = makeGrupoKey(it, modoTransferencia);
+              const lotesGrupo = (loteRecebimento || [])
+                .filter((x) => makeGrupoKey(x, modoTransferencia) === grupoKey)
+                .flatMap((x) => Array.isArray(x?.lotes_sugeridos) ? x.lotes_sugeridos : [])
+                .map((s) => String(s || '').trim())
+                .filter(Boolean);
+              const optionsGrupo = [...new Set(lotesGrupo)].map((l, pos) => ({
+                id: `group-lote-${itemId}-${pos}`,
+                lote: l,
+                quantidade_disponivel: null,
+              }));
+              const optionsBase = optionsStock.length > 0
+                ? optionsStock
+                : (optionsGrupo.length > 0 ? optionsGrupo : optionsFallback);
+              const selected = Array.isArray(it?.lotes) ? it.lotes : [];
+              const selectedUpper = new Set(selected.map((s) => String(s || '').trim().toUpperCase()).filter(Boolean));
+              const selectedEmOutrasLinhas = new Set(
+                (loteRecebimento || [])
+                  .filter((x, i) => i !== lotePickerIdx && makeGrupoKey(x, modoTransferencia) === grupoKey)
+                  .flatMap((x) => Array.isArray(x?.lotes) ? x.lotes : [])
+                  .map((s) => String(s || '').trim().toUpperCase())
+                  .filter(Boolean)
+              );
+              const options = optionsBase.filter((o) => {
+                const lote = String(o?.lote || '').trim();
+                if (!lote) return false;
+                if (selectedUpper.has(lote.toUpperCase())) return true;
+                return !selectedEmOutrasLinhas.has(lote.toUpperCase());
+              });
+              return (
+                <div className="fixed inset-0 z-[1200] bg-black/25 flex items-center justify-center p-4">
+                  <div className="w-full max-w-md rounded-xl border border-gray-200 bg-white shadow-2xl">
+                    <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
+                      <div>
+                        <p className="text-sm font-semibold text-gray-800">Selecionar lotes</p>
+                        <p className="text-[11px] text-gray-500 font-mono">{String(it?.codigo || '')}</p>
+                      </div>
+                      <button
+                        type="button"
+                        className="px-2 py-1 text-xs border border-gray-300 rounded hover:bg-gray-50"
+                        onClick={() => setLotePickerIdx(null)}
+                      >
+                        Fechar
+                      </button>
+                    </div>
+                    <div className="px-4 py-3">
+                      <p className="text-xs text-gray-600 mb-2">{selected.length} lote(s) selecionado(s)</p>
+                      <div className="max-h-72 overflow-y-auto border border-gray-200 rounded p-2 space-y-1">
+                        {options.map((o) => {
+                          const lote = String(o.lote || '').trim();
+                          const checked = selectedUpper.has(lote.toUpperCase());
+                          const qtdDisp = o?.quantidade_disponivel != null ? formatMetrosLoteWizard(o.quantidade_disponivel) : null;
+                          return (
+                            <label key={String(o.id || lote)} className="flex items-center gap-2 text-xs text-gray-700">
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={() => toggleLoteLinhaLote(lotePickerIdx, lote)}
+                              />
+                              <span className="font-mono">{lote}</span>
+                              {qtdDisp != null && (
+                                <span className="text-gray-400">({qtdDisp} disp.)</span>
+                              )}
+                            </label>
+                          );
+                        })}
+                        {options.length === 0 && (
+                          <p className="text-xs text-gray-400">Sem lotes disponíveis para este item na origem.</p>
                         )}
                       </div>
                     </div>

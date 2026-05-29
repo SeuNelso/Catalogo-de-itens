@@ -1751,10 +1751,11 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
         const itensByReqId = new Map();
         const rastreavelAggByReqItemId = new Map();
         const seriaisByReqItemId = new Map();
+        const lotesByReqItemId = new Map();
         if (reqIds.length > 0) {
           const itensQ = await pool.query(
             `SELECT ri.id AS requisicao_item_id, ri.requisicao_id, ri.item_id, ri.quantidade, ri.quantidade_preparada, ri.quantidade_apeados,
-                    ri.serialnumber,
+                    ri.serialnumber, ri.lote,
                     i.codigo AS item_codigo, i.descricao AS item_descricao, i.tipocontrolo
              FROM requisicoes_itens ri
              INNER JOIN itens i ON i.id = ri.item_id
@@ -1766,6 +1767,13 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
             if (!Number.isFinite(rid)) continue;
             if (!itensByReqId.has(rid)) itensByReqId.set(rid, []);
             itensByReqId.get(rid).push(it);
+            const riId = Number(it.requisicao_item_id || 0);
+            const loteRi = String(it?.lote || '').trim();
+            if (Number.isFinite(riId) && loteRi) {
+              if (!lotesByReqItemId.has(riId)) lotesByReqItemId.set(riId, []);
+              const arrL = lotesByReqItemId.get(riId);
+              if (!arrL.some((x) => String(x).trim().toUpperCase() === loteRi.toUpperCase())) arrL.push(loteRi);
+            }
           }
 
           const bobinasQ = await pool.query(
@@ -1782,6 +1790,12 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
             prev.metros += Number(b?.metros || 0) || 0;
             if (String(b?.serialnumber || '').trim()) prev.seriais += 1;
             rastreavelAggByReqItemId.set(riId, prev);
+            const loteB = String(b?.lote || '').trim();
+            if (loteB) {
+              if (!lotesByReqItemId.has(riId)) lotesByReqItemId.set(riId, []);
+              const arrL = lotesByReqItemId.get(riId);
+              if (!arrL.some((x) => String(x).trim().toUpperCase() === loteB.toUpperCase())) arrL.push(loteB);
+            }
           }
 
           const seriaisQ = await pool.query(
@@ -1820,6 +1834,7 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
           referencia,
           data,
           seriais = [],
+          lotes = [],
           categoria = 'devolucao',
         }) => {
           const cod = String(codigo || '').trim();
@@ -1838,6 +1853,7 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
             referencia: String(referencia || '').trim(),
             data: String(data || '').trim(),
             seriais: Array.isArray(seriais) ? [...new Set(seriais.map((s) => String(s || '').trim()).filter(Boolean))] : [],
+            lotes: Array.isArray(lotes) ? [...new Set(lotes.map((s) => String(s || '').trim()).filter(Boolean))] : [],
             categoria: categoriaNorm,
           });
         };
@@ -1876,6 +1892,7 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
                 referencia: String(r?.tra_numero || 'TRA confirmado').trim(),
                 data: String(r?.updated_at || r?.created_at || '').trim(),
                 seriais: Number.isFinite(riId) ? (seriaisByReqItemId.get(riId) || []) : [],
+                lotes: Number.isFinite(riId) ? (lotesByReqItemId.get(riId) || []) : [],
                 categoria: 'recebimento',
               });
             }
@@ -1917,6 +1934,7 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
                 referencia: String(r?.tra_numero || 'DEV devolução').trim(),
                 data: String(r?.updated_at || r?.devolucao_tra_gerada_em || r?.created_at || '').trim(),
                 seriais: Number.isFinite(riId) ? (seriaisByReqItemId.get(riId) || []) : [],
+                lotes: Number.isFinite(riId) ? (lotesByReqItemId.get(riId) || []) : [],
                 categoria: 'devolucao',
               });
               addPendente({
@@ -1930,6 +1948,7 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
                 referencia: String(r?.tra_numero || 'DEV devolução').trim(),
                 data: String(r?.updated_at || r?.devolucao_tra_gerada_em || r?.created_at || '').trim(),
                 seriais: Number.isFinite(riId) ? (seriaisByReqItemId.get(riId) || []) : [],
+                lotes: Number.isFinite(riId) ? (lotesByReqItemId.get(riId) || []) : [],
                 categoria: 'apeados',
               });
             }
@@ -1961,7 +1980,6 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
             [armazemId]
           );
           for (const t of tkQ.rows || []) {
-            if (!t?.trfl_gerada_em) continue;
             const cod = String(t?.item_codigo || '').trim();
             const qtd = Number(t?.quantidade || 0) || 0;
             if (!cod || qtd <= 0) continue;
@@ -2054,6 +2072,7 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
             referencia: String(row?.referencia || '').trim(),
             data: String(row?.data || '').trim(),
             seriais: Array.isArray(row?.seriais) ? row.seriais.slice(0, 400) : [],
+            lotes: Array.isArray(row?.lotes) ? row.lotes.slice(0, 400) : [],
             categoria: String(row?.categoria || 'devolucao').trim() || 'devolucao',
           };
           prev.qtd += qtd;
@@ -2064,6 +2083,10 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
           if (Array.isArray(row?.seriais) && row.seriais.length > 0) {
             const merged = [...new Set([...(prev.seriais || []), ...row.seriais].map((s) => String(s || '').trim()).filter(Boolean))];
             prev.seriais = merged.slice(0, 400);
+          }
+          if (Array.isArray(row?.lotes) && row.lotes.length > 0) {
+            const mergedL = [...new Set([...(prev.lotes || []), ...row.lotes].map((s) => String(s || '').trim()).filter(Boolean))];
+            prev.lotes = mergedL.slice(0, 400);
           }
           const prevTs = Date.parse(String(prev?.data || '')) || 0;
           const rowTs = Date.parse(String(row?.data || '')) || 0;
@@ -2101,12 +2124,16 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
             quantidade: 0,
             seriais: [],
             referencias: [],
+            lotes: [],
           };
           prev.quantidade += qtd;
           if (!prev.descricao && row?.descricao) prev.descricao = String(row.descricao).trim();
           if (!prev.tipocontrolo && row?.tipocontrolo) prev.tipocontrolo = String(row.tipocontrolo).trim();
           if (Array.isArray(row?.seriais) && row.seriais.length > 0) {
             prev.seriais = [...new Set([...(prev.seriais || []), ...row.seriais].map((s) => String(s || '').trim()).filter(Boolean))].slice(0, 400);
+          }
+          if (Array.isArray(row?.lotes) && row.lotes.length > 0) {
+            prev.lotes = [...new Set([...(prev.lotes || []), ...row.lotes].map((s) => String(s || '').trim()).filter(Boolean))].slice(0, 400);
           }
           const ref = String(row?.referencia || '').trim();
           if (ref && !prev.referencias.includes(ref)) prev.referencias.push(ref);
@@ -2123,6 +2150,11 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
           acc[key] = Number(acc[key] || 0) + Number(row?.qtd || 0);
           return acc;
         }, {});
+        const contagensPorCategoria = allRows.reduce((acc, row) => {
+          const key = String(row?.categoria || 'devolucao').trim() || 'devolucao';
+          acc[key] = Number(acc[key] || 0) + 1;
+          return acc;
+        }, {});
         return res.json({
           total: allRows.length,
           limit,
@@ -2132,6 +2164,7 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
           armazem: armazemLabel,
           localizacao: targetLocation,
           totais_por_categoria: totaisPorCategoria,
+          contagens_por_categoria: contagensPorCategoria,
           prefill_items: prefillItems,
           rows,
         });
