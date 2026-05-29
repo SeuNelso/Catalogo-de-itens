@@ -4,6 +4,7 @@ const {
   quantidadeNecessariaStockPreparacao,
   quantidadePreparadaEfetiva,
   itemTemSaidaTrflTra,
+  quantidadeMonitorRececaoItem,
 } = require('../../services/requisicoes/preparacaoUtils');
 
 describe('quantidadeNecessariaStockPreparacao', () => {
@@ -56,5 +57,40 @@ describe('quantidadePreparadaEfetiva / itemTemSaidaTrflTra', () => {
   it('sem preparação usa quantidade requisitada', () => {
     assert.equal(quantidadePreparadaEfetiva({ quantidade: 3 }), 3);
     assert.equal(itemTemSaidaTrflTra({ quantidade: 3 }), true);
+  });
+});
+
+describe('quantidadeMonitorRececaoItem', () => {
+  it('LOTE com bobinas usa metros, não quantidade da GT', () => {
+    assert.equal(
+      quantidadeMonitorRececaoItem(
+        { tipocontrolo: 'LOTE', quantidade: 555, quantidade_preparada: null },
+        { metros: 480, seriais: 0 },
+        0
+      ),
+      480
+    );
+  });
+
+  it('LOTE sem bobinas usa quantidade preparada', () => {
+    assert.equal(
+      quantidadeMonitorRececaoItem(
+        { tipocontrolo: 'LOTE', quantidade: 555, quantidade_preparada: 480 },
+        { metros: 0, seriais: 0 },
+        0
+      ),
+      480
+    );
+  });
+
+  it('S/N com seriais na tabela auxiliar usa contagem', () => {
+    assert.equal(
+      quantidadeMonitorRececaoItem(
+        { tipocontrolo: 'S/N', quantidade: 10, quantidade_preparada: null },
+        { metros: 0, seriais: 2 },
+        0
+      ),
+      2
+    );
   });
 });

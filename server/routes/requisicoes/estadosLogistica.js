@@ -6,6 +6,7 @@ const {
   requisicaoPerfilNegadoMiddleware,
 } = require('../../middleware/requisicoesScope');
 const { usuarioTemPermissaoControloStock } = require('../../utils/usuarioDbColumns');
+const { quantidadeMonitorRececaoItem } = require('../../services/requisicoes/preparacaoUtils');
 
 function createEstadosLogisticaRouter(deps) {
   const {
@@ -1869,18 +1870,10 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
             && String(r?.status || '') === 'FINALIZADO';
           if (isRecebimento) {
             for (const it of itens) {
-              const tipoControlo = String(it?.tipocontrolo || '').trim().toUpperCase();
               const riId = Number(it?.requisicao_item_id || 0);
               const rastAgg = Number.isFinite(riId) ? rastreavelAggByReqItemId.get(riId) : null;
-              const qtdBruta = Number(it?.quantidade_preparada ?? it?.quantidade ?? it?.quantidade_confirmada ?? 0) || 0;
               const seriaisInline = serialsNormalizadosList(it?.serialnumber).length;
-              const qtdFallbackRastreavel =
-                tipoControlo === 'LOTE'
-                  ? Number(rastAgg?.metros || 0) || 0
-                  : (isTipoControloSerial(tipoControlo)
-                      ? (Number(rastAgg?.seriais || 0) || seriaisInline || 0)
-                      : 0);
-              const qtd = qtdBruta > 0 ? qtdBruta : qtdFallbackRastreavel;
+              const qtd = quantidadeMonitorRececaoItem(it, rastAgg, seriaisInline);
               addPendente({
                 reqId: r?.id,
                 reqItemId: it?.requisicao_item_id,
@@ -1907,18 +1900,10 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
             && String(r?.status || '') === 'FINALIZADO';
           if (elegivelDevolucao) {
             for (const it of itens) {
-              const tipoControlo = String(it?.tipocontrolo || '').trim().toUpperCase();
               const riId = Number(it?.requisicao_item_id || 0);
               const rastAgg = Number.isFinite(riId) ? rastreavelAggByReqItemId.get(riId) : null;
-              const baseBruto = Number(it?.quantidade_preparada ?? it?.quantidade ?? it?.quantidade_confirmada ?? 0) || 0;
               const seriaisInline = serialsNormalizadosList(it?.serialnumber).length;
-              const baseFallbackRastreavel =
-                tipoControlo === 'LOTE'
-                  ? Number(rastAgg?.metros || 0) || 0
-                  : (isTipoControloSerial(tipoControlo)
-                      ? (Number(rastAgg?.seriais || 0) || seriaisInline || 0)
-                      : 0);
-              const base = baseBruto > 0 ? baseBruto : baseFallbackRastreavel;
+              const base = quantidadeMonitorRececaoItem(it, rastAgg, seriaisInline);
               if (base <= 0) continue;
               const qApeados = Math.max(0, Number(it?.quantidade_apeados ?? 0) || 0);
               const qtdDevolucao = Math.max(0, base - qApeados);
@@ -1963,6 +1948,8 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
             `SELECT i.codigo AS item_codigo,
                     ami.quantidade::float AS quantidade,
                     ami.trfl_gerada_em,
+                    ami.tra_apeado_gerada_em,
+                    COALESCE(ami.trfl_gerada_em, ami.tra_apeado_gerada_em, ami.created_at) AS evento_em,
                     ami.created_at,
                     lo.localizacao AS origem_localizacao_label,
                     ld.localizacao AS destino_localizacao_label,
@@ -1980,6 +1967,7 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
             [armazemId]
           );
           for (const t of tkQ.rows || []) {
+            if (!t?.trfl_gerada_em && !t?.tra_apeado_gerada_em) continue;
             const cod = String(t?.item_codigo || '').trim();
             const qtd = Number(t?.quantidade || 0) || 0;
             if (!cod || qtd <= 0) continue;
@@ -1999,7 +1987,7 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
             if (!ticketDeltasByCategoriaCodigo.has(deltaKey)) ticketDeltasByCategoriaCodigo.set(deltaKey, []);
             ticketDeltasByCategoriaCodigo.get(deltaKey).push({
               delta,
-              ts: Date.parse(String(t?.created_at || '')) || 0,
+              ts: Date.parse(String(t?.evento_em || t?.created_at || '')) || 0,
             });
           }
         }

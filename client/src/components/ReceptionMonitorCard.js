@@ -34,6 +34,13 @@ const formatQtyDecimal = (value) => {
   return n.toLocaleString('pt-PT', { maximumFractionDigits: 4 });
 };
 
+const formatQtyForMonitorRow = (row) => {
+  const q = formatQtyDecimal(row?.qtd);
+  const tip = String(row?.tipocontrolo || '').trim().toUpperCase();
+  if (tip === 'LOTE') return `${q} m`;
+  return q;
+};
+
 const firstNonEmpty = (...values) => {
   for (const v of values) {
     const s = String(v || '').trim();
@@ -504,7 +511,7 @@ function ReceptionMonitorCard() {
                   <div className="line-clamp-2 text-[11px] text-gray-600">{String(row.descricao || '-')}</div>
                 </div>
                 <span className="shrink-0 rounded bg-white px-2 py-0.5 text-xs font-semibold text-gray-800">
-                  {formatQtyDecimal(row.qtd)}
+                  {formatQtyForMonitorRow(row)}
                 </span>
               </div>
               <div className="mt-1.5 flex items-center justify-between gap-2 text-[11px] text-gray-500">
@@ -528,7 +535,7 @@ function ReceptionMonitorCard() {
                   <div className="line-clamp-2 text-[11px] text-gray-600">{String(row.descricao || '-')}</div>
                 </div>
                 <span className="shrink-0 rounded bg-white px-2 py-0.5 text-xs font-semibold text-gray-800">
-                  {formatQtyDecimal(row.qtd)}
+                  {formatQtyForMonitorRow(row)}
                 </span>
               </div>
               <div className="mt-1.5 flex items-center justify-between gap-2 text-[11px] text-gray-500">

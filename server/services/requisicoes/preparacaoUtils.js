@@ -39,9 +39,29 @@ function itemTemSaidaTrflTra(requisicaoItem) {
   return quantidadePreparadaEfetiva(requisicaoItem) > 0;
 }
 
+/**
+ * Quantidade para o monitor da zona de receção (pendente de armazenar).
+ * Alinha com reporte/stock: LOTE em metros (bobinas); S/N em unidades; resto preparação efectiva.
+ */
+function quantidadeMonitorRececaoItem(requisicaoItem, rastAgg, seriaisInline = 0) {
+  const t = String(requisicaoItem?.tipocontrolo || '').trim().toUpperCase();
+  if (t === 'LOTE') {
+    const metrosBobinas = Number(rastAgg?.metros || 0) || 0;
+    if (metrosBobinas > 0) return metrosBobinas;
+  }
+  if (isTipoControloSerialLocal(t)) {
+    const nSer = Number(rastAgg?.seriais || 0) || 0;
+    if (nSer > 0) return nSer;
+    const inline = Number(seriaisInline) || 0;
+    if (inline > 0) return inline;
+  }
+  return quantidadePreparadaEfetiva(requisicaoItem);
+}
+
 module.exports = {
   quantidadeNecessariaStockPreparacao,
   isTipoControloSerialLocal,
   quantidadePreparadaEfetiva,
   itemTemSaidaTrflTra,
+  quantidadeMonitorRececaoItem,
 };
