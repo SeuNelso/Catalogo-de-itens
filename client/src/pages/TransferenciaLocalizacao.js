@@ -1109,15 +1109,16 @@ const TransferenciaLocalizacao = () => {
 
   useEffect(() => {
     if (!loteRecebimento.length || !origemId) return;
-    // Só sugere destino automaticamente quando autoSubmit está ativo (fluxo legado).
-    // No pré-preenchimento da zona de receção o utilizador escolhe o destino e clica em «Gerar tickets».
-    if (!recebimentoAutoSubmitRef.current) return;
+    const fromRececaoCard = Boolean(String(loteOrigemLabel || '').trim());
+    if (!recebimentoAutoSubmitRef.current && !fromRececaoCard) return;
     if (modoTransferencia === 'apeado') {
       const destinoPadrao = pickDestinoPadraoApeado(locsApeadoComId);
       if (!destinoPadrao?.id) return;
       const destinoPadraoId = String(destinoPadrao.id);
       setLoteRecebimento((prev) =>
         prev.map((it) => {
+          const part = String(it?.particao || 'normal').toLowerCase();
+          if (part !== 'apeado') return it;
           const atual = String(it?.destinoId || '').trim();
           return atual && atual !== String(origemId) ? it : { ...it, destinoId: destinoPadraoId };
         })
@@ -1129,11 +1130,13 @@ const TransferenciaLocalizacao = () => {
     const destinoPadraoId = String(destinoPadrao.id);
     setLoteRecebimento((prev) =>
       prev.map((it) => {
+        const part = String(it?.particao || 'normal').toLowerCase();
+        if (part === 'apeado') return it;
         const atual = String(it?.destinoId || '').trim();
         return atual && atual !== String(origemId) ? it : { ...it, destinoId: destinoPadraoId };
       })
     );
-  }, [modoTransferencia, loteRecebimento.length, origemId, locsApeadoComId, locsComId]);
+  }, [modoTransferencia, loteRecebimento.length, origemId, loteOrigemLabel, locsApeadoComId, locsComId]);
 
   useEffect(() => {
     setLinhasOrigem([]);
@@ -2229,9 +2232,28 @@ const TransferenciaLocalizacao = () => {
             };
         if (isSerialItem) {
           const qtdInt = Math.floor(quantidade);
-          const serialsSel = serialsSelecionadosLinha;
+          let serialsSel = [...serialsSelecionadosLinha];
+          if (serialsSel.length !== qtdInt && seriaisSugeridosLinha.length >= qtdInt) {
+            serialsSel = seriaisSugeridosLinha.slice(0, qtdInt);
+          }
+          if (serialsSel.length !== qtdInt && pode && rowStock?.item_id && origemId) {
+            const { data: disponiveis } = await axios.get(
+              `/api/armazens/${armazemId}/localizacoes/${origemId}/itens/${rowStock.item_id}/seriais-disponiveis`,
+              { headers: { Authorization: `Bearer ${token}` } }
+            );
+            const lista = Array.isArray(disponiveis) ? disponiveis : [];
+            const preferidos = new Set(seriaisSugeridosLinha.map((s) => String(s).trim().toUpperCase()));
+            const ordenados = [
+              ...lista.filter((x) => preferidos.has(String(x?.serialnumber || '').trim().toUpperCase())),
+              ...lista.filter((x) => !preferidos.has(String(x?.serialnumber || '').trim().toUpperCase())),
+            ];
+            serialsSel = ordenados
+              .map((x) => String(x?.serialnumber || '').trim())
+              .filter(Boolean)
+              .slice(0, qtdInt);
+          }
           if (serialsSel.length !== qtdInt) {
-            throw new Error(`Selecione ${qtdInt} serial(s) para ${codigo}.`);
+            throw new Error(`Selecione ${qtdInt} serial(s) para ${codigo} na localização de origem.`);
           }
           const seen = serialSeenByGrupo.get(keyGrupo) || new Set();
           for (const sn of serialsSel) {

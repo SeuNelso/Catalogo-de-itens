@@ -1,5 +1,8 @@
 const express = require('express');
-const { isFluxoDevolucaoViaturaCentral } = require('../../middleware/requisicoesScope');
+const {
+  isFluxoDevolucaoViaturaCentral,
+  isFluxoDevolucaoParaCentral,
+} = require('../../middleware/requisicoesScope');
 const { usuarioTemPermissaoControloStock } = require('../../utils/usuarioDbColumns');
 const { isAdmin } = require('../../utils/roles');
 
@@ -186,11 +189,34 @@ router.patch('/:id/atender-item', ...requisicaoAuth, denyBackofficeOperations, a
         error: 'quantidade_apeados não pode ser superior à quantidade preparada.',
       });
     }
-    const quantidadeApeadosFinal = isZero ? 0 : qApeadosRaw;
+    let quantidadeApeadosFinal = isZero ? 0 : qApeadosRaw;
+    const ehDevolucaoParaCentral = isFluxoDevolucaoParaCentral(
+      check.rows[0].armazem_origem_tipo,
+      check.rows[0].armazem_destino_tipo
+    );
     const ehDevolucaoViaturaCentral = isFluxoDevolucaoViaturaCentral(
       check.rows[0].armazem_origem_tipo,
       check.rows[0].armazem_destino_tipo
     );
+    if (!isZero && ehDevolucaoParaCentral && quantidadeApeadosFinal <= 0) {
+      const serialsApeadosBody = Array.isArray(req.body?.serials_apeados)
+        ? req.body.serials_apeados.map((s) => String(s || '').trim()).filter(Boolean)
+        : [];
+      if (serialsApeadosBody.length > 0) {
+        quantidadeApeadosFinal = Math.min(quantidadePreparadaFinal, serialsApeadosBody.length);
+      } else if ((item.tipocontrolo || '').toUpperCase() === 'LOTE' && Array.isArray(bobinas) && bobinas.length > 0) {
+        const nBobApeadas = bobinas.filter((b) => Boolean(b?.apeado)).length;
+        if (nBobApeadas > 0) {
+          quantidadeApeadosFinal = Math.min(quantidadePreparadaFinal, nBobApeadas);
+        }
+      }
+    }
+    if (quantidadeApeadosFinal > quantidadePreparadaFinal) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({
+        error: 'quantidade_apeados não pode ser superior à quantidade preparada.',
+      });
+    }
 
     if (!ehRecebimentoTransfer && !isZero && check.rows[0].armazem_origem_id && check.rows[0].armazem_id) {
       const tiposR = await client.query(
@@ -671,6 +697,20 @@ router.patch('/:id/atender-item', ...requisicaoAuth, denyBackofficeOperations, a
           ? [...new Set(req.body.serials_apeados.map((s) => String(s || '').trim()).filter(Boolean))]
           : [];
         const apeadoUpper = new Set(serialsApeadosSelecionados.map((s) => s.toUpperCase()));
+        if (
+          !isZero &&
+          ehDevolucaoParaCentral &&
+          quantidadeApeadosFinal > 0 &&
+          Array.isArray(serialsNormalizados) &&
+          serialsNormalizados.length > 0 &&
+          apeadoUpper.size < quantidadeApeadosFinal
+        ) {
+          for (const rawSn of serialsNormalizados) {
+            if (apeadoUpper.size >= quantidadeApeadosFinal) break;
+            const sn = String(rawSn || '').trim();
+            if (sn) apeadoUpper.add(sn.toUpperCase());
+          }
+        }
 
         if (!isZero && Array.isArray(serialsNormalizados) && serialsNormalizados.length > 0) {
           const serialRowsJson = serialsNormalizados.map((rawSn, i) => {

@@ -33,6 +33,10 @@ import {
   mensagemDocumentosEmFaltaFinalizarDevolucao
 } from '../utils/podeFinalizarDevolucaoTransferenciasPendentes';
 import {
+  getEpiColaboradorFromObs,
+  isFluxoDevolucaoParaCentral
+} from '../utils/fluxoDevolucao';
+import {
   formatArtigoExibicao,
   isTipoControloSerial,
   metrosTotalFromBobinas,
@@ -42,6 +46,25 @@ import {
 function labelArmazem(armazem) {
   if (!armazem) return '';
   return armazem.codigo ? `${armazem.codigo} - ${armazem.descricao}` : (armazem.descricao || '');
+}
+
+/** Devolução S/N: alinha checkbox «Qtd. APEADOS» com seriais marcados. */
+function bobinasSeriaisComApeadosPorQuantidade(bobinas, qtdApeados) {
+  const list = Array.isArray(bobinas) ? bobinas : [];
+  let restantes = Math.max(0, Math.floor(Number(qtdApeados) || 0));
+  return list.map((bb) => {
+    const hasSn = String(bb?.serialnumber || '').trim();
+    if (!hasSn) return { ...bb, apeado: false };
+    if (restantes > 0) {
+      restantes -= 1;
+      return { ...bb, apeado: true };
+    }
+    return { ...bb, apeado: false };
+  });
+}
+
+function contarSeriaisApeadosNasBobinas(bobinas) {
+  return (bobinas || []).filter((b) => Boolean(b?.apeado) && String(b?.serialnumber || '').trim()).length;
 }
 
 const MAX_BOBINAS_LOTE = 500;
@@ -966,9 +989,15 @@ const PrepararRequisicao = () => {
     prevSnPreenchidosRef.current = isSerial
       ? bobinasComOrdem.filter((b) => String(b?.serialnumber || '').trim()).length
       : 0;
-    const qtdApeadosInicial = (isLote || isSerial)
-      ? (bobinasComOrdem || []).filter((bb) => Boolean(bb?.apeado)).length
-      : (Number(item?.quantidade_apeados) || 0);
+    const marcadosApeado = (bobinasComOrdem || []).filter((bb) => Boolean(bb?.apeado)).length;
+    const qtdApeadosCol = Math.max(0, Math.floor(Number(item?.quantidade_apeados) || 0));
+    let bobinasForm = bobinasComOrdem;
+    let qtdApeadosInicial = (isLote || isSerial) ? marcadosApeado : qtdApeadosCol;
+    if (isSerial && qtdApeadosCol > marcadosApeado) {
+      qtdApeadosInicial = qtdApeadosCol;
+      bobinasForm = bobinasSeriaisComApeadosPorQuantidade(bobinasComOrdem, qtdApeadosCol);
+      qtdApeadosInicial = contarSeriaisApeadosNasBobinas(bobinasForm);
+    }
     setFormItem({
       quantidade_preparada: qtdPreparada,
       localizacao_origem: isOrigemCustom ? '_custom_' : locOrigem,
@@ -978,7 +1007,7 @@ const PrepararRequisicao = () => {
       lote: item.lote || '',
       serialnumber: item.serialnumber || '',
       quantidade_apeados: Math.max(0, Math.floor(qtdApeadosInicial || 0)),
-      bobinas: bobinasComOrdem
+      bobinas: bobinasForm
     });
   };
 
@@ -1643,6 +1672,31 @@ const PrepararRequisicao = () => {
       bobinasPayload = seriais.map((sn) => ({ serialnumber: sn }));
     }
 
+    const qtdApeadosCheckbox = Math.max(0, Math.floor(Number(formItem.quantidade_apeados) || 0));
+    const seriaisApeadosMarcados = isTipoControloSerial(tipoControlo)
+      ? (formItem.bobinas || [])
+          .filter((b) => Boolean(b?.apeado) && String(b?.serialnumber || '').trim())
+          .map((b) => String(b.serialnumber).trim())
+      : [];
+    const seriaisOrdemSn = isTipoControloSerial(tipoControlo)
+      ? (formItem.bobinas || []).map((b) => String(b?.serialnumber || '').trim()).filter(Boolean)
+      : [];
+    const serialsApeadosPayload =
+      isFluxoDevolucao && isTipoControloSerial(tipoControlo)
+        ? (seriaisApeadosMarcados.length > 0
+            ? seriaisApeadosMarcados
+            : qtdApeadosCheckbox > 0
+              ? seriaisOrdemSn.slice(0, qtdApeadosCheckbox)
+              : [])
+        : undefined;
+    const quantidadeApeadosPayload = !isFluxoDevolucao
+      ? 0
+      : tipoControlo === 'LOTE'
+        ? (Array.isArray(bobinasPayload) ? bobinasPayload.filter((b) => Boolean(b?.apeado)).length : 0)
+        : isTipoControloSerial(tipoControlo)
+          ? Math.max(seriaisApeadosMarcados.length, serialsApeadosPayload?.length || 0, qtdApeadosCheckbox)
+          : qtdApeadosCheckbox;
+
     try {
       setSubmitting(itemPreparando.id);
       const token = localStorage.getItem('token');
@@ -1656,16 +1710,7 @@ const PrepararRequisicao = () => {
             bobinasPayload,
             isTipoControloSerial,
           }),
-          quantidade_apeados:
-            !isFluxoDevolucao
-              ? 0
-              : tipoControlo === 'LOTE'
-              ? (Array.isArray(bobinasPayload) ? bobinasPayload.filter((b) => Boolean(b?.apeado)).length : 0)
-              : (isTipoControloSerial(tipoControlo)
-                  ? (formItem.bobinas || []).filter(
-                    (b) => Boolean(b?.apeado) && String(b?.serialnumber || '').trim()
-                  ).length
-                  : Math.max(0, Math.floor(Number(formItem.quantidade_apeados) || 0))),
+          quantidade_apeados: quantidadeApeadosPayload,
           localizacao_origem: isFluxoRecebimentoMercadoria ? null : locOrigem,
           lote: formItem.lote || null,
           serialnumber: formItem.serialnumber || null,
@@ -1674,12 +1719,7 @@ const PrepararRequisicao = () => {
             !isZero && isTipoControloSerial(tipoControlo) && Array.isArray(bobinasPayload)
               ? bobinasPayload.map((b) => b.serialnumber)
               : undefined,
-          serials_apeados: isTipoControloSerial(tipoControlo)
-            && isFluxoDevolucao
-            ? (formItem.bobinas || [])
-                .filter((b) => Boolean(b?.apeado) && String(b?.serialnumber || '').trim())
-                .map((b) => String(b.serialnumber).trim())
-            : undefined
+          serials_apeados: serialsApeadosPayload?.length ? serialsApeadosPayload : undefined
           // localizacao_destino = EXPEDICAO é definida automaticamente no servidor
         },
         {
@@ -2082,21 +2122,13 @@ const PrepararRequisicao = () => {
   const podeGerirLinhasItem =
     podeEditarItensPreparacao && (podeAgirSeparacao || adminCorrigindoPosSeparacao);
   const podeTrflTraReporte = podeAgirSeparacao && podeDocsPosSeparacao;
-  const tipoRequisicaoNorm = String(requisicao?.tipo || '')
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase()
-    .trim();
-  /** Alinhar à API (`devolucao`, `devolucao de carrinha`) — muitas requisições da lista devoluções vêm sem `tipo`. */
-  const isDevolucaoCarrinha =
-    tipoRequisicaoNorm === 'devolucao de carrinha' ||
-    tipoRequisicaoNorm === 'devolucao';
-  const geometriaDevolucaoViaturaCentral =
-    String(armazemOrigem?.tipo || requisicao.armazem_origem_tipo || '').toLowerCase() === 'viatura' &&
-    String(armazemDestino?.tipo || requisicao.armazem_destino_tipo || '').toLowerCase() === 'central';
-  const isFluxoDevolucao =
-    geometriaDevolucaoViaturaCentral &&
-    (isDevolucaoCarrinha || origemPagina === 'devolucoes');
+  const tipoOrigemReq = String(armazemOrigem?.tipo || requisicao.armazem_origem_tipo || '').toLowerCase();
+  const tipoDestinoReq = String(armazemDestino?.tipo || requisicao.armazem_destino_tipo || '').toLowerCase();
+  const geometriaDevolucaoParaCentral = isFluxoDevolucaoParaCentral(tipoOrigemReq, tipoDestinoReq);
+  const isFluxoDevolucaoEpi = tipoOrigemReq === 'epi' && tipoDestinoReq === 'central';
+  /** EPI/viatura → central: APEADOS na preparação não depende de ?origem=devolucoes nem do campo tipo. */
+  const isFluxoDevolucao = geometriaDevolucaoParaCentral;
+  const epiColabDevolucao = isFluxoDevolucaoEpi ? getEpiColaboradorFromObs(requisicao?.observacoes) : null;
   const isFluxoRecebimentoMercadoria = String(requisicao?.observacoes || '')
     .toUpperCase()
     .startsWith(RECEBIMENTO_TRANSFERENCIA_MARKER);
@@ -2294,7 +2326,9 @@ const PrepararRequisicao = () => {
             {isFluxoRecebimentoMercadoria
               ? `Preparar Recebimento #${id}`
               : isFluxoDevolucao
-                ? `Preparar Devolução #${id}`
+                ? isFluxoDevolucaoEpi
+                  ? `Preparar Devolução EPI #${id}`
+                  : `Preparar Devolução #${id}`
                 : `Preparar Requisição #${id}`}
           </h1>
           {!isFluxoDevolucao && !isFluxoRecebimentoMercadoria && (
@@ -2321,6 +2355,14 @@ const PrepararRequisicao = () => {
               <span className="text-sm text-gray-500">{tituloDestino}</span>
               <p className="font-medium text-gray-900">{valorDestino}</p>
             </div>
+            {isFluxoDevolucaoEpi && (epiColabDevolucao?.nome || epiColabDevolucao?.numero) && (
+              <div className="sm:col-span-2">
+                <span className="text-sm text-gray-500">Colaborador (devolução EPI)</span>
+                <p className="font-medium text-gray-900">
+                  {[epiColabDevolucao.numero, epiColabDevolucao.nome].filter(Boolean).join(' — ')}
+                </p>
+              </div>
+            )}
             <div>
               <span className="text-sm text-gray-500">Criado por</span>
               <p className="font-medium text-gray-900 flex flex-wrap items-center gap-2">
@@ -2728,7 +2770,13 @@ const PrepararRequisicao = () => {
                                       const nextChecked = Boolean(e.target.checked);
 
                                       if (!nextChecked) {
-                                        setFormItem((prev) => ({ ...prev, quantidade_apeados: 0 }));
+                                        setFormItem((prev) => ({
+                                          ...prev,
+                                          quantidade_apeados: 0,
+                                          bobinas: isTipoControloSerial(item.tipocontrolo)
+                                            ? (prev.bobinas || []).map((bb) => ({ ...bb, apeado: false }))
+                                            : prev.bobinas,
+                                        }));
                                         return;
                                       }
 
@@ -2742,8 +2790,20 @@ const PrepararRequisicao = () => {
 
                                       setFormItem((prev) => {
                                         const current = Number(prev.quantidade_apeados) || 0;
-                                        const nextApeados = current > 0 ? current : 1;
-                                        return { ...prev, quantidade_apeados: Math.min(nextApeados, totalQty) };
+                                        const nextApeados = Math.min(
+                                          totalQty,
+                                          current > 0 ? current : 1
+                                        );
+                                        const bobinasAtualizadas = isTipoControloSerial(item.tipocontrolo)
+                                          ? bobinasSeriaisComApeadosPorQuantidade(prev.bobinas, nextApeados)
+                                          : prev.bobinas;
+                                        return {
+                                          ...prev,
+                                          quantidade_apeados: isTipoControloSerial(item.tipocontrolo)
+                                            ? contarSeriaisApeadosNasBobinas(bobinasAtualizadas)
+                                            : nextApeados,
+                                          bobinas: bobinasAtualizadas,
+                                        };
                                       });
                                     }}
                                   />

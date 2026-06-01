@@ -204,12 +204,82 @@ async function aplicarStockLinhaMovInterna(client, {
       );
       serialRows = linked.rows || [];
     }
+    let serialsParaValidar = [...new Set(
+      (serialsLinha || []).map((s) => String(s || '').trim()).filter(Boolean)
+    )];
+    if (serialsParaValidar.length < qtdInt) {
+      const origemLabel = String(origemLocLabel || '').trim()
+        || String(
+          (
+            await client.query(
+              `SELECT localizacao FROM armazens_localizacoes WHERE id = $1`,
+              [origemLocId]
+            )
+          ).rows?.[0]?.localizacao || ''
+        ).trim();
+      const autoQ = await client.query(
+        `SELECT serialnumber
+         FROM stock_serial
+         WHERE item_id = $1
+           AND armazem_id = $2
+           AND status IN ('disponivel', 'reservado')
+         ORDER BY
+           CASE
+             WHEN UPPER(TRIM(localizacao)) = UPPER(TRIM($3::text)) THEN 0
+             ELSE 1
+           END,
+           serialnumber ASC
+         LIMIT $4`,
+        [itemId, armazemId, origemLabel || origemLocLabel, qtdInt]
+      );
+      const seen = new Set(serialsParaValidar.map((s) => s.toUpperCase()));
+      for (const row of autoQ.rows || []) {
+        if (serialsParaValidar.length >= qtdInt) break;
+        const sn = String(row.serialnumber || '').trim();
+        const key = sn.toUpperCase();
+        if (!sn || seen.has(key)) continue;
+        seen.add(key);
+        serialsParaValidar.push(sn);
+      }
+    }
+    if (serialRows.length < qtdInt && serialsParaValidar.length > 0) {
+      const origemSyncLabel = String(origemLocLabel || '').trim()
+        || String(
+          (
+            await client.query(
+              `SELECT localizacao FROM armazens_localizacoes WHERE id = $1`,
+              [origemLocId]
+            )
+          ).rows?.[0]?.localizacao || ''
+        ).trim();
+      if (origemSyncLabel) {
+        await client.query(
+          `UPDATE stock_serial
+           SET localizacao = $3,
+               status = 'disponivel',
+               reservado_em = NULL,
+               atualizado_em = CURRENT_TIMESTAMP
+           WHERE item_id = $1
+             AND armazem_id = $2
+             AND UPPER(TRIM(serialnumber)) = ANY(
+               SELECT UPPER(TRIM(u.x)) FROM unnest($4::text[]) AS u(x)
+             )
+             AND status IN ('disponivel', 'reservado')`,
+          [
+            itemId,
+            armazemId,
+            origemSyncLabel,
+            serialsParaValidar.slice(0, qtdInt).map((s) => String(s).trim()),
+          ]
+        );
+      }
+    }
     if (serialRows.length < qtdInt) {
       serialRows = await validarSerialsNaOrigem(client, {
         itemId,
         armazemId,
         origemLocId,
-        serialsLinha,
+        serialsLinha: serialsParaValidar.slice(0, qtdInt),
         itemCodigo,
       });
     }
@@ -598,6 +668,93 @@ async function aplicarStockTicketMovInternaSePendente(client, {
   return { applied: true };
 }
 
+/**
+ * Seriais para TRFL/TRA APEADO: tabela do ticket, depois stock na origem ou no destino
+ * (tickets antigos sem `armazem_movimentacao_interna_seriais` ou stock já transferido).
+ */
+async function listarSeriaisParaExportTicket(client, {
+  ticketId,
+  itemId,
+  armazemId,
+  origemLocLabel,
+  destinoArmazemId,
+  destinoLocLabel,
+  quantidade,
+  hasTicketSerialTable,
+}) {
+  const qtdInt = Math.floor(Number(quantidade) || 0);
+  if (qtdInt <= 0) return [];
+
+  if (hasTicketSerialTable && ticketId) {
+    const linked = await client.query(
+      `SELECT ss.id, ss.serialnumber
+       FROM armazem_movimentacao_interna_seriais amis
+       INNER JOIN stock_serial ss ON ss.id = amis.stock_serial_id
+       WHERE amis.ticket_id = $1
+       ORDER BY ss.serialnumber ASC`,
+      [ticketId]
+    );
+    if ((linked.rows || []).length >= qtdInt) {
+      return (linked.rows || []).slice(0, qtdInt);
+    }
+  }
+
+  const queryAt = async (armId, label) => {
+    const arm = Number(armId || 0);
+    const loc = String(label || '').trim();
+    if (!Number.isFinite(arm) || arm <= 0 || !loc) return [];
+    const r = await client.query(
+      `SELECT id, serialnumber
+       FROM stock_serial
+       WHERE item_id = $1
+         AND armazem_id = $2
+         AND UPPER(TRIM(localizacao)) = UPPER(TRIM($3::text))
+         AND status IN ('disponivel', 'reservado')
+       ORDER BY serialnumber ASC
+       LIMIT $4`,
+      [itemId, arm, loc, qtdInt]
+    );
+    return r.rows || [];
+  };
+
+  let rows = await queryAt(armazemId, origemLocLabel);
+  if (rows.length < qtdInt) {
+    rows = await queryAt(destinoArmazemId, destinoLocLabel);
+  }
+  if (rows.length < qtdInt) {
+    const origNorm = String(origemLocLabel || '').trim();
+    const destNorm = String(destinoLocLabel || '').trim();
+    const r = await client.query(
+      `SELECT id, serialnumber
+       FROM stock_serial
+       WHERE item_id = $1
+         AND status IN ('disponivel', 'reservado')
+         AND (
+           ($2::int > 0 AND armazem_id = $2)
+           OR ($3::int > 0 AND armazem_id = $3)
+         )
+       ORDER BY
+         CASE
+           WHEN $4::text <> '' AND UPPER(TRIM(localizacao)) = UPPER(TRIM($4::text)) THEN 0
+           WHEN $5::text <> '' AND UPPER(TRIM(localizacao)) = UPPER(TRIM($5::text)) THEN 1
+           ELSE 2
+         END,
+         serialnumber ASC
+       LIMIT $6`,
+      [
+        itemId,
+        Number(armazemId) || 0,
+        Number(destinoArmazemId) || 0,
+        origNorm,
+        destNorm,
+        qtdInt,
+      ]
+    );
+    rows = r.rows || [];
+  }
+  return rows.slice(0, qtdInt);
+}
+
 module.exports = {
   isTipoControloSerial,
   makeBizError,
@@ -607,6 +764,7 @@ module.exports = {
   libertarReservaSerialsTicket,
   aplicarStockLinhaMovInterna,
   aplicarStockTicketMovInternaSePendente,
+  listarSeriaisParaExportTicket,
   ticketEstoqueJaAplicado,
   marcarTicketEstoqueAplicado,
   hasEstoqueAplicadoColumn,

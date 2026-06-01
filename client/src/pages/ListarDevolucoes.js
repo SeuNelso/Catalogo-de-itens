@@ -1619,7 +1619,14 @@ const ListarDevolucoes = () => {
                 onClick={() => navigate('/requisicoes/criar?devolucao=1')}
                 className="inline-flex items-center gap-2 px-4 py-2 bg-[#0915FF] text-white rounded-lg hover:bg-[#070FCC] transition-colors text-sm"
               >
-                <FaPlus /> Nova Devolução
+                <FaPlus /> Nova Devolução (viatura)
+              </button>
+              <button
+                type="button"
+                onClick={() => navigate('/requisicoes/criar?devolucao=1&fluxo=epi')}
+                className="inline-flex items-center gap-2 px-4 py-2 border border-indigo-400 text-indigo-800 rounded-lg hover:bg-indigo-50 transition-colors text-sm"
+              >
+                <FaPlus /> Nova Devolução EPI
               </button>
             </div>
           )}
@@ -1756,6 +1763,8 @@ const ListarDevolucoes = () => {
 
                   const podePrepararAqui = canPrepare && ['pendente', 'EM SEPARACAO', 'separado'].includes(r.status);
                   const podeAbrir = Boolean(canOpenMonitor || canEntregar);
+                  const isDevolucaoEpi =
+                    String(r.armazem_origem_tipo || '').trim().toLowerCase() === 'epi';
 
                   return (
                     <div
@@ -1815,6 +1824,11 @@ const ListarDevolucoes = () => {
                               <span className={`px-2 py-1 text-xs font-semibold rounded-full ${getStatusBadge(r.status)}`}>
                                 {statusLabel}
                               </span>
+                              {isDevolucaoEpi && (
+                                <span className="px-2 py-0.5 text-[10px] font-semibold rounded-full bg-teal-100 text-teal-800 uppercase tracking-wide">
+                                  EPI
+                                </span>
+                              )}
                               {r.status === 'EM EXPEDICAO' && Boolean(r.cancelada_em_expedicao) && (
                                 <span className="px-2 py-1 text-xs font-semibold rounded-full bg-red-100 text-red-800">
                                   Cancelada

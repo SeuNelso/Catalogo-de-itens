@@ -1,6 +1,6 @@
-﻿import React, { useCallback, useEffect, useMemo, useState } from 'react';
+﻿import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import axios from 'axios';
-import { FaWarehouse } from 'react-icons/fa';
+import { FaFileImport, FaWarehouse } from 'react-icons/fa';
 import Toast from '../components/Toast';
 import { useAuth } from '../contexts/AuthContext';
 import { isAdmin } from '../utils/roles';
@@ -14,6 +14,16 @@ import {
   MODOS_PDF,
   TIPO_ETIQUETA
 } from '../utils/identificacaoItemPdf';
+import {
+  MAX_CODIGOS_IMPORT_IDENT,
+  parseCodigosImportados
+} from '../utils/parseCodigosImportados';
+import { resolverItensPorCodigos } from '../utils/resolverItensPorCodigos';
+
+const MODO_ENTRADA = Object.freeze({
+  MANUAL: 'manual',
+  IMPORTAR: 'importar'
+});
 
 const normalize = (s) =>
   String(s || '')
@@ -103,8 +113,16 @@ const novaLinhaArtigo = () => ({
 
 const IdentificacaoItens = () => {
   const { user } = useAuth();
+  const [modoEntrada, setModoEntrada] = useState(MODO_ENTRADA.MANUAL);
   const [modo, setModo] = useState(MODOS_PDF.FOLHA_INTEIRA);
   const [etiquetaComLote, setEtiquetaComLote] = useState(false);
+
+  const [importTexto, setImportTexto] = useState('');
+  const [importResolvendo, setImportResolvendo] = useState(false);
+  const [importProgresso, setImportProgresso] = useState({ feito: 0, total: 0 });
+  const [importResultados, setImportResultados] = useState([]);
+  const importAbortRef = useRef(null);
+  const importFileRef = useRef(null);
 
   const [linhas, setLinhas] = useState([novaLinhaArtigo()]);
   const [linhaSugAtiva, setLinhaSugAtiva] = useState(null);
@@ -132,6 +150,22 @@ const IdentificacaoItens = () => {
 
   const isTres = modo === MODOS_PDF.TRES_POR_FOLHA;
   const modoLoteAtivo = !isTres && etiquetaComLote;
+  const isImportar = modoEntrada === MODO_ENTRADA.IMPORTAR;
+
+  const importCodigosParsed = useMemo(
+    () => parseCodigosImportados(importTexto),
+    [importTexto]
+  );
+
+  const importEncontrados = useMemo(
+    () => (importResultados || []).filter((r) => r.encontrado && r.item),
+    [importResultados]
+  );
+
+  const importNaoEncontrados = useMemo(
+    () => (importResultados || []).filter((r) => !r.encontrado),
+    [importResultados]
+  );
 
   useEffect(() => {
     const loadArmazens = async () => {
@@ -463,6 +497,7 @@ const IdentificacaoItens = () => {
 
   const ativarEtiquetaComLote = (ativo) => {
     setEtiquetaComLote(ativo);
+    if (ativo) setModoEntrada(MODO_ENTRADA.MANUAL);
     setLinhas((prev) =>
       prev.map((l) => ({
         ...l,
@@ -551,28 +586,177 @@ const IdentificacaoItens = () => {
   const precisaSelecionarArmazem =
     armazensIdentificacao.length > 1 && !armazemId;
 
-  const podeGerar = useMemo(() => {
-    if (gerando || loadingArmazens || precisaSelecionarArmazem) return false;
+  const precisaArmazemParaGerar =
+    !isImportar && (modoLoteAtivo || precisaSelecionarArmazem);
+
+  const podeGerarManual = useMemo(() => {
+    if (gerando || loadingArmazens) return false;
     if (armazensIdentificacao.length === 0) return false;
+    if (precisaArmazemParaGerar && !armazemId) return false;
     if (linhasPreenchidas.length < 1) return false;
     if (modoLoteAtivo) {
-      return (
-        Boolean(armazemId) &&
-        linhasPreenchidas.every((l) => l.lote)
-      );
+      return linhasPreenchidas.every((l) => l.lote);
     }
     return true;
   }, [
     gerando,
     linhasPreenchidas,
     loadingArmazens,
-    precisaSelecionarArmazem,
+    precisaArmazemParaGerar,
     armazensIdentificacao.length,
     modoLoteAtivo,
     armazemId
   ]);
 
+  const podeGerarImport = useMemo(() => {
+    if (gerando || importResolvendo || loadingArmazens) return false;
+    if (armazensIdentificacao.length === 0) return false;
+    if (modoLoteAtivo) return false;
+    if (importCodigosParsed.length < 1) return false;
+    if (importResultados.length > 0) return importEncontrados.length > 0;
+    return true;
+  }, [
+    gerando,
+    importResolvendo,
+    loadingArmazens,
+    armazensIdentificacao.length,
+    modoLoteAtivo,
+    importCodigosParsed.length,
+    importResultados.length,
+    importEncontrados.length
+  ]);
+
+  const podeGerar = isImportar ? podeGerarImport : podeGerarManual;
+
+  const validarListaImport = useCallback(async () => {
+    const codigos = parseCodigosImportados(importTexto);
+    if (codigos.length === 0) {
+      setToast({ type: 'error', message: 'Cole ou importe pelo menos um código de artigo.' });
+      return [];
+    }
+    if (codigos.length > MAX_CODIGOS_IMPORT_IDENT) {
+      setToast({
+        type: 'error',
+        message: `Máximo de ${MAX_CODIGOS_IMPORT_IDENT} códigos por importação.`
+      });
+      return [];
+    }
+
+    importAbortRef.current?.abort();
+    const ac = new AbortController();
+    importAbortRef.current = ac;
+
+    setImportResolvendo(true);
+    setImportProgresso({ feito: 0, total: codigos.length });
+    setImportResultados([]);
+    try {
+      const rows = await resolverItensPorCodigos(codigos, {
+        signal: ac.signal,
+        onProgress: (feito, total) => setImportProgresso({ feito, total })
+      });
+      if (ac.signal.aborted) return [];
+      setImportResultados(rows);
+      const ok = rows.filter((r) => r.encontrado).length;
+      const falha = rows.length - ok;
+      setToast({
+        type: falha > 0 ? 'warning' : 'success',
+        message:
+          falha > 0
+            ? `${ok} artigo(s) encontrado(s), ${falha} código(s) sem correspondência.`
+            : `${ok} artigo(s) encontrado(s).`
+      });
+      return rows;
+    } catch (e) {
+      if (e?.name === 'AbortError') return [];
+      setToast({ type: 'error', message: e?.message || 'Erro ao validar códigos.' });
+      return [];
+    } finally {
+      if (importAbortRef.current === ac) {
+        setImportResolvendo(false);
+        importAbortRef.current = null;
+      }
+    }
+  }, [importTexto]);
+
+  const handleImportarFicheiro = (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const text = String(reader.result || '');
+      setImportTexto(text);
+      setImportResultados([]);
+      setToast({ type: 'success', message: `Ficheiro «${file.name}» carregado.` });
+    };
+    reader.onerror = () => {
+      setToast({ type: 'error', message: 'Não foi possível ler o ficheiro.' });
+    };
+    reader.readAsText(file, 'UTF-8');
+  };
+
+  useEffect(() => {
+    return () => importAbortRef.current?.abort();
+  }, []);
+
+  useEffect(() => {
+    if (!isImportar) return;
+    setImportResultados([]);
+  }, [importTexto, isImportar]);
+
+  const handleGerarPdfImport = async () => {
+    if (modoLoteAtivo) {
+      setToast({
+        type: 'error',
+        message: 'Importação de lista só está disponível para etiquetas de localização (não Lote).'
+      });
+      return;
+    }
+
+    let rows = importResultados;
+    if (!rows.length || rows.length !== importCodigosParsed.length) {
+      rows = await validarListaImport();
+      if (!rows.length) return;
+    }
+
+    const itensPdf = rows
+      .filter((r) => r.encontrado && r.item)
+      .map((r) => ({
+        codigo: String(r.item.codigo || r.codigo || '').trim(),
+        descricao: String(r.item.descricao || r.item.nome || '').trim(),
+        tipoEtiqueta: TIPO_ETIQUETA.LOCALIZACAO
+      }));
+
+    if (itensPdf.length === 0) {
+      setToast({ type: 'error', message: 'Nenhum código da lista foi encontrado no catálogo.' });
+      return;
+    }
+
+    try {
+      setGerando(true);
+      await gerarPdfIdentificacao({
+        modo,
+        tipoEtiqueta: TIPO_ETIQUETA.LOCALIZACAO,
+        localizacao: '',
+        itens: itensPdf
+      });
+      setToast({
+        type: 'success',
+        message: `PDF gerado com ${itensPdf.length} etiqueta(s).`
+      });
+    } catch (err) {
+      setToast({ type: 'error', message: err?.message || 'Erro ao gerar PDF.' });
+    } finally {
+      setGerando(false);
+    }
+  };
+
   const handleGerarPdf = async () => {
+    if (isImportar) {
+      await handleGerarPdfImport();
+      return;
+    }
+
     if (!isTres) {
       for (let i = 0; i < linhasPreenchidas.length; i += 1) {
         const qtdRaw = linhasPreenchidas[i].quantidade;
@@ -645,13 +829,13 @@ const IdentificacaoItens = () => {
 
   return (
     <div className="min-h-screen bg-[#F7F8FA] p-4 sm:p-6 lg:p-8">
-      <div className="max-w-2xl mx-auto">
+      <div className="max-w-3xl mx-auto">
         <h1 className="text-2xl sm:text-3xl font-bold text-gray-800">Identificação de itens</h1>
         <p className="text-gray-600 mt-1 mb-6">
           PDF em A4 (horizontal ou vertical conforme o formato).
           {modoLoteAtivo
             ? ' QR = lote; código de barras = artigo.'
-            : ' QR e texto de localização são opcionais; código de barras = código do artigo.'}
+            : ' Na folha inteira, localização é opcional (QR e texto só se preencher). Código de barras = código do artigo.'}
         </p>
 
         <section className="bg-white rounded-2xl shadow-lg border border-gray-200 p-4 sm:p-6 space-y-5">
@@ -699,6 +883,47 @@ const IdentificacaoItens = () => {
               )}
             </div>
           )}
+
+          <fieldset>
+            <legend className="text-sm font-medium text-gray-700 mb-3">Como adicionar artigos</legend>
+            <div className="flex flex-col sm:flex-row gap-2 mb-5">
+              <label className="flex-1 flex items-start gap-2 p-3 border rounded-lg cursor-pointer has-[:checked]:border-[#0915FF] has-[:checked]:bg-blue-50/50">
+                <input
+                  type="radio"
+                  name="modo-entrada"
+                  className="mt-1"
+                  checked={modoEntrada === MODO_ENTRADA.MANUAL}
+                  onChange={() => setModoEntrada(MODO_ENTRADA.MANUAL)}
+                />
+                <span className="text-sm text-gray-800">
+                  <span className="font-semibold block">Um a um</span>
+                  <span className="text-xs text-gray-500">Pesquisar e preencher cada artigo</span>
+                </span>
+              </label>
+              <label
+                className={`flex-1 flex items-start gap-2 p-3 border rounded-lg cursor-pointer has-[:checked]:border-[#0915FF] has-[:checked]:bg-blue-50/50 ${
+                  modoLoteAtivo ? 'opacity-50 cursor-not-allowed' : ''
+                }`}
+              >
+                <input
+                  type="radio"
+                  name="modo-entrada"
+                  className="mt-1"
+                  checked={isImportar}
+                  disabled={modoLoteAtivo}
+                  onChange={() => {
+                    if (!modoLoteAtivo) setModoEntrada(MODO_ENTRADA.IMPORTAR);
+                  }}
+                />
+                <span className="text-sm text-gray-800">
+                  <span className="font-semibold block">Importar lista</span>
+                  <span className="text-xs text-gray-500">
+                    Códigos em texto ou ficheiro · gera PDF sem localização
+                  </span>
+                </span>
+              </label>
+            </div>
+          </fieldset>
 
           <fieldset>
             <legend className="text-sm font-medium text-gray-700 mb-3">Formato da folha</legend>
@@ -760,13 +985,88 @@ const IdentificacaoItens = () => {
             </fieldset>
           )}
 
+          {isImportar ? (
+            <div className="space-y-4 border border-indigo-100 bg-indigo-50/30 rounded-xl p-4">
+              <p className="text-sm text-gray-700">
+                Cole códigos de artigo (um por linha) ou importe um ficheiro{' '}
+                <span className="font-mono text-xs">.txt</span> /{' '}
+                <span className="font-mono text-xs">.csv</span>. Cada código gera uma etiqueta;
+                localização não é necessária. Máximo {MAX_CODIGOS_IMPORT_IDENT} códigos.
+              </p>
+              <textarea
+                value={importTexto}
+                onChange={(e) => setImportTexto(e.target.value)}
+                rows={10}
+                placeholder={'3000324\n3000325\n3000326'}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-[#0915FF]/30 focus:border-[#0915FF]"
+              />
+              <div className="flex flex-wrap gap-2 items-center">
+                <input
+                  ref={importFileRef}
+                  type="file"
+                  accept=".txt,.csv,text/plain,text/csv"
+                  className="hidden"
+                  onChange={handleImportarFicheiro}
+                />
+                <button
+                  type="button"
+                  onClick={() => importFileRef.current?.click()}
+                  className="inline-flex items-center gap-2 px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white hover:bg-gray-50"
+                >
+                  <FaFileImport /> Escolher ficheiro
+                </button>
+                <button
+                  type="button"
+                  onClick={validarListaImport}
+                  disabled={importResolvendo || importCodigosParsed.length === 0}
+                  className="px-3 py-2 text-sm font-medium border border-indigo-300 text-indigo-800 rounded-lg bg-white hover:bg-indigo-50 disabled:opacity-50"
+                >
+                  {importResolvendo
+                    ? `A validar… (${importProgresso.feito}/${importProgresso.total || importCodigosParsed.length})`
+                    : 'Validar lista'}
+                </button>
+                <span className="text-xs text-gray-600">
+                  {importCodigosParsed.length} código(s) na lista
+                </span>
+              </div>
+              {importResultados.length > 0 && (
+                <div className="text-sm space-y-2">
+                  <p className="text-gray-800">
+                    <strong>{importEncontrados.length}</strong> encontrado(s)
+                    {importNaoEncontrados.length > 0 && (
+                      <>
+                        {' '}
+                        · <strong className="text-amber-800">{importNaoEncontrados.length}</strong>{' '}
+                        sem correspondência
+                      </>
+                    )}
+                  </p>
+                  {importNaoEncontrados.length > 0 && (
+                    <p className="text-xs text-amber-900 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 font-mono break-all">
+                      {importNaoEncontrados.map((r) => r.codigo).join(', ')}
+                    </p>
+                  )}
+                  {importEncontrados.length > 0 && importEncontrados.length <= 12 && (
+                    <ul className="text-xs text-gray-600 max-h-32 overflow-auto border border-gray-200 rounded-lg bg-white divide-y">
+                      {importEncontrados.map((r) => (
+                        <li key={r.codigo} className="px-2 py-1.5 flex gap-2">
+                          <span className="font-mono font-semibold shrink-0">{r.item.codigo}</span>
+                          <span className="truncate">{r.item.descricao || r.item.nome}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
+            </div>
+          ) : (
           <div className="space-y-4">
               <p className="text-sm text-gray-600">
                 {isTres
                   ? 'Adicione quantos artigos precisar (3 por página A4; novas páginas são criadas automaticamente). Localização opcional (QR e texto na etiqueta).'
                   : modoLoteAtivo
                     ? 'Adicione artigos com controlo por Lote (1 etiqueta por página A4 horizontal). Pesquise só artigos Lote; o número de lote pode ser escolhido entre os registados no seu armazém.'
-                    : 'Adicione quantos artigos precisar (1 etiqueta por página A4 horizontal). Todos entram num único PDF com várias folhas.'}
+                    : 'Adicione quantos artigos precisar (1 etiqueta por página A4 horizontal). Localização é opcional; todos entram num único PDF com várias folhas.'}
               </p>
               {linhas.map((linha, idx) => (
                 <div
@@ -1047,6 +1347,7 @@ const IdentificacaoItens = () => {
                 + Adicionar artigo
               </button>
           </div>
+          )}
 
           <button
             type="button"
@@ -1056,9 +1357,15 @@ const IdentificacaoItens = () => {
           >
             {gerando
               ? 'A gerar PDF…'
-              : isTres
-                ? 'Gerar PDF (A4 vertical)'
-                : 'Gerar PDF (A4 horizontal)'}
+              : isImportar
+                ? importResolvendo
+                  ? 'A validar códigos…'
+                  : isTres
+                    ? 'Gerar PDF da lista (A4 vertical)'
+                    : 'Gerar PDF da lista (A4 horizontal)'
+                : isTres
+                  ? 'Gerar PDF (A4 vertical)'
+                  : 'Gerar PDF (A4 horizontal)'}
           </button>
         </section>
       </div>

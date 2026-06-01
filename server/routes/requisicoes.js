@@ -28,6 +28,8 @@ const {
   usuarioEscopadoSemArmazensAtribuidos,
   requisicaoPerfilNegadoMiddleware,
   isFluxoDevolucaoViaturaCentral,
+  isFluxoDevolucaoEpiCentral,
+  isFluxoDevolucaoParaCentral,
 } = require('../middleware/requisicoesScope');
 const { usuarioTemPermissaoControloStock, usuarioTemPermissaoConsultaMovimentos } = require('../utils/usuarioDbColumns');
 const { quantidadePreparadaEfetiva, itemTemSaidaTrflTra } = require('../services/requisicoes/preparacaoUtils');
@@ -214,10 +216,32 @@ function extractSeriaisLinhasFromItemBody(x) {
   return dedupeSeriaisLinhasPorSerial(acc);
 }
 
+const CLOG_TIPO_DEVOLUCAO_EPI = 'Devolucao EPI';
+const CLOG_TIPO_DEVOLUCAO_CARRINHA = 'Devolucao de carrinha';
+
+function tipoMovimentoClogParaDevolucao(origemTipo, destinoTipo) {
+  return isFluxoDevolucaoEpiCentral(origemTipo, destinoTipo)
+    ? CLOG_TIPO_DEVOLUCAO_EPI
+    : CLOG_TIPO_DEVOLUCAO_CARRINHA;
+}
+
+/** Snapshots antigos classificavam EPI→central como devolução de carrinha. */
+function normalizarTipoMovimentoClogDevolucao(row) {
+  if (!row || typeof row !== 'object') return row;
+  const t = String(row['Tipo de Movimento'] || '').trim().toLowerCase();
+  if (t !== 'devolucao de carrinha') return row;
+  const origemTipo = String(row.armazem_origem_tipo || '').toLowerCase();
+  const destinoTipo = String(row.armazem_destino_tipo || '').toLowerCase();
+  if (isFluxoDevolucaoEpiCentral(origemTipo, destinoTipo)) {
+    return { ...row, 'Tipo de Movimento': CLOG_TIPO_DEVOLUCAO_EPI };
+  }
+  return row;
+}
+
 function ordemTipoMovimentoClog(tipo) {
   const t = String(tipo || '').trim().toLowerCase();
   if (t === 'transf. apeado') return 1;
-  if (t === 'devolucao de carrinha') return 2;
+  if (t === 'devolucao epi' || t === 'devolucao de carrinha') return 2;
   return 9;
 }
 
@@ -861,6 +885,49 @@ async function creditarStockNaLocalizacaoArmazem(client, armazemId, itemId, item
   await adicionarQtyArmazemLocalizacaoItem(client, locId, itemId, q);
 }
 
+/** Atualiza `stock_serial` entre localizações do mesmo armazém central (devolução TRFL interna). */
+async function moverSeriaisMesmoArmazemPorLabels(
+  client,
+  armazemId,
+  itemId,
+  itemCodigo,
+  fromLabel,
+  toLabel,
+  serialnumbers
+) {
+  const sns = [...new Set((serialnumbers || []).map((s) => String(s || '').trim()).filter(Boolean))];
+  if (!sns.length) return;
+  const from = String(fromLabel || '').trim();
+  const to = String(toLabel || '').trim();
+  if (!from || !to || from.toUpperCase() === to.toUpperCase()) return;
+  const moved = await client.query(
+    `UPDATE stock_serial
+     SET localizacao = $4,
+         status = 'disponivel',
+         reservado_em = NULL,
+         requisicao_id = NULL,
+         requisicao_item_id = NULL,
+         atualizado_em = CURRENT_TIMESTAMP
+     WHERE item_id = $1
+       AND armazem_id = $2
+       AND UPPER(TRIM(localizacao)) = UPPER(TRIM($3::text))
+       AND UPPER(TRIM(serialnumber)) = ANY(
+         SELECT UPPER(TRIM(u.x)) FROM unnest($5::text[]) AS u(x)
+       )
+       AND status IN ('disponivel', 'reservado')
+     RETURNING serialnumber`,
+    [itemId, armazemId, from, to, sns]
+  );
+  if ((moved.rows || []).length < sns.length) {
+    throw makeStockPrepBizError(
+      400,
+      `Seriais insuficientes na origem para ${itemCodigo || itemId}.`,
+      'SERIAIS_ORIGEM_INSUFICIENTES',
+      { item_id: itemId, origem: from, destino: to }
+    );
+  }
+}
+
 async function moverStockMesmoArmazemPorLabels(client, armazemId, itemId, itemCodigo, fromLabel, toLabel, qty) {
   const q = Number(qty);
   if (!Number.isFinite(q) || q <= 0) return;
@@ -1165,6 +1232,68 @@ async function aplicarStockTrflDevolucaoInterno(client, {
     const qty = Math.floor(quantidadePreparadaEfetiva(ri));
     const apeadosQty = Math.max(0, Math.min(qty, parseInt(ri.quantidade_apeados ?? 0, 10) || 0));
     const normalQty = Math.max(0, qty - apeadosQty);
+    if (isTipoControloSerial(tipoControlo)) {
+      const serialsMeta = await serialsComApeadoRequisicaoItem(client, Number(ri.id), ri);
+      let apeadosSns = serialsMeta.filter((x) => x.apeado).map((x) => x.sn).slice(0, apeadosQty);
+      let normalSns = serialsMeta.filter((x) => !x.apeado).map((x) => x.sn).slice(0, normalQty);
+      if (apeadosQty > 0 && apeadosSns.length < apeadosQty) {
+        const restantes = serialsMeta
+          .map((x) => x.sn)
+          .filter((sn) => !normalSns.includes(sn) && !apeadosSns.includes(sn));
+        apeadosSns = [...apeadosSns, ...restantes].slice(0, apeadosQty);
+      }
+      if (normalQty > 0 && normalSns.length < normalQty) {
+        const restantes = serialsMeta
+          .map((x) => x.sn)
+          .filter((sn) => !apeadosSns.includes(sn) && !normalSns.includes(sn));
+        normalSns = [...normalSns, ...restantes].slice(0, normalQty);
+      }
+      if (apeadosQty > 0) {
+        if (apeadosSns.length > 0) {
+          await moverSeriaisMesmoArmazemPorLabels(
+            client,
+            centralId,
+            ri.item_id,
+            ri.item_codigo,
+            locRec,
+            localizacaoFERR,
+            apeadosSns
+          );
+        }
+        await moverStockMesmoArmazemPorLabels(
+          client,
+          centralId,
+          ri.item_id,
+          ri.item_codigo,
+          locRec,
+          localizacaoFERR,
+          apeadosQty
+        );
+      }
+      if (normalQty > 0) {
+        if (normalSns.length > 0) {
+          await moverSeriaisMesmoArmazemPorLabels(
+            client,
+            centralId,
+            ri.item_id,
+            ri.item_codigo,
+            locRec,
+            localizacaoNormal,
+            normalSns
+          );
+        }
+        await moverStockMesmoArmazemPorLabels(
+          client,
+          centralId,
+          ri.item_id,
+          ri.item_codigo,
+          locRec,
+          localizacaoNormal,
+          normalQty
+        );
+      }
+      continue;
+    }
     if (apeadosQty > 0) {
       await moverStockMesmoArmazemPorLabels(client, centralId, ri.item_id, ri.item_codigo, locRec, localizacaoFERR, apeadosQty);
     }
@@ -1983,6 +2112,15 @@ function isDestinoEPI(requisicao) {
   return tipo === 'epi' || codigo.includes('EPI') || descricao.includes('EPI');
 }
 
+/** Entrega para EPI ou devolução EPI → central (colaborador nas observações). */
+function requisicaoComColaboradorEpi(requisicao) {
+  if (isDestinoEPI(requisicao)) return true;
+  return isFluxoDevolucaoEpiCentral(
+    requisicao?.armazem_origem_tipo,
+    requisicao?.armazem_destino_tipo
+  );
+}
+
 /** Coluna Observações no Clog / lista de movimentos: só nome e nº do colaborador (import EPI), sem declaração nem resto. */
 function observacoesClogEpiSomenteColaborador(obsRaw) {
   const s = String(obsRaw || '').trim();
@@ -2005,6 +2143,11 @@ function observacoesClogEpiCodigoNome(obsRaw) {
   const numero = String(numeroMatch?.[1] || '').trim();
   if (numero && nome) return `${numero}-${nome}`;
   return numero || nome || '';
+}
+
+function observacoesTemColaboradorEpi(obsRaw) {
+  const s = String(obsRaw || '');
+  return /(?:^|\|)\s*colaborador\s*:/i.test(s) && /(?:^|\|)\s*nr\.?\s*colab\.?\s*:/i.test(s);
 }
 
 /** Coluna Observações no reporte EPI (modal / XLSX): só "nº - nome" extraído do texto da requisição. */
@@ -2106,6 +2249,8 @@ async function normalizarObservacoesConsultaMovimentos(rows) {
       obs = isEpi ? observacoesClogEpiCodigoNome(rawObs) : destinoLabel;
     } else if (tipo === 'devolucao de carrinha') {
       obs = origemLabel;
+    } else if (tipo === 'devolucao epi') {
+      obs = observacoesClogEpiCodigoNome(rawObs) || origemLabel;
     }
     return { ...row, Observações: obs };
   });
@@ -2215,7 +2360,7 @@ function podeExportarReporteOuClog(requisicao) {
 function podeExportarReporteDevolucaoEmProcesso(requisicao) {
   const st = String(requisicao?.status || '');
   if (st !== 'EM EXPEDICAO') return false;
-  return isFluxoDevolucaoViaturaCentral(
+  return isFluxoDevolucaoParaCentral(
     requisicao?.armazem_origem_tipo,
     requisicao?.armazem_destino_tipo
   );
@@ -2247,9 +2392,24 @@ function podeExportarReporteRequisicao(requisicao) {
   );
 }
 
+/** Devolução viatura/EPI → central: Clog após DEV gerado e Nº DEV/TRA registado (inclui EM EXPEDICAO/APEADOS). */
+function podeExportarClogDevolucaoParaCentral(requisicao) {
+  if (
+    !isFluxoDevolucaoParaCentral(
+      requisicao?.armazem_origem_tipo,
+      requisicao?.armazem_destino_tipo
+    )
+  ) {
+    return false;
+  }
+  if (!requisicao?.devolucao_tra_gerada_em) return false;
+  return Boolean(String(requisicao?.tra_numero || '').trim());
+}
+
 /** Clog permite também devolução em APEADOS após DEV + Nº DEV guardado. */
 function podeExportarClog(requisicao) {
   if (podeExportarClogCentralApeado(requisicao)) return true;
+  if (podeExportarClogDevolucaoParaCentral(requisicao)) return true;
   if (podeExportarReporteOuClog(requisicao)) return true;
   const st = String(requisicao?.status || '');
   if (st !== 'APEADOS') return false;
@@ -2502,7 +2662,7 @@ router.get('/:id/export-trfl', ...requisicaoAuth, denyOperador, async (req, res)
         tipoDestino = String(armDest.rows[0].tipo || '').toLowerCase();
       }
     }
-    const fluxoDevolucao = isFluxoDevolucaoViaturaCentral(tipoOrigem, tipoDestino);
+    const fluxoDevolucao = isFluxoDevolucaoParaCentral(tipoOrigem, tipoDestino);
 
     if (!fluxoDevolucao && tipoOrigem !== 'central') {
       return res.status(400).json({ error: 'TRFL só é gerado quando o armazém de origem é um armazém geral (central). Esta requisição tem origem em armazém viatura (use primeiro a TRA de devolução, depois esta TRFL).' });
@@ -2726,6 +2886,7 @@ router.get('/:id/export-trfl', ...requisicaoAuth, denyOperador, async (req, res)
       }
 
       buildExcelTransferencia(rows, res, `TRFL_requisicao_${id}_devolucao_${new Date().toISOString().slice(0, 10)}.xlsx`);
+      schedulePersistMovimentosHistoricoForRequisicoes([Number(id)], 'export-devolucao-trfl');
       return;
     }
 
@@ -3051,7 +3212,7 @@ router.get('/:id/export-tra', ...requisicaoAuth, denyOperador, async (req, res) 
     }
     const tipoOrigNorm = String(tipoOrigemArm || '').trim().toLowerCase();
     const tipoDestNorm = String(tipoDestArm || '').trim().toLowerCase();
-    const fluxoDevolucaoTra = isFluxoDevolucaoViaturaCentral(tipoOrigNorm, tipoDestNorm);
+    const fluxoDevolucaoTra = isFluxoDevolucaoParaCentral(tipoOrigNorm, tipoDestNorm);
     const fluxoCentralApeado = tipoOrigNorm === 'central' && tipoDestNorm === 'apeado';
     const fluxoCentralCentral = tipoOrigNorm === 'central' && tipoDestNorm === 'central';
 
@@ -3244,6 +3405,7 @@ router.get('/:id/export-tra', ...requisicaoAuth, denyOperador, async (req, res) 
       }
 
       buildExcelTransferencia(rows, res, `DEV_requisicao_${id}_devolucao_${new Date().toISOString().slice(0, 10)}.xlsx`);
+      schedulePersistMovimentosHistoricoForRequisicoes([Number(id)], 'export-devolucao-dev');
       return;
     }
 
@@ -3792,7 +3954,7 @@ router.get('/:id/export-trfl-pendente-armazenagem', ...requisicaoAuth, denyOpera
       return res.status(403).json({ error: 'Sem acesso a esta requisição.' });
     }
 
-    const fluxoDevolucao = isFluxoDevolucaoViaturaCentral(requisicao.armazem_origem_tipo, requisicao.armazem_destino_tipo);
+    const fluxoDevolucao = isFluxoDevolucaoParaCentral(requisicao.armazem_origem_tipo, requisicao.armazem_destino_tipo);
     if (!fluxoDevolucao) {
       return res.status(400).json({ error: 'TRFL pendente de armazenagem é apenas para devoluções viatura -> central.' });
     }
@@ -4359,7 +4521,7 @@ router.post('/export-dev-multi', ...requisicaoAuth, denyOperador, async (req, re
 
       const tipoOrigNorm = String(requisicao?.armazem_origem_tipo || '').trim().toLowerCase();
       const tipoDestNorm = String(requisicao?.armazem_destino_tipo || '').trim().toLowerCase();
-      if (!isFluxoDevolucaoViaturaCentral(tipoOrigNorm, tipoDestNorm)) continue;
+      if (!isFluxoDevolucaoParaCentral(tipoOrigNorm, tipoDestNorm)) continue;
       if (!['separado', 'EM EXPEDICAO', 'APEADOS', 'Entregue', 'FINALIZADO'].includes(requisicao.status)) continue;
       if (!requisicao.armazem_id) continue;
 
@@ -4580,7 +4742,7 @@ function clogRowsFromItemData(
     (origemTipo === 'central' && (destinoTipoNorm === 'apeado' || destinoTipoNorm === 'apeados')) ||
     ((origemTipo === 'apeado' || origemTipo === 'apeados') && destinoTipoNorm === 'central');
   const tipoMovimento = isDevolucao
-    ? 'Devolucao de carrinha'
+    ? tipoMovimentoClogParaDevolucao(origemTipo, destinoTipoNorm)
     : (isCentralApeado ? 'Transf. Apeado' : 'Saida de Armazem');
   const rows = [];
   const itemByItemId = new Map(itensComFerramenta.map((it) => [it.item_id, it]));
@@ -5098,7 +5260,7 @@ async function buildClogRowsForRequisicaoIds(idsClean, dateStr, opts = {}) {
     const { localizacaoFERR, localizacaoNormal } = computeDestLocFerrNormal(codigoDestino, locRows);
     const itens = itensByReq.get(id) || [];
     const bobinas = bobByReq.get(id) || [];
-    const isDevolucao = isFluxoDevolucaoViaturaCentral(
+    const isDevolucao = isFluxoDevolucaoParaCentral(
       isRecMerc ? r.armazem_destino_tipo : r.armazem_origem_tipo,
       isRecMerc ? r.armazem_origem_tipo : r.armazem_destino_tipo
     );
@@ -5110,7 +5272,7 @@ async function buildClogRowsForRequisicaoIds(idsClean, dateStr, opts = {}) {
         const epi = tipoD === 'epi' || cod.includes('EPI') || desc.includes('EPI');
         return epi ? observacoesClogEpiSomenteColaborador(r.observacoes) : r.observacoes || '';
       }
-      return isDestinoEPI(r)
+      return requisicaoComColaboradorEpi(r)
         ? observacoesClogEpiSomenteColaborador(r.observacoes)
         : r.observacoes || '';
     })();
@@ -5134,13 +5296,20 @@ async function buildClogRowsForRequisicaoIds(idsClean, dateStr, opts = {}) {
         destinoTipo: isRecMerc ? r.armazem_origem_tipo : r.armazem_destino_tipo,
         isDevolucao,
         isApeados:
-          Boolean(r.devolucao_tra_apeados_gerada_em) &&
-          Boolean(String(r.devolucao_tra_apeados_numero || '').trim()) &&
-          (itens || []).some((it) => (parseInt(it.quantidade_apeados ?? 0, 10) || 0) > 0),
+          (itens || []).some((it) => (parseInt(it.quantidade_apeados ?? 0, 10) || 0) > 0) &&
+          (
+            (
+              Boolean(r.devolucao_tra_apeados_gerada_em) &&
+              Boolean(String(r.devolucao_tra_apeados_numero || '').trim())
+            ) ||
+            Boolean(r.devolucao_trfl_gerada_em)
+          ),
         apeadoDestinoCodigo: String(r.devolucao_apeado_destino_codigo || '').trim(),
         traApeadosNumero: String(r.devolucao_tra_apeados_numero || '').trim(),
         apeadoDestinoLoc: recByApeadoId.get(Number(r.devolucao_apeado_destino_id)) || '',
-        apeadosOrigemLoc: recByDestArm.get(locArmDestinoLogico) || LOCALIZACAO_RECEBIMENTO_FALLBACK,
+        apeadosOrigemLoc: r.devolucao_trfl_gerada_em
+          ? localizacaoFERR
+          : (recByDestArm.get(locArmDestinoLogico) || LOCALIZACAO_RECEBIMENTO_FALLBACK),
         devolucaoDestinoLoc: recByDestArm.get(locArmDestinoLogico) || LOCALIZACAO_RECEBIMENTO_FALLBACK,
         destinoTraLoc: recByDestArm.get(locArmDestinoLogico) || localizacaoNormal
       }
@@ -5153,8 +5322,11 @@ async function buildClogRowsForRequisicaoIds(idsClean, dateStr, opts = {}) {
     allRows.push(...rows.map((row) => ({ ...row, __req_sort_ts: reqSortTs })));
   }
 
-  if (opts?.withOverrides === false) return allRows;
-  return applyMovimentosOverrides(allRows);
+  if (opts?.withOverrides === false) {
+    return allRows.map(normalizarTipoMovimentoClogDevolucao);
+  }
+  const withOverrides = await applyMovimentosOverrides(allRows);
+  return withOverrides.map(normalizarTipoMovimentoClogDevolucao);
 }
 
 /** Limite de requisições distintas por lote ao reidratar S/N e Lote (evita picos com scans muito largos). */
@@ -5589,7 +5761,7 @@ router.get('/movimentos-clog/consulta', ...requisicaoAuth, denyOnlyOperador, asy
         const descricaoDestino =
           String(armDestino?.descricao || '').trim() ||
           (isRecebMerc ? String(meta?.armazem_origem_descricao || '').trim() : String(meta?.armazem_destino_descricao || '').trim());
-        return {
+        const withTipos = {
           ...row,
           armazem_origem_id: origemId || null,
           armazem_id: destinoId || null,
@@ -5597,7 +5769,26 @@ router.get('/movimentos-clog/consulta', ...requisicaoAuth, denyOnlyOperador, asy
           armazem_destino_codigo: codigoDestino,
           armazem_origem_descricao: descricaoOrigem,
           armazem_destino_descricao: descricaoDestino,
+          armazem_origem_tipo: String(
+            row.armazem_origem_tipo ||
+              (meta
+                ? isRecebMerc
+                  ? meta.armazem_destino_tipo
+                  : meta.armazem_origem_tipo
+                : '') ||
+              ''
+          ).trim(),
+          armazem_destino_tipo: String(
+            row.armazem_destino_tipo ||
+              (meta
+                ? isRecebMerc
+                  ? meta.armazem_origem_tipo
+                  : meta.armazem_destino_tipo
+                : '') ||
+              ''
+          ).trim(),
         };
+        return normalizarTipoMovimentoClogDevolucao(withTipos);
       });
       return { rows: enriched, metaByReqId: byReqId };
     };
@@ -5619,7 +5810,13 @@ router.get('/movimentos-clog/consulta', ...requisicaoAuth, denyOnlyOperador, asy
       const destinoTipo = String(row?.armazem_destino_tipo || '').toLowerCase();
       if (origemTipo !== 'central' || destinoTipo !== 'central') return row;
       const tipoAtual = String(row?.['Tipo de Movimento'] || '').trim().toLowerCase();
-      if (tipoAtual === 'devolucao de carrinha' || tipoAtual === 'apeados') return row;
+      if (
+        tipoAtual === 'devolucao de carrinha' ||
+        tipoAtual === 'devolucao epi' ||
+        tipoAtual === 'apeados'
+      ) {
+        return row;
+      }
       let qty = Number(row?.QTY);
       if (!Number.isFinite(qty)) qty = 0;
       if (armazemIdFiltro) {
@@ -5649,7 +5846,7 @@ router.get('/movimentos-clog/consulta', ...requisicaoAuth, denyOnlyOperador, asy
         const destinoTipo = String(row?.armazem_destino_tipo || '').toLowerCase();
         const observacoesRow = String(row?.Observações || '').toUpperCase();
         const isRecebimentoTransfer = observacoesRow.startsWith(RECEBIMENTO_TRANSFERENCIA_MARKER);
-        if (isFluxoDevolucaoViaturaCentral(origemTipo, destinoTipo)) {
+        if (isFluxoDevolucaoParaCentral(origemTipo, destinoTipo)) {
           return Number.isFinite(destinoId) && allowedScopeIds.includes(destinoId);
         }
         // Recebimento de transferência: o armazém "lógico" do utilizador pode estar em armazem_id.
@@ -5740,7 +5937,9 @@ router.get('/movimentos-clog/consulta', ...requisicaoAuth, denyOnlyOperador, asy
         for (let i = 0; i < mergedSlots.length; i++) {
           const slot = mergedSlots[i];
           const normRow =
-            slot && typeof slot === 'object' ? normalizarTransferenciaCentralCentral(slot) : null;
+            slot && typeof slot === 'object'
+              ? normalizarTipoMovimentoClogDevolucao(normalizarTransferenciaCentralCentral(slot))
+              : null;
           if (normRow) indexedNorm.push({ idx: i, row: normRow });
         }
         const enrichedList =
@@ -5779,8 +5978,10 @@ router.get('/movimentos-clog/consulta', ...requisicaoAuth, denyOnlyOperador, asy
         const tipoTxtA = String(a['Tipo de Movimento'] || '').trim().toLowerCase();
         const tipoTxtB = String(b['Tipo de Movimento'] || '').trim().toLowerCase();
         const isParDevolucaoApeado =
-          (tipoTxtA === 'transf. apeado' && tipoTxtB === 'devolucao de carrinha') ||
-          (tipoTxtA === 'devolucao de carrinha' && tipoTxtB === 'transf. apeado');
+          (tipoTxtA === 'transf. apeado' &&
+            (tipoTxtB === 'devolucao de carrinha' || tipoTxtB === 'devolucao epi')) ||
+          ((tipoTxtA === 'devolucao de carrinha' || tipoTxtA === 'devolucao epi') &&
+            tipoTxtB === 'transf. apeado');
         if (isParDevolucaoApeado) {
           const reqA = Number(a.requisicao_id || 0);
           const reqB = Number(b.requisicao_id || 0);
@@ -5982,10 +6183,12 @@ router.get('/movimentos-clog/consulta', ...requisicaoAuth, denyOnlyOperador, asy
       }
 
       let rows = [...histRows, ...rowsMissing];
-      rows = (await applyMovimentosOverrides(rows)).map((r) => ({
-        ...r,
-        Observações: r?.Observações == null ? '' : r.Observações
-      })).map((r) => normalizarTransferenciaCentralCentral(r));
+      rows = (await applyMovimentosOverrides(rows))
+        .map((r) => ({
+          ...r,
+          Observações: r?.Observações == null ? '' : r.Observações,
+        }))
+        .map((r) => normalizarTipoMovimentoClogDevolucao(normalizarTransferenciaCentralCentral(r)));
       rows = await enriquecerClogRastreioVazioComDadosAoVivo(rows);
       for (const row of rows) {
         if (!passesRowFilter(row)) continue;
@@ -6009,8 +6212,10 @@ router.get('/movimentos-clog/consulta', ...requisicaoAuth, denyOnlyOperador, asy
       const tipoTxtA = String(a['Tipo de Movimento'] || '').trim().toLowerCase();
       const tipoTxtB = String(b['Tipo de Movimento'] || '').trim().toLowerCase();
       const isParDevolucaoApeado =
-        (tipoTxtA === 'transf. apeado' && tipoTxtB === 'devolucao de carrinha') ||
-        (tipoTxtA === 'devolucao de carrinha' && tipoTxtB === 'transf. apeado');
+        (tipoTxtA === 'transf. apeado' &&
+          (tipoTxtB === 'devolucao de carrinha' || tipoTxtB === 'devolucao epi')) ||
+        ((tipoTxtA === 'devolucao de carrinha' || tipoTxtA === 'devolucao epi') &&
+          tipoTxtB === 'transf. apeado');
       if (isParDevolucaoApeado) {
         const reqA = Number(a.requisicao_id || 0);
         const reqB = Number(b.requisicao_id || 0);
@@ -6143,14 +6348,21 @@ router.post('/movimentos-clog/linha', ...requisicaoAuth, denyOperador, async (re
       if (t === 'transf. apeado' || t === 'transf apeado' || t === 'apeado') {
         return { tipo: 'Transf. Apeado', sign: 1 };
       }
-      if (t === 'devolucao de carrinha' || t === 'devolução de carrinha' || t === 'devolucao' || t === 'devolução') {
-        return { tipo: 'Devolucao de carrinha', sign: 1 };
+      if (t === 'devolucao epi' || t === 'devolução epi') {
+        return { tipo: CLOG_TIPO_DEVOLUCAO_EPI, sign: 1 };
+      }
+      if (t === 'devolucao de carrinha' || t === 'devolução de carrinha') {
+        return { tipo: CLOG_TIPO_DEVOLUCAO_CARRINHA, sign: 1 };
+      }
+      if (t === 'devolucao' || t === 'devolução') {
+        return { tipo: CLOG_TIPO_DEVOLUCAO_CARRINHA, sign: 1 };
       }
       return { tipo: '', sign: 1 };
     };
     const formatTraDevByTipo = (rawValue, tipoMovimentoCanonical) => {
       const tipo = String(tipoMovimentoCanonical || '').trim().toLowerCase();
-      const prefix = tipo === 'devolucao de carrinha' ? 'DEV' : 'TRA';
+      const prefix =
+        tipo === 'devolucao de carrinha' || tipo === 'devolucao epi' ? 'DEV' : 'TRA';
       const raw = String(rawValue || '').trim();
       if (!raw) return '';
       const semPrefixo = raw.replace(/^(TRA|DEV)\s*/i, '').trim();
@@ -6478,7 +6690,7 @@ async function buildClogRowsFromRequisicao(requisicao, dateStr) {
     return { rows: [], eligible: false, reason: 'Armazém de origem não encontrado.' };
   }
   const tipoOrigemRow = (armazemOrigem.rows[0].tipo || '').toLowerCase();
-  const fluxoDevolucao = isFluxoDevolucaoViaturaCentral(
+  const fluxoDevolucao = isFluxoDevolucaoParaCentral(
     isRecMerc ? requisicao.armazem_destino_tipo : tipoOrigemRow,
     isRecMerc ? requisicao.armazem_origem_tipo : requisicao.armazem_destino_tipo
   );
@@ -6599,6 +6811,7 @@ async function buildClogRowsFromRequisicao(requisicao, dateStr) {
       armazemOrigemId: isRecMerc ? requisicao.armazem_id : requisicao.armazem_origem_id,
       armazemDestinoId: isRecMerc ? requisicao.armazem_origem_id : requisicao.armazem_id,
       origemTipo: isRecMerc ? requisicao.armazem_destino_tipo : requisicao.armazem_origem_tipo,
+      destinoTipo: isRecMerc ? requisicao.armazem_origem_tipo : requisicao.armazem_destino_tipo,
       isDevolucao: fluxoDevolucao,
       isApeados:
         String(requisicao?.status || '') === 'APEADOS' &&
@@ -6608,11 +6821,11 @@ async function buildClogRowsFromRequisicao(requisicao, dateStr) {
       apeadoDestinoLoc: apeadoDestinoLocClog,
       apeadosOrigemLoc: localizacaoRecebimentoDestino || LOCALIZACAO_RECEBIMENTO_FALLBACK,
       devolucaoDestinoLoc: localizacaoRecebimentoDestino || LOCALIZACAO_RECEBIMENTO_FALLBACK,
-      destinoTipo: isRecMerc ? requisicao.armazem_origem_tipo : requisicao.armazem_destino_tipo,
       destinoTraLoc: localizacaoRecebimentoDestino || localizacaoNormal
     }
   );
-  return { rows: await applyMovimentosOverrides(rows), eligible: true };
+  const rowsNorm = (await applyMovimentosOverrides(rows)).map(normalizarTipoMovimentoClogDevolucao);
+  return { rows: rowsNorm, eligible: true };
 }
 
 router.get('/:id/export-clog', ...requisicaoAuth, denyOperador, async (req, res) => {
@@ -6761,7 +6974,7 @@ router.get('/:id/export-reporte', ...requisicaoAuth, denyOperador, async (req, r
         localizacaoOrigemTRA = locExp.rows[0].localizacao;
       }
     }
-    const isDevolucaoViaturaCentral = isFluxoDevolucaoViaturaCentral(
+    const isDevolucaoViaturaCentral = isFluxoDevolucaoParaCentral(
       requisicao.armazem_origem_tipo,
       requisicao.armazem_destino_tipo
     );
@@ -6785,8 +6998,8 @@ router.get('/:id/export-reporte', ...requisicaoAuth, denyOperador, async (req, r
       bobinas = [];
     }
 
-    const destinoEPI = isDestinoEPI(requisicao);
-    const colaboradorObs = destinoEPI ? observacoesReporteEpiColaborador(requisicao.observacoes) : '';
+    const comColabEpi = requisicaoComColaboradorEpi(requisicao);
+    const colaboradorObs = comColabEpi ? observacoesReporteEpiColaborador(requisicao.observacoes) : '';
     const rows = [];
     for (const b of bobinas) {
       rows.push({
@@ -6824,7 +7037,7 @@ router.get('/:id/export-reporte', ...requisicaoAuth, denyOperador, async (req, r
       rows,
       res,
       `REPORTE_requisicao_${id}_${new Date().toISOString().slice(0, 10)}.xlsx`,
-      { includeObservacoes: destinoEPI }
+      { includeObservacoes: comColabEpi }
     );
   } catch (error) {
     console.error('Erro ao exportar reporte:', error);
@@ -6848,8 +7061,8 @@ router.get('/:id/reporte-dados', ...requisicaoAuth, denyOperador, async (req, re
       });
     }
 
-    const destinoEPI = isDestinoEPI(requisicao);
-    const colaboradorObs = destinoEPI ? observacoesReporteEpiColaborador(requisicao.observacoes) : '';
+    const comColabEpi = requisicaoComColaboradorEpi(requisicao);
+    const colaboradorObs = comColabEpi ? observacoesReporteEpiColaborador(requisicao.observacoes) : '';
 
     // Mesma origem/destino usados na TRA
     const codigoDestino = requisicao.armazem_destino_codigo || '';
@@ -6863,7 +7076,7 @@ router.get('/:id/reporte-dados', ...requisicaoAuth, denyOperador, async (req, re
         localizacaoOrigemTRA = locExp.rows[0].localizacao;
       }
     }
-    const isDevolucaoViaturaCentral = isFluxoDevolucaoViaturaCentral(
+    const isDevolucaoViaturaCentral = isFluxoDevolucaoParaCentral(
       requisicao.armazem_origem_tipo,
       requisicao.armazem_destino_tipo
     );
@@ -6922,7 +7135,7 @@ router.get('/:id/reporte-dados', ...requisicaoAuth, denyOperador, async (req, re
     }
 
     const columns = ['Artigo', 'Descrição', 'Quantidade', 'ORIGEM', 'S/N', 'LOTE', 'DESTINO'];
-    if (destinoEPI) columns.push('Observações');
+    if (comColabEpi) columns.push('Observações');
 
     res.json({ columns, rows });
   } catch (error) {
@@ -6957,9 +7170,9 @@ router.post('/reporte-dados-multi', ...requisicaoAuth, denyOperador, async (req,
       if (!requisicao) continue;
       if (!podeExportarReporteRequisicao(requisicao)) continue;
 
-      const destinoEPI = isDestinoEPI(requisicao);
-      if (destinoEPI) includeObservacoes = true;
-      const colaboradorObs = destinoEPI ? observacoesReporteEpiColaborador(requisicao.observacoes) : '';
+      const comColabEpi = requisicaoComColaboradorEpi(requisicao);
+      if (comColabEpi) includeObservacoes = true;
+      const colaboradorObs = comColabEpi ? observacoesReporteEpiColaborador(requisicao.observacoes) : '';
 
       // Linha de separação entre requisições
       allRows.push({
@@ -6970,7 +7183,7 @@ router.post('/reporte-dados-multi', ...requisicaoAuth, denyOperador, async (req,
         'S/N': '',
         LOTE: '',
         DESTINO: '',
-        ...(destinoEPI ? { 'Observações': '' } : {})
+        ...(comColabEpi ? { 'Observações': '' } : {})
       });
 
       const codigoDestino = requisicao.armazem_destino_codigo || '';
@@ -6984,7 +7197,7 @@ router.post('/reporte-dados-multi', ...requisicaoAuth, denyOperador, async (req,
           localizacaoOrigemTRA = locExp.rows[0].localizacao;
         }
       }
-      const isDevolucaoViaturaCentral = isFluxoDevolucaoViaturaCentral(
+      const isDevolucaoViaturaCentral = isFluxoDevolucaoParaCentral(
         requisicao.armazem_origem_tipo,
         requisicao.armazem_destino_tipo
       );
@@ -7079,9 +7292,9 @@ router.post('/export-reporte-multi', ...requisicaoAuth, denyOperador, async (req
       const requisicao = await getRequisicaoComItens(id);
       if (!requisicao) continue;
       if (!podeExportarReporteRequisicao(requisicao)) continue;
-      const destinoEPI = isDestinoEPI(requisicao);
-      const colaboradorObs = destinoEPI ? observacoesReporteEpiColaborador(requisicao.observacoes) : '';
-      if (destinoEPI) includeObservacoes = true;
+      const comColabEpi = requisicaoComColaboradorEpi(requisicao);
+      const colaboradorObs = comColabEpi ? observacoesReporteEpiColaborador(requisicao.observacoes) : '';
+      if (comColabEpi) includeObservacoes = true;
 
       // Mesma origem/destino usados na TRA (por requisição)
       const codigoDestino = requisicao.armazem_destino_codigo || '';
@@ -7095,7 +7308,7 @@ router.post('/export-reporte-multi', ...requisicaoAuth, denyOperador, async (req
           localizacaoOrigemTRA = locExp.rows[0].localizacao;
         }
       }
-      const isDevolucaoViaturaCentral = isFluxoDevolucaoViaturaCentral(
+      const isDevolucaoViaturaCentral = isFluxoDevolucaoParaCentral(
         requisicao.armazem_origem_tipo,
         requisicao.armazem_destino_tipo
       );
@@ -7324,7 +7537,7 @@ router.post('/', ...requisicaoAuth, denyOnlyOperador, async (req, res) => {
     if (req.requisicaoArmazemOrigemIds && req.requisicaoArmazemOrigemIds.length > 0) {
       const orig = armazem_origem_id ? parseInt(armazem_origem_id, 10) : null;
       const dest = parseInt(armazem_id, 10);
-      if (orig != null && isFluxoDevolucaoViaturaCentral(tipoOrigemCriar, tipoDestinoCriar)) {
+      if (orig != null && isFluxoDevolucaoParaCentral(tipoOrigemCriar, tipoDestinoCriar)) {
         if (!req.requisicaoArmazemOrigemIds.includes(dest)) {
           await client.query('ROLLBACK');
           return res.status(403).json({
@@ -7340,6 +7553,53 @@ router.post('/', ...requisicaoAuth, denyOnlyOperador, async (req, res) => {
           });
         }
       }
+    }
+
+    if (isFluxoDevolucaoEpiCentral(tipoOrigemCriar, tipoDestinoCriar)) {
+      if (!armazem_origem_id) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'Para devolução de EPI, selecione o armazém EPI de origem.' });
+      }
+      if (!observacoesTemColaboradorEpi(observacoes)) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({
+          error:
+            'Para devolução de EPI, preencha nome e número do colaborador (Colaborador: … | Nr. Colab.: …).',
+        });
+      }
+      const origEpiId = parseInt(armazem_origem_id, 10);
+      const destCentralId = parseInt(armazem_id, 10);
+      let vincEpi;
+      try {
+        vincEpi = await client.query(
+          `SELECT armazem_central_vinculado_id FROM armazens WHERE id = $1 AND ativo = true`,
+          [origEpiId]
+        );
+      } catch (vincErr) {
+        if (vincErr.code === '42703') {
+          await client.query('ROLLBACK');
+          return res.status(503).json({
+            error: 'Vínculo central/EPI em falta na base de dados.',
+            details: 'Execute: npm run db:migrate:armazens-vinculo-central',
+          });
+        }
+        throw vincErr;
+      }
+      if (!vincEpi.rows.length) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: 'Armazém EPI de origem não encontrado.' });
+      }
+      if (Number(vincEpi.rows[0].armazem_central_vinculado_id) !== destCentralId) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({
+          error: 'O armazém EPI selecionado não está vinculado ao armazém central de destino.',
+        });
+      }
+    }
+
+    if (isFluxoDevolucaoViaturaCentral(tipoOrigemCriar, tipoDestinoCriar) && !armazem_origem_id) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Para devolução de viatura, selecione o armazém de origem.' });
     }
 
     // Validar itens: apenas existência e quantidade aqui; Lote e Serial serão definidos na separação
@@ -8256,7 +8516,7 @@ router.put('/:id', ...requisicaoAuth, denyOnlyOperador, async (req, res) => {
         const destT = await client.query('SELECT tipo FROM armazens WHERE id = $1', [destEff]);
         const tO = origT.rows[0]?.tipo;
         const tD = destT.rows[0]?.tipo;
-        if (isFluxoDevolucaoViaturaCentral(tO, tD)) {
+        if (isFluxoDevolucaoParaCentral(tO, tD)) {
           if (!req.requisicaoArmazemOrigemIds.includes(destEff)) {
             await client.query('ROLLBACK');
             return res.status(403).json({

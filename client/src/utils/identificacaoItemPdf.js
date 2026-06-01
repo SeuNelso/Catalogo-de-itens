@@ -501,8 +501,11 @@ export async function gerarPdfIdentificacao(params, opts = {}) {
         const slot = slots[i];
         if (!slot) break;
         const assets = await prepararAssetsEtiqueta(pageItens[i], slot.w, slot.h);
+        const locDestaque = Boolean(
+          String(pageItens[i]?.localizacao || pageItens[i]?.lote || '').trim()
+        );
         drawEtiqueta(doc, slot.x, slot.y, slot.w, slot.h, assets.payload, assets, {
-          destacarLocalizacao: true
+          destacarLocalizacao: locDestaque
         });
       }
     }

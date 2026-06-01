@@ -43,6 +43,16 @@ function itemTemSaidaTrflTra(requisicaoItem) {
  * Quantidade para o monitor da zona de receção (pendente de armazenar).
  * Alinha com reporte/stock: LOTE em metros (bobinas); S/N em unidades; resto preparação efectiva.
  */
+/** Máximo entre coluna `quantidade_apeados` e marcações em bobinas/seriais (devoluções antigas). */
+function quantidadeApeadosMonitorItem(requisicaoItem, requisicaoItemId, apeadosChildByReqItemId) {
+  const fromCol = Math.max(0, Number(requisicaoItem?.quantidade_apeados ?? 0) || 0);
+  const riId = Number(requisicaoItemId || requisicaoItem?.requisicao_item_id || 0);
+  const fromChild = Number.isFinite(riId)
+    ? Math.max(0, Number(apeadosChildByReqItemId?.get(riId) ?? 0) || 0)
+    : 0;
+  return Math.max(fromCol, fromChild);
+}
+
 function quantidadeMonitorRececaoItem(requisicaoItem, rastAgg, seriaisInline = 0) {
   const t = String(requisicaoItem?.tipocontrolo || '').trim().toUpperCase();
   if (t === 'LOTE') {
@@ -64,4 +74,5 @@ module.exports = {
   quantidadePreparadaEfetiva,
   itemTemSaidaTrflTra,
   quantidadeMonitorRececaoItem,
+  quantidadeApeadosMonitorItem,
 };

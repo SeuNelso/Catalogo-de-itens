@@ -30,7 +30,7 @@ router.get('/', ...requisicaoAuth, async (req, res) => {
       req.query.minhas === 'true' ||
       String(req.query.minhas || '').toLowerCase() === 'sim';
 
-    const devolucoesViaturaCentral = ['1', 'true', 'yes', 'sim'].includes(
+    const devolucoesParaCentral = ['1', 'true', 'yes', 'sim'].includes(
       String(devolucoes || '').toLowerCase()
     );
     const transferenciasFluxo = ['1', 'true', 'yes', 'sim'].includes(
@@ -74,16 +74,20 @@ router.get('/', ...requisicaoAuth, async (req, res) => {
       // (armazem_origem_id = onde se recebe). Não contar como transferência "centrais".
       query += ` AND UPPER(COALESCE(r.observacoes, '')) NOT LIKE $${paramCount++}`;
       params.push(`${RECEBIMENTO_TRANSFERENCIA_MARKER}%`);
-    } else if (devolucoesViaturaCentral) {
-      // Devolução: origem = viatura e destino = central
-      query += ` AND LOWER(TRIM(ao.tipo)) = $${paramCount++} AND LOWER(TRIM(a.tipo)) = $${paramCount++}`;
-      params.push('viatura', 'central');
+    } else if (devolucoesParaCentral) {
+      // Devolução: viatura ou EPI → central
+      query += ` AND (
+        (LOWER(TRIM(ao.tipo)) = $${paramCount++} AND LOWER(TRIM(a.tipo)) = $${paramCount++})
+        OR (LOWER(TRIM(ao.tipo)) = $${paramCount++} AND LOWER(TRIM(a.tipo)) = $${paramCount++})
+      )`;
+      params.push('viatura', 'central', 'epi', 'central');
     } else {
       // Página "Requisições": excluir fluxos dedicados de Devoluções e Transferências.
-      // Devoluções: viatura -> central
+      // Devoluções: viatura/epi -> central
       // Transferências: central <-> apeado e central -> central (exceto recebimento mercadoria)
       query += ` AND NOT (
         (LOWER(TRIM(ao.tipo)) = $${paramCount++} AND LOWER(TRIM(a.tipo)) = $${paramCount++})
+        OR (LOWER(TRIM(ao.tipo)) = $${paramCount++} AND LOWER(TRIM(a.tipo)) = $${paramCount++})
         OR (LOWER(TRIM(ao.tipo)) = $${paramCount++} AND LOWER(TRIM(a.tipo)) = $${paramCount++})
         OR (LOWER(TRIM(ao.tipo)) = $${paramCount++} AND LOWER(TRIM(a.tipo)) = $${paramCount++})
         OR (
@@ -93,6 +97,8 @@ router.get('/', ...requisicaoAuth, async (req, res) => {
       )`;
       params.push(
         'viatura',
+        'central',
+        'epi',
         'central',
         'central',
         'apeado',
@@ -113,7 +119,7 @@ router.get('/', ...requisicaoAuth, async (req, res) => {
     }
 
     if (req.requisicaoArmazemOrigemIds && req.requisicaoArmazemOrigemIds.length > 0) {
-      if (devolucoesViaturaCentral) {
+      if (devolucoesParaCentral) {
         query += ` AND r.armazem_id = ANY($${paramCount++}::int[])`;
       } else {
         query += ` AND r.armazem_origem_id = ANY($${paramCount++}::int[])`;
@@ -182,12 +188,16 @@ router.get('/', ...requisicaoAuth, async (req, res) => {
           fbParams.push('central', 'apeado', 'apeado', 'central', 'central', 'central');
           fallbackQuery += ` AND UPPER(COALESCE(r.observacoes, '')) NOT LIKE $${pc++}`;
           fbParams.push(`${RECEBIMENTO_TRANSFERENCIA_MARKER}%`);
-        } else if (devolucoesViaturaCentral) {
-          fallbackQuery += ` AND LOWER(TRIM(ao.tipo)) = $${pc++} AND LOWER(TRIM(a.tipo)) = $${pc++}`;
-          fbParams.push('viatura', 'central');
+        } else if (devolucoesParaCentral) {
+          fallbackQuery += ` AND (
+            (LOWER(TRIM(ao.tipo)) = $${pc++} AND LOWER(TRIM(a.tipo)) = $${pc++})
+            OR (LOWER(TRIM(ao.tipo)) = $${pc++} AND LOWER(TRIM(a.tipo)) = $${pc++})
+          )`;
+          fbParams.push('viatura', 'central', 'epi', 'central');
         } else {
           fallbackQuery += ` AND NOT (
             (LOWER(TRIM(ao.tipo)) = $${pc++} AND LOWER(TRIM(a.tipo)) = $${pc++})
+            OR (LOWER(TRIM(ao.tipo)) = $${pc++} AND LOWER(TRIM(a.tipo)) = $${pc++})
             OR (LOWER(TRIM(ao.tipo)) = $${pc++} AND LOWER(TRIM(a.tipo)) = $${pc++})
             OR (LOWER(TRIM(ao.tipo)) = $${pc++} AND LOWER(TRIM(a.tipo)) = $${pc++})
             OR (
@@ -197,6 +207,8 @@ router.get('/', ...requisicaoAuth, async (req, res) => {
           )`;
           fbParams.push(
             'viatura',
+            'central',
+            'epi',
             'central',
             'central',
             'apeado',
@@ -215,7 +227,7 @@ router.get('/', ...requisicaoAuth, async (req, res) => {
           }
         }
         if (req.requisicaoArmazemOrigemIds && req.requisicaoArmazemOrigemIds.length > 0) {
-          if (devolucoesViaturaCentral) {
+          if (devolucoesParaCentral) {
             fallbackQuery += ` AND r.armazem_id = ANY($${pc++}::int[])`;
           } else {
             fallbackQuery += ` AND r.armazem_origem_id = ANY($${pc++}::int[])`;

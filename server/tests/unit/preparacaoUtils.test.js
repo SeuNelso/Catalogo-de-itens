@@ -5,6 +5,7 @@ const {
   quantidadePreparadaEfetiva,
   itemTemSaidaTrflTra,
   quantidadeMonitorRececaoItem,
+  quantidadeApeadosMonitorItem,
 } = require('../../services/requisicoes/preparacaoUtils');
 
 describe('quantidadeNecessariaStockPreparacao', () => {
@@ -57,6 +58,20 @@ describe('quantidadePreparadaEfetiva / itemTemSaidaTrflTra', () => {
   it('sem preparação usa quantidade requisitada', () => {
     assert.equal(quantidadePreparadaEfetiva({ quantidade: 3 }), 3);
     assert.equal(itemTemSaidaTrflTra({ quantidade: 3 }), true);
+  });
+});
+
+describe('quantidadeApeadosMonitorItem', () => {
+  it('usa o máximo entre coluna e contagem em filhos', () => {
+    const map = new Map([[42, 2]]);
+    assert.equal(
+      quantidadeApeadosMonitorItem({ quantidade_apeados: 0 }, 42, map),
+      2
+    );
+    assert.equal(
+      quantidadeApeadosMonitorItem({ quantidade_apeados: 3 }, 42, map),
+      3
+    );
   });
 });
 

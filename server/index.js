@@ -101,6 +101,7 @@ const {
   libertarReservaSerialsTicket,
   aplicarStockLinhaMovInterna,
   aplicarStockTicketMovInternaSePendente,
+  listarSeriaisParaExportTicket,
   hasEstoqueAplicadoColumn,
 } = require('./utils/aplicarStockTicketMovInterna');
 const { expandirComposicaoAteFolhas } = require('./utils/composicaoExpandida');
@@ -6483,6 +6484,19 @@ app.post('/api/armazens/:armazemId/transferencia-localizacao', authenticateToken
         // #endregion
         if (isTipoControloSerial(tipoControlo)) {
           const qtdInt = Math.floor(Number(q) || 0);
+          if (!serialsLinha.length && temTabelaTickets) {
+            const picked = await listarSeriaisParaExportTicket(client, {
+              ticketId: null,
+              itemId,
+              armazemId,
+              origemLocLabel,
+              destinoArmazemId: destinoArmazemEfetivoId,
+              destinoLocLabel,
+              quantidade: q,
+              hasTicketSerialTable: false,
+            });
+            serialsLinha = picked.map((r) => String(r.serialnumber || '').trim()).filter(Boolean);
+          }
           if (!serialsLinha.length) {
             await client.query('ROLLBACK');
             return res.status(400).json({ error: `Selecione os serial numbers do artigo ${itemCodigoRaw || itemId}.` });
@@ -6905,22 +6919,20 @@ app.post('/api/armazens/:armazemId/movimentacoes-internas/export-trfl', authenti
         const qtd = Number(row.quantidade) || 0;
         if (isSerial && qtd > 0) {
           const qtdInt = Math.floor(qtd);
-          let serialRows = [];
-          if (hasTicketSerialTable) {
-            const linked = await client.query(
-              `SELECT ss.id, ss.serialnumber
-               FROM armazem_movimentacao_interna_seriais amis
-               INNER JOIN stock_serial ss ON ss.id = amis.stock_serial_id
-               WHERE amis.ticket_id = $1
-               ORDER BY ss.serialnumber ASC`,
-              [row.id]
-            );
-            serialRows = (linked.rows || []).slice(0, qtdInt);
-          }
+          const serialRows = await listarSeriaisParaExportTicket(client, {
+            ticketId: row.id,
+            itemId: Number(row.item_id),
+            armazemId,
+            origemLocLabel: String(row.origem_loc || ''),
+            destinoArmazemId: Number(row.destino_armazem_id || armazemId),
+            destinoLocLabel: String(row.destino_loc || ''),
+            quantidade: qtd,
+            hasTicketSerialTable,
+          });
           if (serialRows.length < qtdInt) {
             await client.query('ROLLBACK');
             return res.status(400).json({
-              error: `Seriais insuficientes para o artigo ${String(row.item_codigo || '')}.`,
+              error: `Seriais insuficientes para o artigo ${String(row.item_codigo || '')} (origem: ${String(row.origem_loc || '').trim() || '—'}).`,
               code: 'SERIAIS_ORIGEM_INSUFICIENTE',
             });
           }
@@ -7121,22 +7133,20 @@ app.post('/api/armazens/:armazemId/movimentacoes-internas/export-tra-apeado', au
         const qtd = Number(row.quantidade) || 0;
         if (isSerial && qtd > 0) {
           const qtdInt = Math.floor(qtd);
-          let serialRows = [];
-          if (hasTicketSerialTable) {
-            const linked = await client.query(
-              `SELECT ss.id, ss.serialnumber
-               FROM armazem_movimentacao_interna_seriais amis
-               INNER JOIN stock_serial ss ON ss.id = amis.stock_serial_id
-               WHERE amis.ticket_id = $1
-               ORDER BY ss.serialnumber ASC`,
-              [row.id]
-            );
-            serialRows = (linked.rows || []).slice(0, qtdInt);
-          }
+          const serialRows = await listarSeriaisParaExportTicket(client, {
+            ticketId: row.id,
+            itemId: Number(row.item_id),
+            armazemId,
+            origemLocLabel: String(row.origem_loc || ''),
+            destinoArmazemId: destArmId,
+            destinoLocLabel: String(row.destino_loc || ''),
+            quantidade: qtd,
+            hasTicketSerialTable,
+          });
           if (serialRows.length < qtdInt) {
             await client.query('ROLLBACK');
             return res.status(400).json({
-              error: `Seriais insuficientes para o artigo ${String(row.item_codigo || '')}.`,
+              error: `Seriais insuficientes para o artigo ${String(row.item_codigo || '')} (origem: ${String(row.origem_loc || '').trim() || '—'}).`,
               code: 'SERIAIS_ORIGEM_INSUFICIENTE',
             });
           }

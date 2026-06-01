@@ -32,6 +32,7 @@ const MOVIMENTO_TIPOS = [
   { value: 'Transferencia', label: 'Transferência' },
   { value: 'Transf. Apeado', label: 'Transf. Apeado' },
   { value: 'Devolucao de carrinha', label: 'Devolução de carrinha' },
+  { value: 'Devolucao EPI', label: 'Devolução EPI' },
 ];
 
 function parseSeriaisMovimento(raw) {
@@ -68,7 +69,14 @@ function extrairCodigoArmazemDaDescricao(descricao) {
 
 function expectedTraDevPrefixByTipo(tipoMovimento) {
   const t = String(tipoMovimento || '').trim().toLowerCase();
-  if (t === 'devolucao de carrinha' || t === 'devolução de carrinha') return 'DEV';
+  if (
+    t === 'devolucao de carrinha' ||
+    t === 'devolução de carrinha' ||
+    t === 'devolucao epi' ||
+    t === 'devolução epi'
+  ) {
+    return 'DEV';
+  }
   return 'TRA';
 }
 
@@ -423,6 +431,12 @@ const ConsultaMovimentos = () => {
     if (tipoMov === 'devolucao de carrinha' || tipoMov === 'devolução de carrinha') {
       return {
         origem: base.filter(isViatura),
+        destino: base.filter(isCentral),
+      };
+    }
+    if (tipoMov === 'devolucao epi' || tipoMov === 'devolução epi') {
+      return {
+        origem: base.filter((a) => normalizeTipoArmazem(a?.tipo) === 'epi'),
         destino: base.filter(isCentral),
       };
     }
@@ -1089,7 +1103,8 @@ const ConsultaMovimentos = () => {
                   <option value="saida">Saída de Armazem</option>
                   <option value="transferencia">Transferencia</option>
                   <option value="transf. apeado">Transf. Apeado</option>
-                  <option value="devolucao">Devolução de carrinha</option>
+                  <option value="devolucao de carrinha">Devolução de carrinha</option>
+                  <option value="devolucao epi">Devolução EPI</option>
                 </select>
                 <input
                   value={filtros.q}

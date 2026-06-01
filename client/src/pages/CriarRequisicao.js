@@ -61,9 +61,15 @@ const CriarRequisicao = () => {
     const p = new URLSearchParams(location.search || '');
     return ['1', 'true', 'yes', 'sim'].includes(String(p.get('devolucao') || '').toLowerCase());
   })();
+  const devolucaoFluxoQuery = (() => {
+    const p = new URLSearchParams(location.search || '');
+    return String(p.get('fluxo') || '').toLowerCase() === 'epi' ? 'epi' : '';
+  })();
   const isModoTransferencia =
     location.pathname.startsWith('/transferencias') || transferenciasQueryFlag;
   const isModoDevolucao = !isModoTransferencia && devolucaoQueryFlag;
+  const isModoDevolucaoEpi = isModoDevolucao && devolucaoFluxoQuery === 'epi';
+  const isModoDevolucaoViatura = isModoDevolucao && !isModoDevolucaoEpi;
   const rotaVoltarTransferencias = fluxoTransferenciaQuery
     ? `/transferencias?fluxo=${fluxoTransferenciaQuery}`
     : '/transferencias';
@@ -262,14 +268,20 @@ const CriarRequisicao = () => {
     let origem = filtrarArmazensOrigemRequisicao(armazens || []);
     if (isModoTransferencia) {
       origem = origem.filter((a) => ['central', 'apeado'].includes(String(a?.tipo || '').toLowerCase()));
-    } else if (isModoDevolucao) {
+    } else if (isModoDevolucaoEpi) {
+      origem = origem.filter((a) => String(a?.tipo || '').toLowerCase() === 'epi');
+      const destId = parseInt(formData.armazem_id, 10);
+      if (Number.isFinite(destId)) {
+        origem = origem.filter((a) => Number(a?.armazem_central_vinculado_id) === destId);
+      }
+    } else if (isModoDevolucaoViatura) {
       origem = origem.filter((a) => String(a?.tipo || '').toLowerCase() === 'viatura');
     }
     const allowed = getRequisicoesArmazemOrigemIds(user);
     if (user?.role === 'admin') {
       return origem;
     }
-    // Devolução (viatura → central): o servidor valida o acesso pelo armazém central (destino), não pela viatura.
+    // Devolução (viatura/EPI → central): o servidor valida pelo armazém central (destino).
     if (isModoDevolucao) {
       return origem;
     }
@@ -278,7 +290,7 @@ const CriarRequisicao = () => {
       return origem.filter((a) => set.has(a.id));
     }
     return [];
-  }, [armazens, user, isModoTransferencia, isModoDevolucao]);
+  }, [armazens, user, isModoTransferencia, isModoDevolucao, isModoDevolucaoEpi, isModoDevolucaoViatura, formData.armazem_id]);
 
   const armazensOrigemFiltrados = filterArmazens(armazensListaOrigem, buscaArmazemOrigem);
   /** Destino: em transferências, apenas central e APEADO. */
@@ -296,6 +308,7 @@ const CriarRequisicao = () => {
   const armazemOrigemSelecionado = armazens.find(a => a.id === parseInt(formData.armazem_origem_id, 10));
   const armazemDestinoSelecionado = armazens.find(a => a.id === parseInt(formData.armazem_id, 10));
   const isDestinoEpi = String(armazemDestinoSelecionado?.tipo || '').trim().toLowerCase() === 'epi';
+  const precisaColaboradorEpi = isDestinoEpi || isModoDevolucaoEpi;
 
   useEffect(() => {
     if (formData.armazem_origem_id && !armazensListaOrigem.some((a) => String(a.id) === String(formData.armazem_origem_id))) {
@@ -305,6 +318,13 @@ const CriarRequisicao = () => {
       setFormData((prev) => ({ ...prev, armazem_id: '' }));
     }
   }, [formData.armazem_origem_id, formData.armazem_id, armazensListaOrigem, armazensListaDestino]);
+
+  useEffect(() => {
+    if (!isModoDevolucaoEpi || !formData.armazem_origem_id) return;
+    if (!armazensListaOrigem.some((a) => String(a.id) === String(formData.armazem_origem_id))) {
+      setFormData((prev) => ({ ...prev, armazem_origem_id: '' }));
+    }
+  }, [isModoDevolucaoEpi, formData.armazem_id, formData.armazem_origem_id, armazensListaOrigem]);
 
   const semArmazemOrigemAtribuido = Boolean(
     user && user.role !== 'admin' && getRequisicoesArmazemOrigemIds(user).length === 0
@@ -344,16 +364,28 @@ const CriarRequisicao = () => {
       return;
     }
 
-    if (isDestinoEpi) {
+    if (precisaColaboradorEpi) {
       const nomeColab = String(formData.colaborador_nome || '').trim();
       const numeroColab = String(formData.colaborador_numero || '').trim();
       if (!nomeColab || !numeroColab) {
         setToast({
           type: 'error',
-          message: 'Para requisição EPI, preencha nome e número do colaborador.'
+          message: isModoDevolucaoEpi
+            ? 'Para devolução de EPI, preencha nome e número do colaborador.'
+            : 'Para requisição EPI, preencha nome e número do colaborador.'
         });
         return;
       }
+    }
+
+    if (isModoDevolucao && !formData.armazem_origem_id) {
+      setToast({
+        type: 'error',
+        message: isModoDevolucaoEpi
+          ? 'Selecione o armazém EPI de origem.'
+          : 'Selecione o armazém viatura de origem.'
+      });
+      return;
     }
 
     if (itensRequisicao.length === 0) {
@@ -367,7 +399,7 @@ const CriarRequisicao = () => {
       const nomeColab = String(formData.colaborador_nome || '').trim();
       const numeroColab = String(formData.colaborador_numero || '').trim();
       const observacoesBase = String(formData.observacoes || '').trim();
-      const observacoes = isDestinoEpi
+      const observacoes = precisaColaboradorEpi
         ? [
             nomeColab ? `Colaborador: ${nomeColab}` : null,
             numeroColab ? `Nr. Colab.: ${numeroColab}` : null,
@@ -446,14 +478,22 @@ const CriarRequisicao = () => {
             <FaArrowLeft /> Voltar
           </button>
           <h1 className="text-2xl sm:text-3xl font-bold text-gray-800 mb-2">
-            {isModoTransferencia ? 'Nova Transferência' : (isModoDevolucao ? 'Nova Devolução' : 'Nova Requisição')}
+            {isModoTransferencia
+              ? 'Nova Transferência'
+              : isModoDevolucaoEpi
+                ? 'Nova Devolução EPI'
+                : isModoDevolucao
+                  ? 'Nova Devolução'
+                  : 'Nova Requisição'}
           </h1>
           <p className="text-gray-600">
             {isModoTransferencia
               ? 'Etapa 1: Defina origem, itens, quantidades e destino (somente armazéns Central e APEADO).'
-              : (isModoDevolucao
-                ? 'Etapa 1: Defina origem (viatura), itens, quantidades e destino (armazém central).'
-                : 'Etapa 1: Defina origem, itens, quantidades e destino. A localização será preenchida na preparação.')}
+              : isModoDevolucaoEpi
+                ? 'Etapa 1: Defina armazém EPI de origem, colaborador, itens e armazém central de destino.'
+                : isModoDevolucao
+                  ? 'Etapa 1: Defina origem (viatura), itens, quantidades e destino (armazém central).'
+                  : 'Etapa 1: Defina origem, itens, quantidades e destino. A localização será preenchida na preparação.'}
           </p>
         </div>
 
@@ -773,7 +813,7 @@ const CriarRequisicao = () => {
             </div>
 
             {/* Observações */}
-            {isDestinoEpi && (
+            {precisaColaboradorEpi && (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -833,7 +873,8 @@ const CriarRequisicao = () => {
                   loading ||
                   itensRequisicao.length === 0 ||
                   semArmazemOrigemAtribuido ||
-                  (isModoTransferencia && !formData.armazem_origem_id)
+                  (isModoTransferencia && !formData.armazem_origem_id) ||
+                  (isModoDevolucao && !formData.armazem_origem_id)
                 }
                 className="flex-1 px-6 py-3 bg-[#0915FF] text-white rounded-lg hover:bg-[#070FCC] transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
               >
@@ -844,7 +885,14 @@ const CriarRequisicao = () => {
                   </>
                 ) : (
                   <>
-                    <FaSave /> {isModoTransferencia ? 'Criar Transferência' : (isModoDevolucao ? 'Criar Devolução' : 'Criar Requisição')}
+                    <FaSave />{' '}
+                    {isModoTransferencia
+                      ? 'Criar Transferência'
+                      : isModoDevolucaoEpi
+                        ? 'Criar Devolução EPI'
+                        : isModoDevolucao
+                          ? 'Criar Devolução'
+                          : 'Criar Requisição'}
                   </>
                 )}
               </button>

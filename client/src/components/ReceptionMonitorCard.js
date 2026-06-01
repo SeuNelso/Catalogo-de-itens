@@ -57,6 +57,7 @@ function ReceptionMonitorCard() {
   const [error, setError] = useState('');
   const [loadingRows, setLoadingRows] = useState(false);
   const [targetLocation, setTargetLocation] = useState(FALLBACK_LOCATION);
+  const [targetLocationApeados, setTargetLocationApeados] = useState(FALLBACK_LOCATION);
   const [targetArmazemId, setTargetArmazemId] = useState(null);
   const [targetArmazemLabel, setTargetArmazemLabel] = useState('');
   const [armazensDisponiveis, setArmazensDisponiveis] = useState([]);
@@ -183,6 +184,9 @@ function ReceptionMonitorCard() {
 
       const data = await response.json().catch(() => ({}));
       if (requestSeq !== requestSeqRef.current) return;
+      const locApeadosApi = String(data?.localizacao_apeados || '').trim();
+      if (locApeadosApi) setTargetLocationApeados(locApeadosApi);
+      else setTargetLocationApeados(resolvedLocation);
       const apiRows = Array.isArray(data?.rows) ? data.rows : [];
       const apiPrefillItems = Array.isArray(data?.prefill_items) ? data.prefill_items : [];
       setTotaisPorCategoria(data?.totais_por_categoria && typeof data.totais_por_categoria === 'object' ? data.totais_por_categoria : {});
@@ -228,6 +232,7 @@ function ReceptionMonitorCard() {
             referencias: Array.isArray(r?.referencias)
               ? r.referencias.map((s) => String(s || '').trim()).filter(Boolean)
               : [],
+            origem_localizacao: String(r?.origem_localizacao || '').trim(),
           }))
           .filter((r) => r.codigo && r.quantidade > 0)
       );
@@ -340,16 +345,24 @@ function ReceptionMonitorCard() {
         ],
       };
     }).filter((x) => Number(x?.quantidade_total || 0) > 0 && x?.codigo);
+    const origemLoc =
+      part === 'apeado'
+        ? firstNonEmpty(
+            ...prefillParticionados.map((it) => it?.origem_localizacao),
+            targetLocationApeados,
+            targetLocation
+          )
+        : targetLocation;
     return {
       armazemId: targetArmazemId,
-      origemLocalizacao: targetLocation,
+      origemLocalizacao: origemLoc,
       modo: part === 'apeado' ? 'apeado' : undefined,
       prefill_version: 2,
       autoSubmit: false,
       items: legacyItems,
       items_v2: itemsV2,
     };
-  }, [prefillItems, rowsApeados, rowsOutros, prefillByItemPart, targetArmazemId, targetLocation]);
+  }, [prefillItems, rowsApeados, rowsOutros, prefillByItemPart, targetArmazemId, targetLocation, targetLocationApeados]);
   const totalApeados = Number(contagensPorCategoria?.apeados ?? totaisPorCategoria?.apeados ?? rowsApeados.length) || 0;
   const totalOutros = Number(
     (contagensPorCategoria?.devolucao || 0)

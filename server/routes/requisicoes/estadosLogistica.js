@@ -2,11 +2,15 @@ const express = require('express');
 const fs = require('fs');
 const { isAdmin } = require('../../utils/roles');
 const {
-  isFluxoDevolucaoViaturaCentral,
+  isFluxoDevolucaoParaCentral,
   requisicaoPerfilNegadoMiddleware,
 } = require('../../middleware/requisicoesScope');
 const { usuarioTemPermissaoControloStock } = require('../../utils/usuarioDbColumns');
-const { quantidadeMonitorRececaoItem } = require('../../services/requisicoes/preparacaoUtils');
+const {
+  quantidadeMonitorRececaoItem,
+  quantidadeApeadosMonitorItem,
+} = require('../../services/requisicoes/preparacaoUtils');
+const { hasEstoqueAplicadoColumn } = require('../../utils/aplicarStockTicketMovInterna');
 
 function createEstadosLogisticaRouter(deps) {
   const {
@@ -521,7 +525,7 @@ router.patch('/:id/finalizar', ...requisicaoAuth, denyOperador, async (req, res)
     }
     if (check.rows[0].status === 'cancelada') return res.status(400).json({ error: 'Requisição cancelada' });
     const row = check.rows[0];
-    const fluxoDevolucao = isFluxoDevolucaoViaturaCentral(row.origem_tipo, row.destino_tipo);
+    const fluxoDevolucao = isFluxoDevolucaoParaCentral(row.origem_tipo, row.destino_tipo);
     const fluxoCentralApeado =
       String(row.origem_tipo || '').trim().toLowerCase() === 'central' &&
       String(row.destino_tipo || '').trim().toLowerCase() === 'apeado';
@@ -1736,10 +1740,36 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
           (await localizacaoArmazemPorTipoConn(pool, armazemId, 'recebimento')) ||
           LOCALIZACAO_RECEBIMENTO_FALLBACK;
         const targetNorm = String(targetLocation || '').trim().toUpperCase();
+        let localizacaoApeadosOrigem = targetLocation;
+        const ferrNorm = () => String(localizacaoApeadosOrigem || '').trim().toUpperCase();
+        const locSaiZonaRececao = (label) => {
+          const u = String(label || '').trim().toUpperCase();
+          if (!u) return false;
+          if (targetNorm && u === targetNorm) return true;
+          const f = ferrNorm();
+          if (f && u === f) return true;
+          return u.endsWith('.FERR') || u.includes('.FERR.');
+        };
+        const locEntraZonaRececao = (label) => {
+          const u = String(label || '').trim().toUpperCase();
+          return Boolean(targetNorm && u === targetNorm);
+        };
+        try {
+          const locsCentralQ = await pool.query(
+            `SELECT localizacao FROM armazens_localizacoes WHERE armazem_id = $1 ORDER BY id`,
+            [armazemId]
+          );
+          const { localizacaoFERR } = computeDestLocFerrNormal(armCodigo, locsCentralQ.rows || []);
+          if (String(localizacaoFERR || '').trim()) {
+            localizacaoApeadosOrigem = String(localizacaoFERR).trim();
+          }
+        } catch (_) {
+          /* mantém recebimento */
+        }
 
         const reqQ = await pool.query(
           `SELECT r.id, r.status, r.created_at, r.updated_at, r.observacoes, r.tra_numero,
-                  r.devolucao_tra_gerada_em, r.devolucao_tra_apeados_gerada_em,
+                  r.devolucao_tra_gerada_em, r.devolucao_trfl_gerada_em, r.devolucao_tra_apeados_gerada_em,
                   r.armazem_id, r.armazem_origem_id
            FROM requisicoes r
            WHERE r.armazem_id = $1 OR r.armazem_origem_id = $1
@@ -1749,10 +1779,21 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
         );
         const reqRows = reqQ.rows || [];
         const reqIds = reqRows.map((r) => Number(r.id)).filter((id) => Number.isFinite(id));
+        const reqTrflDevById = new Map(
+          (reqRows || []).map((r) => [Number(r.id), Boolean(r?.devolucao_trfl_gerada_em)])
+        );
+        const origemLocApeadosParaReq = (reqId) => {
+          const rid = Number(reqId || 0);
+          if (Number.isFinite(rid) && reqTrflDevById.get(rid)) {
+            return localizacaoApeadosOrigem;
+          }
+          return targetLocation;
+        };
         const itensByReqId = new Map();
         const rastreavelAggByReqItemId = new Map();
         const seriaisByReqItemId = new Map();
         const lotesByReqItemId = new Map();
+        const apeadosChildCountByReqItemId = new Map();
         if (reqIds.length > 0) {
           const itensQ = await pool.query(
             `SELECT ri.id AS requisicao_item_id, ri.requisicao_id, ri.item_id, ri.quantidade, ri.quantidade_preparada, ri.quantidade_apeados,
@@ -1818,6 +1859,44 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
               const arr = seriaisByReqItemId.get(riId);
               if (!arr.includes(sn)) arr.push(sn);
             }
+          }
+
+          const bumpApeadosChild = (riId, n) => {
+            if (!Number.isFinite(riId) || n <= 0) return;
+            const prev = apeadosChildCountByReqItemId.get(riId) || 0;
+            apeadosChildCountByReqItemId.set(riId, prev + n);
+          };
+          try {
+            const bobApeQ = await pool.query(
+              `SELECT b.requisicao_item_id, COUNT(*)::int AS n
+               FROM requisicoes_itens_bobinas b
+               INNER JOIN requisicoes_itens ri ON ri.id = b.requisicao_item_id
+               WHERE ri.requisicao_id = ANY($1::int[])
+                 AND COALESCE(b.apeado, false) = true
+               GROUP BY b.requisicao_item_id`,
+              [reqIds]
+            );
+            for (const row of bobApeQ.rows || []) {
+              bumpApeadosChild(Number(row.requisicao_item_id), Number(row.n || 0) || 0);
+            }
+          } catch (eBobApe) {
+            if (eBobApe.code !== '42703') throw eBobApe;
+          }
+          try {
+            const serApeQ = await pool.query(
+              `SELECT s.requisicao_item_id, COUNT(*)::int AS n
+               FROM requisicoes_itens_seriais s
+               INNER JOIN requisicoes_itens ri ON ri.id = s.requisicao_item_id
+               WHERE ri.requisicao_id = ANY($1::int[])
+                 AND COALESCE(s.apeado, false) = true
+               GROUP BY s.requisicao_item_id`,
+              [reqIds]
+            );
+            for (const row of serApeQ.rows || []) {
+              bumpApeadosChild(Number(row.requisicao_item_id), Number(row.n || 0) || 0);
+            }
+          } catch (eSerApe) {
+            if (eSerApe.code !== '42703') throw eSerApe;
           }
         }
 
@@ -1905,9 +1984,13 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
               const seriaisInline = serialsNormalizadosList(it?.serialnumber).length;
               const base = quantidadeMonitorRececaoItem(it, rastAgg, seriaisInline);
               if (base <= 0) continue;
-              const qApeados = Math.max(0, Number(it?.quantidade_apeados ?? 0) || 0);
-              const qtdDevolucao = Math.max(0, base - qApeados);
-              const qtdApeados = Math.min(base, qApeados);
+              const qApeados = Math.min(
+                base,
+                quantidadeApeadosMonitorItem(it, riId, apeadosChildCountByReqItemId)
+              );
+              const trflDevInterna = Boolean(r?.devolucao_trfl_gerada_em);
+              const qtdDevolucao = trflDevInterna ? 0 : Math.max(0, base - qApeados);
+              const qtdApeados = Math.max(0, qApeados);
               addPendente({
                 reqId: r?.id,
                 reqItemId: it?.requisicao_item_id,
@@ -1917,7 +2000,9 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
                 descricao: it?.item_descricao,
                 qtd: qtdDevolucao,
                 referencia: String(r?.tra_numero || 'DEV devolução').trim(),
-                data: String(r?.updated_at || r?.devolucao_tra_gerada_em || r?.created_at || '').trim(),
+                data: String(
+                  r?.devolucao_tra_gerada_em || r?.devolucao_trfl_gerada_em || r?.updated_at || r?.created_at || ''
+                ).trim(),
                 seriais: Number.isFinite(riId) ? (seriaisByReqItemId.get(riId) || []) : [],
                 lotes: Number.isFinite(riId) ? (lotesByReqItemId.get(riId) || []) : [],
                 categoria: 'devolucao',
@@ -1943,13 +2028,33 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
         const makeDeltaKey = (categoriaBucket, codigo) =>
           `${String(categoriaBucket || 'nao_apeados').trim()}::${String(codigo || '').trim()}`;
         const ticketDeltasByCategoriaCodigo = new Map();
+        const pushTicketDelta = (categoriaBucket, codigo, delta, ts) => {
+          const cod = String(codigo || '').trim();
+          const d = Number(delta || 0) || 0;
+          if (!cod || d === 0) return;
+          const deltaKey = makeDeltaKey(categoriaBucket, cod);
+          if (!ticketDeltasByCategoriaCodigo.has(deltaKey)) {
+            ticketDeltasByCategoriaCodigo.set(deltaKey, []);
+          }
+          ticketDeltasByCategoriaCodigo.get(deltaKey).push({
+            delta: d,
+            ts: Number(ts || 0) || 0,
+          });
+        };
         if (await armazemMovimentacaoInternaTableExists()) {
+          const hasEstoqueAplicadoCol = await hasEstoqueAplicadoColumn(pool);
           const tkQ = await pool.query(
             `SELECT i.codigo AS item_codigo,
                     ami.quantidade::float AS quantidade,
                     ami.trfl_gerada_em,
                     ami.tra_apeado_gerada_em,
-                    COALESCE(ami.trfl_gerada_em, ami.tra_apeado_gerada_em, ami.created_at) AS evento_em,
+                    ${hasEstoqueAplicadoCol ? 'ami.estoque_aplicado_em,' : ''}
+                    COALESCE(
+                      ami.trfl_gerada_em,
+                      ami.tra_apeado_gerada_em,
+                      ${hasEstoqueAplicadoCol ? 'ami.estoque_aplicado_em,' : ''}
+                      ami.created_at
+                    ) AS evento_em,
                     ami.created_at,
                     lo.localizacao AS origem_localizacao_label,
                     ld.localizacao AS destino_localizacao_label,
@@ -1962,33 +2067,69 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
              INNER JOIN armazens ao ON ao.id = lo.armazem_id
              INNER JOIN armazens ad ON ad.id = ld.armazem_id
              WHERE ami.armazem_id = $1
+               AND (
+                 ami.trfl_gerada_em IS NOT NULL
+                 OR ami.tra_apeado_gerada_em IS NOT NULL
+                 ${hasEstoqueAplicadoCol ? 'OR ami.estoque_aplicado_em IS NOT NULL' : ''}
+               )
              ORDER BY ami.created_at DESC, ami.id DESC
              LIMIT 5000`,
             [armazemId]
           );
           for (const t of tkQ.rows || []) {
-            if (!t?.trfl_gerada_em && !t?.tra_apeado_gerada_em) continue;
             const cod = String(t?.item_codigo || '').trim();
             const qtd = Number(t?.quantidade || 0) || 0;
             if (!cod || qtd <= 0) continue;
-            const origemNorm = String(t?.origem_localizacao_label || '').trim().toUpperCase();
-            const destinoNorm = String(t?.destino_localizacao_label || '').trim().toUpperCase();
+            const origemLabel = String(t?.origem_localizacao_label || '').trim();
+            const destinoLabel = String(t?.destino_localizacao_label || '').trim();
             let delta = 0;
-            if (origemNorm === targetNorm) delta -= qtd;
-            if (destinoNorm === targetNorm) delta += qtd;
+            if (locSaiZonaRececao(origemLabel)) delta -= qtd;
+            if (locEntraZonaRececao(destinoLabel)) delta += qtd;
             if (delta === 0) continue;
             const origemTipo = String(t?.origem_armazem_tipo || '').trim().toLowerCase();
             const destinoTipo = String(t?.destino_armazem_tipo || '').trim().toLowerCase();
+            const locEhZonaFerr = (label) => {
+              const u = String(label || '').trim().toUpperCase();
+              return u.endsWith('.FERR') || u.includes('.FERR');
+            };
             const categoriaBucket =
               origemTipo === 'apeado' || destinoTipo === 'apeado'
                 ? 'apeados'
-                : 'nao_apeados';
-            const deltaKey = makeDeltaKey(categoriaBucket, cod);
-            if (!ticketDeltasByCategoriaCodigo.has(deltaKey)) ticketDeltasByCategoriaCodigo.set(deltaKey, []);
-            ticketDeltasByCategoriaCodigo.get(deltaKey).push({
+                : locEhZonaFerr(origemLabel) || locEhZonaFerr(destinoLabel)
+                  ? 'apeados'
+                  : 'nao_apeados';
+            pushTicketDelta(
+              categoriaBucket,
+              cod,
               delta,
-              ts: Date.parse(String(t?.evento_em || t?.created_at || '')) || 0,
-            });
+              Date.parse(String(t?.evento_em || t?.created_at || '')) || 0
+            );
+          }
+        }
+
+        for (const r of reqRows) {
+          if (markerFlagAtivo(String(r?.observacoes || ''), RECEBIMENTO_MONITOR_CLEAR_TEST_MARKER)) continue;
+          if (!Boolean(r?.devolucao_trfl_gerada_em)) continue;
+          if (Number(r?.armazem_id) !== armazemId) continue;
+          const ts = Date.parse(String(r.devolucao_trfl_gerada_em)) || 0;
+          const itens = itensByReqId.get(Number(r.id)) || [];
+          for (const it of itens) {
+            const riId = Number(it?.requisicao_item_id || 0);
+            const rastAgg = Number.isFinite(riId) ? rastreavelAggByReqItemId.get(riId) : null;
+            const seriaisInline = serialsNormalizadosList(it?.serialnumber).length;
+            const base = quantidadeMonitorRececaoItem(it, rastAgg, seriaisInline);
+            if (base <= 0) continue;
+            const qApeados = Math.min(
+              base,
+              quantidadeApeadosMonitorItem(it, riId, apeadosChildCountByReqItemId)
+            );
+            const qSaidaRececao = Math.max(0, base - qApeados);
+            if (qSaidaRececao > 0) {
+              pushTicketDelta('nao_apeados', it?.item_codigo, -qSaidaRececao, ts);
+            }
+            if (qApeados > 0) {
+              pushTicketDelta('apeados', it?.item_codigo, -qApeados, ts);
+            }
           }
         }
 
@@ -2025,9 +2166,7 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
             const ticketTs = Number(d.ts || 0) || 0;
             if (delta < 0) {
               let restante = Math.abs(delta);
-              const elegiveis = withTsBase
-                .filter((w) => ticketTs <= 0 || w.ts <= ticketTs)
-                .sort((a, b) => a.ts - b.ts);
+              const elegiveis = withTsBase.slice().sort((a, b) => a.ts - b.ts);
               for (const w of elegiveis) {
                 if (restante <= 0) break;
                 const atual = Number(w.g.qtd || 0) || 0;
@@ -2113,8 +2252,17 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
             seriais: [],
             referencias: [],
             lotes: [],
+            origem_localizacao:
+              particao === 'apeado'
+                ? origemLocApeadosParaReq(row?.reqId)
+                : targetLocation,
           };
           prev.quantidade += qtd;
+          if (particao === 'apeado') {
+            prev.origem_localizacao = origemLocApeadosParaReq(row?.reqId);
+          } else if (!prev.origem_localizacao) {
+            prev.origem_localizacao = targetLocation;
+          }
           if (!prev.descricao && row?.descricao) prev.descricao = String(row.descricao).trim();
           if (!prev.tipocontrolo && row?.tipocontrolo) prev.tipocontrolo = String(row.tipocontrolo).trim();
           if (Array.isArray(row?.seriais) && row.seriais.length > 0) {
@@ -2151,6 +2299,7 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
           armazem_id: armazemId,
           armazem: armazemLabel,
           localizacao: targetLocation,
+          localizacao_apeados: localizacaoApeadosOrigem,
           totais_por_categoria: totaisPorCategoria,
           contagens_por_categoria: contagensPorCategoria,
           prefill_items: prefillItems,

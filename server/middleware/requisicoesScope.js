@@ -156,6 +156,22 @@ function isFluxoDevolucaoViaturaCentral(origemTipo, destTipo) {
   );
 }
 
+/** Devolução: origem armazém EPI → destino central (escopo pelo central destino). */
+function isFluxoDevolucaoEpiCentral(origemTipo, destTipo) {
+  return (
+    String(origemTipo || '').trim().toLowerCase() === 'epi' &&
+    String(destTipo || '').trim().toLowerCase() === 'central'
+  );
+}
+
+/** Viatura ou EPI → central (mesmo fluxo documental DEV / TRFL). */
+function isFluxoDevolucaoParaCentral(origemTipo, destTipo) {
+  return (
+    isFluxoDevolucaoViaturaCentral(origemTipo, destTipo) ||
+    isFluxoDevolucaoEpiCentral(origemTipo, destTipo)
+  );
+}
+
 /**
  * @param {object} [opts]
  * @param {object} [opts.requisicao] — linha com armazem_id, armazem_origem_tipo, armazem_destino_tipo (ex.: JOIN armazens)
@@ -171,7 +187,7 @@ function requisicaoArmazemOrigemAcessoPermitido(req, armazemOrigemId, opts) {
     rec &&
     rec.armazem_id != null &&
     rec.armazem_id !== '' &&
-    isFluxoDevolucaoViaturaCentral(rec.armazem_origem_tipo, rec.armazem_destino_tipo)
+    isFluxoDevolucaoParaCentral(rec.armazem_origem_tipo, rec.armazem_destino_tipo)
   ) {
     const did = parseInt(rec.armazem_id, 10);
     if (!Number.isNaN(did)) return allowed.includes(did);
@@ -209,7 +225,7 @@ async function assertIdsRequisicoesPermitidas(req, idsRaw) {
        AND NOT (
          (r.armazem_origem_id IS NOT NULL AND r.armazem_origem_id = ANY($2::int[]))
          OR (
-           LOWER(TRIM(COALESCE(ao.tipo, ''))) = 'viatura'
+           LOWER(TRIM(COALESCE(ao.tipo, '')) IN ('viatura', 'epi')
            AND LOWER(TRIM(COALESCE(ad.tipo, ''))) = 'central'
            AND r.armazem_id = ANY($2::int[])
          )
@@ -232,6 +248,8 @@ module.exports = {
   requisicaoScopeMiddleware,
   requisicaoPerfilNegadoMiddleware,
   isFluxoDevolucaoViaturaCentral,
+  isFluxoDevolucaoEpiCentral,
+  isFluxoDevolucaoParaCentral,
   requisicaoArmazemOrigemAcessoPermitido,
   usuarioEscopadoSemArmazensAtribuidos,
   assertIdsRequisicoesPermitidas,
