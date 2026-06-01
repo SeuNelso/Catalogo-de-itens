@@ -33,7 +33,7 @@ const PAD_MM = 0.8;
 const RASTER_DPI = 300;
 
 /** Tamanhos de referência (etiqueta base 50 mm altura) — fixos, não encolhem com o texto. */
-const FONT_DIGI_REF_PT = 14;
+const FONT_DIGI_REF_PT = 17;
 const FONT_CODIGO_REF_PT = 18;
 const FONT_LOC_REF_PT = 13;
 const FONT_QTD_LABEL_REF_PT = 10;
