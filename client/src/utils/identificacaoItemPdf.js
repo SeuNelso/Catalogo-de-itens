@@ -1,7 +1,7 @@
 /**
  * PDF de identificação de item (etiqueta) — layout DIGI em A4.
  * Folha inteira: horizontal; múltiplos por folha: vertical.
- * QR = localização; código de barras 1D = código do artigo.
+ * QR = localização (opcional); código de barras 1D = código do artigo.
  */
 import jsPDF from 'jspdf';
 import QRCode from 'qrcode';
@@ -59,10 +59,10 @@ export const MODOS_PDF = Object.freeze({
   TRES_POR_FOLHA: 'tres_por_folha'
 });
 
-function calcLayoutMetrics(labelW, labelH, { comQuantidade = false } = {}) {
+function calcLayoutMetrics(labelW, labelH, { comQuantidade = false, comColunaEsquerda = true } = {}) {
   const innerW = labelW - PAD_MM * 2;
   const innerH = labelH - PAD_MM * 2;
-  const leftW = innerW * LEFT_COL_FRAC;
+  const leftW = comColunaEsquerda ? innerW * LEFT_COL_FRAC : 0;
   const rightW = innerW - leftW;
   const headerH = innerH * HEADER_FRAC;
   const bottomH = innerH * BOTTOM_FRAC;
@@ -316,17 +316,20 @@ function drawEtiqueta(
   w,
   h,
   { codigo, descricao, localizacao, lote, quantidade, tipoEtiqueta },
-  { qrLocalizacao, barcodeCodigoArtigo }
+  { qrLocalizacao, barcodeCodigoArtigo },
+  { destacarLocalizacao = false } = {}
 ) {
   const qtyText = quantidade ? String(quantidade) : '';
   const comQuantidade = Boolean(qtyText);
   const isLote = tipoEtiqueta === TIPO_ETIQUETA.LOTE;
-  const m = calcLayoutMetrics(w, h, { comQuantidade });
+  const locText = isLote ? localizacaoEmCaixaAlta(lote) : localizacaoEmCaixaAlta(localizacao);
+  const comColunaEsquerda = Boolean(qrLocalizacao || locText || comQuantidade);
+  const m = calcLayoutMetrics(w, h, { comQuantidade, comColunaEsquerda });
   const innerX = x0 + m.pad;
   const innerY = y0 + m.pad;
   const innerBottom = innerY + m.innerH;
   const leftX = innerX;
-  const rightX = innerX + m.leftW;
+  const rightX = comColunaEsquerda ? innerX + m.leftW : innerX;
   const headerBottom = innerY + m.headerH;
   const bottomSection = innerY + m.innerH - m.bottomH;
 
@@ -336,21 +339,25 @@ function drawEtiqueta(
 
   const innerRight = innerX + m.innerW;
 
-  doc.line(rightX, innerY, rightX, innerBottom);
-  doc.line(rightX, headerBottom, innerRight, headerBottom);
-  linhaHorizontalColunaEsquerda(doc, leftX, rightX, bottomSection);
-  doc.line(rightX, bottomSection, innerRight, bottomSection);
+  if (comColunaEsquerda) {
+    doc.line(rightX, innerY, rightX, innerBottom);
+    doc.line(rightX, headerBottom, innerRight, headerBottom);
+    linhaHorizontalColunaEsquerda(doc, leftX, rightX, bottomSection);
+    doc.line(rightX, bottomSection, innerRight, bottomSection);
+  } else {
+    doc.line(innerX, headerBottom, innerRight, headerBottom);
+    doc.line(innerX, bottomSection, innerRight, bottomSection);
+  }
 
-  const qtyTop = comQuantidade ? bottomSection + m.locBottomH : null;
+  const qtyTop = comQuantidade && comColunaEsquerda ? bottomSection + m.locBottomH : null;
   if (qtyTop != null) {
     linhaHorizontalColunaEsquerda(doc, leftX, rightX, qtyTop);
   }
 
-  const locText = isLote ? localizacaoEmCaixaAlta(lote) : localizacaoEmCaixaAlta(localizacao);
   const codText = String(codigo || '').trim();
   const descText = String(descricao || '').trim();
 
-  if (qrLocalizacao) {
+  if (comColunaEsquerda && qrLocalizacao) {
     const qrBoxH = bottomSection - innerY;
     const qrSize = Math.min(m.qrSizeMm, qrBoxH - 0.2);
     const qrX = leftX + (m.leftW - qrSize) / 2;
@@ -381,25 +388,29 @@ function drawEtiqueta(
     doc.text('LOTE', leftX + 1.2, locAreaTop + loteLabelPt * 0.48);
   };
 
-  if (comQuantidade) {
-    const locCapPt = Math.min(locFont, (locAreaH - reservaRotuloLote) / 0.38);
-    const locFit = fitDescricaoNoEspaco(
-      doc,
-      locText,
-      locMaxW,
-      Math.max(1, locAreaH - reservaRotuloLote - 0.4),
-      locCapPt,
-      fontePadraoPt(h, 7)
-    );
-    if (isLote) desenharRotuloLote();
-    doc.setFontSize(locFit.size);
-    const textoTop = locAreaTop + reservaRotuloLote;
-    const textoH = locAreaH - reservaRotuloLote;
-    const locY = textoTop + (textoH - locFit.blockH) / 2 + locFit.size * 0.32;
-    doc.text(locFit.lines, leftX + m.leftW / 2, locY, { align: 'center' });
+  if (comColunaEsquerda && comQuantidade) {
+    if (locText) {
+      const locCapPt = Math.min(locFont, (locAreaH - reservaRotuloLote) / 0.38);
+      const locFit = fitDescricaoNoEspaco(
+        doc,
+        locText,
+        locMaxW,
+        Math.max(1, locAreaH - reservaRotuloLote - 0.4),
+        locCapPt,
+        fontePadraoPt(h, 7)
+      );
+      if (isLote) desenharRotuloLote();
+      doc.setFontSize(locFit.size);
+      const textoTop = locAreaTop + reservaRotuloLote;
+      const textoH = locAreaH - reservaRotuloLote;
+      const locY = textoTop + (textoH - locFit.blockH) / 2 + locFit.size * 0.32;
+      doc.text(locFit.lines, leftX + m.leftW / 2, locY, { align: 'center' });
+    } else if (isLote) {
+      desenharRotuloLote();
+    }
 
     drawCaixaQuantidade(doc, leftX, qtyTop, m.leftW, m.qtyH, qtyText, h);
-  } else {
+  } else if (comColunaEsquerda && locText) {
     if (isLote) desenharRotuloLote();
     doc.setFontSize(locFont);
     const locLines = doc.splitTextToSize(locText, locMaxW);
@@ -409,6 +420,8 @@ function drawEtiqueta(
     const textoH = locAreaH - reservaRotuloLote;
     const locY = textoTop + (textoH - locBlockH) / 2 + locFont * 0.32;
     doc.text(locLines, leftX + m.leftW / 2, locY, { align: 'center' });
+  } else if (comColunaEsquerda && isLote) {
+    desenharRotuloLote();
   }
 
   const headerMidY = innerY + m.headerH * 0.58;
@@ -420,6 +433,17 @@ function drawEtiqueta(
   doc.setTextColor(0, 0, 0);
   doc.setFontSize(codFont);
   doc.text(codText, innerX + m.innerW - 2, headerMidY, { align: 'right' });
+
+  if (destacarLocalizacao && locText && !isLote) {
+    const locHeaderPt = Math.min(fontePadraoPt(h, 10), m.headerH * 0.42);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(locHeaderPt);
+    const locHeaderLines = doc.splitTextToSize(locText, m.rightW - 4);
+    const locLineH = locHeaderPt * LINE_HEIGHT_FACTOR;
+    const locBlockH = locHeaderLines.length * locLineH;
+    const locY = headerBottom - locBlockH - 0.6;
+    doc.text(locHeaderLines, rightX + 2.5, locY + locHeaderPt * 0.32);
+  }
 
   const descMaxW = m.rightW - 3;
   const descAreaH = bottomSection - headerBottom - 1;
@@ -453,14 +477,12 @@ export async function gerarPdfIdentificacao(params, opts = {}) {
   const brutos = Array.isArray(params?.itens) ? params.itens : [];
   const itens = brutos
     .map((row) => normalizarItem(row, localizacaoPartilhada, tipoEtiquetaGlobal))
-    .filter((row) => row.codigo && (isLoteGlobal ? row.lote : row.localizacao));
+    .filter((row) => row.codigo && (!isLoteGlobal || row.lote));
 
   if (itens.length === 0) {
     const msg = isLoteGlobal
       ? 'Indique pelo menos um artigo com controlo Lote, código do artigo e número de lote.'
-      : modo === MODOS_PDF.TRES_POR_FOLHA
-        ? 'Indique pelo menos um artigo com código e localização (por artigo).'
-        : 'Indique o artigo com código e localização.';
+      : 'Indique pelo menos um artigo com código.';
     throw new Error(msg);
   }
 
@@ -479,7 +501,9 @@ export async function gerarPdfIdentificacao(params, opts = {}) {
         const slot = slots[i];
         if (!slot) break;
         const assets = await prepararAssetsEtiqueta(pageItens[i], slot.w, slot.h);
-        drawEtiqueta(doc, slot.x, slot.y, slot.w, slot.h, assets.payload, assets);
+        drawEtiqueta(doc, slot.x, slot.y, slot.w, slot.h, assets.payload, assets, {
+          destacarLocalizacao: true
+        });
       }
     }
   } else {
@@ -499,10 +523,12 @@ export async function gerarPdfIdentificacao(params, opts = {}) {
   const baseName =
     opts.filename ||
     (modo === MODOS_PDF.TRES_POR_FOLHA
-      ? `IDENT_${itensPdf.length}x_${sanitizeFilenamePart(primeiro.localizacao)}.pdf`
+      ? `IDENT_${itensPdf.length}x_${sanitizeFilenamePart(sufixoLoc || primeiro.codigo)}.pdf`
       : itensPdf.length > 1
         ? `IDENT_${itensPdf.length}pag_${sanitizeFilenamePart(primeiro.codigo)}.pdf`
-        : `IDENT_${sanitizeFilenamePart(primeiro.codigo)}_${sanitizeFilenamePart(sufixoLoc)}.pdf`);
+        : sufixoLoc
+          ? `IDENT_${sanitizeFilenamePart(primeiro.codigo)}_${sanitizeFilenamePart(sufixoLoc)}.pdf`
+          : `IDENT_${sanitizeFilenamePart(primeiro.codigo)}.pdf`);
   doc.save(baseName.endsWith('.pdf') ? baseName : `${baseName}.pdf`);
 }
 

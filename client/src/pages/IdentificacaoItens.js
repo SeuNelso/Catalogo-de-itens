@@ -113,6 +113,8 @@ const IdentificacaoItens = () => {
   const [loteOpenIdx, setLoteOpenIdx] = useState(null);
   const [lotesStockRows, setLotesStockRows] = useState([]);
   const [loadingLotesSug, setLoadingLotesSug] = useState(false);
+  const [locStockRows, setLocStockRows] = useState([]);
+  const [loadingLocStockSug, setLoadingLocStockSug] = useState(false);
 
   const [loadingSug, setLoadingSug] = useState(false);
   const [gerando, setGerando] = useState(false);
@@ -308,6 +310,63 @@ const IdentificacaoItens = () => {
     };
   }, [modoLoteAtivo, loteOpenIdx, linhas, armazemId]);
 
+  const carregarLocalizacoesStockLinha = useCallback(
+    async (idx, itemId, { preencherUnica = false } = {}) => {
+      const aid = Number(armazemId || 0);
+      const iid = Number(itemId || 0);
+      if (!aid || !iid) {
+        setLocStockRows([]);
+        return;
+      }
+      setLoadingLocStockSug(true);
+      try {
+        const token = localStorage.getItem('token');
+        const { data } = await axios.get(
+          `/api/armazens/${aid}/itens/${iid}/localizacoes-com-stock`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        const locs = Array.isArray(data?.localizacoes) ? data.localizacoes : [];
+        setLocStockRows(locs);
+        if (preencherUnica && locs.length === 1) {
+          const loc = String(locs[0]?.localizacao || '').trim();
+          if (loc) {
+            setLinhas((prev) =>
+              prev.map((l, i) => (i === idx ? { ...l, localizacao: loc } : l))
+            );
+          }
+        }
+      } catch {
+        setLocStockRows([]);
+      } finally {
+        setLoadingLocStockSug(false);
+      }
+    },
+    [armazemId]
+  );
+
+  useEffect(() => {
+    if (modoLoteAtivo || locOpenIdx == null) {
+      setLocStockRows([]);
+      return undefined;
+    }
+    const linha = linhas[locOpenIdx];
+    const itemId = Number(linha?.item_id || 0);
+    if (!itemId || !armazemId) {
+      setLocStockRows([]);
+      return undefined;
+    }
+    let cancelled = false;
+    const t = setTimeout(() => {
+      carregarLocalizacoesStockLinha(locOpenIdx, itemId).then(() => {
+        if (cancelled) return;
+      });
+    }, 200);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [modoLoteAtivo, locOpenIdx, linhas, armazemId, carregarLocalizacoesStockLinha]);
+
   useEffect(() => {
     const onDoc = (e) => {
       if (!e.target.closest('[data-ident-sug]') && !e.target.closest('[data-ident-loc]') && !e.target.closest('[data-ident-lote]')) {
@@ -324,9 +383,21 @@ const IdentificacaoItens = () => {
     if (locOpenIdx == null) return [];
     const termo = linhas[locOpenIdx]?.localizacao || '';
     const q = normalize(termo);
-    if (!q) return localizacoesOpts.slice(0, 30);
-    return localizacoesOpts.filter((l) => normalize(l).includes(q)).slice(0, 30);
-  }, [localizacoesOpts, locOpenIdx, linhas]);
+    const fromStock = (locStockRows || [])
+      .map((r) => ({
+        localizacao: String(r?.localizacao || '').trim(),
+        quantidade: Number(r?.quantidade) || 0
+      }))
+      .filter((r) => r.localizacao);
+    const base =
+      fromStock.length > 0
+        ? fromStock
+        : localizacoesOpts.map((loc) => ({ localizacao: loc, quantidade: null }));
+    const filtradas = q
+      ? base.filter((r) => normalize(r.localizacao).includes(q))
+      : base;
+    return filtradas.slice(0, 30);
+  }, [localizacoesOpts, locOpenIdx, linhas, locStockRows]);
 
   const selecionarItemLinha = (idx, item) => {
     if (modoLoteAtivo && !isItemControloLote(item)) {
@@ -349,13 +420,17 @@ const IdentificacaoItens = () => {
               item_id: itemId,
               busca: formatArtigoExibicao(cod, desc),
               lote: '',
-              quantidade: ''
+              quantidade: '',
+              localizacao: ''
             }
           : l
       )
     );
     setLinhaSugAtiva(null);
     setSugestoesLinha([]);
+    if (!modoLoteAtivo && itemId && armazemId) {
+      carregarLocalizacoesStockLinha(idx, itemId, { preencherUnica: false });
+    }
   };
 
   const limparLinha = (idx) => {
@@ -427,11 +502,15 @@ const IdentificacaoItens = () => {
         const exact = itens.find((i) => String(i.codigo || '').trim() === v);
         const pick = exact || itens[0];
         if (pick) {
+          const itemIdPick = Number(pick.id || 0) || '';
           preencher(
             String(pick.codigo || v).trim(),
             String(pick.descricao || pick.nome || '').trim(),
-            Number(pick.id || 0) || ''
+            itemIdPick
           );
+          if (!modoLoteAtivo && itemIdPick && armazemId) {
+            carregarLocalizacoesStockLinha(linhaIdx, itemIdPick, { preencherUnica: false });
+          }
         } else if (modoLoteAtivo) {
           setToast({
             type: 'error',
@@ -442,7 +521,7 @@ const IdentificacaoItens = () => {
         /* mantém valor lido */
       }
     },
-    [modoLoteAtivo]
+    [modoLoteAtivo, armazemId, carregarLocalizacoesStockLinha]
   );
 
   const aplicarLocalizacaoLida = (valor, linhaIdx) => {
@@ -482,7 +561,7 @@ const IdentificacaoItens = () => {
         linhasPreenchidas.every((l) => l.lote)
       );
     }
-    return linhasPreenchidas.every((l) => l.localizacao);
+    return true;
   }, [
     gerando,
     linhasPreenchidas,
@@ -524,7 +603,7 @@ const IdentificacaoItens = () => {
       const itens = linhasPreenchidas.map((l) => ({
         codigo: l.codigo,
         descricao: l.descricao,
-        localizacao: modoLoteAtivo ? undefined : l.localizacao,
+        localizacao: modoLoteAtivo ? undefined : (String(l.localizacao || '').trim() || undefined),
         lote: modoLoteAtivo ? l.lote : undefined,
         quantidade: isTres ? undefined : l.quantidade || undefined,
         tipoEtiqueta: modoLoteAtivo ? TIPO_ETIQUETA.LOTE : TIPO_ETIQUETA.LOCALIZACAO
@@ -572,7 +651,7 @@ const IdentificacaoItens = () => {
           PDF em A4 (horizontal ou vertical conforme o formato).
           {modoLoteAtivo
             ? ' QR = lote; código de barras = artigo.'
-            : ' QR = localização; código de barras = código do artigo.'}
+            : ' QR e texto de localização são opcionais; código de barras = código do artigo.'}
         </p>
 
         <section className="bg-white rounded-2xl shadow-lg border border-gray-200 p-4 sm:p-6 space-y-5">
@@ -661,7 +740,7 @@ const IdentificacaoItens = () => {
                   />
                   <span className="text-sm text-gray-800">
                     <span className="font-semibold block">Localização</span>
-                    <span className="text-xs text-gray-500">QR da localização + quantidade opcional</span>
+                    <span className="text-xs text-gray-500">QR da localização (opcional) + quantidade opcional</span>
                   </span>
                 </label>
                 <label className="flex-1 flex items-start gap-2 p-3 border rounded-lg cursor-pointer has-[:checked]:border-[#0915FF] has-[:checked]:bg-blue-50/50">
@@ -684,7 +763,7 @@ const IdentificacaoItens = () => {
           <div className="space-y-4">
               <p className="text-sm text-gray-600">
                 {isTres
-                  ? 'Adicione quantos artigos precisar (3 por página A4; novas páginas são criadas automaticamente). Cada etiqueta usa a localização do respetivo artigo no QR.'
+                  ? 'Adicione quantos artigos precisar (3 por página A4; novas páginas são criadas automaticamente). Localização opcional (QR e texto na etiqueta).'
                   : modoLoteAtivo
                     ? 'Adicione artigos com controlo por Lote (1 etiqueta por página A4 horizontal). Pesquise só artigos Lote; o número de lote pode ser escolhido entre os registados no seu armazém.'
                     : 'Adicione quantos artigos precisar (1 etiqueta por página A4 horizontal). Todos entram num único PDF com várias folhas.'}
@@ -887,7 +966,7 @@ const IdentificacaoItens = () => {
                       )}
                       <div className="relative" data-ident-loc>
                         <label className="block text-xs font-medium text-gray-600 mb-1">
-                          Localização (QR)
+                          Localização (opcional — QR e etiqueta)
                         </label>
                         <PesquisaComLeitorQr
                           value={linha.localizacao}
@@ -898,38 +977,63 @@ const IdentificacaoItens = () => {
                             );
                             setLocOpenIdx(idx);
                           }}
-                          onFocus={() => setLocOpenIdx(idx)}
+                          onFocus={() => {
+                            setLocOpenIdx(idx);
+                            if (linha.item_id && armazemId) {
+                              carregarLocalizacoesStockLinha(idx, linha.item_id);
+                            }
+                          }}
                           onLerClick={() => {
                             setScannerLocLinhaIdx(idx);
                             setScannerLocOpen(true);
                           }}
-                          placeholder="Ex.: GERAL.E.R"
+                          placeholder="Opcional — ex.: GERAL.E"
                           fontMono
                           lerTitle="Ler QR da localização"
-                          disabled={!armazemId || armazensIdentificacao.length === 0}
-                          lerDisabled={!armazemId || armazensIdentificacao.length === 0}
+                          disabled={!linha.codigo || !armazemId || armazensIdentificacao.length === 0}
+                          lerDisabled={!linha.codigo || !armazemId || armazensIdentificacao.length === 0}
                         />
+                        {locOpenIdx === idx && loadingLocStockSug && (
+                          <p className="text-xs text-gray-500 mt-1">A carregar localizações com stock…</p>
+                        )}
                         {locOpenIdx === idx && localizacoesFiltradasLinha.length > 0 && (
                           <ul className="absolute z-20 left-0 right-0 mt-1 max-h-48 overflow-auto bg-white border border-gray-200 rounded-lg shadow-lg text-sm">
-                            {localizacoesFiltradasLinha.map((loc) => (
-                              <li key={loc}>
+                            {localizacoesFiltradasLinha.map((row) => (
+                              <li key={row.localizacao}>
                                 <button
                                   type="button"
-                                  className="w-full text-left px-3 py-2 hover:bg-gray-50 font-mono border-b border-gray-100 last:border-0"
+                                  className="w-full text-left px-3 py-2 hover:bg-gray-50 font-mono border-b border-gray-100 last:border-0 flex justify-between gap-2"
                                   onClick={() => {
                                     setLinhas((prev) =>
                                       prev.map((l, i) =>
-                                        i === idx ? { ...l, localizacao: loc } : l)
+                                        i === idx ? { ...l, localizacao: row.localizacao } : l)
                                     );
                                     setLocOpenIdx(null);
                                   }}
                                 >
-                                  {loc}
+                                  <span>{row.localizacao}</span>
+                                  {row.quantidade != null && Number(row.quantidade) > 0 && (
+                                    <span className="text-gray-500 font-sans text-xs shrink-0">
+                                      {Number(row.quantidade).toLocaleString('pt-PT', {
+                                        maximumFractionDigits: 2
+                                      })}
+                                    </span>
+                                  )}
                                 </button>
                               </li>
                             ))}
                           </ul>
                         )}
+                        {locOpenIdx === idx &&
+                          !loadingLocStockSug &&
+                          linha.codigo &&
+                          armazemId &&
+                          localizacoesFiltradasLinha.length === 0 &&
+                          String(linha.localizacao || '').trim().length >= 1 && (
+                            <p className="text-xs text-gray-500 mt-1">
+                              Sem stock nesta localização para o artigo (pode usar uma localização do armazém).
+                            </p>
+                          )}
                       </div>
                     </>
                   )}
