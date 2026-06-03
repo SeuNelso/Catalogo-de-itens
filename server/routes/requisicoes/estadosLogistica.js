@@ -10,7 +10,7 @@ const {
   quantidadeMonitorRececaoItem,
   quantidadeApeadosMonitorItem,
 } = require('../../services/requisicoes/preparacaoUtils');
-const { hasEstoqueAplicadoColumn } = require('../../utils/aplicarStockTicketMovInterna');
+const { hasEstoqueAplicadoColumn, columnExists } = require('../../utils/aplicarStockTicketMovInterna');
 
 function createEstadosLogisticaRouter(deps) {
   const {
@@ -1767,9 +1767,30 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
           /* mantém recebimento */
         }
 
+        const [
+          hasQtyApeadosCol,
+          hasDevolucaoTraCol,
+          hasDevolucaoTrflCol,
+          hasMovInternaTable,
+        ] = await Promise.all([
+          columnExists(pool, 'requisicoes_itens', 'quantidade_apeados'),
+          columnExists(pool, 'requisicoes', 'devolucao_tra_gerada_em'),
+          columnExists(pool, 'requisicoes', 'devolucao_trfl_gerada_em'),
+          armazemMovimentacaoInternaTableExists(),
+        ]);
+        let hasTraApeadoGeradaCol = false;
+        let hasEstoqueAplicadoCol = false;
+        if (hasMovInternaTable) {
+          [hasTraApeadoGeradaCol, hasEstoqueAplicadoCol] = await Promise.all([
+            columnExists(pool, 'armazem_movimentacao_interna', 'tra_apeado_gerada_em'),
+            hasEstoqueAplicadoColumn(pool),
+          ]);
+        }
+
         const reqQ = await pool.query(
           `SELECT r.id, r.status, r.created_at, r.updated_at, r.observacoes, r.tra_numero,
-                  r.devolucao_tra_gerada_em, r.devolucao_trfl_gerada_em, r.devolucao_tra_apeados_gerada_em,
+                  ${hasDevolucaoTraCol ? 'r.devolucao_tra_gerada_em,' : 'NULL::timestamp AS devolucao_tra_gerada_em,'}
+                  ${hasDevolucaoTrflCol ? 'r.devolucao_trfl_gerada_em,' : 'NULL::timestamp AS devolucao_trfl_gerada_em,'}
                   r.armazem_id, r.armazem_origem_id
            FROM requisicoes r
            WHERE r.armazem_id = $1 OR r.armazem_origem_id = $1
@@ -1796,7 +1817,8 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
         const apeadosChildCountByReqItemId = new Map();
         if (reqIds.length > 0) {
           const itensQ = await pool.query(
-            `SELECT ri.id AS requisicao_item_id, ri.requisicao_id, ri.item_id, ri.quantidade, ri.quantidade_preparada, ri.quantidade_apeados,
+            `SELECT ri.id AS requisicao_item_id, ri.requisicao_id, ri.item_id, ri.quantidade, ri.quantidade_preparada,
+                    ${hasQtyApeadosCol ? 'ri.quantidade_apeados' : '0::int AS quantidade_apeados'},
                     ri.serialnumber, ri.lote,
                     i.codigo AS item_codigo, i.descricao AS item_descricao, i.tipocontrolo
              FROM requisicoes_itens ri
@@ -1840,25 +1862,29 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
             }
           }
 
-          const seriaisQ = await pool.query(
-            `SELECT s.requisicao_item_id, s.serialnumber
-             FROM requisicoes_itens_seriais s
-             INNER JOIN requisicoes_itens ri ON ri.id = s.requisicao_item_id
-             WHERE ri.requisicao_id = ANY($1::int[])`,
-            [reqIds]
-          );
-          for (const s of seriaisQ.rows || []) {
-            const riId = Number(s.requisicao_item_id);
-            if (!Number.isFinite(riId)) continue;
-            const sn = String(s?.serialnumber || '').trim();
-            const prev = rastreavelAggByReqItemId.get(riId) || { metros: 0, seriais: 0 };
-            if (sn) prev.seriais += 1;
-            rastreavelAggByReqItemId.set(riId, prev);
-            if (sn) {
-              if (!seriaisByReqItemId.has(riId)) seriaisByReqItemId.set(riId, []);
-              const arr = seriaisByReqItemId.get(riId);
-              if (!arr.includes(sn)) arr.push(sn);
+          try {
+            const seriaisQ = await pool.query(
+              `SELECT s.requisicao_item_id, s.serialnumber
+               FROM requisicoes_itens_seriais s
+               INNER JOIN requisicoes_itens ri ON ri.id = s.requisicao_item_id
+               WHERE ri.requisicao_id = ANY($1::int[])`,
+              [reqIds]
+            );
+            for (const s of seriaisQ.rows || []) {
+              const riId = Number(s.requisicao_item_id);
+              if (!Number.isFinite(riId)) continue;
+              const sn = String(s?.serialnumber || '').trim();
+              const prev = rastreavelAggByReqItemId.get(riId) || { metros: 0, seriais: 0 };
+              if (sn) prev.seriais += 1;
+              rastreavelAggByReqItemId.set(riId, prev);
+              if (sn) {
+                if (!seriaisByReqItemId.has(riId)) seriaisByReqItemId.set(riId, []);
+                const arr = seriaisByReqItemId.get(riId);
+                if (!arr.includes(sn)) arr.push(sn);
+              }
             }
+          } catch (eSeriaisTbl) {
+            if (eSeriaisTbl.code !== '42P01') throw eSeriaisTbl;
           }
 
           const bumpApeadosChild = (riId, n) => {
@@ -1971,7 +1997,7 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
           }
 
           const isDevolucao = !isRecebimentoReq && (
-            Boolean(r?.devolucao_tra_gerada_em)
+            (hasDevolucaoTraCol && Boolean(r?.devolucao_tra_gerada_em))
             || Boolean(String(r?.tra_numero || '').trim())
           );
           const elegivelDevolucao = isDevolucao
@@ -1988,7 +2014,7 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
                 base,
                 quantidadeApeadosMonitorItem(it, riId, apeadosChildCountByReqItemId)
               );
-              const trflDevInterna = Boolean(r?.devolucao_trfl_gerada_em);
+              const trflDevInterna = hasDevolucaoTrflCol && Boolean(r?.devolucao_trfl_gerada_em);
               const qtdDevolucao = trflDevInterna ? 0 : Math.max(0, base - qApeados);
               const qtdApeados = Math.max(0, qApeados);
               addPendente({
@@ -2041,19 +2067,18 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
             ts: Number(ts || 0) || 0,
           });
         };
-        if (await armazemMovimentacaoInternaTableExists()) {
-          const hasEstoqueAplicadoCol = await hasEstoqueAplicadoColumn(pool);
+        if (hasMovInternaTable) {
           const tkQ = await pool.query(
             `SELECT i.codigo AS item_codigo,
                     ami.quantidade::float AS quantidade,
                     ami.trfl_gerada_em,
-                    ami.tra_apeado_gerada_em,
+                    ${hasTraApeadoGeradaCol ? 'ami.tra_apeado_gerada_em,' : 'NULL::timestamptz AS tra_apeado_gerada_em,'}
                     ${hasEstoqueAplicadoCol ? 'ami.estoque_aplicado_em,' : ''}
                     COALESCE(
-                      ami.trfl_gerada_em,
-                      ami.tra_apeado_gerada_em,
-                      ${hasEstoqueAplicadoCol ? 'ami.estoque_aplicado_em,' : ''}
-                      ami.created_at
+                      ami.trfl_gerada_em
+                      ${hasTraApeadoGeradaCol ? ', ami.tra_apeado_gerada_em' : ''}
+                      ${hasEstoqueAplicadoCol ? ', ami.estoque_aplicado_em' : ''}
+                      , ami.created_at
                     ) AS evento_em,
                     ami.created_at,
                     lo.localizacao AS origem_localizacao_label,
@@ -2069,7 +2094,7 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
              WHERE ami.armazem_id = $1
                AND (
                  ami.trfl_gerada_em IS NOT NULL
-                 OR ami.tra_apeado_gerada_em IS NOT NULL
+                 ${hasTraApeadoGeradaCol ? 'OR ami.tra_apeado_gerada_em IS NOT NULL' : ''}
                  ${hasEstoqueAplicadoCol ? 'OR ami.estoque_aplicado_em IS NOT NULL' : ''}
                )
              ORDER BY ami.created_at DESC, ami.id DESC
@@ -2109,7 +2134,7 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
 
         for (const r of reqRows) {
           if (markerFlagAtivo(String(r?.observacoes || ''), RECEBIMENTO_MONITOR_CLEAR_TEST_MARKER)) continue;
-          if (!Boolean(r?.devolucao_trfl_gerada_em)) continue;
+          if (!hasDevolucaoTrflCol || !Boolean(r?.devolucao_trfl_gerada_em)) continue;
           if (Number(r?.armazem_id) !== armazemId) continue;
           const ts = Date.parse(String(r.devolucao_trfl_gerada_em)) || 0;
           const itens = itensByReqId.get(Number(r.id)) || [];
@@ -2307,7 +2332,16 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
         });
       } catch (e) {
         console.error('Erro ao obter monitor de receção:', e);
-        return res.status(500).json({ error: 'Erro ao obter monitor de receção', details: e.message });
+        const hint42703 =
+          e?.code === '42703'
+            ? 'Execute as migrações em falta (ex.: npm run db:migrate:requisicoes-devolucao-docs, db:migrate:requisicoes-itens-quantidade-apeados, db:migrate:movimentacao-interna-tra-apeado, db:migrate:movimentacao-interna-estoque-aplicado).'
+            : undefined;
+        return res.status(500).json({
+          error: 'Erro ao obter monitor de receção',
+          details: e.message,
+          code: e.code || undefined,
+          hint: hint42703,
+        });
       }
     }
   );

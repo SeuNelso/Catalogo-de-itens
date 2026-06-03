@@ -768,4 +768,5 @@ module.exports = {
   ticketEstoqueJaAplicado,
   marcarTicketEstoqueAplicado,
   hasEstoqueAplicadoColumn,
+  columnExists,
 };

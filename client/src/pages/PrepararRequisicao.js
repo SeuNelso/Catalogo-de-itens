@@ -2759,7 +2759,7 @@ const PrepararRequisicao = () => {
                                 Digite a quantidade real recebida para este artigo.
                               </p>
                             )}
-                            {isFluxoDevolucao && (
+                            {isFluxoDevolucao && !isTipoControloSerial(item.tipocontrolo) && (
                               <div className="rounded-lg border border-violet-100 bg-violet-50/60 px-3 py-2 space-y-2">
                                 <label className="flex items-center gap-2 text-sm text-violet-900 cursor-pointer select-none">
                                   <input
