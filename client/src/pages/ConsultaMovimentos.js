@@ -7,6 +7,43 @@ import { useAuth } from '../contexts/AuthContext';
 /** Máximo de linhas por página na consulta (alinhado com a API). */
 const MOVIMENTOS_PAGE_SIZE = 40;
 
+const MOVIMENTOS_ARMAZEM_FAVORITO_KEY = (userId) =>
+  `catalogo.movimentos.armazem_favorito.v1:${Number(userId) || 'anon'}`;
+
+function readArmazemFavorito(userId) {
+  try {
+    const raw = window.localStorage.getItem(MOVIMENTOS_ARMAZEM_FAVORITO_KEY(userId));
+    const id = parseInt(String(raw || ''), 10);
+    return Number.isFinite(id) && id > 0 ? String(id) : '';
+  } catch {
+    return '';
+  }
+}
+
+function writeArmazemFavorito(userId, armazemId) {
+  try {
+    const key = MOVIMENTOS_ARMAZEM_FAVORITO_KEY(userId);
+    const id = parseInt(String(armazemId || ''), 10);
+    if (Number.isFinite(id) && id > 0) {
+      window.localStorage.setItem(key, String(id));
+    } else {
+      window.localStorage.removeItem(key);
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
+function resolverArmazemInicialConsulta(armazens, userId) {
+  const list = Array.isArray(armazens) ? armazens : [];
+  if (!list.length) return '';
+  const ids = new Set(list.map((a) => String(a?.id)));
+  const favorito = readArmazemFavorito(userId);
+  if (favorito && ids.has(favorito)) return favorito;
+  if (list.length === 1) return String(list[0].id);
+  return '';
+}
+
 const DEFAULT_COLUMNS = [
   'Tipo de Movimento',
   'Dt_Recepção',
@@ -242,6 +279,8 @@ const ConsultaMovimentos = () => {
   const [exportDataInicio, setExportDataInicio] = useState('');
   const [exportDataFim, setExportDataFim] = useState('');
   const [exporting, setExporting] = useState(false);
+  const [armazemPredefinidoId, setArmazemPredefinidoId] = useState('');
+  const armazemInitRef = useRef(false);
   const pageSize = MOVIMENTOS_PAGE_SIZE;
   const [filtros, setFiltros] = useState({
     q: '',
@@ -409,15 +448,39 @@ const ConsultaMovimentos = () => {
   }, []);
 
   useEffect(() => {
-    const initial = { ...filtros };
-    setAppliedFiltros(initial);
+    if (armazemInitRef.current || !armazens.length) return;
+    armazemInitRef.current = true;
+    const favorito = readArmazemFavorito(user?.id);
+    const favoritoValido = favorito && armazens.some((a) => String(a?.id) === favorito);
+    if (favorito && !favoritoValido) {
+      writeArmazemFavorito(user?.id, '');
+    }
+    setArmazemPredefinidoId(favoritoValido ? favorito : '');
+    const armazemId = resolverArmazemInicialConsulta(armazens, user?.id);
+    if (!armazemId) return;
+    const next = {
+      q: '',
+      data_inicio: '',
+      data_fim: '',
+      tipo_movimento: '',
+      tra_numero: '',
+      ref: '',
+      description: '',
+      serial: '',
+      lote: '',
+      armazem_id: armazemId,
+      localizacao: '',
+      minhas: false,
+    };
+    setFiltros(next);
+    setAppliedFiltros(next);
     setOffset(0);
     setOffsetHistory([]);
-    fetchMovimentos(initial, 0);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fetchMovimentos]);
+    fetchMovimentos(next, 0);
+  }, [armazens, user?.id, fetchMovimentos]);
 
   const visibleRows = useMemo(() => rows, [rows]);
+  const consultaComArmazem = Boolean(String(appliedFiltros?.armazem_id || '').trim());
   const nFiltrosAplicados = useMemo(() => countFiltrosAtivos(appliedFiltros), [appliedFiltros]);
   const armazemDescById = useMemo(() => armazemDescricaoPorId(armazens), [armazens]);
   const armazemDescByCodigo = useMemo(() => armazemDescricaoPorCodigo(armazens), [armazens]);
@@ -488,11 +551,32 @@ const ConsultaMovimentos = () => {
   }, [armazensFiltradosPorTipoMovimento.destino, addNovoArmazemSearch]);
 
   const aplicarFiltros = () => {
+    if (!String(filtros.armazem_id || '').trim()) {
+      setToast({ type: 'error', message: 'Selecione um armazém para consultar movimentos.' });
+      return;
+    }
     const next = { ...filtros };
     setAppliedFiltros(next);
     setOffset(0);
     setOffsetHistory([]);
     fetchMovimentos(next, 0);
+  };
+
+  const alternarArmazemPredefinido = () => {
+    const current = String(filtros.armazem_id || '').trim();
+    if (!current) {
+      setToast({ type: 'error', message: 'Selecione um armazém antes de definir como predefinido.' });
+      return;
+    }
+    if (armazemPredefinidoId === current) {
+      writeArmazemFavorito(user?.id, '');
+      setArmazemPredefinidoId('');
+      setToast({ type: 'success', message: 'Armazém predefinido removido.' });
+      return;
+    }
+    writeArmazemFavorito(user?.id, current);
+    setArmazemPredefinidoId(current);
+    setToast({ type: 'success', message: 'Armazém guardado como predefinido neste browser.' });
   };
 
   const limparFormularioAdicionarLinha = useCallback(() => {
@@ -780,6 +864,10 @@ const ConsultaMovimentos = () => {
     try {
       setExporting(true);
       setToast(null);
+      if (!String((appliedFiltros || filtros).armazem_id || '').trim()) {
+        setToast({ type: 'error', message: 'Selecione um armazém antes de exportar.' });
+        return;
+      }
       const dataInicioNorm = normalizeDateFilterValue(exportDataInicio);
       const dataFimNorm = normalizeDateFilterValue(exportDataFim);
       if (dataInicioNorm && dataFimNorm && dataInicioNorm > dataFimNorm) {
@@ -1082,18 +1170,34 @@ const ConsultaMovimentos = () => {
               aria-labelledby="movimentos-filtros-cabecalho"
             >
               <div className="grid grid-cols-1 gap-2">
-                <select
-                  value={filtros.armazem_id}
-                  onChange={(e) => setFiltros((p) => ({ ...p, armazem_id: e.target.value }))}
-                  className="rounded-lg border border-gray-300 px-3 py-2 text-sm"
-                >
-                  <option value="">Armazém (todos)</option>
-                  {armazens.map((a) => (
-                    <option key={a.id} value={String(a.id)}>
-                      {`${a.codigo} — ${a.descricao}`}
-                    </option>
-                  ))}
-                </select>
+                <label className="text-[11px] font-medium text-gray-600">
+                  Armazém *
+                  <select
+                    required
+                    value={filtros.armazem_id}
+                    onChange={(e) => setFiltros((p) => ({ ...p, armazem_id: e.target.value }))}
+                    className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                  >
+                    <option value="">Selecionar armazém…</option>
+                    {armazens.map((a) => (
+                      <option key={a.id} value={String(a.id)}>
+                        {`${a.codigo} — ${a.descricao}`}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="inline-flex items-center gap-2 text-sm text-gray-700">
+                  <input
+                    type="checkbox"
+                    checked={
+                      Boolean(filtros.armazem_id)
+                      && armazemPredefinidoId === String(filtros.armazem_id)
+                    }
+                    disabled={!String(filtros.armazem_id || '').trim()}
+                    onChange={alternarArmazemPredefinido}
+                  />
+                  Usar como armazém predefinido
+                </label>
                 <select
                   value={filtros.tipo_movimento}
                   onChange={(e) => setFiltros((p) => ({ ...p, tipo_movimento: e.target.value }))}
@@ -1180,7 +1284,7 @@ const ConsultaMovimentos = () => {
                 <button
                   type="button"
                   onClick={() =>
-                    setFiltros({
+                    setFiltros((p) => ({
                       q: '',
                       data_inicio: '',
                       data_fim: '',
@@ -1190,14 +1294,14 @@ const ConsultaMovimentos = () => {
                       description: '',
                       serial: '',
                       lote: '',
-                      armazem_id: '',
+                      armazem_id: p.armazem_id,
                       localizacao: '',
                       minhas: false,
-                    })
+                    }))
                   }
                   className="rounded-lg border border-gray-300 px-4 py-2 text-sm hover:bg-gray-50"
                 >
-                  Limpar
+                  Limpar filtros
                 </button>
                 {canAddMovimentoLinha && (
                   <button
@@ -1273,9 +1377,9 @@ const ConsultaMovimentos = () => {
                 <span className="text-sm text-gray-600">Linhas nesta página: {total}</span>
                 <span className="text-xs text-gray-500">Offset: {offset}</span>
               </div>
-              {armazens.length > 1 && (
-                <p className="mt-2 text-xs text-gray-600">
-                  Selecione um armazém para ver os movimentos no contexto desse armazém.
+              {!consultaComArmazem && (
+                <p className="mt-2 text-xs text-amber-700">
+                  Selecione um armazém e clique em Aplicar filtros para ver os movimentos.
                 </p>
               )}
             </div>
@@ -1283,9 +1387,14 @@ const ConsultaMovimentos = () => {
           </div>
 
         <div className="max-w-none space-y-1.5">
-          {visibleRows.length === 0 && (
+          {!consultaComArmazem && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-6 text-center text-sm text-amber-900">
+              Selecione um armazém nos filtros para consultar movimentos.
+            </div>
+          )}
+          {consultaComArmazem && visibleRows.length === 0 && !loading && (
             <div className="rounded-lg border border-gray-200 bg-white px-3 py-6 text-center text-sm text-gray-500">
-              Nenhum movimento encontrado.
+              Nenhum movimento encontrado para este armazém e filtros.
             </div>
           )}
           {visibleRows.map((row, idx) => (

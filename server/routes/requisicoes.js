@@ -6122,6 +6122,9 @@ router.get('/movimentos-clog/consulta', ...requisicaoAuth, denyOnlyOperador, asy
     const armazemIdFiltro = Number.isFinite(armazemIdFiltroRaw) && armazemIdFiltroRaw > 0
       ? armazemIdFiltroRaw
       : null;
+    if (!armazemIdFiltro) {
+      return res.status(400).json({ error: 'armazem_id é obrigatório para consultar movimentos.' });
+    }
     const localizacao = String(req.query?.localizacao || '').trim().toLowerCase();
     const apenasMinhas = String(req.query?.minhas || '').trim() === '1';
     const pageSizeRaw = parseInt(String(req.query?.page_size || '40'), 10);
