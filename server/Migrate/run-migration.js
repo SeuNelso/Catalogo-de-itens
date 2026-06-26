@@ -103,6 +103,8 @@ const migrationFile = sqlInMigrate(
                         ? 'migrate-requisicoes-itens-observacoes.sql'
                       : arg === 'armazens-vinculo-central' || arg === 'vinculo-central'
                         ? 'migrate-armazens-vinculo-central.sql'
+                      : arg === 'armazens-monitor-rececao-oculto-teste' || arg === 'monitor-rececao-oculto-teste'
+                        ? 'migrate-armazens-monitor-rececao-oculto-teste.sql'
                       : 'migrate-requisicoes-itens-preparacao.sql'
 );
 

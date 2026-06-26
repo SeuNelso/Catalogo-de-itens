@@ -457,6 +457,7 @@ function ReceptionMonitorCard() {
                     });
                     const data = await response.json().catch(() => ({}));
                     if (!response.ok) throw new Error(data?.error || 'Erro ao limpar zona de receção para teste.');
+                    setError('');
                     await fetchRows();
                   } catch (e) {
                     setError(e?.message || 'Erro ao limpar zona de receção para teste.');

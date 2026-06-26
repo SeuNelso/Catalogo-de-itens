@@ -1908,8 +1908,9 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
         let offset = parseInt(String(req.query.offset || ''), 10);
         if (!Number.isFinite(offset) || offset < 0) offset = 0;
 
+        const hasMonitorOcultoCol = await columnExists(pool, 'armazens', 'monitor_rececao_oculto_teste');
         const armazemQ = await pool.query(
-          `SELECT codigo, descricao
+          `SELECT codigo, descricao${hasMonitorOcultoCol ? ', monitor_rececao_oculto_teste' : ''}
            FROM armazens
            WHERE id = $1`,
           [armazemId]
@@ -1920,6 +1921,29 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
         const armazemLabel = armCodigo && armDescricao
           ? `${armCodigo} - ${armDescricao}`
           : (armCodigo || armDescricao);
+
+        if (hasMonitorOcultoCol && Boolean(arm?.monitor_rececao_oculto_teste)) {
+          const targetLocationOculto =
+            String(req.query.localizacao || '').trim() ||
+            (await localizacaoArmazemPorTipoConn(pool, armazemId, 'recebimento')) ||
+            LOCALIZACAO_RECEBIMENTO_FALLBACK;
+          return res.json({
+            total: 0,
+            total_unidades: 0,
+            limit,
+            offset,
+            updated_at: new Date().toISOString(),
+            armazem_id: armazemId,
+            armazem: armazemLabel,
+            localizacao: targetLocationOculto,
+            localizacao_apeados: targetLocationOculto,
+            totais_por_categoria: {},
+            contagens_por_categoria: {},
+            prefill_items: [],
+            rows: [],
+            monitor_oculto_teste: true,
+          });
+        }
 
         const targetLocation =
           String(req.query.localizacao || '').trim() ||
@@ -2579,7 +2603,17 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
           );
           updated += 1;
         }
-        return res.json({ ok: true, updated });
+        const hasMonitorOcultoCol = await columnExists(pool, 'armazens', 'monitor_rececao_oculto_teste');
+        if (hasMonitorOcultoCol) {
+          await pool.query(
+            `UPDATE armazens
+             SET monitor_rececao_oculto_teste = true,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE id = $1`,
+            [armazemId]
+          );
+        }
+        return res.json({ ok: true, updated, monitor_oculto_teste: hasMonitorOcultoCol });
       } catch (e) {
         console.error('Erro ao limpar monitor de receção para teste:', e);
         return res.status(500).json({ error: 'Erro ao limpar zona de receção para teste', details: e.message });

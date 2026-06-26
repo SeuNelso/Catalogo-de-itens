@@ -55,6 +55,7 @@
     "db:migrate:inventario-tarefas": "node server/Migrate/run-migration.js inventario-tarefas",
     "db:migrate:requisicoes-itens-observacoes": "node server/Migrate/run-migration.js requisicoes-itens-observacoes",
     "db:migrate:armazens-vinculo-central": "node server/Migrate/run-migration.js armazens-vinculo-central",
+    "db:migrate:armazens-monitor-rececao-oculto-teste": "node server/Migrate/run-migration.js armazens-monitor-rececao-oculto-teste",
     "db:repair:stock-serial-caixa": "node server/scripts/repair-stock-serial-caixa.js",
     "db:repair:stock-serial-caixa:dry-run": "node server/scripts/repair-stock-serial-caixa.js --dry-run",
     "db:migrate:usuario-id1": "node server/Migrate/run-usuario-para-id1.js",

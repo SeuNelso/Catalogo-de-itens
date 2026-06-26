@@ -1307,10 +1307,19 @@ async function aplicarStockDevolucaoEntradaRecebimento(client, { centralId, locR
       });
     }
   }
+  try {
+    await client.query(
+      `UPDATE armazens
+       SET monitor_rececao_oculto_teste = false,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = $1
+         AND monitor_rececao_oculto_teste = true`,
+      [centralId]
+    );
+  } catch (e) {
+    if (e?.code !== '42703') throw e;
+  }
 }
-
-/**
- * Garante que cada linha de `requisicoes_itens` traz em `serialnumber` os S/N de `requisicoes_itens_seriais`
  * (a preparação de recebimento costuma persistir só na tabela filha).
  */
 async function mergeRequisicaoItensSeriaisFromChildTable(client, itensRows) {
