@@ -339,6 +339,8 @@ const PrepararRequisicao = () => {
   const [amostraConferencia, setAmostraConferencia] = useState(null);
   /** Após ✓ em todas as linhas, o utilizador confirma a amostragem; só então pode guardar a preparação. */
   const [amostragemConfirmada, setAmostragemConfirmada] = useState(false);
+  /** Declaração global: todos os S/N esperados estão corretos (dispensa conferência linha a linha da amostra). */
+  const [seriaisAceitosGlobalmenteItemId, setSeriaisAceitosGlobalmenteItemId] = useState(null);
   const [formItem, setFormItem] = useState({
     quantidade_preparada: '',
     localizacao_origem: '',
@@ -500,6 +502,7 @@ const PrepararRequisicao = () => {
     setFiltroEsperadoRecebimento('');
     setAmostraConferencia(null);
     setAmostragemConfirmada(false);
+    setSeriaisAceitosGlobalmenteItemId(null);
     setAmostraScannerUid(null);
   }, [itemPreparando?.id]);
 
@@ -535,6 +538,7 @@ const PrepararRequisicao = () => {
       );
     });
     setAmostragemConfirmada(false);
+    setSeriaisAceitosGlobalmenteItemId(null);
     setAmostraConferencia({ itemId: item.id, linhas });
     const msgCaixa =
       nCaixasComCodigo > 0
@@ -548,6 +552,7 @@ const PrepararRequisicao = () => {
 
   const atualizarAmostraInput = useCallback((uid, value) => {
     setAmostragemConfirmada(false);
+    setSeriaisAceitosGlobalmenteItemId(null);
     setAmostraConferencia((prev) => {
       if (!prev || !Array.isArray(prev.linhas)) return prev;
       return {
@@ -591,6 +596,33 @@ const PrepararRequisicao = () => {
     }));
     return qtd;
   }, []);
+
+  const aceitarSeriaisCorretosRecebimento = useCallback(async (item) => {
+    const det = seriaisDetalheFromItem(item);
+    if (!det.length) {
+      setToast({ type: 'error', message: 'Sem seriais esperados para aceitar.' });
+      return;
+    }
+    const ok = await confirm({
+      title: 'Aceitar seriais como corretos',
+      message:
+        `Declara que os ${det.length} serial(is) esperados deste artigo estão corretos e correspondem ao recebido físico? ` +
+        'A quantidade e todos os S/N serão aplicados à preparação (dispensa conferência da amostra).',
+      confirmLabel: 'Sim, seriais corretos',
+      variant: 'warning',
+    });
+    if (!ok) return;
+    setSeriaisAceitosGlobalmenteItemId(item.id);
+    setAmostragemConfirmada(true);
+    const totalAplicado = aplicarPreparacaoRecebimentoPorSeriaisEsperados(item);
+    setToast({
+      type: 'success',
+      message:
+        totalAplicado > 0
+          ? `Seriais aceites como corretos (${det.length} no total). Já pode confirmar a preparação.`
+          : `Seriais aceites como corretos (${det.length}). Já pode confirmar a preparação.`,
+    });
+  }, [aplicarPreparacaoRecebimentoPorSeriaisEsperados, confirm]);
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
@@ -1417,6 +1449,7 @@ const PrepararRequisicao = () => {
       .startsWith(RECEBIMENTO_TRANSFERENCIA_MARKER);
     if (obsRec && isTipoControloSerial(itemPreparando?.tipocontrolo)) {
       setAmostragemConfirmada(false);
+      setSeriaisAceitosGlobalmenteItemId(null);
     }
     setFormItem((prev) => {
       const next = { ...prev, quantidade_preparada: val };
@@ -1485,28 +1518,31 @@ const PrepararRequisicao = () => {
         ? seriaisDetalheFromItem(itemPreparando)
         : [];
     if (obsRec && isTipoControloSerial(itemPreparando.tipocontrolo) && seriaisEsperadosReceb.length > 0) {
-      const linhasAm =
-        amostraConferencia?.itemId === itemPreparando.id ? (amostraConferencia.linhas || []) : [];
-      if (linhasAm.length === 0) {
-        setToast({
-          type: 'error',
-          message: 'Gere a amostra de conferência antes de confirmar a preparação.',
-        });
-        return;
-      }
-      if (!linhasAm.every((L) => L.ok)) {
-        setToast({
-          type: 'error',
-          message: 'Confirme todos os S/N da amostra de conferência (✓ verde em cada linha) antes de guardar.',
-        });
-        return;
-      }
-      if (!amostragemConfirmada) {
-        setToast({
-          type: 'error',
-          message: 'Clique em «Confirmar amostragem» antes de confirmar a preparação.',
-        });
-        return;
+      const aceiteGlobalSeriais = seriaisAceitosGlobalmenteItemId === itemPreparando.id;
+      if (!aceiteGlobalSeriais) {
+        const linhasAm =
+          amostraConferencia?.itemId === itemPreparando.id ? (amostraConferencia.linhas || []) : [];
+        if (linhasAm.length === 0) {
+          setToast({
+            type: 'error',
+            message: 'Gere a amostra de conferência ou use «Seriais corretos (todos)» antes de confirmar a preparação.',
+          });
+          return;
+        }
+        if (!linhasAm.every((L) => L.ok)) {
+          setToast({
+            type: 'error',
+            message: 'Confirme todos os S/N da amostra de conferência (✓ verde em cada linha) antes de guardar.',
+          });
+          return;
+        }
+        if (!amostragemConfirmada) {
+          setToast({
+            type: 'error',
+            message: 'Clique em «Confirmar amostragem» ou «Seriais corretos (todos)» antes de confirmar a preparação.',
+          });
+          return;
+        }
       }
     }
 
@@ -1514,7 +1550,7 @@ const PrepararRequisicao = () => {
     const isLote = tipoControlo === 'LOTE';
     const preparacaoRecebPorAmostragem =
       obsRec &&
-      amostragemConfirmada &&
+      (amostragemConfirmada || seriaisAceitosGlobalmenteItemId === itemPreparando.id) &&
       isTipoControloSerial(tipoControlo) &&
       seriaisEsperadosReceb.length > 0;
     const qtdRequisitada = parseFloat(itemPreparando.quantidade) || 0;
@@ -1638,7 +1674,9 @@ const PrepararRequisicao = () => {
       bobinasPayload = bobinasValidas;
     } else if (!isZero && isTipoControloSerial(tipoControlo)) {
       const usarSeriaisEsperadosReceb =
-        obsRec && amostragemConfirmada && seriaisEsperadosReceb.length > 0;
+        obsRec
+        && (amostragemConfirmada || seriaisAceitosGlobalmenteItemId === itemPreparando.id)
+        && seriaisEsperadosReceb.length > 0;
       let seriais = [];
       if (usarSeriaisEsperadosReceb) {
         bobinasPayload = seriaisEsperadosReceb
@@ -2941,6 +2979,17 @@ const PrepararRequisicao = () => {
                                 <div className="flex flex-wrap gap-2">
                                   <button
                                     type="button"
+                                    onClick={() => aceitarSeriaisCorretosRecebimento(item)}
+                                    disabled={
+                                      seriaisAceitosGlobalmenteItemId === item.id && amostragemConfirmada
+                                    }
+                                    className="px-3 py-1.5 rounded-lg border-2 border-emerald-700 bg-emerald-700 text-white text-xs font-bold hover:bg-emerald-800 disabled:opacity-45 disabled:cursor-not-allowed shadow-sm"
+                                    title="Declara que todos os seriais esperados estão corretos (dispensa amostra)"
+                                  >
+                                    Seriais corretos (todos)
+                                  </button>
+                                  <button
+                                    type="button"
                                     onClick={() => gerarAmostra10Recebimento(item)}
                                     className="px-3 py-1.5 rounded-lg bg-amber-600 text-white text-xs font-bold hover:bg-amber-700 shadow-sm"
                                   >
@@ -2958,12 +3007,16 @@ const PrepararRequisicao = () => {
                                 </div>
                               </div>
                               <p className="text-[10px] text-emerald-800/90">
-                                Inclui pelo menos 1 S/N aleatório por caixa (com código) e até ~10% do total. Por linha: confira o
-                                físico e digite o S/N ou use
-                                a câmara para ler código de barras / QR. Com todas as linhas ✓, use «Confirmar amostragem»;
-                                o sistema aplica a quantidade e todos os seriais esperados da tarefa. Só depois poderá «Confirmar
-                                preparação». Qualquer alteração nos S/N da amostra anula essa confirmação.
+                                Use «Seriais corretos (todos)» para aceitar a lista esperada sem amostra, ou gere uma
+                                amostra (~10% + 1 por caixa): confira cada linha e use «Confirmar amostragem». Depois
+                                poderá «Confirmar preparação». Alterações nos S/N anulam a confirmação.
                               </p>
+                              {seriaisAceitosGlobalmenteItemId === item.id && amostragemConfirmada && (
+                                <p className="text-[11px] font-semibold text-emerald-800 flex items-center gap-1">
+                                  <FaCheck className="inline shrink-0" />
+                                  Seriais declarados corretos — todos os S/N esperados serão aplicados na preparação.
+                                </p>
+                              )}
                               {amostraConferencia?.itemId === item.id && (amostraConferencia.linhas || []).length > 0 && (
                                 <>
                                   <div className="max-h-64 overflow-y-auto rounded-lg border border-amber-100 bg-white">
@@ -3055,6 +3108,7 @@ const PrepararRequisicao = () => {
                                                 });
                                                 return;
                                               }
+                                              setSeriaisAceitosGlobalmenteItemId(null);
                                               setAmostragemConfirmada(true);
                                               const totalAplicado = aplicarPreparacaoRecebimentoPorSeriaisEsperados(item);
                                               setToast({
@@ -4063,20 +4117,23 @@ const PrepararRequisicao = () => {
                               isFluxoRecebimentoMercadoria &&
                               isTipoControloSerial(item.tipocontrolo) &&
                               detalheEsperadoReceb.length > 0;
+                            const aceiteGlobalSeriais = seriaisAceitosGlobalmenteItemId === item.id;
                             const bloquearPelaAmostra =
                               exigeAmostragemReceb &&
+                              !aceiteGlobalSeriais &&
                               (linhasAmostra.length === 0 || !amostraTodosOk || !amostragemConfirmada);
                             return (
                               <>
-                                {exigeAmostragemReceb && linhasAmostra.length === 0 && (
+                                {exigeAmostragemReceb && linhasAmostra.length === 0 && !aceiteGlobalSeriais && (
                                   <p className="text-xs text-amber-800 text-right max-w-md sm:ml-auto">
-                                    Gere a amostra de conferência antes de confirmar a preparação.
+                                    Gere a amostra ou use «Seriais corretos (todos)» antes de confirmar a preparação.
                                   </p>
                                 )}
                                 {isFluxoRecebimentoMercadoria &&
                                   isTipoControloSerial(item.tipocontrolo) &&
                                   linhasAmostra.length > 0 &&
-                                  !amostraTodosOk && (
+                                  !amostraTodosOk &&
+                                  !aceiteGlobalSeriais && (
                                     <p className="text-xs text-amber-800 text-right max-w-md sm:ml-auto">
                                       Preencha a amostra até ter ✓ verde em todas as linhas; depois use «Confirmar
                                       amostragem» acima.
@@ -4086,7 +4143,8 @@ const PrepararRequisicao = () => {
                                   isTipoControloSerial(item.tipocontrolo) &&
                                   linhasAmostra.length > 0 &&
                                   amostraTodosOk &&
-                                  !amostragemConfirmada && (
+                                  !amostragemConfirmada &&
+                                  !aceiteGlobalSeriais && (
                                     <p className="text-xs text-amber-800 text-right max-w-md sm:ml-auto">
                                       Confirme a amostragem com o botão na secção da amostra para desbloquear o guardar.
                                     </p>
