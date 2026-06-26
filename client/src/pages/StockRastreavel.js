@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { useAuth } from '../contexts/AuthContext';
+import BuscaItemCatalogo, { extrairCodigoItemBusca, labelItemCatalogo } from '../components/BuscaItemCatalogo';
 
 const formatQuantidadeConsulta = (value) => {
   if (value === null || value === undefined || value === '') return '—';
@@ -91,6 +92,14 @@ const EXPORT_TIPO_OPTS = [
   { value: 'lote', label: 'Lote' },
 ];
 
+const filtroItemRastreavelSnLote = (it) => {
+  const tc = String(it?.tipocontrolo || '').trim().toUpperCase();
+  return tc === 'S/N' || tc === 'LOTE';
+};
+
+const INPUT_BUSCA_ITEM_COMPACTO =
+  'w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#0915FF] focus:border-transparent';
+
 const StockRastreavel = ({ mode = 'all' }) => {
   const { user } = useAuth();
   const [arquivo, setArquivo] = useState(null);
@@ -103,6 +112,7 @@ const StockRastreavel = ({ mode = 'all' }) => {
   const [serialCodigo, setSerialCodigo] = useState('');
   const [serialData, setSerialData] = useState(null);
   const [itemId, setItemId] = useState('');
+  const [itemBuscaDisp, setItemBuscaDisp] = useState('');
   const [armazemId, setArmazemId] = useState('');
   const [localizacao, setLocalizacao] = useState('');
   const [dispData, setDispData] = useState(null);
@@ -144,10 +154,8 @@ const StockRastreavel = ({ mode = 'all' }) => {
   const [armazemSelecionadoId, setArmazemSelecionadoId] = useState('');
   const [importArmazemId, setImportArmazemId] = useState('');
   const [savingManual, setSavingManual] = useState(false);
-  const [manualItemResultados, setManualItemResultados] = useState([]);
-  const [manualItemLoading, setManualItemLoading] = useState(false);
   const [manualItemSelecionado, setManualItemSelecionado] = useState(null);
-  const [manualItemDropdownOpen, setManualItemDropdownOpen] = useState(false);
+  const [manualItemBusca, setManualItemBusca] = useState('');
   const [manualForm, setManualForm] = useState({
     modo: 'serial',
     armazem_id: '',
@@ -245,7 +253,7 @@ const StockRastreavel = ({ mode = 'all' }) => {
       const token = localStorage.getItem('token');
       const p = new URLSearchParams();
       p.set('armazem_id', armazemSelecionadoId || fArmazemId);
-      const filtroArtigo = String(fItemId || '').trim();
+      const filtroArtigo = extrairCodigoItemBusca(fItemId);
       if (filtroArtigo) {
         p.set('item_codigo', filtroArtigo);
         if (/^\d+$/.test(filtroArtigo)) p.set('item_id', filtroArtigo);
@@ -323,7 +331,7 @@ const StockRastreavel = ({ mode = 'all' }) => {
       p.set('armazem_id', aid);
       p.set('status', statuses.join(','));
       p.set('tipos', tipos.join(','));
-      const codigoArtigo = String(exportFCodigoArtigo || '').trim();
+      const codigoArtigo = extrairCodigoItemBusca(exportFCodigoArtigo);
       if (codigoArtigo) {
         p.set('item_codigo', codigoArtigo);
         if (/^\d+$/.test(codigoArtigo)) p.set('item_id', codigoArtigo);
@@ -406,10 +414,6 @@ const StockRastreavel = ({ mode = 'all' }) => {
   };
 
   const handleManualChange = (field, value) => {
-    if (field === 'artigo_codigo') {
-      setManualItemSelecionado(null);
-      setManualItemDropdownOpen(true);
-    }
     if (field === 'serialnumber' || field === 'lote') {
       setManualForm((prev) => ({ ...prev, [field]: String(value || '').toUpperCase() }));
       return;
@@ -417,50 +421,8 @@ const StockRastreavel = ({ mode = 'all' }) => {
     setManualForm((prev) => ({ ...prev, [field]: value }));
   };
 
-  useEffect(() => {
-    if (!showManual) return;
-    const termo = String(manualForm.artigo_codigo || '').trim();
-    if (termo.length < 2) {
-      setManualItemResultados([]);
-      setManualItemLoading(false);
-      return;
-    }
-    let ativo = true;
-    const timer = setTimeout(async () => {
-      try {
-        setManualItemLoading(true);
-        const token = localStorage.getItem('token');
-        const p = new URLSearchParams();
-        p.set('search', termo);
-        p.set('limit', '8');
-        const response = await fetch(`/api/itens?${p.toString()}`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        const data = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(data.error || 'Erro ao pesquisar itens');
-        if (!ativo) return;
-        const rows = Array.isArray(data.itens) ? data.itens : [];
-        const filtrados = rows.filter((it) => {
-          const tc = String(it?.tipocontrolo || '').trim().toUpperCase();
-          return tc === 'S/N' || tc === 'LOTE';
-        });
-        setManualItemResultados(filtrados);
-      } catch (_) {
-        if (!ativo) return;
-        setManualItemResultados([]);
-      } finally {
-        if (ativo) setManualItemLoading(false);
-      }
-    }, 250);
-    return () => {
-      ativo = false;
-      clearTimeout(timer);
-    };
-  }, [manualForm.artigo_codigo, showManual]);
-
   const tipoControloManual = String(
     manualItemSelecionado?.tipocontrolo ||
-    manualItemResultados.find((it) => String(it.codigo || '').trim() === String(manualForm.artigo_codigo || '').trim())?.tipocontrolo ||
     ''
   ).toUpperCase();
   const manualAceitaSerial = tipoControloManual === 'S/N';
@@ -690,12 +652,17 @@ const StockRastreavel = ({ mode = 'all' }) => {
       setErro('Selecione um armazém para consultar disponibilidade.');
       return;
     }
+    const itemIdConsulta = itemId || extrairCodigoItemBusca(itemBuscaDisp);
+    if (!itemIdConsulta) {
+      setErro('Selecione ou indique o artigo.');
+      return;
+    }
     setErro('');
     setDispData(null);
     try {
       const token = localStorage.getItem('token');
       const p = new URLSearchParams();
-      p.set('item_id', itemId);
+      p.set('item_id', itemIdConsulta);
       p.set('armazem_id', armazemSelecionadoId || armazemId);
       if (localizacao) p.set('localizacao', localizacao);
       const response = await fetch(`/api/requisicoes/stock/disponibilidade?${p.toString()}`, {
@@ -1036,34 +1003,28 @@ const StockRastreavel = ({ mode = 'all' }) => {
               ))}
             </select>
             <div className="relative">
-              <input
-                value={manualForm.artigo_codigo}
-                onChange={(e) => handleManualChange('artigo_codigo', e.target.value)}
-                onFocus={() => setManualItemDropdownOpen(true)}
-                onBlur={() => setTimeout(() => setManualItemDropdownOpen(false), 120)}
-                placeholder="Código do artigo"
-                className="w-full px-3 py-2 border border-gray-300 rounded"
+              <BuscaItemCatalogo
+                value={manualItemBusca}
+                onChange={(txt) => {
+                  setManualItemBusca(txt);
+                  setManualItemSelecionado(null);
+                  setManualForm((prev) => ({
+                    ...prev,
+                    artigo_codigo: extrairCodigoItemBusca(txt),
+                  }));
+                }}
+                onSelectItem={(it) => {
+                  setManualItemSelecionado(it);
+                  setManualItemBusca(labelItemCatalogo(it));
+                  setManualForm((prev) => ({
+                    ...prev,
+                    artigo_codigo: String(it.codigo || '').trim(),
+                  }));
+                }}
+                placeholder="Pesquisa no catálogo (código ou descrição)…"
+                inputClassName={INPUT_BUSCA_ITEM_COMPACTO}
+                filterItem={filtroItemRastreavelSnLote}
               />
-              {manualItemDropdownOpen && manualItemResultados.length > 0 && (
-                <div className="absolute z-20 mt-1 w-full max-h-40 overflow-auto border border-gray-200 rounded bg-white shadow-sm">
-                  {manualItemResultados.map((it) => (
-                    <button
-                      type="button"
-                      key={it.id}
-                      onMouseDown={(e) => {
-                        e.preventDefault();
-                        setManualForm((prev) => ({ ...prev, artigo_codigo: String(it.codigo || '') }));
-                        setManualItemSelecionado(it);
-                        setManualItemDropdownOpen(false);
-                      }}
-                      className="w-full text-left px-2 py-1.5 hover:bg-gray-50 border-b border-gray-100 last:border-b-0"
-                    >
-                      <div className="text-xs font-medium text-gray-800">{it.codigo}</div>
-                      <div className="text-[11px] text-gray-600">{it.descricao || 'Sem descrição'}</div>
-                    </button>
-                  ))}
-                </div>
-              )}
             </div>
             <input
               value={manualForm.localizacao}
@@ -1119,11 +1080,9 @@ const StockRastreavel = ({ mode = 'all' }) => {
             )}
           </div>
           <div className="text-[11px] text-gray-600 -mt-1">
-            {manualItemLoading
-              ? 'Pesquisando item...'
-              : (manualItemSelecionado
-                ? `${manualItemSelecionado.codigo || ''} - ${manualItemSelecionado.descricao || ''}`
-                : 'Digite 2+ caracteres para pesquisar e selecionar o material.')}
+            {manualItemSelecionado
+              ? `${manualItemSelecionado.codigo || ''} - ${manualItemSelecionado.descricao || ''}`
+              : 'Pesquise e selecione o material no catálogo (S/N ou Lote).'}
             {tipoControloManual && (
               <>
                 {' · '}
@@ -1239,7 +1198,12 @@ const StockRastreavel = ({ mode = 'all' }) => {
             </div>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-5 gap-2">
-            <input value={fItemId} onChange={(e) => setFItemId(e.target.value)} placeholder="código do artigo ou item_id (opcional)" className="px-3 py-2 border border-gray-300 rounded" />
+            <BuscaItemCatalogo
+              value={fItemId}
+              onChange={setFItemId}
+              placeholder="Artigo (código ou descrição, opcional)"
+              inputClassName={INPUT_BUSCA_ITEM_COMPACTO}
+            />
             <input value={fLocalizacao} onChange={(e) => setFLocalizacao(e.target.value)} placeholder="localização (opcional)" className="px-3 py-2 border border-gray-300 rounded" />
             <select value={fStatus} onChange={(e) => setFStatus(e.target.value)} className="px-3 py-2 border border-gray-300 rounded">
               <option value="">status (todos)</option>
@@ -1253,11 +1217,12 @@ const StockRastreavel = ({ mode = 'all' }) => {
           </div>
           <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg space-y-3">
             <p className="text-xs font-medium text-gray-700">Exportar Excel</p>
-            <input
+            <BuscaItemCatalogo
               value={exportFCodigoArtigo}
-              onChange={(e) => setExportFCodigoArtigo(e.target.value)}
-              placeholder="Código do artigo (opcional)"
-              className="w-full max-w-md px-3 py-2 border border-gray-300 rounded text-sm"
+              onChange={setExportFCodigoArtigo}
+              placeholder="Artigo (código ou descrição, opcional)"
+              className="max-w-md"
+              inputClassName={INPUT_BUSCA_ITEM_COMPACTO}
             />
             <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
               <span className="text-xs text-gray-600">Tipos:</span>
@@ -1531,7 +1496,19 @@ const StockRastreavel = ({ mode = 'all' }) => {
         <section className="bg-white rounded-lg border border-gray-200 p-4 space-y-3">
           <h2 className="font-semibold text-gray-800">Consulta de disponibilidade</h2>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-            <input value={itemId} onChange={(e) => setItemId(e.target.value)} placeholder="item_id" className="px-3 py-2 border border-gray-300 rounded" />
+            <BuscaItemCatalogo
+              value={itemBuscaDisp}
+              onChange={(txt) => {
+                setItemBuscaDisp(txt);
+                setItemId('');
+              }}
+              onSelectItem={(it) => {
+                setItemBuscaDisp(labelItemCatalogo(it));
+                setItemId(String(it.id || ''));
+              }}
+              placeholder="Pesquisa no catálogo (código ou descrição)…"
+              inputClassName={INPUT_BUSCA_ITEM_COMPACTO}
+            />
             <input value={localizacao} onChange={(e) => setLocalizacao(e.target.value)} placeholder="localização (opcional)" className="px-3 py-2 border border-gray-300 rounded" />
             <button type="button" onClick={consultarDisponibilidade} className="px-3 py-2 border border-gray-300 rounded hover:bg-gray-50">Consultar</button>
           </div>

@@ -1611,6 +1611,31 @@ const TransferenciaLocalizacao = () => {
     });
   };
 
+  const wizardSerialsLista = () =>
+    wizardSerialsOpcoes
+      .map((o) => String(o?.serialnumber || '').trim())
+      .filter(Boolean);
+
+  const selecionarTodosSeriaisDisponiveis = () => {
+    const todos = wizardSerialsLista();
+    if (!todos.length) return;
+    setQtdDigitada(String(todos.length));
+    setWizardSerialsSel(todos);
+  };
+
+  const selecionarTodosWizardSerials = () => {
+    const todos = wizardSerialsLista();
+    if (!todos.length) return;
+    const limite = Math.max(0, Math.floor(Number(qtdDigitada) || 0));
+    if (limite <= 0) {
+      selecionarTodosSeriaisDisponiveis();
+      return;
+    }
+    setWizardSerialsSel(todos.slice(0, Math.min(limite, todos.length)));
+  };
+
+  const limparWizardSerialsSel = () => setWizardSerialsSel([]);
+
   const confirmarQuantidadeEIrDestino = () => {
     const q = Number(String(qtdDigitada).replace(',', '.'));
     if (!Number.isFinite(q) || q <= 0) {
@@ -3481,12 +3506,35 @@ const TransferenciaLocalizacao = () => {
                             <>
                               {(() => {
                                 const qLim = Math.max(0, Math.floor(Number(qtdDigitada) || 0));
+                                const nDisp = wizardSerialsOpcoes.length;
                                 return (
-                                  <p className="text-[11px] text-gray-600">
-                                    {qLim <= 0
-                                      ? 'Indique a quantidade acima para poder escolher os seriais.'
-                                      : `${wizardSerialsSel.length}/${qLim} selecionado(s)`}
-                                  </p>
+                                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                                    <p className="text-[11px] text-gray-600">
+                                      {qLim <= 0
+                                        ? 'Indique a quantidade acima para poder escolher os seriais.'
+                                        : `${wizardSerialsSel.length}/${qLim} selecionado(s)`}
+                                    </p>
+                                    {nDisp > 0 && (
+                                      <div className="flex flex-wrap gap-x-3 gap-y-1">
+                                        <button
+                                          type="button"
+                                          onClick={selecionarTodosWizardSerials}
+                                          className="text-[11px] font-medium text-[#0915FF] hover:underline"
+                                        >
+                                          Selecionar todos{nDisp > 0 ? ` (${nDisp})` : ''}
+                                        </button>
+                                        {wizardSerialsSel.length > 0 && (
+                                          <button
+                                            type="button"
+                                            onClick={limparWizardSerialsSel}
+                                            className="text-[11px] font-medium text-gray-600 hover:underline"
+                                          >
+                                            Limpar
+                                          </button>
+                                        )}
+                                      </div>
+                                    )}
+                                  </div>
                                 );
                               })()}
                               <div className="max-h-44 overflow-y-auto border border-gray-100 rounded p-2 space-y-1">

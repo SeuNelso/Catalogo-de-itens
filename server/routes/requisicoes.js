@@ -1531,18 +1531,6 @@ async function aplicarStockDevolucaoEntradaRecebimento(client, { centralId, locR
   }
 
   if (!stockAplicado) return;
-  try {
-    await client.query(
-      `UPDATE armazens
-       SET monitor_rececao_oculto_teste = false,
-           updated_at = CURRENT_TIMESTAMP
-       WHERE id = $1
-         AND monitor_rececao_oculto_teste = true`,
-      [centralId]
-    );
-  } catch (e) {
-    if (e?.code !== '42703') throw e;
-  }
 }
 
 /**

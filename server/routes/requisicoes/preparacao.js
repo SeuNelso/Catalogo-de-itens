@@ -698,7 +698,6 @@ router.patch('/:id/atender-item', ...requisicaoAuth, denyBackofficeOperations, a
           }
         }
 
-        let serialBlobPosInsercao = null;
         await client.query('DELETE FROM requisicoes_itens_seriais WHERE requisicao_item_id = $1', [
           requisicao_item_id,
         ]);
@@ -765,19 +764,9 @@ router.patch('/:id/atender-item', ...requisicaoAuth, denyBackofficeOperations, a
               await client.query('RELEASE SAVEPOINT sp_insert_requisicoes_itens_seriais_apeado');
             }
           }
-          const blobPrep = serialRowsJson
-            .map((e) => (e.caixa ? `${e.sn}\t${e.caixa}` : e.sn))
-            .join('\n');
-          if (blobPrep) {
-            serialBlobPosInsercao = blobPrep;
-            await client.query(`UPDATE requisicoes_itens SET serialnumber = $2 WHERE id = $1`, [
-              requisicao_item_id,
-              blobPrep,
-            ]);
-          }
-        }
-        if (serialBlobPosInsercao) {
-          params[4] = serialBlobPosInsercao;
+          await client.query(`UPDATE requisicoes_itens SET serialnumber = NULL WHERE id = $1`, [
+            requisicao_item_id,
+          ]);
         }
       }
 

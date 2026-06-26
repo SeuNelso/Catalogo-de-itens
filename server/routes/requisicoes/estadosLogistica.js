@@ -13,44 +13,121 @@ const {
 const { hasEstoqueAplicadoColumn, columnExists, invalidateColumnExistsCache } = require('../../utils/aplicarStockTicketMovInterna');
 
 const MONITOR_OCULTO_COL = 'monitor_rececao_oculto_teste';
+const MONITOR_BASELINE_COL = 'monitor_rececao_baseline';
+const MONITOR_LIMPO_EM_COL = 'monitor_rececao_limpo_em';
 
-async function ensureMonitorRececaoOcultoTesteColumn(poolConn) {
+async function ensureMonitorRececaoColumns(poolConn) {
   try {
     await poolConn.query(
       `ALTER TABLE armazens
        ADD COLUMN IF NOT EXISTS monitor_rececao_oculto_teste BOOLEAN NOT NULL DEFAULT false`
     );
+    await poolConn.query(
+      `ALTER TABLE armazens
+       ADD COLUMN IF NOT EXISTS monitor_rececao_baseline JSONB NULL`
+    );
+    await poolConn.query(
+      `ALTER TABLE armazens
+       ADD COLUMN IF NOT EXISTS monitor_rececao_limpo_em TIMESTAMPTZ NULL`
+    );
     invalidateColumnExistsCache('armazens', MONITOR_OCULTO_COL);
+    invalidateColumnExistsCache('armazens', MONITOR_BASELINE_COL);
+    invalidateColumnExistsCache('armazens', MONITOR_LIMPO_EM_COL);
     return true;
   } catch (_) {
     return false;
   }
 }
 
-async function readMonitorRececaoOcultoTeste(poolConn, armazemId) {
-  await ensureMonitorRececaoOcultoTesteColumn(poolConn);
+/** @deprecated use ensureMonitorRececaoColumns */
+async function ensureMonitorRececaoOcultoTesteColumn(poolConn) {
+  return ensureMonitorRececaoColumns(poolConn);
+}
+
+function stockMapToBaselineCodigos(stockMap) {
+  const out = {};
+  for (const [, stock] of stockMap || []) {
+    const cod = String(stock?.codigo || '').trim().toUpperCase();
+    if (!cod) continue;
+    out[cod] = Number(stock.qtd) || 0;
+  }
+  return out;
+}
+
+function aplicarBaselineAoStockMap(stockMap, baselineCodigos) {
+  const base = baselineCodigos && typeof baselineCodigos === 'object' ? baselineCodigos : null;
+  if (!base || !Object.keys(base).length) return stockMap;
+  const out = new Map();
+  for (const [key, stock] of stockMap || []) {
+    const codKey = String(stock?.codigo || '').trim().toUpperCase();
+    const qtdBase = Number(base[codKey] ?? 0) || 0;
+    const qtdAtual = Number(stock?.qtd) || 0;
+    const qtd = Math.max(0, qtdAtual - qtdBase);
+    if (qtd > 0) {
+      out.set(key, { ...stock, qtd });
+    }
+  }
+  return out;
+}
+
+function filtrarLedgerPosLimpezaMonitor(rows, limpoEm) {
+  if (!limpoEm) return rows || [];
+  const t0 = Date.parse(String(limpoEm)) || 0;
+  if (!t0) return rows || [];
+  return (rows || []).filter((r) => {
+    const t = Date.parse(String(r?.data || '')) || 0;
+    return !t || t >= t0;
+  });
+}
+
+async function readMonitorRececaoEstado(poolConn, armazemId) {
+  await ensureMonitorRececaoColumns(poolConn);
   try {
     const r = await poolConn.query(
-      `SELECT monitor_rececao_oculto_teste FROM armazens WHERE id = $1`,
+      `SELECT monitor_rececao_oculto_teste, monitor_rececao_baseline, monitor_rececao_limpo_em
+       FROM armazens
+       WHERE id = $1`,
       [armazemId]
     );
-    return Boolean(r.rows[0]?.monitor_rececao_oculto_teste);
+    const row = r.rows[0] || {};
+    const raw = row.monitor_rececao_baseline;
+    let baseline = { recebimento: {}, apeados: {} };
+    if (raw && typeof raw === 'object') {
+      baseline = {
+        recebimento: raw.recebimento && typeof raw.recebimento === 'object' ? raw.recebimento : {},
+        apeados: raw.apeados && typeof raw.apeados === 'object' ? raw.apeados : {},
+      };
+    }
+    return {
+      ocultoLegado: Boolean(row.monitor_rececao_oculto_teste),
+      limpoEm: row.monitor_rececao_limpo_em || null,
+      baseline,
+    };
   } catch (e) {
-    if (e?.code === '42703') return false;
+    if (e?.code === '42703') {
+      return { ocultoLegado: false, limpoEm: null, baseline: { recebimento: {}, apeados: {} } };
+    }
     throw e;
   }
 }
 
-async function setMonitorRececaoOcultoTeste(poolConn, armazemId, value) {
-  const ensured = await ensureMonitorRececaoOcultoTesteColumn(poolConn);
+async function readMonitorRececaoOcultoTeste(poolConn, armazemId) {
+  const st = await readMonitorRececaoEstado(poolConn, armazemId);
+  return st.ocultoLegado;
+}
+
+async function setMonitorRececaoBaseline(poolConn, armazemId, baselinePayload) {
+  const ensured = await ensureMonitorRececaoColumns(poolConn);
   if (!ensured) return false;
   try {
     await poolConn.query(
       `UPDATE armazens
-       SET monitor_rececao_oculto_teste = $2,
+       SET monitor_rececao_baseline = $2::jsonb,
+           monitor_rececao_limpo_em = CURRENT_TIMESTAMP,
+           monitor_rececao_oculto_teste = false,
            updated_at = CURRENT_TIMESTAMP
        WHERE id = $1`,
-      [armazemId, Boolean(value)]
+      [armazemId, JSON.stringify(baselinePayload || { recebimento: {}, apeados: {} })]
     );
     return true;
   } catch (e) {
@@ -284,6 +361,32 @@ function createEstadosLogisticaRouter(deps) {
     RECEBIMENTO_MONITOR_CLEAR_TEST_MARKER,
   } = deps;
   const router = express.Router();
+
+  async function resolverLocaisZonaRececaoMonitor(poolConn, armazemId, localizacaoQuery) {
+    const armazemQ = await poolConn.query(
+      `SELECT codigo FROM armazens WHERE id = $1`,
+      [armazemId]
+    );
+    const armCodigo = String(armazemQ.rows[0]?.codigo || '').trim();
+    const targetLocation =
+      String(localizacaoQuery || '').trim() ||
+      (await localizacaoArmazemPorTipoConn(poolConn, armazemId, 'recebimento')) ||
+      LOCALIZACAO_RECEBIMENTO_FALLBACK;
+    let localizacaoApeadosOrigem = targetLocation;
+    try {
+      const locsCentralQ = await poolConn.query(
+        `SELECT localizacao FROM armazens_localizacoes WHERE armazem_id = $1 ORDER BY id`,
+        [armazemId]
+      );
+      const { localizacaoFERR } = computeDestLocFerrNormal(armCodigo, locsCentralQ.rows || []);
+      if (String(localizacaoFERR || '').trim()) {
+        localizacaoApeadosOrigem = String(localizacaoFERR).trim();
+      }
+    } catch (_) {
+      /* mantém recebimento */
+    }
+    return { targetLocation, localizacaoApeadosOrigem };
+  }
 
 // Marcar como EM EXPEDICAO (após baixar o ficheiro TRFL)
 router.patch('/:id/marcar-em-expedicao', ...requisicaoAuth, denyOperador, async (req, res) => {
@@ -1575,22 +1678,9 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
                   );
                 }
               }
-              const blobLinhas = l.seriais_linhas
-                .map((rowSn) => {
-                  const sn = String(rowSn.sn || rowSn.serial || rowSn.serialnumber || '').trim();
-                  if (!sn) return null;
-                  const cxSrc = rowSn.caixa ?? rowSn.codigo_caixa;
-                  const cx =
-                    cxSrc != null && String(cxSrc).trim() ? String(cxSrc).trim() : '';
-                  return cx ? `${sn}\t${cx}` : sn;
-                })
-                .filter(Boolean)
-                .join('\n');
-              if (blobLinhas) {
-                await client.query(`UPDATE requisicoes_itens SET serialnumber = $2 WHERE id = $1`, [
-                  riId,
-                  blobLinhas,
-                ]);
+              // Seriais na tabela filha: não duplicar blob (índice btree em serialnumber limita ~8KB).
+              if (serialRowsJson.length > 0) {
+                await client.query(`UPDATE requisicoes_itens SET serialnumber = NULL WHERE id = $1`, [riId]);
               }
             } catch (eSer) {
               if (eSer.code === '42P01' || eSer.code === '42703') {
@@ -1955,7 +2045,7 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
         let offset = parseInt(String(req.query.offset || ''), 10);
         if (!Number.isFinite(offset) || offset < 0) offset = 0;
 
-        const monitorOcultoTeste = await readMonitorRececaoOcultoTeste(pool, armazemId);
+        const monitorEstado = await readMonitorRececaoEstado(pool, armazemId);
         const armazemQ = await pool.query(
           `SELECT codigo, descricao
            FROM armazens
@@ -1969,11 +2059,12 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
           ? `${armCodigo} - ${armDescricao}`
           : (armCodigo || armDescricao);
 
-        if (monitorOcultoTeste) {
-          const targetLocationOculto =
-            String(req.query.localizacao || '').trim() ||
-            (await localizacaoArmazemPorTipoConn(pool, armazemId, 'recebimento')) ||
-            LOCALIZACAO_RECEBIMENTO_FALLBACK;
+        const baselineVazio =
+          !Object.keys(monitorEstado.baseline?.recebimento || {}).length
+          && !Object.keys(monitorEstado.baseline?.apeados || {}).length;
+        if (monitorEstado.ocultoLegado && !monitorEstado.limpoEm && baselineVazio) {
+          const { targetLocation: targetLocationOculto, localizacaoApeadosOrigem: locApeOculto } =
+            await resolverLocaisZonaRececaoMonitor(pool, armazemId, req.query.localizacao);
           return res.json({
             total: 0,
             total_unidades: 0,
@@ -1983,7 +2074,7 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
             armazem_id: armazemId,
             armazem: armazemLabel,
             localizacao: targetLocationOculto,
-            localizacao_apeados: targetLocationOculto,
+            localizacao_apeados: locApeOculto,
             totais_por_categoria: {},
             contagens_por_categoria: {},
             prefill_items: [],
@@ -2539,18 +2630,29 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
           rowsByCategoriaCodigo.set(key, prev);
         }
 
-        const ledgerRows = [...rowsByCategoriaCodigo.values()];
+        const ledgerRows = filtrarLedgerPosLimpezaMonitor(
+          [...rowsByCategoriaCodigo.values()],
+          monitorEstado.limpoEm
+        );
         const [stockRececao, stockApeados] = await Promise.all([
           fetchStockPorLocalizacaoMonitor(pool, armazemId, targetLocation),
           fetchStockPorLocalizacaoMonitor(pool, armazemId, localizacaoApeadosOrigem),
         ]);
+        const stockRececaoMonitor = aplicarBaselineAoStockMap(
+          stockRececao,
+          monitorEstado.baseline?.recebimento
+        );
+        const stockApeadosMonitor = aplicarBaselineAoStockMap(
+          stockApeados,
+          monitorEstado.baseline?.apeados
+        );
         const ledgerNormal = ledgerRows.filter((r) => String(r?.categoria || '').trim().toLowerCase() !== 'apeados');
         const ledgerApeados = ledgerRows.filter((r) => String(r?.categoria || '').trim().toLowerCase() === 'apeados');
-        const reconciliadoNormal = reconciliarLinhasMonitorComStock(ledgerNormal, stockRececao, {
+        const reconciliadoNormal = reconciliarLinhasMonitorComStock(ledgerNormal, stockRececaoMonitor, {
           armazemLabel,
           categoriaDefault: 'recebimento',
         });
-        const reconciliadoApeados = reconciliarLinhasMonitorComStock(ledgerApeados, stockApeados, {
+        const reconciliadoApeados = reconciliarLinhasMonitorComStock(ledgerApeados, stockApeadosMonitor, {
           armazemLabel,
           categoriaDefault: 'apeados',
           forcarCategoria: 'apeados',
@@ -2650,16 +2752,31 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
           );
           updated += 1;
         }
-        const monitorOcultoOk = await setMonitorRececaoOcultoTeste(pool, armazemId, true);
-        if (!monitorOcultoOk) {
+        const { targetLocation, localizacaoApeadosOrigem } = await resolverLocaisZonaRececaoMonitor(
+          pool,
+          armazemId,
+          req.body?.localizacao || req.query?.localizacao
+        );
+        const [stockRececao, stockApeados] = await Promise.all([
+          fetchStockPorLocalizacaoMonitor(pool, armazemId, targetLocation),
+          fetchStockPorLocalizacaoMonitor(pool, armazemId, localizacaoApeadosOrigem),
+        ]);
+        const baselinePayload = {
+          recebimento: stockMapToBaselineCodigos(stockRececao),
+          apeados: stockMapToBaselineCodigos(stockApeados),
+          localizacao_recebimento: targetLocation,
+          localizacao_apeados: localizacaoApeadosOrigem,
+        };
+        const baselineOk = await setMonitorRececaoBaseline(pool, armazemId, baselinePayload);
+        if (!baselineOk) {
           return res.status(503).json({
-            error: 'Requisições marcadas, mas não foi possível ocultar o stock no monitor. Verifique permissões da BD ou execute a migração armazens-monitor-rececao-oculto-teste.',
+            error: 'Requisições marcadas, mas não foi possível registar o baseline do monitor. Execute npm run db:migrate:armazens-monitor-rececao-baseline na BD.',
             ok: false,
             updated,
-            monitor_oculto_teste: false,
+            monitor_baseline: false,
           });
         }
-        return res.json({ ok: true, updated, monitor_oculto_teste: true });
+        return res.json({ ok: true, updated, monitor_baseline: true });
       } catch (e) {
         console.error('Erro ao limpar monitor de receção para teste:', e);
         return res.status(500).json({ error: 'Erro ao limpar zona de receção para teste', details: e.message });

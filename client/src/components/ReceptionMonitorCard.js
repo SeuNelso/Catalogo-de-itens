@@ -443,7 +443,7 @@ function ReceptionMonitorCard() {
                 className="w-full rounded-md border border-amber-300 bg-amber-50 px-2 py-1.5 text-xs font-semibold text-amber-800 hover:bg-amber-100 disabled:opacity-60"
                 disabled={clearingTest}
                 onClick={async () => {
-                  if (!window.confirm('Limpar artigos da Zona de receção para testes? (somente ocultação no monitor)')) return;
+                  if (!window.confirm('Limpar artigos da Zona de receção para testes? O stock actual deixa de aparecer; só entradas novas serão mostradas.')) return;
                   const armazemIdLimpar =
                     Number(selectedArmazemId || targetArmazemId || 0) || null;
                   if (!armazemIdLimpar) {
@@ -465,8 +465,8 @@ function ReceptionMonitorCard() {
                     if (!response.ok) {
                       throw new Error(
                         data?.error
-                        || (data?.monitor_oculto_teste === false
-                          ? 'Limpeza parcial: execute a migração monitor-rececao-oculto-teste na BD de produção.'
+                        || (data?.monitor_baseline === false
+                          ? 'Limpeza parcial: execute a migração monitor-rececao-baseline na BD de produção.'
                           : 'Erro ao limpar zona de receção para teste.')
                       );
                     }

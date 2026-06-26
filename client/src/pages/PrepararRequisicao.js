@@ -1525,7 +1525,7 @@ const PrepararRequisicao = () => {
         if (linhasAm.length === 0) {
           setToast({
             type: 'error',
-            message: 'Gere a amostra de conferência ou use «Seriais corretos (todos)» antes de confirmar a preparação.',
+            message: 'Gere a amostra de conferência ou use «Declarar todos os seriais corretos» antes de confirmar a preparação.',
           });
           return;
         }
@@ -1539,7 +1539,7 @@ const PrepararRequisicao = () => {
         if (!amostragemConfirmada) {
           setToast({
             type: 'error',
-            message: 'Clique em «Confirmar amostragem» ou «Seriais corretos (todos)» antes de confirmar a preparação.',
+            message: 'Clique em «Confirmar amostragem» ou «Declarar todos os seriais corretos» antes de confirmar a preparação.',
           });
           return;
         }
@@ -2972,22 +2972,30 @@ const PrepararRequisicao = () => {
                               </table>
                             </div>
                             <div className="mt-4 pt-3 border-t border-emerald-200/90 space-y-3">
+                              <button
+                                type="button"
+                                onClick={() => aceitarSeriaisCorretosRecebimento(item)}
+                                disabled={
+                                  seriaisAceitosGlobalmenteItemId === item.id && amostragemConfirmada
+                                }
+                                className="w-full px-4 py-2.5 rounded-lg border-2 border-emerald-700 bg-emerald-700 text-white text-sm font-bold hover:bg-emerald-800 disabled:opacity-45 disabled:cursor-not-allowed shadow-sm"
+                                title="Declara que todos os seriais esperados estão corretos (dispensa amostra)"
+                              >
+                                {seriaisAceitosGlobalmenteItemId === item.id && amostragemConfirmada
+                                  ? '✓ Seriais declarados corretos'
+                                  : `Declarar todos os seriais corretos (${detalheEsperadoReceb.length})`}
+                              </button>
+                              {seriaisAceitosGlobalmenteItemId === item.id && amostragemConfirmada && (
+                                <p className="text-[11px] font-semibold text-emerald-800 flex items-center gap-1">
+                                  <FaCheck className="inline shrink-0" />
+                                  Todos os S/N esperados serão aplicados na preparação — pode confirmar abaixo.
+                                </p>
+                              )}
                               <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center sm:justify-between gap-2">
                                 <h5 className="text-xs font-semibold uppercase tracking-wide text-emerald-900">
                                   Amostra (1 S/N por caixa + ~10%)
                                 </h5>
-                                <div className="flex flex-wrap gap-2">
-                                  <button
-                                    type="button"
-                                    onClick={() => aceitarSeriaisCorretosRecebimento(item)}
-                                    disabled={
-                                      seriaisAceitosGlobalmenteItemId === item.id && amostragemConfirmada
-                                    }
-                                    className="px-3 py-1.5 rounded-lg border-2 border-emerald-700 bg-emerald-700 text-white text-xs font-bold hover:bg-emerald-800 disabled:opacity-45 disabled:cursor-not-allowed shadow-sm"
-                                    title="Declara que todos os seriais esperados estão corretos (dispensa amostra)"
-                                  >
-                                    Seriais corretos (todos)
-                                  </button>
+                                <div className="flex flex-wrap gap-2 sm:justify-end">
                                   <button
                                     type="button"
                                     onClick={() => gerarAmostra10Recebimento(item)}
@@ -3007,16 +3015,10 @@ const PrepararRequisicao = () => {
                                 </div>
                               </div>
                               <p className="text-[10px] text-emerald-800/90">
-                                Use «Seriais corretos (todos)» para aceitar a lista esperada sem amostra, ou gere uma
-                                amostra (~10% + 1 por caixa): confira cada linha e use «Confirmar amostragem». Depois
-                                poderá «Confirmar preparação». Alterações nos S/N anulam a confirmação.
+                                Ou use o botão verde acima para aceitar os {detalheEsperadoReceb.length} seriais sem
+                                amostra. Alternativa: gere amostra (~10% + 1 por caixa), confira cada linha e use
+                                «Confirmar amostragem» antes de «Confirmar preparação».
                               </p>
-                              {seriaisAceitosGlobalmenteItemId === item.id && amostragemConfirmada && (
-                                <p className="text-[11px] font-semibold text-emerald-800 flex items-center gap-1">
-                                  <FaCheck className="inline shrink-0" />
-                                  Seriais declarados corretos — todos os S/N esperados serão aplicados na preparação.
-                                </p>
-                              )}
                               {amostraConferencia?.itemId === item.id && (amostraConferencia.linhas || []).length > 0 && (
                                 <>
                                   <div className="max-h-64 overflow-y-auto rounded-lg border border-amber-100 bg-white">
@@ -4126,7 +4128,7 @@ const PrepararRequisicao = () => {
                               <>
                                 {exigeAmostragemReceb && linhasAmostra.length === 0 && !aceiteGlobalSeriais && (
                                   <p className="text-xs text-amber-800 text-right max-w-md sm:ml-auto">
-                                    Gere a amostra ou use «Seriais corretos (todos)» antes de confirmar a preparação.
+                                    Gere a amostra ou use «Declarar todos os seriais corretos» antes de confirmar a preparação.
                                   </p>
                                 )}
                                 {isFluxoRecebimentoMercadoria &&
