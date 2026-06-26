@@ -1140,6 +1140,247 @@ async function vincularStockSerialACaixaEntrada(client, {
   }
 }
 
+const ENTRADA_SERIAL_BATCH_SIZE = 500;
+
+/** Carrega S/N + caixa de várias linhas `requisicoes_itens` numa única query. */
+async function seriaisComCaixaBulkFromRequisicaoItens(client, itensRows) {
+  const rows = Array.isArray(itensRows) ? itensRows : [];
+  const byRiId = new Map();
+  const ids = rows.map((r) => Number(r.id)).filter(Number.isFinite);
+  if (ids.length) {
+    try {
+      const snRows = await client.query(
+        `SELECT requisicao_item_id,
+                TRIM(serialnumber) AS sn,
+                NULLIF(TRIM(codigo_caixa), '') AS codigo_caixa
+         FROM requisicoes_itens_seriais
+         WHERE requisicao_item_id = ANY($1::int[])
+         ORDER BY requisicao_item_id, ordem, id`,
+        [ids]
+      );
+      for (const r of snRows.rows || []) {
+        const rid = Number(r.requisicao_item_id);
+        const sn = String(r.sn || '').trim();
+        if (!Number.isFinite(rid) || !sn) continue;
+        if (!byRiId.has(rid)) byRiId.set(rid, []);
+        byRiId.get(rid).push({
+          sn,
+          codigo_caixa: String(r.codigo_caixa || '').trim(),
+        });
+      }
+    } catch (e) {
+      if (e.code === '42P01') {
+        /* tabela inexistente — cair para blob por linha */
+      } else if (e.code === '42703') {
+        const snRows = await client.query(
+          `SELECT requisicao_item_id, TRIM(serialnumber) AS sn
+           FROM requisicoes_itens_seriais
+           WHERE requisicao_item_id = ANY($1::int[])
+           ORDER BY requisicao_item_id, ordem, id`,
+          [ids]
+        );
+        for (const r of snRows.rows || []) {
+          const rid = Number(r.requisicao_item_id);
+          const sn = String(r.sn || '').trim();
+          if (!Number.isFinite(rid) || !sn) continue;
+          if (!byRiId.has(rid)) byRiId.set(rid, []);
+          byRiId.get(rid).push({ sn, codigo_caixa: '' });
+        }
+      } else {
+        throw e;
+      }
+    }
+  }
+  for (const ri of rows) {
+    const rid = Number(ri.id);
+    if (!Number.isFinite(rid)) continue;
+    if ((byRiId.get(rid) || []).length) continue;
+    const blobMap = caixaPorSerialFromSerialnumberBlob(ri.serialnumber);
+    const fromBlob = serialsNormalizadosList(ri.serialnumber).map((sn) => ({
+      sn,
+      codigo_caixa: blobMap.get(sn.toUpperCase()) || '',
+    }));
+    if (fromBlob.length) byRiId.set(rid, fromBlob);
+  }
+  return byRiId;
+}
+
+/**
+ * Entrada de stock por S/N em lote (recebimento/devolução).
+ * Evita N round-trips quando há milhares de seriais (ex.: 10k+).
+ */
+async function aplicarEntradaStockSeriaisEmLote(client, {
+  centralId,
+  locRec,
+  entries,
+  origem = 'aplicarStockDevolucaoEntradaRecebimento',
+}) {
+  const list = Array.isArray(entries) ? entries : [];
+  if (!list.length || !centralId || !locRec) return new Map();
+
+  const status = STOCK_STATUS.DISPONIVEL;
+  const serialIdByKey = new Map();
+
+  for (let i = 0; i < list.length; i += ENTRADA_SERIAL_BATCH_SIZE) {
+    const chunk = list.slice(i, i + ENTRADA_SERIAL_BATCH_SIZE);
+    const upsertQ = await client.query(
+      `INSERT INTO stock_serial (item_id, armazem_id, localizacao, serialnumber, lote, status)
+       SELECT x.item_id, x.armazem_id, x.localizacao, x.serialnumber, x.lote, x.status
+       FROM unnest($1::int[], $2::int[], $3::text[], $4::text[], $5::text[], $6::text[])
+         AS x(item_id, armazem_id, localizacao, serialnumber, lote, status)
+       ON CONFLICT (item_id, serialnumber)
+       DO UPDATE SET
+         armazem_id = EXCLUDED.armazem_id,
+         localizacao = EXCLUDED.localizacao,
+         lote = COALESCE(NULLIF(EXCLUDED.lote, ''), stock_serial.lote),
+         status = EXCLUDED.status,
+         requisicao_id = NULL,
+         requisicao_item_id = NULL,
+         reservado_em = NULL,
+         consumido_em = NULL,
+         atualizado_em = CURRENT_TIMESTAMP
+       RETURNING id, item_id, serialnumber`,
+      [
+        chunk.map((e) => e.itemId),
+        chunk.map(() => centralId),
+        chunk.map(() => locRec),
+        chunk.map((e) => e.sn),
+        chunk.map((e) => e.lote || null),
+        chunk.map(() => status),
+      ]
+    );
+    for (const row of upsertQ.rows || []) {
+      const key = `${Number(row.item_id)}::${String(row.serialnumber || '').trim()}`.toUpperCase();
+      serialIdByKey.set(key, Number(row.id));
+    }
+  }
+
+  const caixaMetaByCodigo = new Map();
+  for (const e of list) {
+    const cx = String(e.codigoCaixa || '').trim();
+    if (!cx) continue;
+    if (!caixaMetaByCodigo.has(cx)) {
+      caixaMetaByCodigo.set(cx, {
+        itemId: e.itemId,
+        armazemId: centralId,
+        localizacao: locRec,
+      });
+    }
+  }
+
+  const caixaIdByCodigo = new Map();
+  const caixaCodigos = [...caixaMetaByCodigo.keys()];
+  for (let i = 0; i < caixaCodigos.length; i += ENTRADA_SERIAL_BATCH_SIZE) {
+    const chunkCodes = caixaCodigos.slice(i, i + ENTRADA_SERIAL_BATCH_SIZE);
+    const cods = [];
+    const itemIds = [];
+    const armIds = [];
+    const locs = [];
+    for (const cod of chunkCodes) {
+      const meta = caixaMetaByCodigo.get(cod);
+      cods.push(cod);
+      itemIds.push(meta.itemId);
+      armIds.push(meta.armazemId);
+      locs.push(meta.localizacao);
+    }
+    try {
+      const caixaQ = await client.query(
+        `INSERT INTO stock_caixas (codigo_caixa, item_id, armazem_id, localizacao, status, criado_por_usuario_id)
+         SELECT x.codigo_caixa, x.item_id, x.armazem_id, x.localizacao, 'fechada', NULL
+         FROM unnest($1::text[], $2::int[], $3::int[], $4::text[])
+           AS x(codigo_caixa, item_id, armazem_id, localizacao)
+         ON CONFLICT (codigo_caixa)
+         DO UPDATE SET
+           item_id = EXCLUDED.item_id,
+           armazem_id = EXCLUDED.armazem_id,
+           localizacao = EXCLUDED.localizacao,
+           atualizado_em = CURRENT_TIMESTAMP
+         RETURNING id, codigo_caixa`,
+        [cods, itemIds, armIds, locs]
+      );
+      for (const row of caixaQ.rows || []) {
+        caixaIdByCodigo.set(String(row.codigo_caixa || '').trim(), Number(row.id));
+      }
+    } catch (e) {
+      if (e.code === '42P01') break;
+      throw e;
+    }
+  }
+
+  const linkCaixaIds = [];
+  const linkSerialIds = [];
+  for (const e of list) {
+    const cx = String(e.codigoCaixa || '').trim();
+    if (!cx) continue;
+    const serialKey = `${e.itemId}::${e.sn}`.toUpperCase();
+    const stockSerialId = serialIdByKey.get(serialKey);
+    const caixaId = caixaIdByCodigo.get(cx);
+    if (!stockSerialId || !caixaId) continue;
+    linkCaixaIds.push(caixaId);
+    linkSerialIds.push(stockSerialId);
+  }
+  for (let i = 0; i < linkCaixaIds.length; i += ENTRADA_SERIAL_BATCH_SIZE) {
+    try {
+      await client.query(
+        `INSERT INTO stock_caixa_seriais (caixa_id, stock_serial_id)
+         SELECT x.caixa_id, x.stock_serial_id
+         FROM unnest($1::bigint[], $2::bigint[]) AS x(caixa_id, stock_serial_id)
+         ON CONFLICT (stock_serial_id)
+         DO UPDATE SET caixa_id = EXCLUDED.caixa_id`,
+        [
+          linkCaixaIds.slice(i, i + ENTRADA_SERIAL_BATCH_SIZE),
+          linkSerialIds.slice(i, i + ENTRADA_SERIAL_BATCH_SIZE),
+        ]
+      );
+    } catch (e) {
+      if (e.code === '42P01') break;
+      throw e;
+    }
+  }
+
+  for (let i = 0; i < list.length; i += ENTRADA_SERIAL_BATCH_SIZE) {
+    const chunk = list.slice(i, i + ENTRADA_SERIAL_BATCH_SIZE);
+    try {
+      await client.query(
+        `INSERT INTO stock_movimentos_auditoria
+           (tipo, item_id, armazem_id, localizacao, lote, serialnumber, quantidade,
+            requisicao_id, requisicao_item_id, caixa_id, usuario_id, payload)
+         SELECT x.tipo, x.item_id, x.armazem_id, x.localizacao, x.lote, x.serialnumber, x.quantidade,
+                x.requisicao_id, x.requisicao_item_id, x.caixa_id, NULL, x.payload::jsonb
+         FROM unnest(
+           $1::text[], $2::int[], $3::int[], $4::text[], $5::text[], $6::text[], $7::numeric[],
+           $8::int[], $9::int[], $10::bigint[], $11::text[]
+         ) AS x(tipo, item_id, armazem_id, localizacao, lote, serialnumber, quantidade,
+                requisicao_id, requisicao_item_id, caixa_id, payload)`,
+        [
+          chunk.map(() => 'entrada_devolucao_serial'),
+          chunk.map((e) => e.itemId),
+          chunk.map(() => centralId),
+          chunk.map(() => locRec),
+          chunk.map((e) => e.lote || null),
+          chunk.map((e) => e.sn),
+          chunk.map(() => 1),
+          chunk.map((e) => e.requisicaoId),
+          chunk.map((e) => e.requisicaoItemId),
+          chunk.map((e) => {
+            const cx = String(e.codigoCaixa || '').trim();
+            return cx ? (caixaIdByCodigo.get(cx) || null) : null;
+          }),
+          chunk.map((e) => JSON.stringify({
+            origem,
+            codigo_caixa: e.codigoCaixa || null,
+          })),
+        ]
+      );
+    } catch (e) {
+      if (e.code === '42P01') break;
+      throw e;
+    }
+  }
+
+  return serialIdByKey;
+}
+
 /** S/N + caixa opcional a partir da tabela filha ou do blob `serialnumber`. */
 async function seriaisComCaixaFromRequisicaoItem(client, requisicaoItemId, serialnumberBlob) {
   const rid = Number(requisicaoItemId);
@@ -1196,21 +1437,29 @@ async function aplicarStockDevolucaoEntradaRecebimento(client, { centralId, locR
   const list = itensComFerramenta || [];
   const bob = bobinas || [];
   let stockAplicado = false;
+  const locIdRecebimento = await resolveLocalizacaoIdPorCodigo(client, centralId, locRec);
+  if (!locIdRecebimento) {
+    throw makeStockPrepBizError(
+      400,
+      `A localização «${String(locRec).trim()}» não existe no armazém.`,
+      'LOCALIZACAO_STOCK_INEXISTENTE',
+      { armazem_id: centralId }
+    );
+  }
+  const creditarQtyRecebimento = async (itemId, qty) => {
+    const q = Number(qty);
+    if (!Number.isFinite(q) || q <= 0) return;
+    await adicionarQtyArmazemLocalizacaoItem(client, locIdRecebimento, itemId, q);
+    stockAplicado = true;
+  };
+
   for (const b of bob) {
     const metros = Number(b.metros) || 0;
     if (metros <= 0) continue;
     const ri = list.find((it) => it.item_id === b.item_id) || {};
     if (!itemTemSaidaTrflTra(ri)) continue;
     const localizacaoCadastro = locRec;
-    await creditarStockNaLocalizacaoArmazem(
-      client,
-      centralId,
-      b.item_id,
-      ri.item_codigo || b.item_codigo,
-      localizacaoCadastro,
-      metros
-    );
-    stockAplicado = true;
+    await creditarQtyRecebimento(b.item_id, metros);
     const loteBobina = String(b.lote || '').trim();
     if (loteBobina) {
       await client.query(
@@ -1243,75 +1492,44 @@ async function aplicarStockDevolucaoEntradaRecebimento(client, { centralId, locR
     if (!itemTemSaidaTrflTra(ri)) continue;
     const qty = Math.floor(quantidadePreparadaEfetiva(ri));
     if (qty <= 0) continue;
-    await creditarStockNaLocalizacaoArmazem(client, centralId, ri.item_id, ri.item_codigo, locRec, qty);
-    stockAplicado = true;
+    await creditarQtyRecebimento(ri.item_id, qty);
   }
 
-  // Rastreabilidade de S/N na entrada de devolução/recebimento:
-  // além do crédito em quantidade, cada serial precisa ficar disponível no armazém central.
-  for (const ri of list) {
+  const serialItens = list.filter((ri) => {
     const tipoControlo = String(ri.tipocontrolo || '').toUpperCase();
-    if (!isTipoControloSerial(tipoControlo)) continue;
-    // eslint-disable-next-line no-await-in-loop
-    const serialRows = await seriaisComCaixaFromRequisicaoItem(client, ri.id, ri.serialnumber);
-    if (!serialRows.length) continue;
-    const localizacaoCadastro = locRec;
+    return isTipoControloSerial(tipoControlo) && itemTemSaidaTrflTra(ri);
+  });
+  if (serialItens.length) {
+    const bulkMap = await seriaisComCaixaBulkFromRequisicaoItens(client, serialItens);
+    const entries = [];
     const seen = new Set();
-    for (const { sn, codigo_caixa: codigoCaixa } of serialRows) {
-      const key = `${ri.item_id}::${sn}`.toUpperCase();
-      if (seen.has(key)) continue;
-      seen.add(key);
-      stockAplicado = true;
-      // eslint-disable-next-line no-await-in-loop
-      const upsert = await client.query(
-        `INSERT INTO stock_serial (item_id, armazem_id, localizacao, serialnumber, lote, status)
-         VALUES ($1, $2, $3, $4, $5, $6)
-         ON CONFLICT (item_id, serialnumber)
-         DO UPDATE SET
-           armazem_id = EXCLUDED.armazem_id,
-           localizacao = EXCLUDED.localizacao,
-           lote = COALESCE(NULLIF(EXCLUDED.lote, ''), stock_serial.lote),
-           status = EXCLUDED.status,
-           requisicao_id = NULL,
-           requisicao_item_id = NULL,
-           reservado_em = NULL,
-           consumido_em = NULL,
-           atualizado_em = CURRENT_TIMESTAMP
-         RETURNING id`,
-        [ri.item_id, centralId, localizacaoCadastro, sn, ri.lote || null, STOCK_STATUS.DISPONIVEL]
-      );
-      const stockSerialId = Number(upsert.rows[0]?.id || 0) || null;
-      let caixaId = null;
-      if (codigoCaixa && stockSerialId) {
-        // eslint-disable-next-line no-await-in-loop
-        caixaId = await vincularStockSerialACaixaEntrada(client, {
+    for (const ri of serialItens) {
+      const serialRows = bulkMap.get(Number(ri.id)) || [];
+      for (const { sn, codigo_caixa: codigoCaixa } of serialRows) {
+        const key = `${ri.item_id}::${sn}`.toUpperCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        entries.push({
           itemId: ri.item_id,
-          armazemId: centralId,
-          localizacao: localizacaoCadastro,
-          stockSerialId,
-          codigoCaixa,
+          requisicaoId: Number(ri.requisicao_id) || null,
+          requisicaoItemId: Number(ri.id) || null,
+          lote: ri.lote || null,
+          sn,
+          codigoCaixa: String(codigoCaixa || '').trim(),
         });
       }
-      // eslint-disable-next-line no-await-in-loop
-      await logStockMovimentoHelper(client, {
-        tipo: 'entrada_devolucao_serial',
-        itemId: ri.item_id,
-        armazemId: centralId,
-        localizacao: localizacaoCadastro,
-        lote: ri.lote || null,
-        serialnumber: sn,
-        quantidade: 1,
-        requisicaoId: Number(ri.requisicao_id) || null,
-        requisicaoItemId: Number(ri.id) || null,
-        caixaId,
-        usuarioId: null,
-        payload: {
-          origem: 'aplicarStockDevolucaoEntradaRecebimento',
-          codigo_caixa: codigoCaixa || null,
-        },
+    }
+    if (entries.length) {
+      await aplicarEntradaStockSeriaisEmLote(client, {
+        centralId,
+        locRec,
+        entries,
+        origem: 'aplicarStockDevolucaoEntradaRecebimento',
       });
+      stockAplicado = true;
     }
   }
+
   if (!stockAplicado) return;
   try {
     await client.query(

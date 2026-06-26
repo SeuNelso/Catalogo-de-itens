@@ -2899,7 +2899,7 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
           [reqId]
         );
         await client.query('COMMIT');
-        const updated = await getRequisicaoComItens(reqId);
+        const updated = await getRequisicaoComItens(reqId, false);
         return res.json(updated);
       } catch (e) {
         await client.query('ROLLBACK').catch(() => {});
@@ -3021,7 +3021,7 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
         );
         await client.query('COMMIT');
         schedulePersistMovimentosHistoricoForRequisicoes([reqId], 'finalizar recebimento');
-        const updated = await getRequisicaoComItens(reqId);
+        const updated = await getRequisicaoComItens(reqId, false);
         return res.json(updated);
       } catch (e) {
         await client.query('ROLLBACK').catch(() => {});
