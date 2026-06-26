@@ -444,6 +444,12 @@ function ReceptionMonitorCard() {
                 disabled={clearingTest}
                 onClick={async () => {
                   if (!window.confirm('Limpar artigos da Zona de receção para testes? (somente ocultação no monitor)')) return;
+                  const armazemIdLimpar =
+                    Number(selectedArmazemId || targetArmazemId || 0) || null;
+                  if (!armazemIdLimpar) {
+                    setError('Armazém não identificado para limpar a zona de receção.');
+                    return;
+                  }
                   try {
                     setClearingTest(true);
                     const token = localStorage.getItem('token');
@@ -453,10 +459,22 @@ function ReceptionMonitorCard() {
                         Authorization: `Bearer ${token}`,
                         'Content-Type': 'application/json',
                       },
-                      body: JSON.stringify({ armazem_id: targetArmazemId }),
+                      body: JSON.stringify({ armazem_id: armazemIdLimpar }),
                     });
                     const data = await response.json().catch(() => ({}));
-                    if (!response.ok) throw new Error(data?.error || 'Erro ao limpar zona de receção para teste.');
+                    if (!response.ok) {
+                      throw new Error(
+                        data?.error
+                        || (data?.monitor_oculto_teste === false
+                          ? 'Limpeza parcial: execute a migração monitor-rececao-oculto-teste na BD de produção.'
+                          : 'Erro ao limpar zona de receção para teste.')
+                      );
+                    }
+                    setRows([]);
+                    setPrefillItems([]);
+                    setTotalArtigosRececao(0);
+                    setTotaisPorCategoria({});
+                    setContagensPorCategoria({});
                     setError('');
                     await fetchRows();
                   } catch (e) {

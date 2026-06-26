@@ -1195,6 +1195,7 @@ async function aplicarStockDevolucaoEntradaRecebimento(client, { centralId, locR
   if (!centralId || !locRec) return;
   const list = itensComFerramenta || [];
   const bob = bobinas || [];
+  let stockAplicado = false;
   for (const b of bob) {
     const metros = Number(b.metros) || 0;
     if (metros <= 0) continue;
@@ -1209,6 +1210,7 @@ async function aplicarStockDevolucaoEntradaRecebimento(client, { centralId, locR
       localizacaoCadastro,
       metros
     );
+    stockAplicado = true;
     const loteBobina = String(b.lote || '').trim();
     if (loteBobina) {
       await client.query(
@@ -1240,7 +1242,9 @@ async function aplicarStockDevolucaoEntradaRecebimento(client, { centralId, locR
     if (tipoControlo === 'LOTE' && temBobinas) continue;
     if (!itemTemSaidaTrflTra(ri)) continue;
     const qty = Math.floor(quantidadePreparadaEfetiva(ri));
+    if (qty <= 0) continue;
     await creditarStockNaLocalizacaoArmazem(client, centralId, ri.item_id, ri.item_codigo, locRec, qty);
+    stockAplicado = true;
   }
 
   // Rastreabilidade de S/N na entrada de devolução/recebimento:
@@ -1257,6 +1261,7 @@ async function aplicarStockDevolucaoEntradaRecebimento(client, { centralId, locR
       const key = `${ri.item_id}::${sn}`.toUpperCase();
       if (seen.has(key)) continue;
       seen.add(key);
+      stockAplicado = true;
       // eslint-disable-next-line no-await-in-loop
       const upsert = await client.query(
         `INSERT INTO stock_serial (item_id, armazem_id, localizacao, serialnumber, lote, status)
@@ -1307,6 +1312,7 @@ async function aplicarStockDevolucaoEntradaRecebimento(client, { centralId, locR
       });
     }
   }
+  if (!stockAplicado) return;
   try {
     await client.query(
       `UPDATE armazens

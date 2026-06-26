@@ -19,6 +19,14 @@ async function columnExists(client, tableName, columnName) {
   return ok;
 }
 
+function invalidateColumnExistsCache(tableName, columnName) {
+  if (tableName && columnName) {
+    _columnExistsCache.delete(`${tableName}.${columnName}`);
+    return;
+  }
+  _columnExistsCache.clear();
+}
+
 async function hasEstoqueAplicadoColumn(client) {
   return columnExists(client, 'armazem_movimentacao_interna', 'estoque_aplicado_em');
 }
@@ -808,4 +816,5 @@ module.exports = {
   marcarTicketEstoqueAplicado,
   hasEstoqueAplicadoColumn,
   columnExists,
+  invalidateColumnExistsCache,
 };

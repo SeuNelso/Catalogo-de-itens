@@ -10,7 +10,54 @@ const {
   quantidadeMonitorRececaoItem,
   quantidadeApeadosMonitorItem,
 } = require('../../services/requisicoes/preparacaoUtils');
-const { hasEstoqueAplicadoColumn, columnExists } = require('../../utils/aplicarStockTicketMovInterna');
+const { hasEstoqueAplicadoColumn, columnExists, invalidateColumnExistsCache } = require('../../utils/aplicarStockTicketMovInterna');
+
+const MONITOR_OCULTO_COL = 'monitor_rececao_oculto_teste';
+
+async function ensureMonitorRececaoOcultoTesteColumn(poolConn) {
+  try {
+    await poolConn.query(
+      `ALTER TABLE armazens
+       ADD COLUMN IF NOT EXISTS monitor_rececao_oculto_teste BOOLEAN NOT NULL DEFAULT false`
+    );
+    invalidateColumnExistsCache('armazens', MONITOR_OCULTO_COL);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+async function readMonitorRececaoOcultoTeste(poolConn, armazemId) {
+  await ensureMonitorRececaoOcultoTesteColumn(poolConn);
+  try {
+    const r = await poolConn.query(
+      `SELECT monitor_rececao_oculto_teste FROM armazens WHERE id = $1`,
+      [armazemId]
+    );
+    return Boolean(r.rows[0]?.monitor_rececao_oculto_teste);
+  } catch (e) {
+    if (e?.code === '42703') return false;
+    throw e;
+  }
+}
+
+async function setMonitorRececaoOcultoTeste(poolConn, armazemId, value) {
+  const ensured = await ensureMonitorRececaoOcultoTesteColumn(poolConn);
+  if (!ensured) return false;
+  try {
+    await poolConn.query(
+      `UPDATE armazens
+       SET monitor_rececao_oculto_teste = $2,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = $1`,
+      [armazemId, Boolean(value)]
+    );
+    return true;
+  } catch (e) {
+    if (e?.code === '42703') return false;
+    throw e;
+  }
+}
 
 /** Stock real por artigo numa localização do armazém central (fonte de verdade do monitor). */
 async function fetchStockPorLocalizacaoMonitor(poolConn, armazemId, locLabel) {
@@ -1908,9 +1955,9 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
         let offset = parseInt(String(req.query.offset || ''), 10);
         if (!Number.isFinite(offset) || offset < 0) offset = 0;
 
-        const hasMonitorOcultoCol = await columnExists(pool, 'armazens', 'monitor_rececao_oculto_teste');
+        const monitorOcultoTeste = await readMonitorRececaoOcultoTeste(pool, armazemId);
         const armazemQ = await pool.query(
-          `SELECT codigo, descricao${hasMonitorOcultoCol ? ', monitor_rececao_oculto_teste' : ''}
+          `SELECT codigo, descricao
            FROM armazens
            WHERE id = $1`,
           [armazemId]
@@ -1922,7 +1969,7 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
           ? `${armCodigo} - ${armDescricao}`
           : (armCodigo || armDescricao);
 
-        if (hasMonitorOcultoCol && Boolean(arm?.monitor_rececao_oculto_teste)) {
+        if (monitorOcultoTeste) {
           const targetLocationOculto =
             String(req.query.localizacao || '').trim() ||
             (await localizacaoArmazemPorTipoConn(pool, armazemId, 'recebimento')) ||
@@ -2603,17 +2650,16 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
           );
           updated += 1;
         }
-        const hasMonitorOcultoCol = await columnExists(pool, 'armazens', 'monitor_rececao_oculto_teste');
-        if (hasMonitorOcultoCol) {
-          await pool.query(
-            `UPDATE armazens
-             SET monitor_rececao_oculto_teste = true,
-                 updated_at = CURRENT_TIMESTAMP
-             WHERE id = $1`,
-            [armazemId]
-          );
+        const monitorOcultoOk = await setMonitorRececaoOcultoTeste(pool, armazemId, true);
+        if (!monitorOcultoOk) {
+          return res.status(503).json({
+            error: 'Requisições marcadas, mas não foi possível ocultar o stock no monitor. Verifique permissões da BD ou execute a migração armazens-monitor-rececao-oculto-teste.',
+            ok: false,
+            updated,
+            monitor_oculto_teste: false,
+          });
         }
-        return res.json({ ok: true, updated, monitor_oculto_teste: hasMonitorOcultoCol });
+        return res.json({ ok: true, updated, monitor_oculto_teste: true });
       } catch (e) {
         console.error('Erro ao limpar monitor de receção para teste:', e);
         return res.status(500).json({ error: 'Erro ao limpar zona de receção para teste', details: e.message });
