@@ -32,7 +32,11 @@ const {
   isFluxoDevolucaoParaCentral,
 } = require('../middleware/requisicoesScope');
 const { usuarioTemPermissaoControloStock, usuarioTemPermissaoConsultaMovimentos } = require('../utils/usuarioDbColumns');
-const { quantidadePreparadaEfetiva, itemTemSaidaTrflTra } = require('../services/requisicoes/preparacaoUtils');
+const {
+  quantidadePreparadaEfetiva,
+  itemTemSaidaTrflTra,
+  quantidadeMonitorRececaoItem,
+} = require('../services/requisicoes/preparacaoUtils');
 
 const SQL_CRIADOR_COM_EMAIL = `${SQL_CRIADOR_NOME} AS usuario_nome,
         u.email AS usuario_email,
@@ -1433,7 +1437,7 @@ async function seriaisComCaixaFromRequisicaoItem(client, requisicaoItemId, seria
 
 /** DEV (devolução): crédito na localização de recebimento do central. */
 async function aplicarStockDevolucaoEntradaRecebimento(client, { centralId, locRec, itensComFerramenta, bobinas }) {
-  if (!centralId || !locRec) return;
+  if (!centralId || !locRec) return false;
   const list = itensComFerramenta || [];
   const bob = bobinas || [];
   let stockAplicado = false;
@@ -1446,6 +1450,21 @@ async function aplicarStockDevolucaoEntradaRecebimento(client, { centralId, locR
       { armazem_id: centralId }
     );
   }
+  const rastAggByRiId = new Map();
+  for (const b of bob) {
+    const riId = Number(b.requisicao_item_id);
+    if (!Number.isFinite(riId)) continue;
+    const prev = rastAggByRiId.get(riId) || { metros: 0, seriais: 0 };
+    prev.metros += Number(b.metros) || 0;
+    if (String(b.serialnumber || '').trim()) prev.seriais += 1;
+    rastAggByRiId.set(riId, prev);
+  }
+  const qtyRecebimentoItem = (ri) => {
+    const riId = Number(ri.id || ri.requisicao_item_id || 0);
+    const rastAgg = Number.isFinite(riId) ? rastAggByRiId.get(riId) : null;
+    const seriaisInline = serialsNormalizadosList(ri.serialnumber).length;
+    return quantidadeMonitorRececaoItem(ri, rastAgg, seriaisInline);
+  };
   const creditarQtyRecebimento = async (itemId, qty) => {
     const q = Number(qty);
     if (!Number.isFinite(q) || q <= 0) return;
@@ -1457,7 +1476,7 @@ async function aplicarStockDevolucaoEntradaRecebimento(client, { centralId, locR
     const metros = Number(b.metros) || 0;
     if (metros <= 0) continue;
     const ri = list.find((it) => it.item_id === b.item_id) || {};
-    if (!itemTemSaidaTrflTra(ri)) continue;
+    if (qtyRecebimentoItem(ri) <= 0) continue;
     const localizacaoCadastro = locRec;
     await creditarQtyRecebimento(b.item_id, metros);
     const loteBobina = String(b.lote || '').trim();
@@ -1489,15 +1508,15 @@ async function aplicarStockDevolucaoEntradaRecebimento(client, { centralId, locR
     const tipoControlo = (ri.tipocontrolo || '').toUpperCase();
     const temBobinas = bob.some((x) => x.item_id === ri.item_id);
     if (tipoControlo === 'LOTE' && temBobinas) continue;
-    if (!itemTemSaidaTrflTra(ri)) continue;
-    const qty = Math.floor(quantidadePreparadaEfetiva(ri));
+    if (isTipoControloSerial(tipoControlo)) continue;
+    const qty = Math.floor(qtyRecebimentoItem(ri));
     if (qty <= 0) continue;
     await creditarQtyRecebimento(ri.item_id, qty);
   }
 
   const serialItens = list.filter((ri) => {
     const tipoControlo = String(ri.tipocontrolo || '').toUpperCase();
-    return isTipoControloSerial(tipoControlo) && itemTemSaidaTrflTra(ri);
+    return isTipoControloSerial(tipoControlo) && qtyRecebimentoItem(ri) > 0;
   });
   if (serialItens.length) {
     const bulkMap = await seriaisComCaixaBulkFromRequisicaoItens(client, serialItens);
@@ -1530,7 +1549,7 @@ async function aplicarStockDevolucaoEntradaRecebimento(client, { centralId, locR
     }
   }
 
-  if (!stockAplicado) return;
+  return stockAplicado;
 }
 
 /**
@@ -2787,6 +2806,7 @@ function podeExportarClog(requisicao) {
   if (podeExportarClogCentralApeado(requisicao)) return true;
   if (podeExportarClogDevolucaoParaCentral(requisicao)) return true;
   if (podeExportarReporteOuClog(requisicao)) return true;
+  if (podeExportarReporteEmExpedicaoPosTrfl(requisicao)) return true;
   const st = String(requisicao?.status || '');
   if (st !== 'APEADOS') return false;
   if (!requisicao?.devolucao_tra_gerada_em) return false;
@@ -5201,7 +5221,8 @@ function clogRowsFromItemData(
     if (tipoControlo === 'LOTE' && itemIdsComBobina.has(ri.item_id)) continue;
 
     if (!itemTemSaidaTrflTra(ri)) continue;
-    const qty = qtySign * quantidadePreparadaEfetiva(ri);
+    const qtyBase = quantidadePreparadaEfetiva(ri);
+    const qty = qtySign * qtyBase;
     if (qty === 0) continue;
     const serialsItem = isTipoControloSerial(tipoControlo) ? serialsNormalizadosList(ri.serialnumber) : [];
     /** Uma linha por artigo: S/N agregados (newline), alinhado com ConsultaMovimentos.parseSeriaisMovimento. */
@@ -5513,6 +5534,26 @@ async function buildClogRowsForRequisicaoIds(idsClean, dateStr, opts = {}) {
   const elegiveis = candidatas.filter((r) => Boolean(armById.get(r.armazem_origem_id)));
   if (elegiveis.length === 0) return [];
 
+  const recMercOrigemIds = [
+    ...new Set(
+      elegiveis
+        .filter((r) => hasRecebimentoMarker(r) && !String(r.tra_numero || '').trim())
+        .map((r) => getAutoFromReqId(r))
+        .filter(Number.isFinite)
+    ),
+  ];
+  const traNumeroPorOrigemReqId = new Map();
+  if (recMercOrigemIds.length > 0) {
+    const traOrigemQ = await pool.query(
+      'SELECT id, tra_numero FROM requisicoes WHERE id = ANY($1::int[])',
+      [recMercOrigemIds]
+    );
+    for (const row of traOrigemQ.rows || []) {
+      const tra = String(row?.tra_numero || '').trim();
+      if (tra) traNumeroPorOrigemReqId.set(Number(row.id), tra);
+    }
+  }
+
   const requisicaoIdsCentral = [...new Set(elegiveis.map((r) => r.id))];
   const origemIdsCentral = [
     ...new Set(
@@ -5669,7 +5710,15 @@ async function buildClogRowsForRequisicaoIds(idsClean, dateStr, opts = {}) {
         ? observacoesClogEpiSomenteColaborador(r.observacoes)
         : r.observacoes || '';
     })();
-    const numeroTraDev = String(r.tra_numero || r.devolucao_tra_apeados_numero || '').trim();
+    const numeroTraDev = (() => {
+      let tra = String(r.tra_numero || '').trim();
+      if (!tra && isRecMerc) {
+        const origemId = getAutoFromReqId(r);
+        if (Number.isFinite(origemId)) tra = traNumeroPorOrigemReqId.get(origemId) || '';
+      }
+      if (!tra) tra = String(r.devolucao_tra_apeados_numero || '').trim();
+      return tra;
+    })();
     const rows = clogRowsFromItemData(
       dateForReq || formatDateBR(new Date()),
       codigoDestino,
@@ -6464,10 +6513,16 @@ router.get('/movimentos-clog/consulta', ...requisicaoAuth, denyOnlyOperador, asy
     };
 
     // Requisições aptas para Clog na consulta.
-    // Devoluções podem não ter tra_numero clássico; usar marcador DEV como elegível.
+    // Devoluções podem não ter tra_numero clássico; recebimentos usam tra da origem ou baixa de expedição.
     where.push(`(
       COALESCE(TRIM(r.tra_numero), '') <> ''
       OR r.devolucao_tra_gerada_em IS NOT NULL
+      OR r.tra_gerada_em IS NOT NULL
+      OR (
+        r.status = 'FINALIZADO'
+        AND r.tra_baixa_expedicao_aplicada_em IS NOT NULL
+        AND UPPER(COALESCE(r.observacoes, '')) LIKE 'RECEBIMENTO_TRANSFERENCIA_V1%'
+      )
     )`);
     where.push(`(
       r.status = 'FINALIZADO'
@@ -6477,6 +6532,12 @@ router.get('/movimentos-clog/consulta', ...requisicaoAuth, denyOnlyOperador, asy
         AND r.devolucao_tra_gerada_em IS NOT NULL
         AND r.devolucao_tra_apeados_gerada_em IS NOT NULL
         AND COALESCE(TRIM(r.devolucao_tra_apeados_numero), '') <> ''
+      )
+      OR (
+        r.status = 'EM EXPEDICAO'
+        AND r.tra_gerada_em IS NOT NULL
+        AND NOT (UPPER(COALESCE(r.observacoes, '')) LIKE 'RECEBIMENTO_TRANSFERENCIA_V1%')
+        AND COALESCE(r.cancelada_em_expedicao, false) = false
       )
     )`);
 

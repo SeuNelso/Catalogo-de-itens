@@ -1144,11 +1144,7 @@ router.patch('/:id/finalizar', ...requisicaoAuth, denyOperador, async (req, res)
         cFinNormal.release();
       }
     }
-    if (fluxoDevolucao) {
-      await persistMovimentosHistoricoForRequisicoes([id]);
-    } else {
-      schedulePersistMovimentosHistoricoForRequisicoes([id], 'finalizar requisição');
-    }
+    await persistMovimentosHistoricoForRequisicoes([id]);
     res.json({ ok: true, id: parseInt(id, 10), status: 'FINALIZADO' });
   } catch (error) {
     console.error('Erro ao finalizar requisição:', error);
@@ -1215,11 +1211,7 @@ router.patch('/:id/tra-numero', ...requisicaoAuth, denyOperador, async (req, res
     );
     const reqIdNum = parseInt(id, 10);
     if (Number.isFinite(reqIdNum)) {
-      if (isDevolucaoFluxo) {
-        await persistMovimentosHistoricoForRequisicoes([reqIdNum]);
-      } else {
-        schedulePersistMovimentosHistoricoForRequisicoes([reqIdNum], 'tra-numero');
-      }
+      await persistMovimentosHistoricoForRequisicoes([reqIdNum]);
     }
     const origemTipo = String(row.armazem_origem_tipo || '').trim().toLowerCase();
     const destinoTipo = String(row.armazem_destino_tipo || '').trim().toLowerCase();
@@ -2349,8 +2341,6 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
 
         for (const r of reqRows) {
           const itens = itensByReqId.get(Number(r.id)) || [];
-          const obs = String(r?.observacoes || '');
-          if (markerFlagAtivo(obs, RECEBIMENTO_MONITOR_CLEAR_TEST_MARKER)) continue;
           const isRecebimentoReq = hasRecebimentoMarker(r);
           const recebimentoStockAplicado = Boolean(r?.tra_baixa_expedicao_aplicada_em);
           const recebimentoFinalizado = String(r?.status || '') === 'FINALIZADO';
@@ -2517,7 +2507,6 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
         }
 
         for (const r of reqRows) {
-          if (markerFlagAtivo(String(r?.observacoes || ''), RECEBIMENTO_MONITOR_CLEAR_TEST_MARKER)) continue;
           if (!hasDevolucaoTrflCol || !Boolean(r?.devolucao_trfl_gerada_em)) continue;
           if (Number(r?.armazem_id) !== armazemId) continue;
           const ts = Date.parse(String(r.devolucao_trfl_gerada_em)) || 0;
@@ -2727,31 +2716,6 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
         if (!Number.isFinite(armazemId) || armazemId <= 0) {
           return res.status(400).json({ error: 'armazem_id inválido.' });
         }
-        const reqQ = await pool.query(
-          `SELECT id, observacoes
-           FROM requisicoes
-           WHERE status = 'FINALIZADO'
-             AND (armazem_id = $1 OR armazem_origem_id = $1)
-           ORDER BY id DESC
-           LIMIT 4000`,
-          [armazemId]
-        );
-        let updated = 0;
-        for (const row of reqQ.rows || []) {
-          const id = Number(row?.id || 0);
-          if (!Number.isFinite(id) || id <= 0) continue;
-          const nextObs = upsertMarkerFlag(row?.observacoes, RECEBIMENTO_MONITOR_CLEAR_TEST_MARKER, true);
-          if (String(nextObs || '') === String(row?.observacoes || '')) continue;
-          // eslint-disable-next-line no-await-in-loop
-          await pool.query(
-            `UPDATE requisicoes
-             SET observacoes = $2,
-                 updated_at = CURRENT_TIMESTAMP
-             WHERE id = $1`,
-            [id, nextObs]
-          );
-          updated += 1;
-        }
         const { targetLocation, localizacaoApeadosOrigem } = await resolverLocaisZonaRececaoMonitor(
           pool,
           armazemId,
@@ -2770,13 +2734,12 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
         const baselineOk = await setMonitorRececaoBaseline(pool, armazemId, baselinePayload);
         if (!baselineOk) {
           return res.status(503).json({
-            error: 'Requisições marcadas, mas não foi possível registar o baseline do monitor. Execute npm run db:migrate:armazens-monitor-rececao-baseline na BD.',
+            error: 'Não foi possível registar o baseline do monitor. Execute npm run db:migrate:armazens-monitor-rececao-baseline na BD.',
             ok: false,
-            updated,
             monitor_baseline: false,
           });
         }
-        return res.json({ ok: true, updated, monitor_baseline: true });
+        return res.json({ ok: true, monitor_baseline: true });
       } catch (e) {
         console.error('Erro ao limpar monitor de receção para teste:', e);
         return res.status(500).json({ error: 'Erro ao limpar zona de receção para teste', details: e.message });
@@ -3071,9 +3034,10 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
           return res.status(400).json({ error: 'Confirme a TRA do armazém de origem antes de finalizar.' });
         }
         const reqOrigemId = getAutoFromReqId(row);
+        let traNumeroOrigem = '';
         if (Number.isFinite(reqOrigemId)) {
           const origemQ = await client.query('SELECT tra_numero FROM requisicoes WHERE id = $1', [reqOrigemId]);
-          const traNumeroOrigem = String(origemQ.rows?.[0]?.tra_numero || '').trim();
+          traNumeroOrigem = String(origemQ.rows?.[0]?.tra_numero || '').trim();
           if (!traNumeroOrigem) {
             await client.query('ROLLBACK');
             return res.status(400).json({ error: 'Aguardando Nº TRA do armazém de origem para finalizar.' });
@@ -3132,12 +3096,13 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
           `UPDATE requisicoes
            SET status = 'FINALIZADO',
                tra_baixa_expedicao_aplicada_em = COALESCE(tra_baixa_expedicao_aplicada_em, CURRENT_TIMESTAMP),
+               tra_numero = COALESCE(NULLIF(TRIM(tra_numero), ''), NULLIF($2::text, '')),
                updated_at = CURRENT_TIMESTAMP
            WHERE id = $1`,
-          [reqId]
+          [reqId, traNumeroOrigem || null]
         );
         await client.query('COMMIT');
-        schedulePersistMovimentosHistoricoForRequisicoes([reqId], 'finalizar recebimento');
+        await persistMovimentosHistoricoForRequisicoes([reqId]);
         const updated = await getRequisicaoComItens(reqId, false);
         return res.json(updated);
       } catch (e) {
