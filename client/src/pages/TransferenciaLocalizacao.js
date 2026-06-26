@@ -1979,10 +1979,6 @@ const TransferenciaLocalizacao = () => {
       });
       return;
     }
-    const selectedSet = new Set(selectedTicketIds.map((x) => Number(x)));
-    const haviaPendenteSelecionado = tickets.some(
-      (t) => selectedSet.has(Number(t.id)) && ticketMovInternaPendente(t, modoTransferencia)
-    );
     setExportingTrfl(true);
     setToast(null);
     try {
@@ -2033,9 +2029,7 @@ const TransferenciaLocalizacao = () => {
             ? 'Ficheiro TRA APEADO transferido. Registe o Nº TRA em cada ticket para concluir.'
             : 'Ficheiro TRFL transferido.',
       });
-      if (haviaPendenteSelecionado) {
-        window.dispatchEvent(new CustomEvent(RECEBIMENTO_REFRESH_EVENT));
-      }
+      window.dispatchEvent(new CustomEvent(RECEBIMENTO_REFRESH_EVENT));
       setSelectedTicketIds([]);
       setTicketsPage(1);
       loadTickets();

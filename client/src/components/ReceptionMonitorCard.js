@@ -8,8 +8,8 @@ import { podeUsarConsultaMovimentos } from '../utils/controloStock';
 
 const FALLBACK_LOCATION = 'RECEBIMENTO.E';
 const PAGE_SIZE = 40;
-const REFRESH_MS = 180000;
-const MAX_ITEMS = 8;
+const REFRESH_MS = 60000;
+const MAX_ITEMS = 20;
 const RECEBIMENTO_REFRESH_EVENT = 'recebimento-card-refresh';
 
 const formatDate = (value) => {
@@ -191,7 +191,9 @@ function ReceptionMonitorCard() {
       const apiPrefillItems = Array.isArray(data?.prefill_items) ? data.prefill_items : [];
       setTotaisPorCategoria(data?.totais_por_categoria && typeof data.totais_por_categoria === 'object' ? data.totais_por_categoria : {});
       setContagensPorCategoria(data?.contagens_por_categoria && typeof data.contagens_por_categoria === 'object' ? data.contagens_por_categoria : {});
-      setTotalArtigosRececao(Number(data?.total ?? apiRows.length) || 0);
+      setTotalArtigosRececao(
+        Number(data?.total_unidades ?? data?.total ?? apiRows.length) || 0
+      );
       setRows(
         apiRows
           .map((r) => ({
@@ -275,7 +277,14 @@ function ReceptionMonitorCard() {
       fetchRows();
     };
     window.addEventListener(RECEBIMENTO_REFRESH_EVENT, onRefresh);
-    return () => window.removeEventListener(RECEBIMENTO_REFRESH_EVENT, onRefresh);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') fetchRows();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      window.removeEventListener(RECEBIMENTO_REFRESH_EVENT, onRefresh);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   }, [canView, fetchRows]);
 
   const rowsApeados = useMemo(() => rows.filter((r) => r.categoria === 'apeados'), [rows]);

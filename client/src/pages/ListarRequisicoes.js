@@ -1109,6 +1109,7 @@ const ListarRequisicoes = ({ modo = 'requisicoes' }) => {
         throw new Error(data.error || 'Erro ao receber stock');
       }
       await fetchRequisicoes();
+      window.dispatchEvent(new CustomEvent(RECEBIMENTO_REFRESH_EVENT));
       setToast({ type: 'success', message: 'Stock recebido com sucesso.' });
     } catch (error) {
       setToast({ type: 'error', message: error.message || 'Erro ao receber stock' });

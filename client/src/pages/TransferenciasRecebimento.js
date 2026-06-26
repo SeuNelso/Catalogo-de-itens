@@ -6,6 +6,8 @@ import Toast from '../components/Toast';
 import { useAuth } from '../contexts/AuthContext';
 import { podeUsarControloStock } from '../utils/controloStock';
 
+const RECEBIMENTO_REFRESH_EVENT = 'recebimento-card-refresh';
+
 const parseNumberPt = (v) => {
   // aceita "1.234,56" ou "1,234.56" ou "1234.56" ou "1234,56"
   const raw = String(v ?? '').trim();
@@ -977,6 +979,7 @@ const TransferenciasRecebimento = () => {
       }
       const data = await res.json();
       setRecebimentoReq(data);
+      window.dispatchEvent(new CustomEvent(RECEBIMENTO_REFRESH_EVENT));
       setToast({ type: 'success', message: 'Stock recebido com sucesso na localização de recebimento.' });
     } catch (e) {
       setToast({ type: 'error', message: e.message || 'Erro ao receber stock.' });

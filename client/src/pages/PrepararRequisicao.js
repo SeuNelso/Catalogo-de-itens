@@ -571,6 +571,7 @@ const PrepararRequisicao = () => {
     const bobinasInicial = det.slice(0, qtd).map((r) => ({
       lote: '',
       serialnumber: String(r.serialnumber || '').trim(),
+      codigo_caixa: String(r.codigo_caixa || '').trim() || undefined,
       metros: '',
       apeado: false,
     }));
@@ -1640,9 +1641,13 @@ const PrepararRequisicao = () => {
         obsRec && amostragemConfirmada && seriaisEsperadosReceb.length > 0;
       let seriais = [];
       if (usarSeriaisEsperadosReceb) {
-        seriais = seriaisEsperadosReceb
-          .map((r) => String(r.serialnumber || '').trim())
-          .filter(Boolean);
+        bobinasPayload = seriaisEsperadosReceb
+          .map((r) => ({
+            serialnumber: String(r.serialnumber || '').trim(),
+            codigo_caixa: String(r.codigo_caixa || '').trim() || undefined,
+          }))
+          .filter((b) => b.serialnumber);
+        seriais = bobinasPayload.map((b) => b.serialnumber);
       } else {
         if (!Array.isArray(formItem.bobinas) || formItem.bobinas.length === 0) {
           setToast({ type: 'error', message: 'Adicione pelo menos um serial number.' });
@@ -1669,7 +1674,9 @@ const PrepararRequisicao = () => {
         });
         return;
       }
-      bobinasPayload = seriais.map((sn) => ({ serialnumber: sn }));
+      if (!bobinasPayload) {
+        bobinasPayload = seriais.map((sn) => ({ serialnumber: sn }));
+      }
     }
 
     const qtdApeadosCheckbox = Math.max(0, Math.floor(Number(formItem.quantidade_apeados) || 0));
@@ -1714,7 +1721,10 @@ const PrepararRequisicao = () => {
           localizacao_origem: isFluxoRecebimentoMercadoria ? null : locOrigem,
           lote: formItem.lote || null,
           serialnumber: formItem.serialnumber || null,
-          bobinas: !isZero && tipoControlo === 'LOTE' ? bobinasPayload : undefined,
+          bobinas:
+            !isZero && Array.isArray(bobinasPayload) && bobinasPayload.length > 0
+              ? bobinasPayload
+              : undefined,
           serials:
             !isZero && isTipoControloSerial(tipoControlo) && Array.isArray(bobinasPayload)
               ? bobinasPayload.map((b) => b.serialnumber)

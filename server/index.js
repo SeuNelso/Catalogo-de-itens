@@ -102,6 +102,7 @@ const {
   aplicarStockLinhaMovInterna,
   aplicarStockTicketMovInternaSePendente,
   listarSeriaisParaExportTicket,
+  validarQuantidadeSeriaisTicketExport,
   hasEstoqueAplicadoColumn,
 } = require('./utils/aplicarStockTicketMovInterna');
 const { expandirComposicaoAteFolhas } = require('./utils/composicaoExpandida');
@@ -6918,8 +6919,7 @@ app.post('/api/armazens/:armazemId/movimentacoes-internas/export-trfl', authenti
         const isLote = tipoControlo === 'LOTE';
         const qtd = Number(row.quantidade) || 0;
         if (isSerial && qtd > 0) {
-          const qtdInt = Math.floor(qtd);
-          const serialRows = await listarSeriaisParaExportTicket(client, {
+          const { ok: seriaisOk, qtdInt } = await validarQuantidadeSeriaisTicketExport(client, {
             ticketId: row.id,
             itemId: Number(row.item_id),
             armazemId,
@@ -6929,30 +6929,28 @@ app.post('/api/armazens/:armazemId/movimentacoes-internas/export-trfl', authenti
             quantidade: qtd,
             hasTicketSerialTable,
           });
-          if (serialRows.length < qtdInt) {
+          if (!seriaisOk) {
             await client.query('ROLLBACK');
             return res.status(400).json({
               error: `Seriais insuficientes para o artigo ${String(row.item_codigo || '')} (origem: ${String(row.origem_loc || '').trim() || '—'}).`,
               code: 'SERIAIS_ORIGEM_INSUFICIENTE',
             });
           }
-          for (const s of serialRows) {
-            rows.push({
-              Date: dateStr,
-              OriginWarehouse: wh,
-              OriginLocation: String(row.origem_loc || ''),
-              Article: String(row.item_codigo || ''),
-              Quatity: 1,
-              SerialNumber1: String(s.serialnumber || ''),
-              SerialNumber2: '',
-              MacAddress: '',
-              CentroCusto: '',
-              DestinationWarehouse: wh,
-              DestinationLocation: String(row.destino_loc || ''),
-              ProjectCode: '',
-              Batch: '',
-            });
-          }
+          rows.push({
+            Date: dateStr,
+            OriginWarehouse: wh,
+            OriginLocation: String(row.origem_loc || ''),
+            Article: String(row.item_codigo || ''),
+            Quatity: qtdInt,
+            SerialNumber1: '',
+            SerialNumber2: '',
+            MacAddress: '',
+            CentroCusto: '',
+            DestinationWarehouse: wh,
+            DestinationLocation: String(row.destino_loc || ''),
+            ProjectCode: '',
+            Batch: '',
+          });
           continue;
         }
         if (isLote && hasTicketLotesTable) {
@@ -7132,8 +7130,7 @@ app.post('/api/armazens/:armazemId/movimentacoes-internas/export-tra-apeado', au
         const isLote = tipoControlo === 'LOTE';
         const qtd = Number(row.quantidade) || 0;
         if (isSerial && qtd > 0) {
-          const qtdInt = Math.floor(qtd);
-          const serialRows = await listarSeriaisParaExportTicket(client, {
+          const { ok: seriaisOk, qtdInt } = await validarQuantidadeSeriaisTicketExport(client, {
             ticketId: row.id,
             itemId: Number(row.item_id),
             armazemId,
@@ -7143,30 +7140,28 @@ app.post('/api/armazens/:armazemId/movimentacoes-internas/export-tra-apeado', au
             quantidade: qtd,
             hasTicketSerialTable,
           });
-          if (serialRows.length < qtdInt) {
+          if (!seriaisOk) {
             await client.query('ROLLBACK');
             return res.status(400).json({
               error: `Seriais insuficientes para o artigo ${String(row.item_codigo || '')} (origem: ${String(row.origem_loc || '').trim() || '—'}).`,
               code: 'SERIAIS_ORIGEM_INSUFICIENTE',
             });
           }
-          for (const s of serialRows) {
-            rows.push({
-              Date: dateStr,
-              OriginWarehouse: String(row.origem_armazem_codigo || ''),
-              OriginLocation: String(row.origem_loc || ''),
-              Article: String(row.item_codigo || ''),
-              Quatity: 1,
-              SerialNumber1: String(s.serialnumber || ''),
-              SerialNumber2: '',
-              MacAddress: '',
-              CentroCusto: '',
-              DestinationWarehouse: String(row.destino_armazem_codigo || ''),
-              DestinationLocation: String(row.destino_loc || ''),
-              ProjectCode: '',
-              Batch: '',
-            });
-          }
+          rows.push({
+            Date: dateStr,
+            OriginWarehouse: String(row.origem_armazem_codigo || ''),
+            OriginLocation: String(row.origem_loc || ''),
+            Article: String(row.item_codigo || ''),
+            Quatity: qtdInt,
+            SerialNumber1: '',
+            SerialNumber2: '',
+            MacAddress: '',
+            CentroCusto: '',
+            DestinationWarehouse: String(row.destino_armazem_codigo || ''),
+            DestinationLocation: String(row.destino_loc || ''),
+            ProjectCode: '',
+            Batch: '',
+          });
           continue;
         }
         if (isLote && hasTicketLotesTable) {

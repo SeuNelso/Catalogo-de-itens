@@ -755,6 +755,44 @@ async function listarSeriaisParaExportTicket(client, {
   return rows.slice(0, qtdInt);
 }
 
+/** Valida quantidade de S/N do ticket sem carregar todos os seriais (export TRFL/TRA agregado). */
+async function validarQuantidadeSeriaisTicketExport(client, {
+  ticketId,
+  itemId,
+  armazemId,
+  origemLocLabel,
+  destinoArmazemId,
+  destinoLocLabel,
+  quantidade,
+  hasTicketSerialTable,
+}) {
+  const qtdInt = Math.floor(Number(quantidade) || 0);
+  if (qtdInt <= 0) return { ok: true, qtdInt: 0 };
+
+  if (hasTicketSerialTable && ticketId) {
+    const cQ = await client.query(
+      `SELECT COUNT(*)::int AS n
+       FROM armazem_movimentacao_interna_seriais
+       WHERE ticket_id = $1`,
+      [ticketId]
+    );
+    const n = Number(cQ.rows[0]?.n || 0) || 0;
+    if (n >= qtdInt) return { ok: true, qtdInt };
+  }
+
+  const serialRows = await listarSeriaisParaExportTicket(client, {
+    ticketId,
+    itemId,
+    armazemId,
+    origemLocLabel,
+    destinoArmazemId,
+    destinoLocLabel,
+    quantidade,
+    hasTicketSerialTable,
+  });
+  return { ok: serialRows.length >= qtdInt, qtdInt };
+}
+
 module.exports = {
   isTipoControloSerial,
   makeBizError,
@@ -765,6 +803,7 @@ module.exports = {
   aplicarStockLinhaMovInterna,
   aplicarStockTicketMovInternaSePendente,
   listarSeriaisParaExportTicket,
+  validarQuantidadeSeriaisTicketExport,
   ticketEstoqueJaAplicado,
   marcarTicketEstoqueAplicado,
   hasEstoqueAplicadoColumn,

@@ -145,6 +145,34 @@ function isTipoControloSerial(tipoControlo) {
   return norm === 'S/N' || norm === 'SN' || norm === 'SERIAL';
 }
 
+/** Separa S/N de caixa opcional numa linha (tab, pipe ou espaço — espelha import no cliente). */
+function serialLimpoDeLinhaComCaixa(raw) {
+  const line = String(raw || '').trim();
+  if (!line) return { sn: '', caixa: '' };
+  const tab = line.indexOf('\t');
+  if (tab > 0) {
+    return {
+      sn: line.slice(0, tab).trim(),
+      caixa: line.slice(tab + 1).trim(),
+    };
+  }
+  const pipe = line.indexOf('|');
+  if (pipe > 0) {
+    return {
+      sn: line.slice(0, pipe).trim(),
+      caixa: line.slice(pipe + 1).trim(),
+    };
+  }
+  const spaceParts = line.split(/\s+/).filter(Boolean);
+  if (spaceParts.length >= 2) {
+    return {
+      sn: spaceParts[0],
+      caixa: spaceParts.slice(1).join(' ') || '',
+    };
+  }
+  return { sn: line, caixa: '' };
+}
+
 function serialsNormalizadosList(value) {
   const isSerialInformadoValido = (raw) => {
     const s = String(raw || '').trim();
@@ -156,10 +184,27 @@ function serialsNormalizadosList(value) {
     if (norm === 'sem serial') return false;
     return true;
   };
-  return String(value || '')
-    .split(/\r?\n|;|\|/)
-    .map((s) => String(s || '').trim())
-    .filter(isSerialInformadoValido);
+  const seen = new Set();
+  const out = [];
+  const pushSn = (raw) => {
+    const { sn } = serialLimpoDeLinhaComCaixa(raw);
+    if (!isSerialInformadoValido(sn)) return;
+    const k = sn.toUpperCase();
+    if (seen.has(k)) return;
+    seen.add(k);
+    out.push(sn);
+  };
+  const raw = String(value || '');
+  if (/\r?\n/.test(raw)) {
+    for (const line of raw.split(/\r?\n/).map((l) => String(l || '').trim()).filter(Boolean)) {
+      pushSn(line);
+    }
+    return out;
+  }
+  for (const chunk of raw.split(';').map((s) => String(s || '').trim()).filter(Boolean)) {
+    pushSn(chunk);
+  }
+  return out;
 }
 
 /** { sn, caixa } com sn único (case-insensitive), primeira caixa ganha. */
@@ -219,10 +264,40 @@ function extractSeriaisLinhasFromItemBody(x) {
 const CLOG_TIPO_DEVOLUCAO_EPI = 'Devolucao EPI';
 const CLOG_TIPO_DEVOLUCAO_CARRINHA = 'Devolucao de carrinha';
 
-function tipoMovimentoClogParaDevolucao(origemTipo, destinoTipo) {
-  return isFluxoDevolucaoEpiCentral(origemTipo, destinoTipo)
-    ? CLOG_TIPO_DEVOLUCAO_EPI
-    : CLOG_TIPO_DEVOLUCAO_CARRINHA;
+/** Armazém EPI por tipo ou heurística código/descrição (Clog / consulta movimentos). */
+function armazemOrigemEhEpi(origemTipo, origemCodigo, origemDescricao) {
+  if (String(origemTipo || '').trim().toLowerCase() === 'epi') return true;
+  const cod = String(origemCodigo || '').toUpperCase();
+  const desc = String(origemDescricao || '').toUpperCase();
+  return cod.includes('EPI') || desc.includes('EPI');
+}
+
+/** Devolução para central: viatura/EPI explícitos ou armazém EPI por heurística. */
+function isFluxoDevolucaoParaCentralClog(requisicaoOrOrigemTipo, destinoTipo, origemCodigo, origemDescricao) {
+  if (requisicaoOrOrigemTipo && typeof requisicaoOrOrigemTipo === 'object') {
+    const rec = requisicaoOrOrigemTipo;
+    if (isFluxoDevolucaoParaCentral(rec.armazem_origem_tipo, rec.armazem_destino_tipo)) return true;
+    if (String(rec.armazem_destino_tipo || '').trim().toLowerCase() !== 'central') return false;
+    return armazemOrigemEhEpi(
+      rec.armazem_origem_tipo,
+      rec.armazem_origem_codigo,
+      rec.armazem_origem_descricao
+    );
+  }
+  if (isFluxoDevolucaoParaCentral(requisicaoOrOrigemTipo, destinoTipo)) return true;
+  if (String(destinoTipo || '').trim().toLowerCase() !== 'central') return false;
+  return armazemOrigemEhEpi(requisicaoOrOrigemTipo, origemCodigo, origemDescricao);
+}
+
+function tipoMovimentoClogParaDevolucao(origemTipo, destinoTipo, origemCodigo, origemDescricao) {
+  if (
+    isFluxoDevolucaoEpiCentral(origemTipo, destinoTipo) ||
+    (String(destinoTipo || '').trim().toLowerCase() === 'central' &&
+      armazemOrigemEhEpi(origemTipo, origemCodigo, origemDescricao))
+  ) {
+    return CLOG_TIPO_DEVOLUCAO_EPI;
+  }
+  return CLOG_TIPO_DEVOLUCAO_CARRINHA;
 }
 
 /** Snapshots antigos classificavam EPI→central como devolução de carrinha. */
@@ -232,7 +307,15 @@ function normalizarTipoMovimentoClogDevolucao(row) {
   if (t !== 'devolucao de carrinha') return row;
   const origemTipo = String(row.armazem_origem_tipo || '').toLowerCase();
   const destinoTipo = String(row.armazem_destino_tipo || '').toLowerCase();
-  if (isFluxoDevolucaoEpiCentral(origemTipo, destinoTipo)) {
+  if (
+    isFluxoDevolucaoEpiCentral(origemTipo, destinoTipo) ||
+    (destinoTipo === 'central' &&
+      armazemOrigemEhEpi(
+        origemTipo,
+        row.armazem_origem_codigo,
+        row.armazem_origem_descricao
+      ))
+  ) {
     return { ...row, 'Tipo de Movimento': CLOG_TIPO_DEVOLUCAO_EPI };
   }
   return row;
@@ -1018,6 +1101,95 @@ async function logStockMovimentoHelper(db, {
   );
 }
 
+/** Liga um `stock_serial` à caixa física (`stock_caixas` + `stock_caixa_seriais`). */
+async function vincularStockSerialACaixaEntrada(client, {
+  itemId,
+  armazemId,
+  localizacao,
+  stockSerialId,
+  codigoCaixa,
+}) {
+  const cx = String(codigoCaixa || '').trim();
+  if (!cx || !stockSerialId) return null;
+  try {
+    const caixaQ = await client.query(
+      `INSERT INTO stock_caixas (codigo_caixa, item_id, armazem_id, localizacao, status, criado_por_usuario_id)
+       VALUES ($1, $2, $3, $4, 'fechada', NULL)
+       ON CONFLICT (codigo_caixa)
+       DO UPDATE SET
+         item_id = EXCLUDED.item_id,
+         armazem_id = EXCLUDED.armazem_id,
+         localizacao = EXCLUDED.localizacao,
+         atualizado_em = CURRENT_TIMESTAMP
+       RETURNING id`,
+      [cx, itemId, armazemId, localizacao]
+    );
+    const caixaId = Number(caixaQ.rows[0]?.id || 0) || null;
+    if (!caixaId) return null;
+    await client.query(
+      `INSERT INTO stock_caixa_seriais (caixa_id, stock_serial_id)
+       VALUES ($1, $2)
+       ON CONFLICT (stock_serial_id)
+       DO UPDATE SET caixa_id = EXCLUDED.caixa_id`,
+      [caixaId, stockSerialId]
+    );
+    return caixaId;
+  } catch (e) {
+    if (e.code === '42P01') return null;
+    throw e;
+  }
+}
+
+/** S/N + caixa opcional a partir da tabela filha ou do blob `serialnumber`. */
+async function seriaisComCaixaFromRequisicaoItem(client, requisicaoItemId, serialnumberBlob) {
+  const rid = Number(requisicaoItemId);
+  if (Number.isFinite(rid)) {
+    try {
+      const snRows = await client.query(
+        `SELECT TRIM(serialnumber) AS sn,
+                NULLIF(TRIM(codigo_caixa), '') AS codigo_caixa
+         FROM requisicoes_itens_seriais
+         WHERE requisicao_item_id = $1
+         ORDER BY ordem, id`,
+        [rid]
+      );
+      const rows = (snRows.rows || [])
+        .map((r) => ({
+          sn: String(r.sn || '').trim(),
+          codigo_caixa: String(r.codigo_caixa || '').trim(),
+        }))
+        .filter((r) => r.sn);
+      if (rows.length) return rows;
+    } catch (e) {
+      if (e.code === '42P01') {
+        // tabela inexistente — cair para blob
+      } else if (e.code === '42703') {
+        const snRows = await client.query(
+          `SELECT TRIM(serialnumber) AS sn
+           FROM requisicoes_itens_seriais
+           WHERE requisicao_item_id = $1
+           ORDER BY ordem, id`,
+          [rid]
+        );
+        const rows = (snRows.rows || [])
+          .map((r) => ({
+            sn: String(r.sn || '').trim(),
+            codigo_caixa: '',
+          }))
+          .filter((r) => r.sn);
+        if (rows.length) return rows;
+      } else {
+        throw e;
+      }
+    }
+  }
+  const blobMap = caixaPorSerialFromSerialnumberBlob(serialnumberBlob);
+  return serialsNormalizadosList(serialnumberBlob).map((sn) => ({
+    sn,
+    codigo_caixa: blobMap.get(sn.toUpperCase()) || '',
+  }));
+}
+
 /** DEV (devolução): crédito na localização de recebimento do central. */
 async function aplicarStockDevolucaoEntradaRecebimento(client, { centralId, locRec, itensComFerramenta, bobinas }) {
   if (!centralId || !locRec) return;
@@ -1076,33 +1248,17 @@ async function aplicarStockDevolucaoEntradaRecebimento(client, { centralId, locR
   for (const ri of list) {
     const tipoControlo = String(ri.tipocontrolo || '').toUpperCase();
     if (!isTipoControloSerial(tipoControlo)) continue;
-    let serials = serialsNormalizadosList(ri.serialnumber);
-    if ((!serials || serials.length === 0) && Number.isFinite(Number(ri.id))) {
-      // Em devoluções S/N, os seriais podem estar persistidos em requisicoes_itens_seriais
-      // enquanto requisicoes_itens.serialnumber fica vazio.
-      // Evita dependência de helper fora de escopo neste ponto do fluxo.
-      // eslint-disable-next-line no-await-in-loop
-      const snRows = await client.query(
-        `SELECT TRIM(serialnumber) AS sn
-         FROM requisicoes_itens_seriais
-         WHERE requisicao_item_id = $1
-         ORDER BY ordem, id`,
-        [Number(ri.id)]
-      ).catch((e) => {
-        if (e.code === '42P01') return { rows: [] };
-        throw e;
-      });
-      serials = (snRows.rows || []).map((r) => String(r.sn || '').trim()).filter(Boolean);
-    }
-    if (!serials.length) continue;
+    // eslint-disable-next-line no-await-in-loop
+    const serialRows = await seriaisComCaixaFromRequisicaoItem(client, ri.id, ri.serialnumber);
+    if (!serialRows.length) continue;
     const localizacaoCadastro = locRec;
     const seen = new Set();
-    for (const sn of serials) {
+    for (const { sn, codigo_caixa: codigoCaixa } of serialRows) {
       const key = `${ri.item_id}::${sn}`.toUpperCase();
       if (seen.has(key)) continue;
       seen.add(key);
       // eslint-disable-next-line no-await-in-loop
-      await client.query(
+      const upsert = await client.query(
         `INSERT INTO stock_serial (item_id, armazem_id, localizacao, serialnumber, lote, status)
          VALUES ($1, $2, $3, $4, $5, $6)
          ON CONFLICT (item_id, serialnumber)
@@ -1115,9 +1271,22 @@ async function aplicarStockDevolucaoEntradaRecebimento(client, { centralId, locR
            requisicao_item_id = NULL,
            reservado_em = NULL,
            consumido_em = NULL,
-           atualizado_em = CURRENT_TIMESTAMP`,
+           atualizado_em = CURRENT_TIMESTAMP
+         RETURNING id`,
         [ri.item_id, centralId, localizacaoCadastro, sn, ri.lote || null, STOCK_STATUS.DISPONIVEL]
       );
+      const stockSerialId = Number(upsert.rows[0]?.id || 0) || null;
+      let caixaId = null;
+      if (codigoCaixa && stockSerialId) {
+        // eslint-disable-next-line no-await-in-loop
+        caixaId = await vincularStockSerialACaixaEntrada(client, {
+          itemId: ri.item_id,
+          armazemId: centralId,
+          localizacao: localizacaoCadastro,
+          stockSerialId,
+          codigoCaixa,
+        });
+      }
       // eslint-disable-next-line no-await-in-loop
       await logStockMovimentoHelper(client, {
         tipo: 'entrada_devolucao_serial',
@@ -1129,8 +1298,12 @@ async function aplicarStockDevolucaoEntradaRecebimento(client, { centralId, locR
         quantidade: 1,
         requisicaoId: Number(ri.requisicao_id) || null,
         requisicaoItemId: Number(ri.id) || null,
+        caixaId,
         usuarioId: null,
-        payload: { origem: 'aplicarStockDevolucaoEntradaRecebimento' },
+        payload: {
+          origem: 'aplicarStockDevolucaoEntradaRecebimento',
+          codigo_caixa: codigoCaixa || null,
+        },
       });
     }
   }
@@ -1167,15 +1340,12 @@ async function mergeRequisicaoItensSeriaisFromChildTable(client, itensRows) {
   }
   return rows.map((ri) => {
     const fromChild = byRi.get(Number(ri.id)) || [];
-    if (!fromChild.length) return ri;
+    if (fromChild.length) {
+      return { ...ri, serialnumber: fromChild.join('\n') };
+    }
     const fromBlob = serialsNormalizadosList(ri.serialnumber);
-    const merged = [
-      ...new Set(
-        [...fromBlob, ...fromChild].map((s) => String(s || '').trim()).filter(Boolean)
-      ),
-    ];
-    if (!merged.length) return ri;
-    return { ...ri, serialnumber: merged.join('\n') };
+    if (!fromBlob.length) return ri;
+    return { ...ri, serialnumber: fromBlob.join('\n') };
   });
 }
 
@@ -1943,19 +2113,8 @@ function caixaPorSerialFromSerialnumberBlob(blob) {
     .split(/\r?\n/)
     .map((l) => l.trim())
     .filter(Boolean)) {
-    const tab = line.indexOf('\t');
-    if (tab > 0) {
-      const sn = line.slice(0, tab).trim();
-      const cx = line.slice(tab + 1).trim();
-      if (sn) m.set(sn.toUpperCase(), cx || '');
-      continue;
-    }
-    const pipe = line.indexOf('|');
-    if (pipe > 0) {
-      const sn = line.slice(0, pipe).trim();
-      const cx = line.slice(pipe + 1).trim();
-      if (sn) m.set(sn.toUpperCase(), cx || '');
-    }
+    const { sn, caixa } = serialLimpoDeLinhaComCaixa(line);
+    if (sn) m.set(sn.toUpperCase(), caixa || '');
   }
   return m;
 }
@@ -2394,14 +2553,7 @@ function podeExportarReporteRequisicao(requisicao) {
 
 /** Devolução viatura/EPI → central: Clog após DEV gerado e Nº DEV/TRA registado (inclui EM EXPEDICAO/APEADOS). */
 function podeExportarClogDevolucaoParaCentral(requisicao) {
-  if (
-    !isFluxoDevolucaoParaCentral(
-      requisicao?.armazem_origem_tipo,
-      requisicao?.armazem_destino_tipo
-    )
-  ) {
-    return false;
-  }
+  if (!isFluxoDevolucaoParaCentralClog(requisicao)) return false;
   if (!requisicao?.devolucao_tra_gerada_em) return false;
   return Boolean(String(requisicao?.tra_numero || '').trim());
 }
@@ -4738,11 +4890,13 @@ function clogRowsFromItemData(
   const armazemDestinoId = Number(opts?.armazemDestinoId) || 0;
   const origemTipo = String(opts?.origemTipo || '').trim().toLowerCase();
   const destinoTipoNorm = String(opts?.destinoTipo || '').trim().toLowerCase();
+  const origemCodigo = String(opts?.origemCodigo || '').trim();
+  const origemDescricao = String(opts?.origemDescricao || '').trim();
   const isCentralApeado =
     (origemTipo === 'central' && (destinoTipoNorm === 'apeado' || destinoTipoNorm === 'apeados')) ||
     ((origemTipo === 'apeado' || origemTipo === 'apeados') && destinoTipoNorm === 'central');
   const tipoMovimento = isDevolucao
-    ? tipoMovimentoClogParaDevolucao(origemTipo, destinoTipoNorm)
+    ? tipoMovimentoClogParaDevolucao(origemTipo, destinoTipoNorm, origemCodigo, origemDescricao)
     : (isCentralApeado ? 'Transf. Apeado' : 'Saida de Armazem');
   const rows = [];
   const itemByItemId = new Map(itensComFerramenta.map((it) => [it.item_id, it]));
@@ -4919,7 +5073,11 @@ function clogRowsFromItemData(
     }
   }
 
-  return rows;
+  const origemMeta = {};
+  if (origemCodigo) origemMeta.armazem_origem_codigo = origemCodigo;
+  if (origemDescricao) origemMeta.armazem_origem_descricao = origemDescricao;
+  if (!Object.keys(origemMeta).length) return rows;
+  return rows.map((row) => ({ ...row, ...origemMeta }));
 }
 
 let _cacheMovimentosOverridesTable = null;
@@ -5260,9 +5418,20 @@ async function buildClogRowsForRequisicaoIds(idsClean, dateStr, opts = {}) {
     const { localizacaoFERR, localizacaoNormal } = computeDestLocFerrNormal(codigoDestino, locRows);
     const itens = itensByReq.get(id) || [];
     const bobinas = bobByReq.get(id) || [];
-    const isDevolucao = isFluxoDevolucaoParaCentral(
-      isRecMerc ? r.armazem_destino_tipo : r.armazem_origem_tipo,
-      isRecMerc ? r.armazem_origem_tipo : r.armazem_destino_tipo
+    const isDevolucao = isFluxoDevolucaoParaCentralClog(
+      isRecMerc
+        ? {
+            armazem_origem_tipo: r.armazem_destino_tipo,
+            armazem_destino_tipo: r.armazem_origem_tipo,
+            armazem_origem_codigo: r.armazem_destino_codigo,
+            armazem_origem_descricao: r.armazem_destino_descricao,
+          }
+        : {
+            armazem_origem_tipo: r.armazem_origem_tipo,
+            armazem_destino_tipo: r.armazem_destino_tipo,
+            armazem_origem_codigo: r.armazem_origem_codigo,
+            armazem_origem_descricao: r.armazem_origem_descricao,
+          }
     );
     const obsClog = (() => {
       if (isRecMerc) {
@@ -5294,6 +5463,8 @@ async function buildClogRowsForRequisicaoIds(idsClean, dateStr, opts = {}) {
         armazemDestinoId: isRecMerc ? r.armazem_origem_id : r.armazem_id,
         origemTipo: isRecMerc ? r.armazem_destino_tipo : r.armazem_origem_tipo,
         destinoTipo: isRecMerc ? r.armazem_origem_tipo : r.armazem_destino_tipo,
+        origemCodigo: isRecMerc ? r.armazem_destino_codigo : r.armazem_origem_codigo,
+        origemDescricao: isRecMerc ? r.armazem_destino_descricao : r.armazem_origem_descricao,
         isDevolucao,
         isApeados:
           (itens || []).some((it) => (parseInt(it.quantidade_apeados ?? 0, 10) || 0) > 0) &&
@@ -5545,7 +5716,15 @@ async function persistMovimentosHistoricoForRequisicoes(ids) {
       const rid = Number(r.id);
       const kept = preservedDtRecepcao.get(rid);
       if (kept) return kept;
-      return formatDateBR(new Date(r.tra_gerada_em || r.updated_at || r.created_at || Date.now()));
+      return formatDateBR(
+        new Date(
+          r.devolucao_tra_gerada_em ||
+            r.tra_gerada_em ||
+            r.updated_at ||
+            r.created_at ||
+            Date.now()
+        )
+      );
     },
     { withOverrides: false }
   );
@@ -5846,7 +6025,15 @@ router.get('/movimentos-clog/consulta', ...requisicaoAuth, denyOnlyOperador, asy
         const destinoTipo = String(row?.armazem_destino_tipo || '').toLowerCase();
         const observacoesRow = String(row?.Observações || '').toUpperCase();
         const isRecebimentoTransfer = observacoesRow.startsWith(RECEBIMENTO_TRANSFERENCIA_MARKER);
-        if (isFluxoDevolucaoParaCentral(origemTipo, destinoTipo)) {
+        const devolucaoParaCentral =
+          isFluxoDevolucaoParaCentral(origemTipo, destinoTipo) ||
+          (String(destinoTipo).toLowerCase() === 'central' &&
+            armazemOrigemEhEpi(
+              origemTipo,
+              row?.armazem_origem_codigo,
+              row?.armazem_origem_descricao
+            ));
+        if (devolucaoParaCentral) {
           return Number.isFinite(destinoId) && allowedScopeIds.includes(destinoId);
         }
         // Recebimento de transferência: o armazém "lógico" do utilizador pode estar em armazem_id.
@@ -6095,11 +6282,24 @@ router.get('/movimentos-clog/consulta', ...requisicaoAuth, denyOnlyOperador, asy
       }
       // Mesmo scope das listagens de requisições:
       // - regra base: armazém de origem atribuído ao utilizador
-      // - devolução viatura->central: scope pelo armazém central destino (r.armazem_id)
+      // - devolução viatura/EPI -> central: scope pelo armazém central destino (r.armazem_id)
       where.push(`(
         (r.armazem_origem_id IS NOT NULL AND r.armazem_origem_id = ANY($${idx}::int[]))
         OR (
           EXISTS (SELECT 1 FROM armazens ao WHERE ao.id = r.armazem_origem_id AND LOWER(TRIM(COALESCE(ao.tipo, ''))) = 'viatura')
+          AND EXISTS (SELECT 1 FROM armazens ad WHERE ad.id = r.armazem_id AND LOWER(TRIM(COALESCE(ad.tipo, ''))) = 'central')
+          AND r.armazem_id = ANY($${idx + 1}::int[])
+        )
+        OR (
+          EXISTS (
+            SELECT 1 FROM armazens ao
+            WHERE ao.id = r.armazem_origem_id
+              AND (
+                LOWER(TRIM(COALESCE(ao.tipo, ''))) = 'epi'
+                OR UPPER(COALESCE(ao.codigo, '')) LIKE '%EPI%'
+                OR UPPER(COALESCE(ao.descricao, '')) LIKE '%EPI%'
+              )
+          )
           AND EXISTS (SELECT 1 FROM armazens ad WHERE ad.id = r.armazem_id AND LOWER(TRIM(COALESCE(ad.tipo, ''))) = 'central')
           AND r.armazem_id = ANY($${idx + 1}::int[])
         )

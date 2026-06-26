@@ -12,6 +12,181 @@ const {
 } = require('../../services/requisicoes/preparacaoUtils');
 const { hasEstoqueAplicadoColumn, columnExists } = require('../../utils/aplicarStockTicketMovInterna');
 
+/** Stock real por artigo numa localização do armazém central (fonte de verdade do monitor). */
+async function fetchStockPorLocalizacaoMonitor(poolConn, armazemId, locLabel) {
+  const map = new Map();
+  const loc = String(locLabel || '').trim();
+  const armNum = Number(armazemId);
+  if (!Number.isFinite(armNum) || armNum <= 0 || !loc) return map;
+  try {
+    const q = await poolConn.query(
+      `SELECT i.id AS item_id, i.codigo, i.descricao, i.tipocontrolo,
+              SUM(ali.quantidade::float) AS qtd
+       FROM armazens_localizacao_item ali
+       INNER JOIN armazens_localizacoes al ON al.id = ali.localizacao_id
+       INNER JOIN itens i ON i.id = ali.item_id
+       WHERE al.armazem_id = $1
+         AND UPPER(TRIM(al.localizacao)) = UPPER(TRIM($2::text))
+         AND ali.quantidade > 0
+       GROUP BY i.id, i.codigo, i.descricao, i.tipocontrolo`,
+      [armNum, loc]
+    );
+    for (const row of q.rows || []) {
+      const cod = String(row.codigo || '').trim();
+      if (!cod) continue;
+      map.set(cod.toUpperCase(), {
+        item_id: Number(row.item_id) || null,
+        codigo: cod,
+        descricao: String(row.descricao || '').trim(),
+        tipocontrolo: String(row.tipocontrolo || '').trim(),
+        qtd: Number(row.qtd) || 0,
+      });
+    }
+  } catch (e) {
+    if (e.code === '42P01') return map;
+    throw e;
+  }
+  return map;
+}
+
+function codigoFromMonitorDeltaKey(deltaKey) {
+  const i = String(deltaKey || '').indexOf('::');
+  return i < 0 ? '' : String(deltaKey.slice(i + 2) || '').trim();
+}
+
+/** Grupos de ledger a debitar quando stock sai da zona de receção (recebimento + devolução). */
+function gruposLedgerParaDeltaSaida(deltaKey, entriesByDeltaGroup) {
+  const cod = codigoFromMonitorDeltaKey(deltaKey);
+  if (!cod) return [];
+  const bucket = String(deltaKey || '').split('::')[0] || '';
+  const keys =
+    bucket === 'apeados'
+      ? [`apeados::${cod}`]
+      : [`recebimento::${cod}`, `nao_apeados::${cod}`];
+  const rows = [];
+  for (const k of keys) {
+    const g = entriesByDeltaGroup.get(k);
+    if (g?.length) rows.push(...g);
+  }
+  return rows;
+}
+
+function mergeMetaMonitorPorCodigo(metaByCod, row) {
+  const codKey = String(row?.codigo || '').trim().toUpperCase();
+  if (!codKey) return;
+  const prev = metaByCod.get(codKey) || {
+    item_id: null,
+    descricao: '',
+    tipocontrolo: '',
+    referencia: '',
+    data: '',
+    seriais: [],
+    lotes: [],
+    categoria: String(row?.categoria || 'devolucao').trim() || 'devolucao',
+  };
+  if (!prev.item_id && Number(row?.item_id || 0) > 0) prev.item_id = Number(row.item_id);
+  if (!prev.descricao && row?.descricao) prev.descricao = String(row.descricao).trim();
+  if (!prev.tipocontrolo && row?.tipocontrolo) prev.tipocontrolo = String(row.tipocontrolo).trim();
+  const ref = String(row?.referencia || '').trim();
+  if (ref) {
+    const rowTs = Date.parse(String(row?.data || '')) || 0;
+    const prevTs = Date.parse(String(prev.data || '')) || 0;
+    if (!prev.referencia || rowTs >= prevTs) {
+      prev.referencia = ref;
+      prev.data = String(row?.data || '').trim();
+      prev.categoria = String(row?.categoria || prev.categoria).trim() || prev.categoria;
+    }
+  }
+  if (Array.isArray(row?.seriais) && row.seriais.length > 0) {
+    prev.seriais = [...new Set([...(prev.seriais || []), ...row.seriais].map((s) => String(s || '').trim()).filter(Boolean))].slice(0, 400);
+  }
+  if (Array.isArray(row?.lotes) && row.lotes.length > 0) {
+    prev.lotes = [...new Set([...(prev.lotes || []), ...row.lotes].map((s) => String(s || '').trim()).filter(Boolean))].slice(0, 400);
+  }
+  metaByCod.set(codKey, prev);
+}
+
+/** Quantidades do monitor alinhadas ao stock físico na localização (metadados do ledger). */
+function reconciliarLinhasMonitorComStock(ledgerRows, stockMap, { armazemLabel, categoriaDefault, forcarCategoria }) {
+  const metaByCod = new Map();
+  for (const row of ledgerRows || []) mergeMetaMonitorPorCodigo(metaByCod, row);
+
+  if (!stockMap || stockMap.size === 0) {
+    return (ledgerRows || []).filter((r) => Number(r?.qtd || 0) > 0);
+  }
+
+  const out = [];
+  for (const [, stock] of stockMap) {
+    const qtd = Number(stock.qtd) || 0;
+    if (qtd <= 0) continue;
+    const codKey = String(stock.codigo || '').trim().toUpperCase();
+    const meta = metaByCod.get(codKey) || {};
+    out.push({
+      item_id: stock.item_id || meta.item_id || null,
+      tipocontrolo: stock.tipocontrolo || meta.tipocontrolo || '',
+      codigo: stock.codigo,
+      descricao: stock.descricao || meta.descricao || '',
+      qtd,
+      armazem: armazemLabel,
+      referencia: meta.referencia || 'Stock em receção',
+      data: meta.data || new Date().toISOString(),
+      seriais: meta.seriais || [],
+      lotes: meta.lotes || [],
+      categoria: forcarCategoria || meta.categoria || categoriaDefault,
+    });
+  }
+  return out;
+}
+
+function buildPrefillItemsFromMonitorRows(rows, targetLocation, origemLocApeadosParaReq) {
+  const prefillByItemPart = new Map();
+  for (const row of rows || []) {
+    const qtd = Number(row?.qtd || 0) || 0;
+    if (qtd <= 0) continue;
+    const categoria = String(row?.categoria || '').trim().toLowerCase();
+    const particao = categoria === 'apeados' ? 'apeado' : 'normal';
+    const key = [
+      Number(row?.item_id || 0) || 0,
+      String(row?.codigo || '').trim().toUpperCase(),
+      particao,
+    ].join('::');
+    const prev = prefillByItemPart.get(key) || {
+      item_id: Number(row?.item_id || 0) || null,
+      codigo: String(row?.codigo || '').trim(),
+      descricao: String(row?.descricao || '').trim(),
+      tipocontrolo: String(row?.tipocontrolo || '').trim(),
+      particao,
+      quantidade: 0,
+      seriais: [],
+      referencias: [],
+      lotes: [],
+      origem_localizacao: particao === 'apeado' ? '' : targetLocation,
+    };
+    prev.quantidade += qtd;
+    if (particao === 'apeado' && !prev.origem_localizacao) {
+      prev.origem_localizacao = origemLocApeadosParaReq(row?.reqId) || targetLocation;
+    } else if (particao !== 'apeado' && !prev.origem_localizacao) {
+      prev.origem_localizacao = targetLocation;
+    }
+    if (!prev.descricao && row?.descricao) prev.descricao = String(row.descricao).trim();
+    if (!prev.tipocontrolo && row?.tipocontrolo) prev.tipocontrolo = String(row.tipocontrolo).trim();
+    if (Array.isArray(row?.seriais) && row.seriais.length > 0) {
+      prev.seriais = [...new Set([...(prev.seriais || []), ...row.seriais].map((s) => String(s || '').trim()).filter(Boolean))].slice(0, 400);
+    }
+    if (Array.isArray(row?.lotes) && row.lotes.length > 0) {
+      prev.lotes = [...new Set([...(prev.lotes || []), ...row.lotes].map((s) => String(s || '').trim()).filter(Boolean))].slice(0, 400);
+    }
+    const ref = String(row?.referencia || '').trim();
+    if (ref && !prev.referencias.includes(ref)) prev.referencias.push(ref);
+    prefillByItemPart.set(key, prev);
+  }
+  return [...prefillByItemPart.values()].sort((a, b) => {
+    const c = String(a.codigo || '').localeCompare(String(b.codigo || ''));
+    if (c !== 0) return c;
+    return String(a.particao || '').localeCompare(String(b.particao || ''));
+  });
+}
+
 function createEstadosLogisticaRouter(deps) {
   const {
     pool,
@@ -819,7 +994,11 @@ router.patch('/:id/finalizar', ...requisicaoAuth, denyOperador, async (req, res)
         cFinNormal.release();
       }
     }
-    schedulePersistMovimentosHistoricoForRequisicoes([id], 'finalizar requisição');
+    if (fluxoDevolucao) {
+      await persistMovimentosHistoricoForRequisicoes([id]);
+    } else {
+      schedulePersistMovimentosHistoricoForRequisicoes([id], 'finalizar requisição');
+    }
     res.json({ ok: true, id: parseInt(id, 10), status: 'FINALIZADO' });
   } catch (error) {
     console.error('Erro ao finalizar requisição:', error);
@@ -886,17 +1065,24 @@ router.patch('/:id/tra-numero', ...requisicaoAuth, denyOperador, async (req, res
     );
     const reqIdNum = parseInt(id, 10);
     if (Number.isFinite(reqIdNum)) {
-      schedulePersistMovimentosHistoricoForRequisicoes([reqIdNum], 'tra-numero');
+      if (isDevolucaoFluxo) {
+        await persistMovimentosHistoricoForRequisicoes([reqIdNum]);
+      } else {
+        schedulePersistMovimentosHistoricoForRequisicoes([reqIdNum], 'tra-numero');
+      }
     }
     const origemTipo = String(row.armazem_origem_tipo || '').trim().toLowerCase();
     const destinoTipo = String(row.armazem_destino_tipo || '').trim().toLowerCase();
     const fluxoCentralApeado = origemTipo === 'central' && destinoTipo === 'apeado';
+    const fluxoDevolucaoCentral =
+      isDevolucaoFluxo || isFluxoDevolucaoParaCentral(origemTipo, destinoTipo);
+    const traGuardado = Boolean(String(up.rows[0].tra_numero || '').trim());
     return res.json({
       ok: true,
       id: up.rows[0].id,
       tra_numero: up.rows[0].tra_numero,
       status: up.rows[0].status,
-      movimentos_registados: fluxoCentralApeado,
+      movimentos_registados: fluxoCentralApeado || (fluxoDevolucaoCentral && traGuardado),
     });
   } catch (error) {
     if (error && error.code === '42703') {
@@ -1741,18 +1927,34 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
           LOCALIZACAO_RECEBIMENTO_FALLBACK;
         const targetNorm = String(targetLocation || '').trim().toUpperCase();
         let localizacaoApeadosOrigem = targetLocation;
+        const labelsZonaRececao = new Set([targetNorm].filter(Boolean));
+        try {
+          const recTipoQ = await pool.query(
+            `SELECT UPPER(TRIM(localizacao)) AS loc
+             FROM armazens_localizacoes
+             WHERE armazem_id = $1
+               AND LOWER(COALESCE(tipo_localizacao, '')) = 'recebimento'`,
+            [armazemId]
+          );
+          for (const r of recTipoQ.rows || []) {
+            const loc = String(r.loc || '').trim();
+            if (loc) labelsZonaRececao.add(loc);
+          }
+        } catch (_) {
+          /* ignora */
+        }
         const ferrNorm = () => String(localizacaoApeadosOrigem || '').trim().toUpperCase();
         const locSaiZonaRececao = (label) => {
           const u = String(label || '').trim().toUpperCase();
           if (!u) return false;
-          if (targetNorm && u === targetNorm) return true;
+          if (labelsZonaRececao.has(u)) return true;
           const f = ferrNorm();
           if (f && u === f) return true;
           return u.endsWith('.FERR') || u.includes('.FERR.');
         };
         const locEntraZonaRececao = (label) => {
           const u = String(label || '').trim().toUpperCase();
-          return Boolean(targetNorm && u === targetNorm);
+          return labelsZonaRececao.has(u);
         };
         try {
           const locsCentralQ = await pool.query(
@@ -1771,11 +1973,13 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
           hasQtyApeadosCol,
           hasDevolucaoTraCol,
           hasDevolucaoTrflCol,
+          hasTraBaixaCol,
           hasMovInternaTable,
         ] = await Promise.all([
           columnExists(pool, 'requisicoes_itens', 'quantidade_apeados'),
           columnExists(pool, 'requisicoes', 'devolucao_tra_gerada_em'),
           columnExists(pool, 'requisicoes', 'devolucao_trfl_gerada_em'),
+          columnExists(pool, 'requisicoes', 'tra_baixa_expedicao_aplicada_em'),
           armazemMovimentacaoInternaTableExists(),
         ]);
         let hasTraApeadoGeradaCol = false;
@@ -1789,6 +1993,7 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
 
         const reqQ = await pool.query(
           `SELECT r.id, r.status, r.created_at, r.updated_at, r.observacoes, r.tra_numero,
+                  ${hasTraBaixaCol ? 'r.tra_baixa_expedicao_aplicada_em,' : 'NULL::timestamptz AS tra_baixa_expedicao_aplicada_em,'}
                   ${hasDevolucaoTraCol ? 'r.devolucao_tra_gerada_em,' : 'NULL::timestamp AS devolucao_tra_gerada_em,'}
                   ${hasDevolucaoTrflCol ? 'r.devolucao_trfl_gerada_em,' : 'NULL::timestamp AS devolucao_trfl_gerada_em,'}
                   r.armazem_id, r.armazem_origem_id
@@ -1926,7 +2131,23 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
           }
         }
 
+        for (const itens of itensByReqId.values()) {
+          for (let i = 0; i < itens.length; i++) {
+            const riId = Number(itens[i]?.requisicao_item_id || 0);
+            const sns = Number.isFinite(riId) ? seriaisByReqItemId.get(riId) : null;
+            if (sns?.length && !String(itens[i]?.serialnumber || '').trim()) {
+              itens[i] = { ...itens[i], serialnumber: sns.join('\n') };
+            }
+          }
+        }
+
         const pendenteEntries = [];
+        const categoriaBucketMonitor = (categoria) => {
+          const c = String(categoria || '').trim().toLowerCase();
+          if (c === 'apeados') return 'apeados';
+          if (c === 'recebimento') return 'recebimento';
+          return 'nao_apeados';
+        };
         const makeCategoriaKey = (categoria, codigo) =>
           `${String(categoria || 'devolucao').trim()}::${String(codigo || '').trim()}`;
         const addPendente = ({
@@ -1969,10 +2190,11 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
           const obs = String(r?.observacoes || '');
           if (markerFlagAtivo(obs, RECEBIMENTO_MONITOR_CLEAR_TEST_MARKER)) continue;
           const isRecebimentoReq = hasRecebimentoMarker(r);
+          const recebimentoStockAplicado = Boolean(r?.tra_baixa_expedicao_aplicada_em);
+          const recebimentoFinalizado = String(r?.status || '') === 'FINALIZADO';
           const isRecebimento = isRecebimentoReq
-            && markerFlagAtivo(obs, 'TRA_CONFIRMED')
             && Number(r?.armazem_origem_id) === armazemId
-            && String(r?.status || '') === 'FINALIZADO';
+            && (recebimentoFinalizado || recebimentoStockAplicado);
           if (isRecebimento) {
             for (const it of itens) {
               const riId = Number(it?.requisicao_item_id || 0);
@@ -2163,10 +2385,7 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
           .filter((row) => row.qtd > 0);
         const entriesByDeltaGroup = new Map();
         for (const row of adjustedEntries) {
-          const categoriaBucket =
-            String(row?.categoria || '').trim().toLowerCase() === 'apeados'
-              ? 'apeados'
-              : 'nao_apeados';
+          const categoriaBucket = categoriaBucketMonitor(row?.categoria);
           const key = makeDeltaKey(categoriaBucket, String(row?.codigo || '').trim());
           if (!entriesByDeltaGroup.has(key)) entriesByDeltaGroup.set(key, []);
           entriesByDeltaGroup.get(key).push(row);
@@ -2180,7 +2399,10 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
             .filter((d) => d.delta !== 0)
             .sort((a, b) => a.ts - b.ts);
           if (!tkDeltas.length) continue;
-          const group = entriesByDeltaGroup.get(deltaKey) || [];
+          let group = entriesByDeltaGroup.get(deltaKey) || [];
+          if (!group.length) {
+            group = gruposLedgerParaDeltaSaida(deltaKey, entriesByDeltaGroup);
+          }
           if (!group.length) continue;
           const withTsBase = group
             .map((g) => ({ g, ts: Date.parse(String(g?.data || '')) || 0 }))
@@ -2246,7 +2468,24 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
           rowsByCategoriaCodigo.set(key, prev);
         }
 
-        const allRows = [...rowsByCategoriaCodigo.values()]
+        const ledgerRows = [...rowsByCategoriaCodigo.values()];
+        const [stockRececao, stockApeados] = await Promise.all([
+          fetchStockPorLocalizacaoMonitor(pool, armazemId, targetLocation),
+          fetchStockPorLocalizacaoMonitor(pool, armazemId, localizacaoApeadosOrigem),
+        ]);
+        const ledgerNormal = ledgerRows.filter((r) => String(r?.categoria || '').trim().toLowerCase() !== 'apeados');
+        const ledgerApeados = ledgerRows.filter((r) => String(r?.categoria || '').trim().toLowerCase() === 'apeados');
+        const reconciliadoNormal = reconciliarLinhasMonitorComStock(ledgerNormal, stockRececao, {
+          armazemLabel,
+          categoriaDefault: 'recebimento',
+        });
+        const reconciliadoApeados = reconciliarLinhasMonitorComStock(ledgerApeados, stockApeados, {
+          armazemLabel,
+          categoriaDefault: 'apeados',
+          forcarCategoria: 'apeados',
+        });
+        const allRows = [...reconciliadoNormal, ...reconciliadoApeados]
+          .filter((r) => Number(r?.qtd || 0) > 0)
           .sort((a, b) => {
             const q = Number(b.qtd || 0) - Number(a.qtd || 0);
             if (q !== 0) return q;
@@ -2256,56 +2495,11 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
           });
 
         const rows = allRows.slice(offset, offset + limit);
-        const prefillByItemPart = new Map();
-        for (const row of adjustedEntries) {
-          const qtd = Number(row?.qtd || 0) || 0;
-          if (qtd <= 0) continue;
-          const categoria = String(row?.categoria || '').trim().toLowerCase();
-          const particao = categoria === 'apeados' ? 'apeado' : 'normal';
-          const key = [
-            Number(row?.item_id || 0) || 0,
-            String(row?.codigo || '').trim().toUpperCase(),
-            particao,
-          ].join('::');
-          const prev = prefillByItemPart.get(key) || {
-            item_id: Number(row?.item_id || 0) || null,
-            codigo: String(row?.codigo || '').trim(),
-            descricao: String(row?.descricao || '').trim(),
-            tipocontrolo: String(row?.tipocontrolo || '').trim(),
-            particao,
-            quantidade: 0,
-            seriais: [],
-            referencias: [],
-            lotes: [],
-            origem_localizacao:
-              particao === 'apeado'
-                ? origemLocApeadosParaReq(row?.reqId)
-                : targetLocation,
-          };
-          prev.quantidade += qtd;
-          if (particao === 'apeado') {
-            prev.origem_localizacao = origemLocApeadosParaReq(row?.reqId);
-          } else if (!prev.origem_localizacao) {
-            prev.origem_localizacao = targetLocation;
-          }
-          if (!prev.descricao && row?.descricao) prev.descricao = String(row.descricao).trim();
-          if (!prev.tipocontrolo && row?.tipocontrolo) prev.tipocontrolo = String(row.tipocontrolo).trim();
-          if (Array.isArray(row?.seriais) && row.seriais.length > 0) {
-            prev.seriais = [...new Set([...(prev.seriais || []), ...row.seriais].map((s) => String(s || '').trim()).filter(Boolean))].slice(0, 400);
-          }
-          if (Array.isArray(row?.lotes) && row.lotes.length > 0) {
-            prev.lotes = [...new Set([...(prev.lotes || []), ...row.lotes].map((s) => String(s || '').trim()).filter(Boolean))].slice(0, 400);
-          }
-          const ref = String(row?.referencia || '').trim();
-          if (ref && !prev.referencias.includes(ref)) prev.referencias.push(ref);
-          prefillByItemPart.set(key, prev);
-        }
-        const prefillItems = [...prefillByItemPart.values()]
-          .sort((a, b) => {
-            const c = String(a.codigo || '').localeCompare(String(b.codigo || ''));
-            if (c !== 0) return c;
-            return String(a.particao || '').localeCompare(String(b.particao || ''));
-          });
+        const prefillItems = buildPrefillItemsFromMonitorRows(
+          allRows,
+          targetLocation,
+          origemLocApeadosParaReq
+        );
         const totaisPorCategoria = allRows.reduce((acc, row) => {
           const key = String(row?.categoria || 'devolucao').trim() || 'devolucao';
           acc[key] = Number(acc[key] || 0) + Number(row?.qtd || 0);
@@ -2316,8 +2510,10 @@ router.patch('/:id/devolucao-tra-apeados-numero', ...requisicaoAuth, denyOperado
           acc[key] = Number(acc[key] || 0) + 1;
           return acc;
         }, {});
+        const totalUnidades = allRows.reduce((sum, row) => sum + (Number(row?.qtd || 0) || 0), 0);
         return res.json({
           total: allRows.length,
+          total_unidades: totalUnidades,
           limit,
           offset,
           updated_at: new Date().toISOString(),
