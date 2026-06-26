@@ -144,15 +144,51 @@ async function fetchStockPorLocalizacaoMonitor(poolConn, armazemId, locLabel) {
   if (!Number.isFinite(armNum) || armNum <= 0 || !loc) return map;
   try {
     const q = await poolConn.query(
-      `SELECT i.id AS item_id, i.codigo, i.descricao, i.tipocontrolo,
-              SUM(ali.quantidade::float) AS qtd
-       FROM armazens_localizacao_item ali
-       INNER JOIN armazens_localizacoes al ON al.id = ali.localizacao_id
-       INNER JOIN itens i ON i.id = ali.item_id
-       WHERE al.armazem_id = $1
-         AND UPPER(TRIM(al.localizacao)) = UPPER(TRIM($2::text))
-         AND ali.quantidade > 0
-       GROUP BY i.id, i.codigo, i.descricao, i.tipocontrolo`,
+      `WITH loc AS (
+         SELECT id FROM armazens_localizacoes
+         WHERE armazem_id = $1
+           AND UPPER(TRIM(localizacao)) = UPPER(TRIM($2::text))
+         LIMIT 1
+       ),
+       serial_q AS (
+         SELECT ss.item_id, COUNT(*)::float AS qtd_serial
+         FROM stock_serial ss
+         WHERE ss.armazem_id = $1
+           AND UPPER(TRIM(ss.localizacao)) = UPPER(TRIM($2::text))
+           AND ss.status IN ('disponivel', 'reservado')
+         GROUP BY ss.item_id
+       ),
+       ali_q AS (
+         SELECT ali.item_id, SUM(ali.quantidade::float) AS qtd_ali
+         FROM armazens_localizacao_item ali
+         INNER JOIN loc ON loc.id = ali.localizacao_id
+         WHERE ali.quantidade > 0
+         GROUP BY ali.item_id
+       ),
+       item_ids AS (
+         SELECT item_id FROM serial_q
+         UNION
+         SELECT item_id FROM ali_q
+       )
+       SELECT i.id AS item_id, i.codigo, i.descricao, i.tipocontrolo,
+              CASE
+                WHEN UPPER(REPLACE(REPLACE(TRIM(COALESCE(i.tipocontrolo, '')), ' ', ''), '/', ''))
+                     IN ('SN', 'SERIAL')
+                THEN COALESCE(sq.qtd_serial, 0)
+                ELSE COALESCE(aq.qtd_ali, 0)
+              END AS qtd
+       FROM item_ids ids
+       INNER JOIN itens i ON i.id = ids.item_id
+       LEFT JOIN serial_q sq ON sq.item_id = i.id
+       LEFT JOIN ali_q aq ON aq.item_id = i.id
+       WHERE (
+         CASE
+           WHEN UPPER(REPLACE(REPLACE(TRIM(COALESCE(i.tipocontrolo, '')), ' ', ''), '/', ''))
+                IN ('SN', 'SERIAL')
+           THEN COALESCE(sq.qtd_serial, 0)
+           ELSE COALESCE(aq.qtd_ali, 0)
+         END
+       ) > 0`,
       [armNum, loc]
     );
     for (const row of q.rows || []) {
@@ -167,7 +203,37 @@ async function fetchStockPorLocalizacaoMonitor(poolConn, armazemId, locLabel) {
       });
     }
   } catch (e) {
-    if (e.code === '42P01') return map;
+    if (e.code === '42P01') {
+      try {
+        const qLegacy = await poolConn.query(
+          `SELECT i.id AS item_id, i.codigo, i.descricao, i.tipocontrolo,
+                  SUM(ali.quantidade::float) AS qtd
+           FROM armazens_localizacao_item ali
+           INNER JOIN armazens_localizacoes al ON al.id = ali.localizacao_id
+           INNER JOIN itens i ON i.id = ali.item_id
+           WHERE al.armazem_id = $1
+             AND UPPER(TRIM(al.localizacao)) = UPPER(TRIM($2::text))
+             AND ali.quantidade > 0
+           GROUP BY i.id, i.codigo, i.descricao, i.tipocontrolo`,
+          [armNum, loc]
+        );
+        for (const row of qLegacy.rows || []) {
+          const cod = String(row.codigo || '').trim();
+          if (!cod) continue;
+          map.set(cod.toUpperCase(), {
+            item_id: Number(row.item_id) || null,
+            codigo: cod,
+            descricao: String(row.descricao || '').trim(),
+            tipocontrolo: String(row.tipocontrolo || '').trim(),
+            qtd: Number(row.qtd) || 0,
+          });
+        }
+      } catch (e2) {
+        if (e2.code === '42P01') return map;
+        throw e2;
+      }
+      return map;
+    }
     throw e;
   }
   return map;

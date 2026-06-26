@@ -28,6 +28,7 @@ function serialsArrayFromTransferenciaLinha(row) {
 }
 
 function debugAgentTransfLocAppend(payload) {
+  if (String(process.env.DEBUG_TRANSFERENCIA_LOC || '').trim() !== '1') return;
   const line = `${JSON.stringify(payload)}\n`;
   const cursorDir = path.join(__dirname, '..', '.cursor');
   try {
@@ -98,6 +99,7 @@ const {
   planificarAlocacaoLotes,
   validarSerialsNaOrigem,
   reservarSerialsParaTicket,
+  inserirLotesParaTicket,
   libertarReservaSerialsTicket,
   aplicarStockLinhaMovInterna,
   aplicarStockTicketMovInternaSePendente,
@@ -6438,6 +6440,12 @@ app.post('/api/armazens/:armazemId/transferencia-localizacao', authenticateToken
           )
         : { rows: [{ ok: false }] };
       const hasTicketLotesTable = Boolean(hasTicketLotesTableQ.rows?.[0]?.ok);
+      const hasTicketSerialTableQ = temTabelaTickets
+        ? await client.query(
+            `SELECT to_regclass('public.armazem_movimentacao_interna_seriais') IS NOT NULL AS ok`
+          )
+        : { rows: [{ ok: false }] };
+      const hasTicketSerialTable = Boolean(hasTicketSerialTableQ.rows?.[0]?.ok);
       for (const {
         item_id: itemIdRaw,
         item_codigo: itemCodigoRaw,
@@ -6458,31 +6466,8 @@ app.post('/api/armazens/:armazemId/transferencia-localizacao', authenticateToken
           return res.status(400).json({ error: `Item inválido: "${itemCodigoRaw || itemIdRaw || ''}"` });
         }
         const tipoControlo = String(ir.rows[0]?.tipocontrolo || '').trim().toUpperCase();
-        const serialsLinha = Array.isArray(serialsLinhaRaw) ? [...new Set(serialsLinhaRaw)] : [];
+        let serialsLinha = Array.isArray(serialsLinhaRaw) ? [...new Set(serialsLinhaRaw)] : [];
         const lotesLinha = Array.isArray(lotesLinhaRaw) ? [...new Set(lotesLinhaRaw)] : [];
-        // #region agent log
-        (() => {
-          const payload = {
-            sessionId: 'cfd2c9',
-            runId: 'post-fix-4',
-            hypothesisId: 'H2',
-            location: 'index.js:transferencia-localizacao',
-            message: 'server normalized line',
-            data: {
-              itemId,
-              itemCodigoRaw: String(itemCodigoRaw || '').slice(0, 32),
-              tipoControlo,
-              serialsLinhaLength: serialsLinha.length,
-              q: Number(q),
-              qtdInt: Math.floor(Number(q) || 0),
-              isTipoSerial: isTipoControloSerial(tipoControlo),
-              origemLocId,
-            },
-            timestamp: Date.now(),
-          };
-          debugAgentTransfLocAppend(payload);
-        })();
-        // #endregion
         if (isTipoControloSerial(tipoControlo)) {
           const qtdInt = Math.floor(Number(q) || 0);
           if (!serialsLinha.length && temTabelaTickets) {
@@ -6607,10 +6592,6 @@ app.post('/api/armazens/:armazemId/transferencia-localizacao', authenticateToken
             [armazemId, req.user.id, origemLocId, destinoLocId, itemId, q]
           );
           ticketIds.push(ti.rows[0].id);
-          const hasTicketSerialTableQ = await client.query(
-            `SELECT to_regclass('public.armazem_movimentacao_interna_seriais') IS NOT NULL AS ok`
-          );
-          const hasTicketSerialTable = Boolean(hasTicketSerialTableQ.rows?.[0]?.ok);
           if (hasTicketSerialTable && isTipoControloSerial(tipoControlo) && serialsLinha.length > 0) {
             const serialRows = serialRowsForTicket || await validarSerialsNaOrigem(client, {
               itemId,
@@ -6625,14 +6606,10 @@ app.post('/api/armazens/:armazemId/transferencia-localizacao', authenticateToken
             });
           }
           if (hasTicketLotesTable && tipoControlo === 'LOTE' && linhasLoteTicket.length > 0) {
-            const ticketId = ti.rows[0].id;
-            for (const ll of linhasLoteTicket) {
-              await client.query(
-                `INSERT INTO armazem_movimentacao_interna_lotes (ticket_id, lote, quantidade)
-                 VALUES ($1, $2, $3::numeric)`,
-                [ticketId, ll.lote, ll.quantidade]
-              );
-            }
+            await inserirLotesParaTicket(client, {
+              ticketId: ti.rows[0].id,
+              linhasLoteTicket,
+            });
           }
         }
       }

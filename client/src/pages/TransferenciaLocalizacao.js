@@ -18,6 +18,9 @@ import { podeUsarControloStock } from '../utils/controloStock';
 import { podeGerarTrflMovimentacaoInterna } from '../utils/roles';
 import Toast from '../components/Toast';
 
+/** Acima deste número não renderiza lista de checkboxes (use «Selecionar todos»). */
+const SERIAL_UI_LIST_MAX = 200;
+
 const MAX_SUGESTOES = 40;
 const RECEBIMENTO_REFRESH_EVENT = 'recebimento-card-refresh';
 const TICKETS_PAGE_SIZE = 14;
@@ -2195,16 +2198,33 @@ const TransferenciaLocalizacao = () => {
     setSubmittingLote(true);
     try {
       const token = localStorage.getItem('token');
-      let criados = 0;
+      const seriaisDisponiveisCache = new Map();
+      const fetchSeriaisDisponiveis = async (itemId) => {
+        const key = Number(itemId);
+        if (!Number.isFinite(key) || key <= 0) return [];
+        if (seriaisDisponiveisCache.has(key)) return seriaisDisponiveisCache.get(key);
+        const { data } = await axios.get(
+          `/api/armazens/${armazemId}/localizacoes/${origemId}/itens/${key}/seriais-disponiveis`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        const lista = Array.isArray(data) ? data : [];
+        seriaisDisponiveisCache.set(key, lista);
+        return lista;
+      };
+      const batches = new Map();
       const serialSeenByGrupo = new Map();
       const loteSeenByGrupo = new Map();
+
       for (const it of linhasAtivas) {
         const quantidade = Number(it.quantidade || 0) || 0;
         if (quantidade <= 0) continue;
         const codigo = String(it.codigo || '').trim();
         if (!codigo) continue;
+        const destinoIdNum = parseInt(String(it.destinoId || ''), 10);
+        if (!Number.isFinite(destinoIdNum)) continue;
         const particao = normalizarParticaoPrefill(it?.particao, modoTransferencia);
         const keyGrupo = String(it?.grupo_key || `${Number(it?.item_id || 0) || 0}::${codigo.toUpperCase()}::${particao}`);
+        const isApeadoLinha = modoTransferencia === 'apeado' || particao === 'apeado';
 
         const rowStock = resolveRowStockPrefill(linhasOrigem, it);
         if (pode && !rowStock) {
@@ -2233,34 +2253,14 @@ const TransferenciaLocalizacao = () => {
         const isLoteItem = String(tipocontroloItem || '').trim().toUpperCase() === 'LOTE';
 
         const itemIdPref = Number(it?.item_id || 0);
-        const linhaPayload = pode
-          ? {
-              item_id: rowStock.item_id,
-              quantidade,
-              serials: isSerialItem
-                ? serialsSelecionadosLinha
-                : undefined,
-              lotes: isLoteItem ? lotesSelecionadosLinha : undefined,
-            }
-          : {
-              item_codigo: codigo,
-              quantidade,
-              ...(Number.isFinite(itemIdPref) && itemIdPref > 0 ? { item_id: itemIdPref } : {}),
-              ...(isSerialItem ? { serials: serialsSelecionadosLinha } : {}),
-              ...(isLoteItem ? { lotes: lotesSelecionadosLinha } : {}),
-            };
+        let serialsSel = isSerialItem ? [...serialsSelecionadosLinha] : [];
         if (isSerialItem) {
           const qtdInt = Math.floor(quantidade);
-          let serialsSel = [...serialsSelecionadosLinha];
           if (serialsSel.length !== qtdInt && seriaisSugeridosLinha.length >= qtdInt) {
             serialsSel = seriaisSugeridosLinha.slice(0, qtdInt);
           }
           if (serialsSel.length !== qtdInt && pode && rowStock?.item_id && origemId) {
-            const { data: disponiveis } = await axios.get(
-              `/api/armazens/${armazemId}/localizacoes/${origemId}/itens/${rowStock.item_id}/seriais-disponiveis`,
-              { headers: { Authorization: `Bearer ${token}` } }
-            );
-            const lista = Array.isArray(disponiveis) ? disponiveis : [];
+            const lista = await fetchSeriaisDisponiveis(rowStock.item_id);
             const preferidos = new Set(seriaisSugeridosLinha.map((s) => String(s).trim().toUpperCase()));
             const ordenados = [
               ...lista.filter((x) => preferidos.has(String(x?.serialnumber || '').trim().toUpperCase())),
@@ -2285,10 +2285,8 @@ const TransferenciaLocalizacao = () => {
           }
           serialSeenByGrupo.set(keyGrupo, seen);
         }
-        if (String(rowStock?.tipocontrolo || it?.tipocontrolo || '').trim().toUpperCase() === 'LOTE') {
-          const lotesSel = Array.isArray(it?.lotes)
-            ? [...new Set(it.lotes.map((s) => String(s || '').trim()).filter(Boolean))]
-            : [];
+        if (isLoteItem) {
+          const lotesSel = lotesSelecionadosLinha;
           const seenL = loteSeenByGrupo.get(keyGrupo) || new Set();
           for (const lote of lotesSel) {
             const k = String(lote || '').trim().toUpperCase();
@@ -2301,20 +2299,47 @@ const TransferenciaLocalizacao = () => {
           loteSeenByGrupo.set(keyGrupo, seenL);
         }
 
-        await axios.post(
+        const linhaPayload = pode
+          ? {
+              item_id: rowStock.item_id,
+              quantidade,
+              ...(isSerialItem ? { serials: serialsSel } : {}),
+              ...(isLoteItem ? { lotes: lotesSelecionadosLinha } : {}),
+            }
+          : {
+              item_codigo: codigo,
+              quantidade,
+              ...(Number.isFinite(itemIdPref) && itemIdPref > 0 ? { item_id: itemIdPref } : {}),
+              ...(isSerialItem ? { serials: serialsSel } : {}),
+              ...(isLoteItem ? { lotes: lotesSelecionadosLinha } : {}),
+            };
+
+        const batchKey = `${destinoIdNum}::${isApeadoLinha ? '1' : '0'}`;
+        if (!batches.has(batchKey)) {
+          batches.set(batchKey, {
+            destino_localizacao_id: destinoIdNum,
+            modo_apeado: isApeadoLinha,
+            apeado_armazem_id: isApeadoLinha ? parseInt(apeadoArmazemId, 10) : undefined,
+            linhas: [],
+          });
+        }
+        batches.get(batchKey).linhas.push(linhaPayload);
+      }
+
+      let criados = 0;
+      for (const batch of batches.values()) {
+        const { data } = await axios.post(
           `/api/armazens/${armazemId}/transferencia-localizacao`,
           {
             origem_localizacao_id: parseInt(origemId, 10),
-            destino_localizacao_id: parseInt(it.destinoId, 10),
-            modo_apeado: modoTransferencia === 'apeado' || particao === 'apeado',
-            apeado_armazem_id: (modoTransferencia === 'apeado' || particao === 'apeado')
-              ? parseInt(apeadoArmazemId, 10)
-              : undefined,
-            linhas: [linhaPayload],
+            destino_localizacao_id: batch.destino_localizacao_id,
+            modo_apeado: batch.modo_apeado,
+            apeado_armazem_id: batch.apeado_armazem_id,
+            linhas: batch.linhas,
           },
           { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } }
         );
-        criados += 1;
+        criados += Number(data?.movimentos || batch.linhas.length || 0);
       }
 
       setToast({
@@ -3537,6 +3562,13 @@ const TransferenciaLocalizacao = () => {
                                   </div>
                                 );
                               })()}
+                              {wizardSerialsOpcoes.length > SERIAL_UI_LIST_MAX ? (
+                                <p className="text-xs text-gray-600 rounded border border-gray-100 bg-gray-50 p-2">
+                                  {wizardSerialsOpcoes.length} seriais disponíveis — use «Selecionar todos» para
+                                  escolher até {Math.max(0, Math.floor(Number(qtdDigitada) || 0))} unidade(s) sem
+                                  listar cada S/N.
+                                </p>
+                              ) : (
                               <div className="max-h-44 overflow-y-auto border border-gray-100 rounded p-2 space-y-1">
                                 {wizardSerialsOpcoes.map((o) => {
                                   const sn = o.serialnumber;
@@ -3560,6 +3592,7 @@ const TransferenciaLocalizacao = () => {
                                   );
                                 })}
                               </div>
+                              )}
                             </>
                           )}
                         </div>

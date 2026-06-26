@@ -37,6 +37,52 @@ function isTipoControloSerial(tipoControlo) {
   return norm === 'S/N' || norm === 'SN' || norm === 'SERIAL';
 }
 
+/** Alinha `armazens_localizacao_item` ao nº de S/N disponíveis/reservados numa localização. */
+async function syncAliQtyFromSerialCount(client, {
+  localizacaoId,
+  itemId,
+  armazemId,
+  locLabel,
+}) {
+  const locId = Number(localizacaoId);
+  const iid = Number(itemId);
+  const armId = Number(armazemId);
+  const label = String(locLabel || '').trim();
+  if (!Number.isFinite(locId) || locId <= 0 || !Number.isFinite(iid) || iid <= 0 || !Number.isFinite(armId) || armId <= 0 || !label) {
+    return;
+  }
+  try {
+    const cntQ = await client.query(
+      `SELECT COUNT(*)::numeric AS n
+       FROM stock_serial
+       WHERE item_id = $1
+         AND armazem_id = $2
+         AND UPPER(TRIM(localizacao)) = UPPER(TRIM($3::text))
+         AND status IN ('disponivel', 'reservado')`,
+      [iid, armId, label]
+    );
+    const n = Number(cntQ.rows[0]?.n) || 0;
+    if (n <= 0) {
+      await client.query(
+        'DELETE FROM armazens_localizacao_item WHERE localizacao_id = $1 AND item_id = $2',
+        [locId, iid]
+      );
+      return;
+    }
+    await client.query(
+      `INSERT INTO armazens_localizacao_item (localizacao_id, item_id, quantidade)
+       VALUES ($1, $2, $3::numeric)
+       ON CONFLICT (localizacao_id, item_id) DO UPDATE SET
+         quantidade = EXCLUDED.quantidade,
+         updated_at = CURRENT_TIMESTAMP`,
+      [locId, iid, n]
+    );
+  } catch (e) {
+    if (e.code === '42P01') return;
+    throw e;
+  }
+}
+
 function makeBizError(status, message, code) {
   const err = new Error(message);
   err.status = status;
@@ -124,8 +170,13 @@ async function validarSerialsNaOrigem(client, {
   return seriaisQ.rows || [];
 }
 
+const RESERVA_SERIAIS_TICKET_INSERT_LOTE = 500;
+
 async function reservarSerialsParaTicket(client, { ticketId, serialRows }) {
-  const ids = (serialRows || []).map((r) => Number(r.id)).filter((n) => Number.isFinite(n) && n > 0);
+  const rows = (serialRows || []).filter(
+    (r) => Number.isFinite(Number(r?.id)) && Number(r.id) > 0 && String(r?.serialnumber || '').trim()
+  );
+  const ids = rows.map((r) => Number(r.id));
   if (!ids.length) return;
   const upd = await client.query(
     `UPDATE stock_serial
@@ -144,15 +195,36 @@ async function reservarSerialsParaTicket(client, { ticketId, serialRows }) {
       'SERIAIS_RESERVA_FALHOU'
     );
   }
-  for (const s of serialRows) {
+  const tid = Number(ticketId);
+  for (let i = 0; i < rows.length; i += RESERVA_SERIAIS_TICKET_INSERT_LOTE) {
+    const chunk = rows.slice(i, i + RESERVA_SERIAIS_TICKET_INSERT_LOTE);
+    const chunkIds = chunk.map((r) => Number(r.id));
+    const chunkSns = chunk.map((r) => String(r.serialnumber || '').trim());
+    // eslint-disable-next-line no-await-in-loop
     await client.query(
-      `INSERT INTO armazem_movimentacao_interna_seriais
-        (ticket_id, stock_serial_id, serialnumber)
-       VALUES ($1, $2, $3)
+      `INSERT INTO armazem_movimentacao_interna_seriais (ticket_id, stock_serial_id, serialnumber)
+       SELECT $1, u.stock_serial_id, u.serialnumber
+       FROM unnest($2::int[], $3::text[]) AS u(stock_serial_id, serialnumber)
        ON CONFLICT (ticket_id, serialnumber) DO NOTHING`,
-      [ticketId, s.id, String(s.serialnumber || '').trim()]
+      [tid, chunkIds, chunkSns]
     );
   }
+}
+
+async function inserirLotesParaTicket(client, { ticketId, linhasLoteTicket }) {
+  const linhas = (linhasLoteTicket || []).filter(
+    (ll) => String(ll?.lote || '').trim() && Number(ll?.quantidade) > 0
+  );
+  if (!linhas.length) return;
+  const tid = Number(ticketId);
+  const lotes = linhas.map((ll) => String(ll.lote || '').trim());
+  const qtys = linhas.map((ll) => Number(ll.quantidade) || 0);
+  await client.query(
+    `INSERT INTO armazem_movimentacao_interna_lotes (ticket_id, lote, quantidade)
+     SELECT $1, u.lote, u.qty::numeric
+     FROM unnest($2::text[], $3::float8[]) AS u(lote, qty)`,
+    [tid, lotes, qtys]
+  );
 }
 
 async function libertarReservaSerialsTicket(client, ticketId) {
@@ -329,6 +401,19 @@ async function aplicarStockLinhaMovInterna(client, {
         'SERIAIS_TRANSFERENCIA_FALHOU'
       );
     }
+    await syncAliQtyFromSerialCount(client, {
+      localizacaoId: origemLocId,
+      itemId,
+      armazemId,
+      locLabel: origemLocLabel,
+    });
+    await syncAliQtyFromSerialCount(client, {
+      localizacaoId: destinoLocId,
+      itemId,
+      armazemId: destinoArmazemEfetivoId,
+      locLabel: destinoLocLabel,
+    });
+    return { linhasLoteTicket };
   } else if (String(tipoControlo || '').trim().toUpperCase() === 'LOTE') {
     if (!linhasLoteTicket.length) {
       const plan = await planificarAlocacaoLotes(client, {
@@ -803,10 +888,12 @@ async function validarQuantidadeSeriaisTicketExport(client, {
 
 module.exports = {
   isTipoControloSerial,
+  syncAliQtyFromSerialCount,
   makeBizError,
   planificarAlocacaoLotes,
   validarSerialsNaOrigem,
   reservarSerialsParaTicket,
+  inserirLotesParaTicket,
   libertarReservaSerialsTicket,
   aplicarStockLinhaMovInterna,
   aplicarStockTicketMovInternaSePendente,

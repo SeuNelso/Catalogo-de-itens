@@ -11,6 +11,7 @@ const archiver = require('archiver');
 const pdfParseLib = require('pdf-parse');
 const { buildExcelTransferencia } = require('../utils/buildExcelTransferencia');
 const { quantidadeStockNacionalNoArmazem } = require('../utils/stockNacionalMatch');
+const { syncAliQtyFromSerialCount } = require('../utils/aplicarStockTicketMovInterna');
 const ITENS_NACIONAL_CACHE_TTL_MS = 20000;
 const itensNacionalPorArmazemCache = new Map();
 
@@ -1216,6 +1217,7 @@ async function seriaisComCaixaBulkFromRequisicaoItens(client, itensRows) {
 async function aplicarEntradaStockSeriaisEmLote(client, {
   centralId,
   locRec,
+  locRecId = null,
   entries,
   origem = 'aplicarStockDevolucaoEntradaRecebimento',
 }) {
@@ -1382,6 +1384,19 @@ async function aplicarEntradaStockSeriaisEmLote(client, {
     }
   }
 
+  const locId = Number(locRecId);
+  if (Number.isFinite(locId) && locId > 0) {
+    const itemIds = [...new Set(list.map((e) => Number(e.itemId)).filter((id) => Number.isFinite(id) && id > 0))];
+    for (const itemId of itemIds) {
+      await syncAliQtyFromSerialCount(client, {
+        localizacaoId: locId,
+        itemId,
+        armazemId: centralId,
+        locLabel: locRec,
+      });
+    }
+  }
+
   return serialIdByKey;
 }
 
@@ -1542,6 +1557,7 @@ async function aplicarStockDevolucaoEntradaRecebimento(client, { centralId, locR
       await aplicarEntradaStockSeriaisEmLote(client, {
         centralId,
         locRec,
+        locRecId: locIdRecebimento,
         entries,
         origem: 'aplicarStockDevolucaoEntradaRecebimento',
       });
