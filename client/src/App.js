@@ -45,6 +45,7 @@ import ContagemSemanal from './pages/ContagemSemanal';
 import StockRastreavelConsulta from './pages/StockRastreavelConsulta';
 import StockRastreavelCadastroManual from './pages/StockRastreavelCadastroManual';
 import StockRastreavelImportacao from './pages/StockRastreavelImportacao';
+import ContagemMicroway from './pages/ContagemMicroway';
 import ReceptionMonitorCard from './components/ReceptionMonitorCard';
 import './App.css';
 import { ROLES_COM_ACESSO_REQUISICOES } from './utils/roles';
@@ -345,6 +346,14 @@ function App() {
                   element={
                     <ProtectedRoute allowedRoles={['admin', 'backoffice_operations']}>
                       <DashboardViaturas />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/admin/contagem-microway"
+                  element={
+                    <ProtectedRoute allowedRoles={['admin']}>
+                      <ContagemMicroway />
                     </ProtectedRoute>
                   }
                 />

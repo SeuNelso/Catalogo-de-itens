@@ -115,6 +115,7 @@ const {
   schedulePersistTransfApeadoMovimentoFromTicket,
 } = require('./services/movimentosHistoricoTicketApeado');
 const { createInventarioRouter } = require('./routes/inventario');
+const { createMicrowayContagemRouter } = require('./routes/microwayContagem');
 const { createIntegrationRouter } = require('./routes/integrations');
 
 const compression = require('compression');
@@ -7990,6 +7991,14 @@ app.use(
     assertIdsRequisicoesPermitidas,
     excelUploadRequisicoes,
     armazemMovimentacaoInternaTableExists,
+  })
+);
+
+app.use(
+  '/api/admin/contagem-microway',
+  createMicrowayContagemRouter({
+    pool,
+    authenticateToken,
   })
 );
 
