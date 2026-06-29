@@ -1,18 +1,21 @@
+const path = require('path');
 const XLSX = require('xlsx');
 const ExcelJS = require('exceljs');
+const {
+  MW_WAREHOUSE_ORDER,
+  loadMicrowayWarehouseAliasMap,
+  resolveMicrowayExportLabel,
+  exportLabelForArmazemCodigo,
+} = require('../../utils/warehouseAliasMap');
 
-/** Ordem Microway no ficheiro STOCK MW.xlsx de exemplo. */
-const MW_WAREHOUSE_ORDER = [
-  'LEIRIA',
-  'GUARDA',
-  'PORTO',
-  'LISBOA',
-  'FARO',
-  'PONTA DELGADA',
-  'MADEIRA',
-];
+const MICROWAY_ALIAS_MAP = loadMicrowayWarehouseAliasMap(
+  path.join(__dirname, '..', '..', 'ALIAS.xlsx')
+);
 
 function warehouseLabelFromDescricao(descricao, codigo) {
+  const fromAlias = exportLabelForArmazemCodigo(codigo, MICROWAY_ALIAS_MAP);
+  if (fromAlias) return fromAlias;
+
   const desc = String(descricao || '').toUpperCase();
   for (const label of MW_WAREHOUSE_ORDER) {
     if (desc.includes(label)) return label;
@@ -24,8 +27,23 @@ function warehouseLabelFromDescricao(descricao, codigo) {
 
 function warehouseSortIndex(label) {
   const u = String(label || '').trim().toUpperCase();
-  const idx = MW_WAREHOUSE_ORDER.indexOf(u);
-  return idx >= 0 ? idx : MW_WAREHOUSE_ORDER.length + 1;
+  const idx = MICROWAY_ALIAS_MAP.exportLabels.findIndex(
+    (l) => String(l).trim().toUpperCase() === u
+  );
+  if (idx >= 0) return idx;
+  const legacy = MW_WAREHOUSE_ORDER.indexOf(u);
+  return legacy >= 0 ? legacy : MICROWAY_ALIAS_MAP.exportLabels.length + 1;
+}
+
+function normalizeWarehouseLabel(label) {
+  return String(label || '').trim().toUpperCase();
+}
+
+function buildMicrowayWarehouseExportList() {
+  return MICROWAY_ALIAS_MAP.exportLabels.map((warehouseLabel) => ({
+    warehouseLabel,
+    sortIndex: warehouseSortIndex(warehouseLabel),
+  })).sort((a, b) => a.sortIndex - b.sortIndex);
 }
 
 /** EXP.* → expedição; armazém apeado → damaged; resto no central → functional. */
@@ -63,10 +81,6 @@ function readMwSheetRows(buffer) {
   return XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { defval: '' });
 }
 
-/**
- * Todas as linhas do MW com stock (Item, Warehouse, Location, Stock).
- * @param {Buffer} buffer
- */
 function parseMwLinhasFromBuffer(buffer) {
   const rows = readMwSheetRows(buffer);
   const out = [];
@@ -111,41 +125,37 @@ async function loadArmazemMicrowayMaps(pool) {
   return { centralByCodigo, apeadoByCodigo, centrais };
 }
 
-function resolveCentralForMwWarehouse(warehouse, maps) {
+function resolveArmazemTipoForMwWarehouse(warehouse, maps) {
   const w = String(warehouse || '').trim().toUpperCase();
-  if (!w || isViaturaMwWarehouse(w)) return null;
-
-  const central = maps.centralByCodigo.get(w);
-  if (central) {
-    return { centralId: central.id, armazemTipo: 'central' };
+  if (maps.apeadoByCodigo.has(w) || w.startsWith('APE.')) {
+    return 'apeado';
   }
-
-  const apeado = maps.apeadoByCodigo.get(w);
-  if (apeado?.centralId) {
-    return { centralId: apeado.centralId, armazemTipo: 'apeado' };
+  if (maps.centralByCodigo.has(w)) {
+    return 'central';
   }
-
-  return null;
+  return 'central';
 }
 
-function makeTotalsKey(centralId, codigo) {
-  return `${Number(centralId)}::${String(codigo || '').trim().toUpperCase()}`;
+function isMwWarehouseRecognized(warehouse, maps) {
+  const w = String(warehouse || '').trim().toUpperCase();
+  if (!w || isViaturaMwWarehouse(w)) return false;
+  if (resolveMicrowayExportLabel(w, MICROWAY_ALIAS_MAP, maps)) return true;
+  return Boolean(maps.centralByCodigo.get(w) || maps.apeadoByCodigo.get(w));
 }
 
-function ensureTotalsCell(totalsMap, centralId, codigo) {
-  const key = makeTotalsKey(centralId, codigo);
+function makeTotalsKey(exportLabel, codigo) {
+  return `${normalizeWarehouseLabel(exportLabel)}::${String(codigo || '').trim().toUpperCase()}`;
+}
+
+function addToTotalsByExportLabel(totalsMap, { exportLabel, codigo, armazemTipo, localizacao, qtd }) {
+  const q = Number(qtd) || 0;
+  if (!exportLabel || !codigo || q <= 0) return;
+  const bucket = classificarMicrowayBucket(armazemTipo, localizacao);
+  const key = makeTotalsKey(exportLabel, codigo);
   if (!totalsMap.has(key)) {
     totalsMap.set(key, { functional: 0, damaged: 0, expedition: 0 });
   }
-  return totalsMap.get(key);
-}
-
-function addToTotals(totalsMap, { centralId, codigo, armazemTipo, localizacao, qtd }) {
-  const q = Number(qtd) || 0;
-  if (!Number.isFinite(Number(centralId)) || Number(centralId) <= 0 || !codigo || q <= 0) return;
-  const bucket = classificarMicrowayBucket(armazemTipo, localizacao);
-  const cell = ensureTotalsCell(totalsMap, centralId, codigo);
-  cell[bucket] += q;
+  totalsMap.get(key)[bucket] += q;
 }
 
 function agregarTotaisFromMwLinhas(mwLinhas, codigosSet, maps) {
@@ -153,12 +163,15 @@ function agregarTotaisFromMwLinhas(mwLinhas, codigosSet, maps) {
   for (const linha of mwLinhas) {
     const codKey = String(linha.codigo || '').trim().toUpperCase();
     if (!codigosSet.has(codKey)) continue;
-    const resolved = resolveCentralForMwWarehouse(linha.warehouse, maps);
-    if (!resolved) continue;
-    addToTotals(totalsMap, {
-      centralId: resolved.centralId,
+
+    const exportLabel = resolveMicrowayExportLabel(linha.warehouse, MICROWAY_ALIAS_MAP, maps);
+    if (!exportLabel) continue;
+
+    const armazemTipo = resolveArmazemTipoForMwWarehouse(linha.warehouse, maps);
+    addToTotalsByExportLabel(totalsMap, {
+      exportLabel,
       codigo: linha.codigo,
-      armazemTipo: resolved.armazemTipo,
+      armazemTipo,
       localizacao: linha.localizacao,
       qtd: linha.stock,
     });
@@ -166,18 +179,23 @@ function agregarTotaisFromMwLinhas(mwLinhas, codigosSet, maps) {
   return totalsMap;
 }
 
-/**
- * Artigos únicos do MW com soma de Stock (só linhas em centrais/apeados reconhecidos).
- */
+function getTotalsForExportLabel(totalsMap, exportLabel, codigo) {
+  return totalsMap.get(makeTotalsKey(exportLabel, codigo)) || {
+    functional: 0,
+    damaged: 0,
+    expedition: 0,
+  };
+}
+
 async function parseMwArtigosFromBuffer(buffer, pool) {
   const mwLinhas = parseMwLinhasFromBuffer(buffer);
-  const maps = await loadArmazemMicrowayMaps(pool);
+  const maps = await loadArmazemMicrowayMapsSafe(pool);
   const byCodigo = new Map();
 
   for (const linha of mwLinhas) {
     const codKey = String(linha.codigo || '').trim().toUpperCase();
     if (!codKey) continue;
-    const resolved = resolveCentralForMwWarehouse(linha.warehouse, maps);
+    const recognized = isMwWarehouseRecognized(linha.warehouse, maps);
     const prev = byCodigo.get(codKey) || {
       codigo: linha.codigo,
       descricao_mw: '',
@@ -185,7 +203,7 @@ async function parseMwArtigosFromBuffer(buffer, pool) {
       linhas_mw: 0,
     };
     if (linha.descricaoMw && !prev.descricao_mw) prev.descricao_mw = linha.descricaoMw;
-    if (resolved && linha.stock > 0) {
+    if (recognized && linha.stock > 0) {
       prev.stock_mw += linha.stock;
       prev.linhas_mw += 1;
     }
@@ -193,6 +211,27 @@ async function parseMwArtigosFromBuffer(buffer, pool) {
   }
 
   return [...byCodigo.values()].sort((a, b) => String(a.codigo).localeCompare(String(b.codigo)));
+}
+
+async function loadArmazemMicrowayMapsSafe(pool) {
+  const empty = { centralByCodigo: new Map(), apeadoByCodigo: new Map(), centrais: [] };
+  if (!pool) return empty;
+  try {
+    return await loadArmazemMicrowayMaps(pool);
+  } catch (e) {
+    console.warn('[Microway] Armazéns BD indisponíveis; agregação via ALIAS.xlsx:', e.message);
+    return empty;
+  }
+}
+
+async function loadDescricoesItensSafe(pool, codigos) {
+  if (!pool) return new Map();
+  try {
+    return await loadDescricoesItens(pool, codigos);
+  } catch (e) {
+    console.warn('[Microway] Catálogo BD indisponível; descrições do ficheiro MW:', e.message);
+    return new Map();
+  }
 }
 
 async function loadDescricoesItens(pool, codigos) {
@@ -209,46 +248,38 @@ async function loadDescricoesItens(pool, codigos) {
   return map;
 }
 
-/**
- * Agrega coluna Stock do MW → STOCK MW (functional / damaged / expedition).
- */
 async function agregarStockMicrowayFromMwFile(pool, buffer, codigos, descMwByCodigo = new Map()) {
   const list = [...new Set((codigos || []).map((c) => String(c || '').trim()).filter(Boolean))];
   if (!list.length) {
     return { centrais: [], linhas: [] };
   }
+  if (!MICROWAY_ALIAS_MAP.loaded || MICROWAY_ALIAS_MAP.byMwCode.size === 0) {
+    throw new Error(
+      'Ficheiro server/ALIAS.xlsx não encontrado ou vazio. É necessário para mapear armazéns MW.'
+    );
+  }
 
   const codigosSet = new Set(list.map((c) => c.toUpperCase()));
-  const [maps, itemMeta, mwLinhas] = await Promise.all([
-    loadArmazemMicrowayMaps(pool),
-    loadDescricoesItens(pool, list),
-    Promise.resolve(parseMwLinhasFromBuffer(buffer)),
-  ]);
+  const maps = await loadArmazemMicrowayMapsSafe(pool);
+  const itemMeta = await loadDescricoesItensSafe(pool, list);
+  const mwLinhas = parseMwLinhasFromBuffer(buffer);
 
   const totalsMap = agregarTotaisFromMwLinhas(mwLinhas, codigosSet, maps);
-
-  const sortedCentrais = [...maps.centrais].sort(
-    (a, b) => warehouseSortIndex(a.warehouseLabel) - warehouseSortIndex(b.warehouseLabel)
-      || String(a.descricao).localeCompare(String(b.descricao))
-  );
+  const warehousesExport = buildMicrowayWarehouseExportList();
   const sortedCodigos = [...list].sort((a, b) => String(a).localeCompare(String(b)));
 
   const linhas = [];
-  for (const central of sortedCentrais) {
+  for (const wh of warehousesExport) {
     for (const codigo of sortedCodigos) {
       const metaDesc = itemMeta.get(String(codigo).toUpperCase());
       const mwMeta = descMwByCodigo.get(String(codigo).toUpperCase());
       const descricao = metaDesc || mwMeta?.descricao_mw || '';
-      const totals = totalsMap.get(makeTotalsKey(central.id, codigo)) || {
-        functional: 0,
-        damaged: 0,
-        expedition: 0,
-      };
+      const totals = getTotalsForExportLabel(totalsMap, wh.warehouseLabel, codigo);
       const erpNum = Number(codigo);
       linhas.push({
         erp: Number.isFinite(erpNum) ? erpNum : codigo,
         descricao,
-        warehouse: central.warehouseLabel,
+        warehouse: wh.warehouseLabel,
         functional: totals.functional,
         damaged: totals.damaged,
         expedition: totals.expedition,
@@ -256,7 +287,7 @@ async function agregarStockMicrowayFromMwFile(pool, buffer, codigos, descMwByCod
     }
   }
 
-  return { centrais: sortedCentrais, linhas };
+  return { centrais: warehousesExport, linhas };
 }
 
 async function buildStockMwWorkbookBuffer(linhas) {
@@ -307,10 +338,14 @@ async function buildStockMwWorkbookBuffer(linhas) {
 
 module.exports = {
   MW_WAREHOUSE_ORDER,
+  MICROWAY_ALIAS_MAP,
   parseMwArtigosFromBuffer,
   parseMwLinhasFromBuffer,
   agregarStockMicrowayFromMwFile,
   buildStockMwWorkbookBuffer,
   classificarMicrowayBucket,
   warehouseLabelFromDescricao,
+  resolveMicrowayExportLabel,
+  agregarTotaisFromMwLinhas,
+  getTotalsForExportLabel,
 };

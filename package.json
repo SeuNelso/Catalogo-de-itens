@@ -58,6 +58,7 @@
     "db:migrate:requisicoes-itens-drop-serialnumber-index": "node server/Migrate/run-migration.js requisicoes-itens-drop-serialnumber-index",
     "db:migrate:armazens-monitor-rececao-oculto-teste": "node server/Migrate/run-migration.js armazens-monitor-rececao-oculto-teste",
     "db:migrate:armazens-monitor-rececao-baseline": "node server/Migrate/run-migration.js armazens-monitor-rececao-baseline",
+    "db:migrate:microway-contagem-perfis": "node server/Migrate/run-migration.js microway-contagem-perfis",
     "db:repair:stock-serial-caixa": "node server/scripts/repair-stock-serial-caixa.js",
     "db:repair:stock-serial-caixa:dry-run": "node server/scripts/repair-stock-serial-caixa.js --dry-run",
     "db:migrate:usuario-id1": "node server/Migrate/run-usuario-para-id1.js",

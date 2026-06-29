@@ -109,6 +109,8 @@ const migrationFile = sqlInMigrate(
                         ? 'migrate-armazens-monitor-rececao-oculto-teste.sql'
                       : arg === 'armazens-monitor-rececao-baseline' || arg === 'monitor-rececao-baseline'
                         ? 'migrate-armazens-monitor-rececao-baseline.sql'
+                      : arg === 'microway-contagem-perfis' || arg === 'microway-perfis'
+                        ? 'migrate-microway-contagem-perfis.sql'
                       : 'migrate-requisicoes-itens-preparacao.sql'
 );
 
