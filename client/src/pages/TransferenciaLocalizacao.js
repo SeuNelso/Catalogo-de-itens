@@ -507,8 +507,8 @@ const TransferenciaLocalizacao = () => {
   const [loadingEstoque, setLoadingEstoque] = useState(false);
   const [codigoArtigo, setCodigoArtigo] = useState('');
   const [qtdDigitada, setQtdDigitada] = useState('');
-  /** Uma única linha por movimentação (1 artigo por ticket). */
-  const [linhaPendente, setLinhaPendente] = useState(null);
+  /** Várias linhas por movimentação (1 ticket por artigo na fila). */
+  const [linhasPendentes, setLinhasPendentes] = useState([]);
   const [qrLeitorOpen, setQrLeitorOpen] = useState(false);
   const [qrLeitorPurpose, setQrLeitorPurpose] = useState(null);
   const qrLeitorPurposeRef = useRef(null);
@@ -1079,7 +1079,7 @@ const TransferenciaLocalizacao = () => {
     setLinhasOrigem([]);
     setCodigoArtigo('');
     setQtdDigitada('');
-    setLinhaPendente(null);
+    setLinhasPendentes([]);
     setPesquisaArtigo('');
     setWizardStep(1);
     setArtigoCorrente(null);
@@ -1145,7 +1145,7 @@ const TransferenciaLocalizacao = () => {
     setLinhasOrigem([]);
     setCodigoArtigo('');
     setQtdDigitada('');
-    setLinhaPendente(null);
+    setLinhasPendentes([]);
     setDestinoId('');
     setFiltroDestinoLoc('');
     setPesquisaArtigo('');
@@ -1595,7 +1595,7 @@ const TransferenciaLocalizacao = () => {
     if (pode && wizardStep === 3 && !artigoCorrente) setWizardStep(2);
   }, [wizardStep, artigoCorrente, pode]);
 
-  /** Seriais guardados em `linhaPendente` como `serials` e/ou `seriais` (PT). */
+  /** Seriais guardados na linha pendente como `serials` e/ou `seriais` (PT). */
   const serialsListaLinhaPendente = (lp) => {
     const a = Array.isArray(lp?.serials) ? lp.serials : [];
     const b = Array.isArray(lp?.seriais) ? lp.seriais : [];
@@ -1639,25 +1639,59 @@ const TransferenciaLocalizacao = () => {
 
   const limparWizardSerialsSel = () => setWizardSerialsSel([]);
 
-  const confirmarQuantidadeEIrDestino = () => {
+  const chaveLinhaPendente = (lp) => {
+    const id = Number(lp?.item_id);
+    if (Number.isFinite(id) && id > 0) return `id:${id}`;
+    return `cod:${String(lp?.codigo || '').trim().toUpperCase()}`;
+  };
+
+  const limparCamposArtigoWizard = () => {
+    setCodigoArtigo('');
+    setQtdDigitada('');
+    setArtigoCorrente(null);
+    setWizardSerialsSel([]);
+    setWizardLotesSel([]);
+    setWizardItemMetaNoPode(null);
+  };
+
+  const adicionarLinhaAoTicket = (linha) => {
+    const chave = chaveLinhaPendente(linha);
+    if (!chave || chave === 'cod:') return false;
+    const duplicado = linhasPendentes.some((lp) => chaveLinhaPendente(lp) === chave);
+    if (duplicado) {
+      setToast({
+        type: 'error',
+        message: `O artigo ${linha.codigo} já está no ticket. Remova-o da lista para alterar a quantidade.`,
+      });
+      return false;
+    }
+    setLinhasPendentes((prev) => [...prev, linha]);
+    return true;
+  };
+
+  const removerLinhaPendente = (index) => {
+    setLinhasPendentes((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const construirLinhaCorrenteWizard = () => {
     const q = Number(String(qtdDigitada).replace(',', '.'));
     if (!Number.isFinite(q) || q <= 0) {
       setToast({ type: 'error', message: 'Indique uma quantidade válida (> 0).' });
-      return;
+      return null;
     }
     const row = artigoCorrente || (pode ? findRowByCodigo(codigoArtigo) : null);
     if (!pode && !row) {
       const cod = extrairCodigoArtigo(codigoArtigo);
       if (!cod) {
         setToast({ type: 'error', message: 'Informe o código do artigo.' });
-        return;
+        return null;
       }
       if (wizardItemMetaLoading) {
         setToast({
           type: 'error',
           message: 'Aguarde a carregar os dados do artigo (catálogo) antes de continuar.',
         });
-        return;
+        return null;
       }
       const qIntEarly = Math.floor(q);
       const meta = wizardItemMetaNoPode;
@@ -1669,20 +1703,21 @@ const TransferenciaLocalizacao = () => {
             type: 'error',
             message: `Selecione ${qIntEarly} serial(is) para ${cod}.`,
           });
-          return;
+          return null;
         }
-        setLinhaPendente({
+        return {
           item_id: meta.item_id,
           codigo: cod,
           descricao: meta.descricao || '',
           quantidade: q,
           tipocontrolo: String(meta.tipocontrolo || ''),
           serials: [...wizardSerialsSel],
-        });
-      } else if (metaMatch && String(meta.tipocontrolo || '').trim().toUpperCase() === 'LOTE') {
+        };
+      }
+      if (metaMatch && String(meta.tipocontrolo || '').trim().toUpperCase() === 'LOTE') {
         if (wizardLotesOpcoes.length > 0 && wizardLotesSel.length === 0) {
           setToast({ type: 'error', message: 'Selecione pelo menos um lote na localização de origem.' });
-          return;
+          return null;
         }
         if (wizardLotesOpcoes.length > 0 && wizardLotesSel.length > 0) {
           const sumLotes = somaMetragemLotesSelecionados(wizardLotesOpcoes, wizardLotesSel);
@@ -1691,11 +1726,11 @@ const TransferenciaLocalizacao = () => {
               type: 'error',
               message: `Quantidade superior à soma disponível nos lotes selecionados (${formatMetrosLoteWizard(sumLotes)} m).`,
             });
-            return;
+            return null;
           }
         }
         const lotesNorm = [...new Set(wizardLotesSel.map((s) => String(s || '').trim()).filter(Boolean))];
-        setLinhaPendente({
+        return {
           item_id: meta.item_id,
           codigo: cod,
           descricao: meta.descricao || '',
@@ -1703,48 +1738,42 @@ const TransferenciaLocalizacao = () => {
           tipocontrolo: String(meta.tipocontrolo || ''),
           serials: undefined,
           ...(lotesNorm.length > 0 ? { lotes: lotesNorm } : {}),
-        });
-      } else if (metaMatch) {
-        setLinhaPendente({
+        };
+      }
+      if (metaMatch) {
+        return {
           item_id: meta.item_id,
           codigo: cod,
           descricao: meta.descricao || '',
           quantidade: q,
           tipocontrolo: String(meta.tipocontrolo || ''),
           serials: undefined,
-        });
-      } else {
-        setLinhaPendente({
-          item_id: null,
-          codigo: cod,
-          descricao: '',
-          quantidade: q,
-          tipocontrolo: '',
-          serials: undefined,
-        });
+        };
       }
-      setCodigoArtigo('');
-      setQtdDigitada('');
-      setArtigoCorrente(null);
-      setWizardStep(4);
-      setToast({ type: 'success', message: 'Escolha a localização de destino.' });
-      return;
+      return {
+        item_id: null,
+        codigo: cod,
+        descricao: '',
+        quantidade: q,
+        tipocontrolo: '',
+        serials: undefined,
+      };
     }
     if (!row) {
       setToast({
         type: 'error',
-        message: 'Código não encontrado nesta localização de origem (use a pesquisa ou o código exato).'
+        message: 'Código não encontrado nesta localização de origem (use a pesquisa ou o código exato).',
       });
-      return;
+      return null;
     }
     if (pode) {
       const max = Number(row.quantidade) || 0;
       if (q > max) {
         setToast({
           type: 'error',
-          message: `Quantidade superior ao disponível (${max}) para ${row.codigo}.`
+          message: `Quantidade superior ao disponível (${max}) para ${row.codigo}.`,
         });
-        return;
+        return null;
       }
     }
     const qInt = Math.floor(q);
@@ -1755,7 +1784,7 @@ const TransferenciaLocalizacao = () => {
         type: 'error',
         message: `Selecione ${qInt} serial(is) para ${row.codigo}.`,
       });
-      return;
+      return null;
     }
     const codR = row ? String(row.codigo || '').trim() : '';
     const metaAlinhado =
@@ -1768,14 +1797,14 @@ const TransferenciaLocalizacao = () => {
         type: 'error',
         message: 'Aguarde a carregar os dados do artigo (catálogo) antes de continuar.',
       });
-      return;
+      return null;
     }
     if (!pode && row && !String(row.tipocontrolo || '').trim() && !metaAlinhado && !wizardItemMetaLoading) {
       setToast({
         type: 'error',
         message: 'Artigo não encontrado no catálogo com este código exato.',
       });
-      return;
+      return null;
     }
     const noPodeSerial =
       !pode &&
@@ -1787,7 +1816,7 @@ const TransferenciaLocalizacao = () => {
         type: 'error',
         message: `Selecione ${qInt} serial(is) para ${row.codigo}.`,
       });
-      return;
+      return null;
     }
     const tipoLinhaFinal = noPodeSerial
       ? String(metaAlinhado?.tipocontrolo || '')
@@ -1796,7 +1825,7 @@ const TransferenciaLocalizacao = () => {
     if (isLoteLinha && wizardLotesOpcoes.length > 0) {
       if (wizardLotesSel.length === 0) {
         setToast({ type: 'error', message: 'Selecione pelo menos um lote na localização de origem.' });
-        return;
+        return null;
       }
       const sumLotes = somaMetragemLotesSelecionados(wizardLotesOpcoes, wizardLotesSel);
       if (q > sumLotes + 1e-9) {
@@ -1804,13 +1833,13 @@ const TransferenciaLocalizacao = () => {
           type: 'error',
           message: `Quantidade superior à soma disponível nos lotes selecionados (${formatMetrosLoteWizard(sumLotes)} m).`,
         });
-        return;
+        return null;
       }
     }
     const lotesPendenteNorm = isLoteLinha
       ? [...new Set(wizardLotesSel.map((s) => String(s || '').trim()).filter(Boolean))]
       : [];
-    setLinhaPendente({
+    return {
       item_id: noPodeSerial ? metaAlinhado.item_id : row.item_id,
       codigo: row.codigo,
       descricao:
@@ -1823,12 +1852,129 @@ const TransferenciaLocalizacao = () => {
         : String(row.tipocontrolo || '').trim(),
       serials: noPodeSerial || rowIsSerialPode ? [...wizardSerialsSel] : undefined,
       ...(isLoteLinha && lotesPendenteNorm.length > 0 ? { lotes: lotesPendenteNorm } : {}),
+    };
+  };
+
+  const wizardTemArtigoCorrente = Boolean(
+    artigoCorrente ||
+    String(codigoArtigo || '').trim() ||
+    String(qtdDigitada || '').trim()
+  );
+
+  const confirmarQuantidadeEAdicionarOutro = () => {
+    const linha = construirLinhaCorrenteWizard();
+    if (!linha) return;
+    if (!adicionarLinhaAoTicket(linha)) return;
+    limparCamposArtigoWizard();
+    setWizardStep(2);
+    setToast({
+      type: 'success',
+      message: `Artigo ${linha.codigo} adicionado. Pode incluir mais artigos ou continuar para o destino.`,
     });
-    setCodigoArtigo('');
-    setQtdDigitada('');
-    setArtigoCorrente(null);
+  };
+
+  const confirmarQuantidadeEIrDestino = () => {
+    let total = linhasPendentes.length;
+    if (wizardTemArtigoCorrente) {
+      const linha = construirLinhaCorrenteWizard();
+      if (!linha) return;
+      if (!adicionarLinhaAoTicket(linha)) return;
+      total += 1;
+      limparCamposArtigoWizard();
+    }
+    if (total === 0) {
+      setToast({ type: 'error', message: 'Adicione pelo menos um artigo ao ticket.' });
+      return;
+    }
     setWizardStep(4);
     setToast({ type: 'success', message: 'Escolha a localização de destino.' });
+  };
+
+  const linhaPendenteParaEnvio = (lp) => {
+    const qtdIntW = Math.floor(Number(lp.quantidade) || 0);
+    const tipLp = String(lp.tipocontrolo || '').trim();
+    const serialsLp = serialsListaLinhaPendente(lp);
+    const isSnLp = isTipoControloSerial(tipLp) || serialsLp.length > 0;
+    if (isSnLp && serialsLp.length !== qtdIntW) {
+      return {
+        error: `Selecione ${qtdIntW} serial(is) para ${lp.codigo} antes de finalizar.`,
+      };
+    }
+    const lotesLp = Array.isArray(lp.lotes)
+      ? [...new Set(lp.lotes.map((s) => String(s || '').trim()).filter(Boolean))]
+      : [];
+    if (pode) {
+      return {
+        linha: {
+          item_id: lp.item_id,
+          quantidade: lp.quantidade,
+          ...(serialsLp.length > 0 ? { serials: serialsLp } : {}),
+          ...(lotesLp.length > 0 ? { lotes: lotesLp } : {}),
+        },
+      };
+    }
+    return {
+      linha: {
+        item_codigo: lp.codigo,
+        quantidade: lp.quantidade,
+        ...(Number.isFinite(Number(lp.item_id)) && Number(lp.item_id) > 0
+          ? { item_id: Number(lp.item_id) }
+          : {}),
+        ...(serialsLp.length > 0 ? { serials: serialsLp } : {}),
+        ...(lotesLp.length > 0 ? { lotes: lotesLp } : {}),
+      },
+    };
+  };
+
+  const renderListaLinhasPendentes = (compact = false) => {
+    if (!linhasPendentes.length) {
+      return (
+        <p className="text-xs text-gray-500">
+          Nenhum artigo no ticket. Adicione artigos no passo anterior.
+        </p>
+      );
+    }
+    return (
+      <div className={`overflow-auto rounded-md border border-gray-200 ${compact ? 'max-h-40' : 'max-h-56'}`}>
+        <table className="min-w-full text-left text-sm">
+          <thead className="sticky top-0 bg-gray-50 text-xs uppercase text-gray-600">
+            <tr>
+              <th className="px-3 py-2">ERP</th>
+              <th className="px-3 py-2">Descrição</th>
+              <th className="px-3 py-2 text-right">Qtd</th>
+              {!compact && <th className="px-3 py-2" />}
+            </tr>
+          </thead>
+          <tbody>
+            {linhasPendentes.map((lp, idx) => (
+              <tr key={`${chaveLinhaPendente(lp)}-${idx}`} className="border-t border-gray-100">
+                <td className="px-3 py-1.5 font-mono text-xs">{lp.codigo}</td>
+                <td className="px-3 py-1.5 text-gray-800">
+                  <span className={compact ? 'line-clamp-2' : ''}>{lp.descricao || '—'}</span>
+                  {Array.isArray(lp.lotes) && lp.lotes.length > 0 ? (
+                    <span className="block text-xs text-gray-500 font-mono mt-0.5">
+                      Lote: {lp.lotes.join(', ')}
+                    </span>
+                  ) : null}
+                </td>
+                <td className="px-3 py-1.5 text-right tabular-nums">{lp.quantidade}</td>
+                {!compact && (
+                  <td className="px-3 py-1.5 text-right">
+                    <button
+                      type="button"
+                      onClick={() => removerLinhaPendente(idx)}
+                      className="text-xs text-red-600 hover:underline"
+                    >
+                      Remover
+                    </button>
+                  </td>
+                )}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
   };
 
   const handleTransferir = async () => {
@@ -1840,65 +1986,43 @@ const TransferenciaLocalizacao = () => {
       setToast({ type: 'error', message: 'Selecione o armazém APEADO de destino.' });
       return;
     }
-    if (!linhaPendente) {
-      setToast({ type: 'error', message: 'Defina o artigo e a quantidade antes de confirmar.' });
+    if (!linhasPendentes.length) {
+      setToast({ type: 'error', message: 'Adicione pelo menos um artigo ao ticket antes de confirmar.' });
       return;
     }
-    const lp = linhaPendente;
-    const qtdIntW = Math.floor(Number(lp.quantidade) || 0);
-    const tipLp = String(lp.tipocontrolo || '').trim();
-    const serialsLp = serialsListaLinhaPendente(lp);
-    /** S/N: pelo tipo OU por já existirem seriais na linha (evita omitir payload se `tipocontrolo` vier vazio). */
-    const isSnLp = isTipoControloSerial(tipLp) || serialsLp.length > 0;
-    if (isSnLp && serialsLp.length !== qtdIntW) {
-      setToast({
-        type: 'error',
-        message: `Selecione ${qtdIntW} serial(is) para ${lp.codigo} antes de finalizar.`,
-      });
-      return;
+    const linhasEnvio = [];
+    for (const lp of linhasPendentes) {
+      const mapped = linhaPendenteParaEnvio(lp);
+      if (mapped.error) {
+        setToast({ type: 'error', message: mapped.error });
+        return;
+      }
+      linhasEnvio.push(mapped.linha);
     }
-    const lotesLp = Array.isArray(lp.lotes)
-      ? [...new Set(lp.lotes.map((s) => String(s || '').trim()).filter(Boolean))]
-      : [];
-    const linhaEnvio = pode
-      ? {
-          item_id: lp.item_id,
-          quantidade: lp.quantidade,
-          ...(serialsLp.length > 0 ? { serials: serialsLp } : {}),
-          ...(lotesLp.length > 0 ? { lotes: lotesLp } : {}),
-        }
-      : {
-          item_codigo: lp.codigo,
-          quantidade: lp.quantidade,
-          ...(Number.isFinite(Number(lp.item_id)) && Number(lp.item_id) > 0
-            ? { item_id: Number(lp.item_id) }
-            : {}),
-          ...(serialsLp.length > 0 ? { serials: serialsLp } : {}),
-          ...(lotesLp.length > 0 ? { lotes: lotesLp } : {}),
-        };
     setSubmitting(true);
     setToast(null);
     try {
       const token = localStorage.getItem('token');
-      await axios.post(
+      const { data } = await axios.post(
         `/api/armazens/${armazemId}/transferencia-localizacao`,
         {
           origem_localizacao_id: parseInt(origemId, 10),
           destino_localizacao_id: parseInt(destinoId, 10),
           modo_apeado: modoTransferencia === 'apeado',
           apeado_armazem_id: modoTransferencia === 'apeado' ? parseInt(apeadoArmazemId, 10) : undefined,
-          linhas: [linhaEnvio],
+          linhas: linhasEnvio,
         },
         { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } }
       );
+      const n = Number(data?.movimentos) || linhasEnvio.length;
       setToast({
         type: 'success',
         message:
           modoTransferencia === 'apeado'
-            ? 'Transferência para APEADOS concluída. Os tickets aparecem na fila abaixo.'
-            : 'Transferência concluída. Os tickets aparecem na fila abaixo.',
+            ? `${n} ticket(s) para APEADOS criado(s). Aparecem na fila abaixo.`
+            : `${n} ticket(s) criado(s). Aparecem na fila abaixo.`,
       });
-      setLinhaPendente(null);
+      setLinhasPendentes([]);
       setDestinoId('');
       setCodigoArtigo('');
       setQtdDigitada('');
@@ -2538,18 +2662,10 @@ const TransferenciaLocalizacao = () => {
   const voltarUmPasso = () => {
     if (wizardStep === 5) setWizardStep(4);
     else if (wizardStep === 4) {
-      const lp = linhaPendente;
-      if (lp) {
-        const row = linhasOrigem.find((r) => r.item_id === lp.item_id);
-        if (row) setArtigoCorrente(row);
-        setQtdDigitada(String(lp.quantidade));
-      }
-      setWizardStep(3);
+      limparCamposArtigoWizard();
+      setWizardStep(2);
     } else if (wizardStep === 3) {
-      setArtigoCorrente(null);
-      setQtdDigitada('');
-      setWizardLotesSel([]);
-      setLinhaPendente(null);
+      limparCamposArtigoWizard();
       setWizardStep(2);
     } else if (wizardStep === 2) setWizardStep(1);
   };
@@ -2579,7 +2695,7 @@ const TransferenciaLocalizacao = () => {
               {modoTransferencia === 'apeado' ? 'Transferência para APEADOS' : 'Transferência de localização'}
             </h1>
             <p className="text-xs text-gray-500 mt-1">
-              Um artigo por movimentação: origem → artigo → quantidade → destino → confirmar.
+              Origem → artigos (vários por movimentação) → destino → confirmar. Cada artigo gera um ticket na fila.
             </p>
           </div>
           <p className="text-sm shrink-0">
@@ -3599,11 +3715,30 @@ const TransferenciaLocalizacao = () => {
                       )}
                     <button
                       type="button"
+                      onClick={confirmarQuantidadeEAdicionarOutro}
+                      className="ui-btn ui-btn-secondary w-full"
+                    >
+                      Adicionar artigo ao ticket
+                    </button>
+                    <button
+                      type="button"
                       onClick={confirmarQuantidadeEIrDestino}
                       className="ui-btn ui-btn-primary w-full"
                     >
-                      Continuar para destino →
+                      {linhasPendentes.length > 0 && !wizardTemArtigoCorrente
+                        ? 'Continuar para destino →'
+                        : 'Adicionar e ir para destino →'}
                     </button>
+                    {linhasPendentes.length > 0 && (
+                      <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 space-y-2">
+                        <p className="text-xs font-medium text-gray-700">
+                          Artigos no ticket (
+                          {linhasPendentes.length}
+                          )
+                        </p>
+                        {renderListaLinhasPendentes(true)}
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -3615,23 +3750,28 @@ const TransferenciaLocalizacao = () => {
                         ← Voltar
                       </button>
                     </div>
-                    {!linhaPendente ? (
-                      <p className="text-sm text-amber-800">Volte atrás e confirme o artigo e a quantidade.</p>
+                    {!linhasPendentes.length ? (
+                      <p className="text-sm text-amber-800">Volte atrás e adicione pelo menos um artigo ao ticket.</p>
                     ) : (
                       <>
-                        <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs mb-3">
-                          <span className="font-mono font-semibold">{linhaPendente.codigo}</span>
-                          <span className="text-gray-600 block line-clamp-2 mt-0.5">{linhaPendente.descricao}</span>
-                          <span className="text-gray-800 mt-1 block">
-                            Quantidade: <strong className="tabular-nums">{linhaPendente.quantidade}</strong>
-                          </span>
-                          {Array.isArray(linhaPendente.lotes) && linhaPendente.lotes.length > 0 ? (
-                            <span className="text-gray-800 mt-1 block">
-                              Lote:{' '}
-                              <strong className="font-mono">{linhaPendente.lotes.join(', ')}</strong>
-                            </span>
-                          ) : null}
+                        <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs mb-3 space-y-2">
+                          <p className="font-medium text-gray-800">
+                            {linhasPendentes.length}
+                            {' '}
+                            artigo(s) no ticket
+                          </p>
+                          {renderListaLinhasPendentes(true)}
                         </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            limparCamposArtigoWizard();
+                            setWizardStep(2);
+                          }}
+                          className="ui-btn ui-btn-secondary w-full text-sm"
+                        >
+                          + Adicionar outro artigo
+                        </button>
                         <label className="block text-xs text-gray-600 mb-1" htmlFor="transf-loc-destino-input">
                           <FaMapMarkerAlt className="inline mr-1 text-emerald-600" />
                           {modoTransferencia === 'apeado' ? 'Localização de destino (APEADO)' : 'Localização de destino'}
@@ -3692,20 +3832,14 @@ const TransferenciaLocalizacao = () => {
                         <span className="font-mono">{labelDestino(destinoId) || '—'}</span>
                       </p>
                     </div>
-                    {linhaPendente && (
-                      <div className="text-sm border border-gray-200 rounded-lg px-3 py-3 flex justify-between gap-2 bg-white">
-                        <span>
-                          <span className="font-mono font-medium">{linhaPendente.codigo}</span>
-                          <span className="text-gray-600 text-xs block line-clamp-2 mt-0.5">{linhaPendente.descricao}</span>
-                          {Array.isArray(linhaPendente.lotes) && linhaPendente.lotes.length > 0 ? (
-                            <span className="text-gray-700 text-xs block mt-1 font-mono">
-                              Lote: {linhaPendente.lotes.join(', ')}
-                            </span>
-                          ) : null}
-                        </span>
-                        <span className="tabular-nums font-medium shrink-0 self-center">× {linhaPendente.quantidade}</span>
-                      </div>
-                    )}
+                    <div className="space-y-2">
+                      <p className="text-xs font-medium text-gray-700">
+                        Artigos (
+                        {linhasPendentes.length}
+                        )
+                      </p>
+                      {renderListaLinhasPendentes()}
+                    </div>
                     <button
                       type="button"
                       onClick={handleTransferir}
@@ -3713,11 +3847,13 @@ const TransferenciaLocalizacao = () => {
                         submitting ||
                         !destinoId ||
                         destinoId === origemId ||
-                        !linhaPendente
+                        !linhasPendentes.length
                       }
                       className="ui-btn w-full py-3 rounded-lg bg-emerald-600 text-white text-sm font-bold hover:bg-emerald-700 disabled:opacity-50"
                     >
-                      {submitting ? 'A criar tickets…' : 'Finalizar — criar movimentação'}
+                      {submitting
+                        ? 'A criar tickets…'
+                        : `Finalizar — criar ${linhasPendentes.length || 0} ticket(s)`}
                     </button>
                   </div>
                 )}

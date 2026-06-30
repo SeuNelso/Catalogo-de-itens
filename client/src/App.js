@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { BrowserRouter as Router, Routes, Route, useLocation } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, useLocation, Navigate } from 'react-router-dom';
 import { AuthProvider } from './contexts/AuthContext';
 import { ConfirmProvider } from './contexts/ConfirmContext';
 import { ImportProgressProvider } from './contexts/ImportProgressContext';
@@ -45,7 +45,7 @@ import ContagemSemanal from './pages/ContagemSemanal';
 import StockRastreavelConsulta from './pages/StockRastreavelConsulta';
 import StockRastreavelCadastroManual from './pages/StockRastreavelCadastroManual';
 import StockRastreavelImportacao from './pages/StockRastreavelImportacao';
-import ContagemMicroway from './pages/ContagemMicroway';
+import ReporteAtivo from './pages/ReporteAtivo';
 import ReceptionMonitorCard from './components/ReceptionMonitorCard';
 import './App.css';
 import { ROLES_COM_ACESSO_REQUISICOES } from './utils/roles';
@@ -350,12 +350,16 @@ function App() {
                   }
                 />
                 <Route
-                  path="/admin/contagem-microway"
+                  path="/admin/reporte-ativo"
                   element={
                     <ProtectedRoute allowedRoles={['admin']}>
-                      <ContagemMicroway />
+                      <ReporteAtivo />
                     </ProtectedRoute>
                   }
+                />
+                <Route
+                  path="/admin/contagem-microway"
+                  element={<Navigate to="/admin/reporte-ativo" replace />}
                 />
                 <Route
                   path="/stock-rastreavel/importacao"

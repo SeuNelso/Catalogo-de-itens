@@ -680,19 +680,19 @@ const Navbar = () => {
                       )}
                       {isAdmin && (
                         <Link
-                          to="/admin/contagem-microway"
+                          to="/admin/reporte-ativo"
                           onClick={(e) => {
                             e.preventDefault();
                             e.stopPropagation();
                             setDadosOpen(false);
                             setTimeout(() => {
-                              navigate('/admin/contagem-microway');
+                              navigate('/admin/reporte-ativo');
                             }, 100);
                           }}
                           className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded"
                         >
                           <Package size={14} className="lg:w-4 lg:h-4" />
-                          Contagem Microway
+                          Reporte Ativo
                         </Link>
                       )}
                       {isAdmin && (

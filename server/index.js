@@ -7994,13 +7994,13 @@ app.use(
   })
 );
 
-app.use(
-  '/api/admin/contagem-microway',
-  createMicrowayContagemRouter({
-    pool,
-    authenticateToken,
-  })
-);
+const microwayContagemRouterDeps = {
+  pool,
+  authenticateToken,
+};
+
+app.use('/api/admin/reporte-ativo', createMicrowayContagemRouter(microwayContagemRouterDeps));
+app.use('/api/admin/contagem-microway', createMicrowayContagemRouter(microwayContagemRouterDeps));
 
 app.use(
   '/api/inventario',

@@ -61,6 +61,12 @@ function sanitizeDownloadFileName(name) {
   return cleaned || 'Reporte';
 }
 
+function formatReporteDateStamp(d = new Date()) {
+  const dd = String(d.getDate()).padStart(2, '0');
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  return `${dd}-${mm}-${d.getFullYear()}`;
+}
+
 async function fetchPerfilRow(pool, perfilId, usuarioId) {
   const r = await pool.query(
     `SELECT id, nome, descricao, created_at, updated_at
@@ -456,7 +462,7 @@ function createMicrowayContagemRouter({ pool, authenticateToken }) {
           });
         }
 
-        const stamp = new Date().toISOString().slice(0, 10);
+        const stamp = formatReporteDateStamp();
         const nomeFicheiro = sanitizeDownloadFileName(req.body?.nome_ficheiro) || `Reporte ${stamp}`;
         const buffer = await buildStockMwWorkbookBuffer(linhas);
         res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');

@@ -4,12 +4,20 @@ import { useAuth } from '../contexts/AuthContext';
 import { apiUrl } from '../utils/apiUrl';
 import Toast from '../components/Toast';
 
+const REPORTE_ATIVO_API = '/api/admin/reporte-ativo';
+
 function sanitizeFileName(name) {
   return String(name || '')
     .trim()
     .replace(/[\\/:*?"<>|]/g, '')
     .replace(/\s+/g, ' ')
     .slice(0, 120) || 'Reporte';
+}
+
+function formatReporteDateStamp(d = new Date()) {
+  const dd = String(d.getDate()).padStart(2, '0');
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  return `${dd}-${mm}-${d.getFullYear()}`;
 }
 
 function applyCodigosToItens(codigos, itensList) {
@@ -50,7 +58,7 @@ function parseCodigosFromText(text) {
   )];
 }
 
-function ContagemMicroway() {
+function ReporteAtivo() {
   const { user, isAuthenticated } = useAuth();
   const navigate = useNavigate();
   const [file, setFile] = useState(null);
@@ -76,6 +84,7 @@ function ContagemMicroway() {
   const [catalogPick, setCatalogPick] = useState(() => new Set());
   const [loadingCatalog, setLoadingCatalog] = useState(false);
   const [pasteCodigosText, setPasteCodigosText] = useState('');
+  const [showPerfisConfig, setShowPerfisConfig] = useState(false);
 
   const notify = (message, type = 'success') => {
     setToastMessage(message);
@@ -118,7 +127,7 @@ function ContagemMicroway() {
     if (!token) return;
     setLoadingPerfis(true);
     try {
-      const response = await fetch(apiUrl('/api/admin/contagem-microway/perfis'), {
+      const response = await fetch(apiUrl(`${REPORTE_ATIVO_API}/perfis`), {
         headers: { Authorization: `Bearer ${token}` },
       });
       const data = await response.json().catch(() => ({}));
@@ -138,7 +147,7 @@ function ContagemMicroway() {
     if (!token || !perfilId) return;
     setLoadingPerfilAction(true);
     try {
-      const response = await fetch(apiUrl(`/api/admin/contagem-microway/perfis/${perfilId}`), {
+      const response = await fetch(apiUrl(`${REPORTE_ATIVO_API}/perfis/${perfilId}`), {
         headers: { Authorization: `Bearer ${token}` },
       });
       const data = await response.json().catch(() => ({}));
@@ -167,7 +176,7 @@ function ContagemMicroway() {
     const token = getToken();
     if (!token || !perfilId) return null;
 
-    const response = await fetch(apiUrl(`/api/admin/contagem-microway/perfis/${perfilId}`), {
+    const response = await fetch(apiUrl(`${REPORTE_ATIVO_API}/perfis/${perfilId}`), {
       headers: { Authorization: `Bearer ${token}` },
     });
     const data = await response.json().catch(() => ({}));
@@ -190,17 +199,42 @@ function ContagemMicroway() {
     setCatalogPick(new Set());
   };
 
-  const handlePerfilSelectChange = async (e) => {
+  const handlePerfilSelectChange = (e) => {
+    const id = e.target.value;
+    setPerfilSeleccionadoId(id);
+    if (!id) {
+      setPerfilNomeInput('');
+      return;
+    }
+    const perfil = perfis.find((p) => String(p.id) === String(id));
+    setPerfilNomeInput(perfil?.nome || '');
+  };
+
+  const handlePerfilSelectNoModal = async (e) => {
     const id = e.target.value;
     setPerfilSeleccionadoId(id);
     if (!id) {
       setPerfilNomeInput('');
       setPerfilDraftItens([]);
+      setPerfilDraftFilter('');
+      setPasteCodigosText('');
+      setCatalogPick(new Set());
       return;
     }
     const perfil = perfis.find((p) => String(p.id) === String(id));
     setPerfilNomeInput(perfil?.nome || '');
     await carregarPerfilNoDraft(id);
+  };
+
+  const handleAbrirPerfisConfig = async () => {
+    setShowPerfisConfig(true);
+    if (perfilSeleccionadoId) {
+      await carregarPerfilNoDraft(perfilSeleccionadoId);
+    }
+  };
+
+  const handleFecharPerfisConfig = () => {
+    setShowPerfisConfig(false);
   };
 
   const handleAplicarPerfil = async () => {
@@ -252,7 +286,7 @@ function ContagemMicroway() {
 
     setLoadingPerfilAction(true);
     try {
-      const response = await fetch(apiUrl('/api/admin/contagem-microway/perfis'), {
+      const response = await fetch(apiUrl(`${REPORTE_ATIVO_API}/perfis`), {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${token}`,
@@ -296,7 +330,7 @@ function ContagemMicroway() {
 
     setLoadingPerfilAction(true);
     try {
-      const response = await fetch(apiUrl(`/api/admin/contagem-microway/perfis/${perfilSeleccionadoId}`), {
+      const response = await fetch(apiUrl(`${REPORTE_ATIVO_API}/perfis/${perfilSeleccionadoId}`), {
         method: 'PUT',
         headers: {
           Authorization: `Bearer ${token}`,
@@ -330,7 +364,7 @@ function ContagemMicroway() {
 
     setLoadingPerfilAction(true);
     try {
-      const response = await fetch(apiUrl(`/api/admin/contagem-microway/perfis/${perfilSeleccionadoId}`), {
+      const response = await fetch(apiUrl(`${REPORTE_ATIVO_API}/perfis/${perfilSeleccionadoId}`), {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -434,7 +468,7 @@ function ContagemMicroway() {
 
     setLoadingPerfilAction(true);
     try {
-      const response = await fetch(apiUrl('/api/admin/contagem-microway/perfis/resolver-codigos'), {
+      const response = await fetch(apiUrl(`${REPORTE_ATIVO_API}/perfis/resolver-codigos`), {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${token}`,
@@ -523,7 +557,7 @@ function ContagemMicroway() {
     try {
       const formData = new FormData();
       formData.append('arquivo', file);
-      const response = await fetch(apiUrl('/api/admin/contagem-microway/parse'), {
+      const response = await fetch(apiUrl(`${REPORTE_ATIVO_API}/parse`), {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}` },
         body: formData,
@@ -588,9 +622,9 @@ function ContagemMicroway() {
       descricoes_mw[it.codigo] = it.descricao_mw || it.descricao || '';
     }
 
-    const stamp = new Date().toISOString().slice(0, 10);
-    const nomeFicheiro = perfilSeleccionado?.nome
-      ? sanitizeFileName(perfilSeleccionado.nome)
+    const stamp = formatReporteDateStamp();
+    const nomeFicheiro = perfilSeleccionadoId
+      ? `${sanitizeFileName(perfilNomeInput || perfilSeleccionado?.nome || 'Perfil')} ${stamp}`
       : `Reporte ${stamp}`;
 
     setLoadingGerar(true);
@@ -600,7 +634,7 @@ function ContagemMicroway() {
       formData.append('codigos', JSON.stringify(codigos));
       formData.append('descricoes_mw', JSON.stringify(descricoes_mw));
       formData.append('nome_ficheiro', nomeFicheiro);
-      const response = await fetch(apiUrl('/api/admin/contagem-microway/gerar'), {
+      const response = await fetch(apiUrl(`${REPORTE_ATIVO_API}/gerar`), {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}` },
         body: formData,
@@ -633,29 +667,11 @@ function ContagemMicroway() {
   return (
     <div className="mx-auto max-w-5xl px-4 py-8">
       <div className="mb-6">
-        <h1 className="text-2xl font-bold text-gray-900">Contagem Microway</h1>
-        <p className="mt-1 text-sm text-gray-600">
-          Monte perfis a partir do catálogo (sem precisar do MW), importe o ficheiro MW para exportar o reporte
-          com stock actual (FUNCTIONAL, DAMAGED em APEADO, EXPEDITION em EXP.*).
-        </p>
+        <h1 className="text-2xl font-bold text-gray-900">Reporte Ativo</h1>
       </div>
 
       <div className="mb-6 rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
-        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-          <h2 className="text-sm font-semibold text-gray-900">Perfis</h2>
-          <button
-            type="button"
-            onClick={handleNovoPerfil}
-            disabled={loadingPerfilAction}
-            className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-800 hover:bg-gray-50"
-          >
-            Novo perfil
-          </button>
-        </div>
-        <p className="mb-3 text-xs text-gray-500">
-          Cada utilizador tem os seus perfis. Pode montá-los pelo catálogo ou colando códigos ERP — o ficheiro MW só é necessário para gerar o reporte.
-        </p>
-
+        <h2 className="mb-3 text-sm font-semibold text-gray-900">Perfil</h2>
         <div className="flex flex-wrap items-end gap-3">
           <div className="min-w-[200px] flex-1">
             <label className="mb-1 block text-xs font-medium text-gray-600">Perfil guardado</label>
@@ -687,210 +703,299 @@ function ContagemMicroway() {
           </button>
           <button
             type="button"
-            disabled={!perfilSeleccionadoId || loadingPerfilAction}
-            onClick={handleApagarPerfil}
-            className="rounded-md border border-red-200 bg-white px-3 py-2 text-sm font-medium text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            Apagar
-          </button>
-        </div>
-
-        <div className="mt-3 flex flex-wrap items-end gap-3">
-          <div className="min-w-[200px] flex-1">
-            <label className="mb-1 block text-xs font-medium text-gray-600">Nome do perfil</label>
-            <input
-              type="text"
-              value={perfilNomeInput}
-              onChange={(e) => setPerfilNomeInput(e.target.value)}
-              placeholder="Ex.: Contagem mensal cabos"
-              maxLength={120}
-              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
-            />
-          </div>
-          <button
-            type="button"
-            disabled={perfilDraftItens.length === 0 || loadingPerfilAction || !!perfilSeleccionadoId}
-            onClick={handleGuardarPerfil}
-            className="rounded-md bg-[#0915FF] px-3 py-2 text-sm font-semibold text-white hover:bg-[#0712cc] disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            Guardar perfil
-          </button>
-          <button
-            type="button"
-            disabled={!perfilSeleccionadoId || perfilDraftItens.length === 0 || loadingPerfilAction}
-            onClick={handleActualizarPerfil}
+            onClick={handleAbrirPerfisConfig}
+            disabled={loadingPerfilAction}
             className="rounded-md border border-[#0915FF] bg-white px-3 py-2 text-sm font-semibold text-[#0915FF] hover:bg-[#0915FF]/5 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            Actualizar perfil
+            Configurar perfis
           </button>
         </div>
-
-        <div className="mt-4 border-t border-gray-100 pt-4">
-          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-600">
-            Artigos do perfil (
-            {perfilDraftItens.length}
-            )
-          </h3>
-          {perfilDraftItens.length > 0 && (
-            <div className="mb-2 flex flex-wrap gap-2">
-              <input
-                type="search"
-                placeholder="Filtrar artigos do perfil…"
-                value={perfilDraftFilter}
-                onChange={(e) => setPerfilDraftFilter(e.target.value)}
-                className="min-w-[200px] flex-1 rounded-md border border-gray-300 px-3 py-1.5 text-sm"
-              />
-              {itens.length > 0 && (
-                <button
-                  type="button"
-                  disabled={selected.size === 0 || loadingPerfilAction}
-                  onClick={handleAdicionarMwAoPerfil}
-                  className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-800 hover:bg-gray-50 disabled:opacity-50"
-                >
-                  Adicionar selecção MW
-                </button>
-              )}
-            </div>
-          )}
-          {perfilDraftItens.length === 0 ? (
-            <p className="text-xs text-gray-500">Nenhum artigo no perfil. Use a pesquisa no catálogo ou cole códigos abaixo.</p>
-          ) : (
-            <div className="max-h-48 overflow-auto rounded-md border border-gray-200">
-              <table className="min-w-full text-left text-sm">
-                <thead className="sticky top-0 bg-gray-50 text-xs uppercase text-gray-600">
-                  <tr>
-                    <th className="px-3 py-2">ERP</th>
-                    <th className="px-3 py-2">Descrição</th>
-                    <th className="px-3 py-2">Catálogo</th>
-                    <th className="px-3 py-2" />
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredPerfilDraft.map((it) => (
-                    <tr key={it.codigo} className="border-t border-gray-100">
-                      <td className="px-3 py-1.5 font-mono text-xs">{it.codigo}</td>
-                      <td className="px-3 py-1.5 text-gray-800">{it.descricao || '—'}</td>
-                      <td className="px-3 py-1.5 text-xs">
-                        {it.no_catalogo ? (
-                          <span className="text-green-700">Sim</span>
-                        ) : (
-                          <span className="text-amber-700">Não</span>
-                        )}
-                      </td>
-                      <td className="px-3 py-1.5 text-right">
-                        <button
-                          type="button"
-                          onClick={() => handleRemoverDoDraft(it.codigo)}
-                          className="text-xs text-red-600 hover:underline"
-                        >
-                          Remover
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-
-        <div className="mt-4 border-t border-gray-100 pt-4">
-          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-600">Adicionar do catálogo</h3>
-          <div className="flex flex-wrap gap-2">
-            <input
-              type="search"
-              placeholder="Pesquisar código ou descrição…"
-              value={catalogSearch}
-              onChange={(e) => setCatalogSearch(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') handlePesquisarCatalogo(); }}
-              className="min-w-[200px] flex-1 rounded-md border border-gray-300 px-3 py-2 text-sm"
-            />
-            <button
-              type="button"
-              disabled={loadingCatalog}
-              onClick={handlePesquisarCatalogo}
-              className="rounded-md border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-800 hover:bg-gray-50 disabled:opacity-50"
-            >
-              {loadingCatalog ? 'A pesquisar…' : 'Pesquisar'}
-            </button>
-            <button
-              type="button"
-              disabled={catalogPick.size === 0}
-              onClick={handleAdicionarCatalogoAoPerfil}
-              className="rounded-md bg-[#0915FF] px-3 py-2 text-sm font-semibold text-white hover:bg-[#0712cc] disabled:opacity-50"
-            >
-              Adicionar ao perfil
-            </button>
-          </div>
-          {catalogResults.length > 0 && (
-            <div className="mt-2 max-h-40 overflow-auto rounded-md border border-gray-200">
-              <table className="min-w-full text-left text-sm">
-                <thead className="sticky top-0 bg-gray-50 text-xs uppercase text-gray-600">
-                  <tr>
-                    <th className="px-3 py-2" />
-                    <th className="px-3 py-2">ERP</th>
-                    <th className="px-3 py-2">Descrição</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {catalogResults.map((it) => {
-                    const cod = String(it.codigo);
-                    const jaNoPerfil = perfilDraftItens.some(
-                      (p) => String(p.codigo).toUpperCase() === cod.toUpperCase()
-                    );
-                    return (
-                      <tr key={cod} className="border-t border-gray-100">
-                        <td className="px-3 py-1.5">
-                          <input
-                            type="checkbox"
-                            checked={catalogPick.has(cod)}
-                            disabled={jaNoPerfil}
-                            onChange={() => toggleCatalogPick(cod)}
-                            aria-label={`Seleccionar ${cod}`}
-                          />
-                        </td>
-                        <td className="px-3 py-1.5 font-mono text-xs">{cod}</td>
-                        <td className="px-3 py-1.5 text-gray-800">
-                          {it.descricao || '—'}
-                          {jaNoPerfil && (
-                            <span className="ml-2 text-xs text-gray-400">(já no perfil)</span>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-
-        <div className="mt-4 border-t border-gray-100 pt-4">
-          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-600">Colar códigos ERP</h3>
-          <textarea
-            value={pasteCodigosText}
-            onChange={(e) => setPasteCodigosText(e.target.value)}
-            placeholder="Um código por linha (ou separados por vírgula, ponto e vírgula ou tab)"
-            rows={3}
-            className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
-          />
-          <button
-            type="button"
-            disabled={!pasteCodigosText.trim() || loadingPerfilAction}
-            onClick={handleImportarCodigosColados}
-            className="mt-2 rounded-md border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-800 hover:bg-gray-50 disabled:opacity-50"
-          >
-            Importar códigos
-          </button>
-        </div>
-
+        {perfilSeleccionado && (
+          <p className="mt-2 text-xs text-gray-500">
+            {perfilSeleccionado.total_itens ?? 0}
+            {' '}
+            artigo(s) no perfil seleccionado.
+          </p>
+        )}
         {loadingPerfis && (
           <p className="mt-2 text-xs text-gray-500">A carregar perfis…</p>
         )}
       </div>
 
+      {showPerfisConfig && (
+        <div
+          className="fixed inset-0 z-[10000] flex items-center justify-center p-4 bg-black/50"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="perfis-config-titulo"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) handleFecharPerfisConfig();
+          }}
+        >
+          <div className="flex max-h-[90vh] w-full max-w-3xl flex-col rounded-xl border border-gray-200 bg-white shadow-xl">
+            <div className="flex items-start justify-between gap-3 border-b border-gray-100 p-4">
+              <div className="min-w-0">
+                <h2 id="perfis-config-titulo" className="text-lg font-semibold text-gray-900">
+                  Configurar perfis
+                </h2>
+              </div>
+              <button
+                type="button"
+                onClick={handleFecharPerfisConfig}
+                className="rounded-lg p-2 text-gray-500 hover:bg-gray-100"
+                aria-label="Fechar"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-4">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                <h3 className="text-sm font-semibold text-gray-900">Editar perfil</h3>
+                <button
+                  type="button"
+                  onClick={handleNovoPerfil}
+                  disabled={loadingPerfilAction}
+                  className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-800 hover:bg-gray-50"
+                >
+                  Novo perfil
+                </button>
+              </div>
+
+              <div className="mb-3">
+                <label className="mb-1 block text-xs font-medium text-gray-600">Perfil a editar</label>
+                <select
+                  value={perfilSeleccionadoId}
+                  onChange={handlePerfilSelectNoModal}
+                  disabled={loadingPerfis || loadingPerfilAction}
+                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
+                >
+                  <option value="">— Novo perfil (rascunho) —</option>
+                  {perfis.map((p) => (
+                    <option key={p.id} value={String(p.id)}>
+                      {p.nome}
+                      {' '}
+                      (
+                      {p.total_itens ?? 0}
+                      )
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="flex flex-wrap items-end gap-3">
+                <div className="min-w-[200px] flex-1">
+                  <label className="mb-1 block text-xs font-medium text-gray-600">Nome do perfil</label>
+                  <input
+                    type="text"
+                    value={perfilNomeInput}
+                    onChange={(e) => setPerfilNomeInput(e.target.value)}
+                    placeholder="Ex.: Contagem mensal cabos"
+                    maxLength={120}
+                    className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
+                  />
+                </div>
+                <button
+                  type="button"
+                  disabled={perfilDraftItens.length === 0 || loadingPerfilAction || !!perfilSeleccionadoId}
+                  onClick={handleGuardarPerfil}
+                  className="rounded-md bg-[#0915FF] px-3 py-2 text-sm font-semibold text-white hover:bg-[#0712cc] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Guardar perfil
+                </button>
+                <button
+                  type="button"
+                  disabled={!perfilSeleccionadoId || perfilDraftItens.length === 0 || loadingPerfilAction}
+                  onClick={handleActualizarPerfil}
+                  className="rounded-md border border-[#0915FF] bg-white px-3 py-2 text-sm font-semibold text-[#0915FF] hover:bg-[#0915FF]/5 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Actualizar perfil
+                </button>
+                <button
+                  type="button"
+                  disabled={!perfilSeleccionadoId || loadingPerfilAction}
+                  onClick={handleApagarPerfil}
+                  className="rounded-md border border-red-200 bg-white px-3 py-2 text-sm font-medium text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Apagar
+                </button>
+              </div>
+
+              <div className="mt-4 border-t border-gray-100 pt-4">
+                <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-600">
+                  Artigos do perfil (
+                  {perfilDraftItens.length}
+                  )
+                </h3>
+                {perfilDraftItens.length > 0 && (
+                  <div className="mb-2 flex flex-wrap gap-2">
+                    <input
+                      type="search"
+                      placeholder="Filtrar artigos do perfil…"
+                      value={perfilDraftFilter}
+                      onChange={(e) => setPerfilDraftFilter(e.target.value)}
+                      className="min-w-[200px] flex-1 rounded-md border border-gray-300 px-3 py-1.5 text-sm"
+                    />
+                    {itens.length > 0 && (
+                      <button
+                        type="button"
+                        disabled={selected.size === 0 || loadingPerfilAction}
+                        onClick={handleAdicionarMwAoPerfil}
+                        className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-800 hover:bg-gray-50 disabled:opacity-50"
+                      >
+                        Adicionar selecção MW
+                      </button>
+                    )}
+                  </div>
+                )}
+                {perfilDraftItens.length === 0 ? (
+                  <p className="text-xs text-gray-500">Nenhum artigo no perfil. Use a pesquisa no catálogo ou cole códigos abaixo.</p>
+                ) : (
+                  <div className="max-h-48 overflow-auto rounded-md border border-gray-200">
+                    <table className="min-w-full text-left text-sm">
+                      <thead className="sticky top-0 bg-gray-50 text-xs uppercase text-gray-600">
+                        <tr>
+                          <th className="px-3 py-2">ERP</th>
+                          <th className="px-3 py-2">Descrição</th>
+                          <th className="px-3 py-2">Catálogo</th>
+                          <th className="px-3 py-2" />
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filteredPerfilDraft.map((it) => (
+                          <tr key={it.codigo} className="border-t border-gray-100">
+                            <td className="px-3 py-1.5 font-mono text-xs">{it.codigo}</td>
+                            <td className="px-3 py-1.5 text-gray-800">{it.descricao || '—'}</td>
+                            <td className="px-3 py-1.5 text-xs">
+                              {it.no_catalogo ? (
+                                <span className="text-green-700">Sim</span>
+                              ) : (
+                                <span className="text-amber-700">Não</span>
+                              )}
+                            </td>
+                            <td className="px-3 py-1.5 text-right">
+                              <button
+                                type="button"
+                                onClick={() => handleRemoverDoDraft(it.codigo)}
+                                className="text-xs text-red-600 hover:underline"
+                              >
+                                Remover
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+
+              <div className="mt-4 border-t border-gray-100 pt-4">
+                <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-600">Adicionar do catálogo</h3>
+                <div className="flex flex-wrap gap-2">
+                  <input
+                    type="search"
+                    placeholder="Pesquisar código ou descrição…"
+                    value={catalogSearch}
+                    onChange={(e) => setCatalogSearch(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') handlePesquisarCatalogo(); }}
+                    className="min-w-[200px] flex-1 rounded-md border border-gray-300 px-3 py-2 text-sm"
+                  />
+                  <button
+                    type="button"
+                    disabled={loadingCatalog}
+                    onClick={handlePesquisarCatalogo}
+                    className="rounded-md border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-800 hover:bg-gray-50 disabled:opacity-50"
+                  >
+                    {loadingCatalog ? 'A pesquisar…' : 'Pesquisar'}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={catalogPick.size === 0}
+                    onClick={handleAdicionarCatalogoAoPerfil}
+                    className="rounded-md bg-[#0915FF] px-3 py-2 text-sm font-semibold text-white hover:bg-[#0712cc] disabled:opacity-50"
+                  >
+                    Adicionar ao perfil
+                  </button>
+                </div>
+                {catalogResults.length > 0 && (
+                  <div className="mt-2 max-h-40 overflow-auto rounded-md border border-gray-200">
+                    <table className="min-w-full text-left text-sm">
+                      <thead className="sticky top-0 bg-gray-50 text-xs uppercase text-gray-600">
+                        <tr>
+                          <th className="px-3 py-2" />
+                          <th className="px-3 py-2">ERP</th>
+                          <th className="px-3 py-2">Descrição</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {catalogResults.map((it) => {
+                          const cod = String(it.codigo);
+                          const jaNoPerfil = perfilDraftItens.some(
+                            (p) => String(p.codigo).toUpperCase() === cod.toUpperCase()
+                          );
+                          return (
+                            <tr key={cod} className="border-t border-gray-100">
+                              <td className="px-3 py-1.5">
+                                <input
+                                  type="checkbox"
+                                  checked={catalogPick.has(cod)}
+                                  disabled={jaNoPerfil}
+                                  onChange={() => toggleCatalogPick(cod)}
+                                  aria-label={`Seleccionar ${cod}`}
+                                />
+                              </td>
+                              <td className="px-3 py-1.5 font-mono text-xs">{cod}</td>
+                              <td className="px-3 py-1.5 text-gray-800">
+                                {it.descricao || '—'}
+                                {jaNoPerfil && (
+                                  <span className="ml-2 text-xs text-gray-400">(já no perfil)</span>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+
+              <div className="mt-4 border-t border-gray-100 pt-4">
+                <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-600">Colar códigos ERP</h3>
+                <textarea
+                  value={pasteCodigosText}
+                  onChange={(e) => setPasteCodigosText(e.target.value)}
+                  placeholder="Um código por linha (ou separados por vírgula, ponto e vírgula ou tab)"
+                  rows={3}
+                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
+                />
+                <button
+                  type="button"
+                  disabled={!pasteCodigosText.trim() || loadingPerfilAction}
+                  onClick={handleImportarCodigosColados}
+                  className="mt-2 rounded-md border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-800 hover:bg-gray-50 disabled:opacity-50"
+                >
+                  Importar códigos
+                </button>
+              </div>
+            </div>
+
+            <div className="border-t border-gray-100 p-4">
+              <button
+                type="button"
+                onClick={handleFecharPerfisConfig}
+                className="rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-800 hover:bg-gray-50"
+              >
+                Fechar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="mb-6 rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
-        <label className="mb-2 block text-sm font-medium text-gray-700">Ficheiro MW (.xlsx)</label>
+        <label className="mb-2 block text-sm font-medium text-gray-700">Ficheiro de stock primavera(.xlsx)</label>
         <input
           type="file"
           accept=".xlsx,.xls"
@@ -952,7 +1057,7 @@ function ContagemMicroway() {
                   </th>
                   <th className="px-4 py-2">ERP</th>
                   <th className="px-4 py-2">Descrição</th>
-                  <th className="px-4 py-2 text-right">Stock MW</th>
+                  <th className="px-4 py-2 text-right">Stock</th>
                   <th className="px-4 py-2">Catálogo</th>
                 </tr>
               </thead>
@@ -1012,4 +1117,4 @@ function ContagemMicroway() {
   );
 }
 
-export default ContagemMicroway;
+export default ReporteAtivo;
