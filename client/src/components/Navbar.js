@@ -3,7 +3,11 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { ChevronDown, Settings, Database, Users, User, FileText, Download, Plus, Trash2, Image, RefreshCw, Menu, X, AlertTriangle, Package, ShoppingCart, Archive, RotateCcw, Truck, MapPin, Share2, Tag } from 'react-feather';
 import { podeAcederInventario, podeAcederRequisicoes } from '../utils/roles';
-import { podeUsarConsultaMovimentos, podeUsarControloStock } from '../utils/controloStock';
+import {
+  podeUsarConsultaMovimentos,
+  podeUsarControloStock,
+  podeUsarAnaliseControloStock,
+} from '../utils/controloStock';
 
 const Navbar = () => {
   const { isAuthenticated, logout, user } = useAuth();
@@ -48,6 +52,7 @@ const Navbar = () => {
   /** Conta autenticada que não é admin: acede a /admin-usuarios só para o próprio perfil */
   const showMeuPerfil = isAuthenticated && !isAdmin;
   const podeStockMenu = user && podeUsarControloStock(user);
+  const podeAnaliseStockMenu = user && podeUsarAnaliseControloStock(user);
   const canSeeConsultaLocalizacoes = Boolean(podeStockMenu);
   const canSeeConsultaMenu =
     user &&
@@ -627,6 +632,23 @@ const Navbar = () => {
                           Importar Stock
                         </Link>
                       )}
+                      {podeAnaliseStockMenu && (
+                        <Link
+                          to="/controlo-stock/analise"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setDadosOpen(false);
+                            setTimeout(() => {
+                              navigate('/controlo-stock/analise');
+                            }, 100);
+                          }}
+                          className="flex items-center gap-2 lg:gap-3 py-2 lg:py-3 px-3 lg:px-4 text-white no-underline font-medium text-xs lg:text-sm transition-colors duration-200 hover:bg-white/10 rounded"
+                        >
+                          <AlertTriangle size={14} className="lg:w-4 lg:h-4" />
+                          Análise de stock
+                        </Link>
+                      )}
                       {(isAdmin || isController) && (
                         <Link 
                           to="/importar-dados-itens" 
@@ -1171,6 +1193,12 @@ const Navbar = () => {
                         <Link to="/importar-stock-nacional" onClick={(e) => handleMobileNavigation('/importar-stock-nacional', e)} className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10">
                           <FileText size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" />
                           Importar Stock
+                        </Link>
+                      )}
+                      {podeAnaliseStockMenu && (
+                        <Link to="/controlo-stock/analise" onClick={(e) => handleMobileNavigation('/controlo-stock/analise', e)} className="text-white py-2.5 sm:py-3 px-4 sm:px-5 pl-8 sm:pl-10 border-b border-white/5 text-xs sm:text-sm transition-colors duration-200 hover:bg-white/10">
+                          <AlertTriangle size={14} className="inline mr-2 sm:mr-3 sm:w-4 sm:h-4" />
+                          Análise de stock
                         </Link>
                       )}
                       {(isAdmin || isController) && (

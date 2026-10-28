@@ -1,9 +1,19 @@
 import React from 'react';
 import { Navigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { podeUsarConsultaMovimentos, podeUsarControloStock } from '../utils/controloStock';
+import {
+  podeUsarConsultaMovimentos,
+  podeUsarControloStock,
+  podeUsarAnaliseControloStock,
+} from '../utils/controloStock';
 
-const ProtectedRoute = ({ children, allowedRoles, requireControloStock, requireConsultaMovimentos }) => {
+const ProtectedRoute = ({
+  children,
+  allowedRoles,
+  requireControloStock,
+  requireConsultaMovimentos,
+  requireAnaliseControloStock,
+}) => {
   const { isAuthenticated, loading, user } = useAuth();
 
   if (loading) {
@@ -23,6 +33,9 @@ const ProtectedRoute = ({ children, allowedRoles, requireControloStock, requireC
   }
 
   if (requireControloStock && !podeUsarControloStock(user)) {
+    return <Navigate to="/" replace />;
+  }
+  if (requireAnaliseControloStock && !podeUsarAnaliseControloStock(user)) {
     return <Navigate to="/" replace />;
   }
   if (requireConsultaMovimentos && !podeUsarConsultaMovimentos(user)) {

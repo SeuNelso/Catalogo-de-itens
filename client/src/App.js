@@ -37,6 +37,7 @@ import Armazens from './pages/Armazens';
 import ConsultaLocalizacoesEstoque from './pages/ConsultaLocalizacoesEstoque';
 import TransferenciaLocalizacao from './pages/TransferenciaLocalizacao';
 import ConsultaMovimentos from './pages/ConsultaMovimentos';
+import AnaliseControloStock from './pages/AnaliseControloStock';
 import DashboardViaturas from './pages/DashboardViaturas';
 import ConsultaStockNacionalArmazem from './pages/ConsultaStockNacionalArmazem';
 import IdentificacaoItens from './pages/IdentificacaoItens';
@@ -338,6 +339,14 @@ function App() {
                   element={
                     <ProtectedRoute requireConsultaMovimentos>
                       <ConsultaMovimentos />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/controlo-stock/analise"
+                  element={
+                    <ProtectedRoute requireAnaliseControloStock>
+                      <AnaliseControloStock />
                     </ProtectedRoute>
                   }
                 />
